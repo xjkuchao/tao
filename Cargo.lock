@@ -144,6 +144,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 
 [[package]]
+name = "bitstream-io"
+version = "0.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "614aa3f2bac03707e62a84d18a48dd3d9ea6171313fd5e6a53b5054d8ae74601"
+
+[[package]]
 name = "bumpalo"
 version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1206,6 +1212,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "puremp3"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2b7efbb39e373af70c139e0611375fa6cad751fb93d528a610b55302710d883"
+dependencies = [
+ "bitstream-io",
+ "byteorder",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1527,6 +1543,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "log",
+ "puremp3",
  "tao-core",
  "thiserror 2.0.18",
 ]

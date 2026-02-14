@@ -11,3 +11,4 @@ tao-core.workspace = true
 thiserror.workspace = true
 log.workspace = true
 bytes.workspace = true
+puremp3.workspace = true
