@@ -138,6 +138,13 @@ impl IoContext {
         Ok(u16::from_be_bytes(buf))
     }
 
+    /// 读取 u24 大端 (3 字节无符号整数)
+    pub fn read_u24_be(&mut self) -> TaoResult<u32> {
+        let mut buf = [0u8; 3];
+        self.read_exact(&mut buf)?;
+        Ok((u32::from(buf[0]) << 16) | (u32::from(buf[1]) << 8) | u32::from(buf[2]))
+    }
+
     /// 读取 u32 大端
     pub fn read_u32_be(&mut self) -> TaoResult<u32> {
         let mut buf = [0u8; 4];

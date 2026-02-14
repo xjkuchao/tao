@@ -1,7 +1,9 @@
 //! 解封装器实现模块.
 
+pub mod aac;
 pub mod aiff;
 pub mod flac;
+pub mod flv;
 pub mod mkv;
 pub mod mp3;
 pub mod mp4;
@@ -33,4 +35,10 @@ pub fn register_all_demuxers(registry: &mut FormatRegistry) {
 
     registry.register_demuxer(FormatId::Matroska, "matroska", mkv::MkvDemuxer::create);
     registry.register_probe(Box::new(mkv::MkvProbe));
+
+    registry.register_demuxer(FormatId::AacAdts, "aac", aac::AacDemuxer::create);
+    registry.register_probe(Box::new(aac::AacProbe));
+
+    registry.register_demuxer(FormatId::Flv, "flv", flv::FlvDemuxer::create);
+    registry.register_probe(Box::new(flv::FlvProbe));
 }
