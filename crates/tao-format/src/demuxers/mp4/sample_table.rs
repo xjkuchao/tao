@@ -276,8 +276,7 @@ impl SampleTable {
                 b"esds" => {
                     let data = io.read_bytes(content_size as usize)?;
                     // 从 esds 描述符中提取 DecoderSpecificInfo (AudioSpecificConfig)
-                    self.extra_data =
-                        extract_decoder_specific_info(&data).unwrap_or(data);
+                    self.extra_data = extract_decoder_specific_info(&data).unwrap_or(data);
                 }
                 b"avcC" | b"hvcC" | b"av1C" | b"vpcC" | b"dOps" => {
                     let data = io.read_bytes(content_size as usize)?;

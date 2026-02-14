@@ -54,13 +54,12 @@ fn find_compatible_config(
     let supported = device.supported_output_configs().ok()?;
     for cfg in supported {
         if cfg.channels() == channels as u16 {
-            let rate = if cfg.min_sample_rate() <= target_rate
-                && cfg.max_sample_rate() >= target_rate
-            {
-                target_rate
-            } else {
-                cfg.max_sample_rate()
-            };
+            let rate =
+                if cfg.min_sample_rate() <= target_rate && cfg.max_sample_rate() >= target_rate {
+                    target_rate
+                } else {
+                    cfg.max_sample_rate()
+                };
             return Some(cpal::StreamConfig {
                 channels: channels as u16,
                 sample_rate: rate,

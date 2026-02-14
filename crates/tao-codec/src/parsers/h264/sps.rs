@@ -59,6 +59,12 @@ pub struct Sps {
     pub crop_top: u32,
     /// cropping 偏移
     pub crop_bottom: u32,
+    /// log2(max_frame_num) = log2_max_frame_num_minus4 + 4
+    pub log2_max_frame_num: u32,
+    /// 图像顺序计数类型 (0, 1, 2)
+    pub poc_type: u32,
+    /// log2(max_pic_order_cnt_lsb) = log2_max_pic_order_cnt_lsb_minus4 + 4 (仅 poc_type==0)
+    pub log2_max_poc_lsb: u32,
 }
 
 /// 预定义的 SAR 表 (ITU-T H.264 表 E-1)
@@ -122,12 +128,13 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
     }
 
     // log2_max_frame_num_minus4
-    let _log2_max_frame_num = read_ue(&mut br)? + 4;
+    let log2_max_frame_num = read_ue(&mut br)? + 4;
     // pic_order_cnt_type
     let poc_type = read_ue(&mut br)?;
+    let mut log2_max_poc_lsb = 0u32;
     match poc_type {
         0 => {
-            let _log2_max_poc_lsb = read_ue(&mut br)? + 4;
+            log2_max_poc_lsb = read_ue(&mut br)? + 4;
         }
         1 => {
             br.skip_bits(1)?; // delta_pic_order_always_zero_flag
@@ -211,6 +218,9 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
         crop_right,
         crop_top,
         crop_bottom,
+        log2_max_frame_num,
+        poc_type,
+        log2_max_poc_lsb,
     })
 }
 
