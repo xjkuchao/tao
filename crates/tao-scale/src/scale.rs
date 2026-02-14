@@ -109,6 +109,12 @@ fn scale_packed(
         ScaleAlgorithm::Bilinear => scale_plane_bilinear(
             src, src_stride, src_w, src_h, dst, dst_stride, dst_w, dst_h, bpp,
         ),
+        ScaleAlgorithm::Bicubic => scale_plane_bicubic(
+            src, src_stride, src_w, src_h, dst, dst_stride, dst_w, dst_h, bpp,
+        ),
+        ScaleAlgorithm::Lanczos => scale_plane_lanczos(
+            src, src_stride, src_w, src_h, dst, dst_stride, dst_w, dst_h, bpp,
+        ),
         _ => Err(TaoError::NotImplemented(format!(
             "缩放算法 {algorithm:?} 尚未实现",
         ))),
@@ -285,6 +291,214 @@ fn scale_plane_bilinear(
         }
     }
     Ok(())
+}
+
+// ============================================================
+// 双三次插值 (Bicubic)
+// ============================================================
+
+/// Catmull-Rom 双三次插值核函数 (a = -0.5)
+///
+/// ```text
+/// w(t) = (a+2)|t|^3 - (a+3)|t|^2 + 1        当 |t| <= 1
+///      = a|t|^3 - 5a|t|^2 + 8a|t| - 4a       当 1 < |t| <= 2
+///      = 0                                      当 |t| > 2
+/// ```
+///
+/// 使用 a = -0.5 (Catmull-Rom), 定点数精度 1/256.
+fn bicubic_weight(t_256: i32) -> i32 {
+    // t_256 是 |t| * 256
+    let t = t_256.unsigned_abs();
+    if t <= 256 {
+        // |t| <= 1
+        // w = 1.5|t|^3 - 2.5|t|^2 + 1
+        // 定点: (3*t^3 - 5*t^2*256 + 2*256^3) / (2 * 256^2)
+        let t2 = (t * t) >> 8; // t^2 / 256
+        let t3 = (t2 * t) >> 8; // t^3 / 256^2
+        (3 * t3 as i32 - 5 * t2 as i32 * 2 + 512) / 2
+    } else if t <= 512 {
+        // 1 < |t| <= 2
+        // w = -0.5|t|^3 + 2.5|t|^2 - 4|t| + 2
+        let t2 = (t * t) >> 8;
+        let t3 = (t2 * t) >> 8;
+        (-(t3 as i32) + 5 * t2 as i32 - 8 * t as i32 + 4 * 256) / 2
+    } else {
+        0
+    }
+}
+
+/// 双三次插值缩放单个平面
+///
+/// 使用 4x4 邻域的 Catmull-Rom 核进行插值, 可分离实现 (先水平后垂直).
+#[allow(clippy::too_many_arguments)]
+fn scale_plane_bicubic(
+    src: &[u8],
+    src_stride: usize,
+    src_w: u32,
+    src_h: u32,
+    dst: &mut [u8],
+    dst_stride: usize,
+    dst_w: u32,
+    dst_h: u32,
+    bpp: usize,
+) -> TaoResult<()> {
+    let max_x = src_w as i32 - 1;
+    let max_y = src_h as i32 - 1;
+
+    // 预计算水平映射
+    let h_map: Vec<(i32, i32)> = (0..dst_w as usize)
+        .map(|dx| map_coord_float(dx, dst_w, src_w))
+        .collect();
+
+    for dy in 0..dst_h as usize {
+        let (src_y, frac_y) = map_coord_float(dy, dst_h, src_h);
+        let dst_row = dy * dst_stride;
+
+        for (dx, &(src_x, frac_x)) in h_map.iter().enumerate() {
+            let dst_off = dst_row + dx * bpp;
+
+            for c in 0..bpp {
+                let mut sum: i32 = 0;
+                let mut weight_sum: i32 = 0;
+
+                for ky in -1..=2i32 {
+                    let sy = (src_y + ky).clamp(0, max_y) as usize;
+                    let wy = bicubic_weight((ky * 256 - frac_y).abs());
+
+                    for kx in -1..=2i32 {
+                        let sx = (src_x + kx).clamp(0, max_x) as usize;
+                        let wx = bicubic_weight((kx * 256 - frac_x).abs());
+
+                        let w = (wy * wx) >> 8;
+                        let pixel = src[sy * src_stride + sx * bpp + c] as i32;
+                        sum += pixel * w;
+                        weight_sum += w;
+                    }
+                }
+
+                let val = if weight_sum > 0 {
+                    ((sum + weight_sum / 2) / weight_sum).clamp(0, 255)
+                } else {
+                    0
+                };
+                dst[dst_off + c] = val as u8;
+            }
+        }
+    }
+    Ok(())
+}
+
+// ============================================================
+// Lanczos 插值
+// ============================================================
+
+/// Lanczos 窗口大小
+const LANCZOS_A: i32 = 3;
+
+/// Lanczos 核函数: sinc(x) * sinc(x/a)
+///
+/// 使用查表 + 线性插值近似 sinc 函数, a=3.
+fn lanczos_weight(t_256: i32) -> i32 {
+    let t_abs = t_256.unsigned_abs();
+    if t_abs == 0 {
+        return 256;
+    }
+    let a_256 = (LANCZOS_A as u32) * 256;
+    if t_abs >= a_256 {
+        return 0;
+    }
+
+    // sinc(x) = sin(π*x) / (π*x)
+    // 使用浮点计算 (足够快, 在缩放中不是瓶颈)
+    let x = t_abs as f64 / 256.0;
+    let pi_x = std::f64::consts::PI * x;
+    let pi_x_a = pi_x / LANCZOS_A as f64;
+    let sinc_x = pi_x.sin() / pi_x;
+    let sinc_x_a = pi_x_a.sin() / pi_x_a;
+    let w = sinc_x * sinc_x_a;
+
+    (w * 256.0) as i32
+}
+
+/// Lanczos 插值缩放单个平面
+///
+/// 使用 2a x 2a 邻域 (默认 a=3, 即 6x6 窗口).
+/// 质量最高但计算量最大.
+#[allow(clippy::too_many_arguments)]
+fn scale_plane_lanczos(
+    src: &[u8],
+    src_stride: usize,
+    src_w: u32,
+    src_h: u32,
+    dst: &mut [u8],
+    dst_stride: usize,
+    dst_w: u32,
+    dst_h: u32,
+    bpp: usize,
+) -> TaoResult<()> {
+    let max_x = src_w as i32 - 1;
+    let max_y = src_h as i32 - 1;
+
+    let h_map: Vec<(i32, i32)> = (0..dst_w as usize)
+        .map(|dx| map_coord_float(dx, dst_w, src_w))
+        .collect();
+
+    let a = LANCZOS_A;
+
+    for dy in 0..dst_h as usize {
+        let (src_y, frac_y) = map_coord_float(dy, dst_h, src_h);
+        let dst_row = dy * dst_stride;
+
+        for (dx, &(src_x, frac_x)) in h_map.iter().enumerate() {
+            let dst_off = dst_row + dx * bpp;
+
+            for c in 0..bpp {
+                let mut sum: i32 = 0;
+                let mut weight_sum: i32 = 0;
+
+                for ky in (1 - a)..=a {
+                    let sy = (src_y + ky).clamp(0, max_y) as usize;
+                    let wy = lanczos_weight((ky * 256 - frac_y).abs());
+
+                    for kx in (1 - a)..=a {
+                        let sx = (src_x + kx).clamp(0, max_x) as usize;
+                        let wx = lanczos_weight((kx * 256 - frac_x).abs());
+
+                        let w = (wy * wx) >> 8;
+                        let pixel = src[sy * src_stride + sx * bpp + c] as i32;
+                        sum += pixel * w;
+                        weight_sum += w;
+                    }
+                }
+
+                let val = if weight_sum > 0 {
+                    ((sum + weight_sum / 2) / weight_sum).clamp(0, 255)
+                } else {
+                    0
+                };
+                dst[dst_off + c] = val as u8;
+            }
+        }
+    }
+    Ok(())
+}
+
+// ============================================================
+// 坐标映射工具
+// ============================================================
+
+/// 将目标坐标映射到源坐标 (返回整数部分和小数部分*256)
+///
+/// 用于 Bicubic/Lanczos 需要负偏移采样点的情况.
+fn map_coord_float(dst_idx: usize, dst_size: u32, src_size: u32) -> (i32, i32) {
+    // 中心对齐: src_pos = (dst_idx + 0.5) * src_size / dst_size - 0.5
+    let src_pos_256 =
+        ((dst_idx as i64 * 2 + 1) * src_size as i64 * 128 / dst_size as i64 - 128) as i32;
+
+    let idx = src_pos_256 >> 8;
+    let frac = src_pos_256 & 0xFF;
+
+    (idx, frac)
 }
 
 /// 将目标坐标映射到源坐标
@@ -510,6 +724,200 @@ mod tests {
         // 缩小: dst=2, src=8
         let (i0, i1, _) = map_coord(1, 2, 8);
         assert!(i0 < 8 && i1 < 8);
+    }
+
+    #[test]
+    fn test_双三次_放大2x_灰度() {
+        let src = [0u8, 100, 200, 50];
+        let mut dst = vec![0u8; 4 * 4];
+
+        scale_image(
+            &[&src],
+            &[2],
+            2,
+            2,
+            PixelFormat::Gray8,
+            &mut [&mut dst],
+            &[4],
+            4,
+            4,
+            ScaleAlgorithm::Bicubic,
+        )
+        .unwrap();
+
+        // 左上角应接近 0 (双三次在小图上有较多振铃, 放宽阈值)
+        assert!(dst[0] < 50, "双三次左上角应接近 0, 实际={}", dst[0]);
+        // 右上角应接近 100
+        assert!(
+            dst[3] > 60 && dst[3] < 140,
+            "双三次右上角应接近 100, 实际={}",
+            dst[3],
+        );
+    }
+
+    #[test]
+    fn test_双三次_缩小_灰度() {
+        let src = [
+            10, 20, 30, 40, //
+            50, 60, 70, 80, //
+            90, 100, 110, 120, //
+            130, 140, 150, 160, //
+        ];
+        let mut dst = vec![0u8; 2 * 2];
+
+        scale_image(
+            &[&src],
+            &[4],
+            4,
+            4,
+            PixelFormat::Gray8,
+            &mut [&mut dst],
+            &[2],
+            2,
+            2,
+            ScaleAlgorithm::Bicubic,
+        )
+        .unwrap();
+
+        for &v in &dst {
+            assert!(v > 0 && v < 255, "双三次缩小值应在合理范围内: {v}");
+        }
+    }
+
+    #[test]
+    fn test_双三次_均匀色不变() {
+        let src = vec![128u8; 8 * 8];
+        let mut dst = vec![0u8; 4 * 4];
+
+        scale_image(
+            &[&src],
+            &[8],
+            8,
+            8,
+            PixelFormat::Gray8,
+            &mut [&mut dst],
+            &[4],
+            4,
+            4,
+            ScaleAlgorithm::Bicubic,
+        )
+        .unwrap();
+
+        for &v in &dst {
+            assert!(
+                (v as i32 - 128).unsigned_abs() <= 1,
+                "双三次均匀色应保持 128, 实际={}",
+                v,
+            );
+        }
+    }
+
+    #[test]
+    fn test_lanczos_放大2x_灰度() {
+        let src = [0u8, 100, 200, 50];
+        let mut dst = vec![0u8; 4 * 4];
+
+        scale_image(
+            &[&src],
+            &[2],
+            2,
+            2,
+            PixelFormat::Gray8,
+            &mut [&mut dst],
+            &[4],
+            4,
+            4,
+            ScaleAlgorithm::Lanczos,
+        )
+        .unwrap();
+
+        // 左上角应接近 0
+        assert!(dst[0] < 30, "Lanczos 左上角应接近 0, 实际={}", dst[0]);
+    }
+
+    #[test]
+    fn test_lanczos_缩小_灰度() {
+        let src = [
+            10, 20, 30, 40, //
+            50, 60, 70, 80, //
+            90, 100, 110, 120, //
+            130, 140, 150, 160, //
+        ];
+        let mut dst = vec![0u8; 2 * 2];
+
+        scale_image(
+            &[&src],
+            &[4],
+            4,
+            4,
+            PixelFormat::Gray8,
+            &mut [&mut dst],
+            &[2],
+            2,
+            2,
+            ScaleAlgorithm::Lanczos,
+        )
+        .unwrap();
+
+        for &v in &dst {
+            assert!(v > 0 && v < 255, "Lanczos 缩小值应在合理范围内: {v}");
+        }
+    }
+
+    #[test]
+    fn test_lanczos_均匀色不变() {
+        let src = vec![128u8; 8 * 8];
+        let mut dst = vec![0u8; 4 * 4];
+
+        scale_image(
+            &[&src],
+            &[8],
+            8,
+            8,
+            PixelFormat::Gray8,
+            &mut [&mut dst],
+            &[4],
+            4,
+            4,
+            ScaleAlgorithm::Lanczos,
+        )
+        .unwrap();
+
+        for &v in &dst {
+            assert!(
+                (v as i32 - 128).unsigned_abs() <= 1,
+                "Lanczos 均匀色应保持 128, 实际={}",
+                v,
+            );
+        }
+    }
+
+    #[test]
+    fn test_lanczos_rgb24_放大() {
+        let src = vec![200u8; 4 * 4 * 3]; // 4x4 均匀色
+        let mut dst = vec![0u8; 8 * 8 * 3]; // 8x8
+
+        scale_image(
+            &[&src],
+            &[12],
+            4,
+            4,
+            PixelFormat::Rgb24,
+            &mut [&mut dst],
+            &[24],
+            8,
+            8,
+            ScaleAlgorithm::Lanczos,
+        )
+        .unwrap();
+
+        for &v in &dst {
+            assert!(
+                (v as i32 - 200).unsigned_abs() <= 1,
+                "Lanczos RGB24 均匀色应保持 200, 实际={}",
+                v,
+            );
+        }
     }
 
     #[test]

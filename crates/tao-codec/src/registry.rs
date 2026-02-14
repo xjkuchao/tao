@@ -143,8 +143,8 @@ mod tests {
         let decoders = registry.list_decoders();
         let encoders = registry.list_encoders();
 
-        // 8 个解码器: rawvideo + 6 PCM + FLAC
-        assert_eq!(decoders.len(), 8);
+        // 9 个解码器: rawvideo + 6 PCM + FLAC + AAC
+        assert_eq!(decoders.len(), 9);
         // 7 个编码器: rawvideo + 6 PCM
         assert_eq!(encoders.len(), 8);
     }

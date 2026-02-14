@@ -1,5 +1,6 @@
 //! 解码器实现模块.
 
+pub mod aac;
 pub mod flac;
 pub mod pcm;
 pub mod rawvideo;
@@ -21,4 +22,5 @@ pub fn register_all_decoders(registry: &mut CodecRegistry) {
     registry.register_decoder(CodecId::PcmS32le, "pcm_s32le", pcm::PcmDecoder::new_s32le);
     registry.register_decoder(CodecId::PcmF32le, "pcm_f32le", pcm::PcmDecoder::new_f32le);
     registry.register_decoder(CodecId::Flac, "flac", flac::FlacDecoder::create);
+    registry.register_decoder(CodecId::Aac, "aac", aac::AacDecoder::create);
 }
