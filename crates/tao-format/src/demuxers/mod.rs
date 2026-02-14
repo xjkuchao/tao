@@ -7,6 +7,7 @@ pub mod flv;
 pub mod mkv;
 pub mod mp3;
 pub mod mp4;
+pub mod mpegts;
 pub mod ogg;
 pub mod wav;
 
@@ -41,4 +42,7 @@ pub fn register_all_demuxers(registry: &mut FormatRegistry) {
 
     registry.register_demuxer(FormatId::Flv, "flv", flv::FlvDemuxer::create);
     registry.register_probe(Box::new(flv::FlvProbe));
+
+    registry.register_demuxer(FormatId::MpegTs, "mpegts", mpegts::TsDemuxer::create);
+    registry.register_probe(Box::new(mpegts::TsProbe));
 }
