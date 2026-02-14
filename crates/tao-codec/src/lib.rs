@@ -12,6 +12,7 @@ pub mod encoder;
 pub mod encoders;
 pub mod frame;
 pub mod packet;
+pub mod parsers;
 pub mod registry;
 
 // 重导出常用类型
