@@ -42,7 +42,8 @@ impl Player {
             return Err(format!("文件不存在: {}", config.input_path));
         }
 
-        let registry = FormatRegistry::new();
+        let mut registry = FormatRegistry::new();
+        tao_format::register_all(&mut registry);
 
         Ok(Self { config, registry })
     }
@@ -97,7 +98,8 @@ impl Player {
         let video_stream_idx = video_stream.map(|s| s.index);
 
         let mut audio_decoder = if let Some(stream) = audio_stream {
-            let codec_registry = tao_codec::registry::CodecRegistry::new();
+            let mut codec_registry = tao_codec::registry::CodecRegistry::new();
+            tao_codec::register_all(&mut codec_registry);
             match codec_registry.create_decoder(stream.codec_id) {
                 Ok(mut dec) => {
                     let params = build_codec_params(stream);
@@ -118,7 +120,8 @@ impl Player {
         };
 
         let mut video_decoder = if let Some(stream) = video_stream {
-            let codec_registry = tao_codec::registry::CodecRegistry::new();
+            let mut codec_registry = tao_codec::registry::CodecRegistry::new();
+            tao_codec::register_all(&mut codec_registry);
             match codec_registry.create_decoder(stream.codec_id) {
                 Ok(mut dec) => {
                     let params = build_codec_params(stream);
