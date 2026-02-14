@@ -36,3 +36,6 @@ config.toml
 # 测试产物
 *.profraw
 *.profdata
+
+# 数据文件
+/data
