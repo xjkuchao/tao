@@ -1,0 +1,12 @@
+[package]
+name = "tao-resample"
+description = "Tao 多媒体框架音频重采样库"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tao-core.workspace = true
+thiserror.workspace = true
+log.workspace = true

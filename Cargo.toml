@@ -1,0 +1,73 @@
+[workspace]
+members = [
+    "crates/tao-core",
+    "crates/tao-codec",
+    "crates/tao-format",
+    "crates/tao-filter",
+    "crates/tao-scale",
+    "crates/tao-resample",
+    "crates/tao-ffi",
+    "bins/tao-cli",
+    "bins/tao-probe",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/user/tao"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# 内部 crate 依赖
+tao-core = { path = "crates/tao-core" }
+tao-codec = { path = "crates/tao-codec" }
+tao-format = { path = "crates/tao-format" }
+tao-filter = { path = "crates/tao-filter" }
+tao-scale = { path = "crates/tao-scale" }
+tao-resample = { path = "crates/tao-resample" }
+tao-ffi = { path = "crates/tao-ffi" }
+
+# 错误处理
+thiserror = "2"
+
+# 日志
+log = "0.4"
+env_logger = "0.11"
+
+# 命令行参数
+clap = { version = "4", features = ["derive"] }
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 位操作
+bitflags = "2"
+
+# 字节处理
+bytes = "1"
+byteorder = "1"
+
+[package]
+name = "tao"
+description = "纯 Rust 实现的多媒体处理框架, 对标 FFmpeg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "tao"
+path = "src/lib.rs"
+
+[dependencies]
+tao-core.workspace = true
+tao-codec.workspace = true
+tao-format.workspace = true
+tao-filter.workspace = true
+tao-scale.workspace = true
+tao-resample.workspace = true
+
+[dev-dependencies]
+bytes.workspace = true

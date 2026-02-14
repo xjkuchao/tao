@@ -1,0 +1,20 @@
+[package]
+name = "tao-ffi"
+description = "Tao 多媒体框架 C FFI 导出层, 用于生成 DLL/SO 供 C/C++ 等语言调用"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "tao_ffi"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+tao-core.workspace = true
+tao-codec.workspace = true
+tao-format.workspace = true
+tao-filter.workspace = true
+tao-scale.workspace = true
+tao-resample.workspace = true
+log.workspace = true

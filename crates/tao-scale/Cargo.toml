@@ -1,0 +1,12 @@
+[package]
+name = "tao-scale"
+description = "Tao 多媒体框架图像缩放与像素格式转换库"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tao-core.workspace = true
+thiserror.workspace = true
+log.workspace = true

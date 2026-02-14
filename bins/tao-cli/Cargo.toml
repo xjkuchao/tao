@@ -1,0 +1,22 @@
+[package]
+name = "tao-cli"
+description = "Tao 多媒体转码命令行工具, 对标 ffmpeg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "tao"
+path = "src/main.rs"
+
+[dependencies]
+tao-core.workspace = true
+tao-codec.workspace = true
+tao-format.workspace = true
+tao-filter.workspace = true
+tao-scale.workspace = true
+tao-resample.workspace = true
+clap.workspace = true
+log.workspace = true
+env_logger.workspace = true

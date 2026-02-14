@@ -1,0 +1,12 @@
+[package]
+name = "tao-core"
+description = "Tao 多媒体框架核心类型与工具库"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+log.workspace = true
+bitflags.workspace = true

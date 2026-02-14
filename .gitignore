@@ -1,0 +1,38 @@
+# 构建产物
+/target
+
+# Cargo.lock 对于库项目不提交 (workspace 中的库)
+# 但如果需要可执行文件的可复现构建, 可以选择提交
+# Cargo.lock
+
+# IDE 和编辑器
+.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 动态库构建产物
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+
+# 调试文件
+*.pdb
+*.dSYM/
+
+# 配置文件 (可能包含敏感信息)
+config.toml
+.env
+
+# 测试产物
+*.profraw
+*.profdata

@@ -1,0 +1,13 @@
+[package]
+name = "tao-codec"
+description = "Tao 多媒体框架编解码器库"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tao-core.workspace = true
+thiserror.workspace = true
+log.workspace = true
+bytes.workspace = true

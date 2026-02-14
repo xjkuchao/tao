@@ -1,0 +1,15 @@
+[package]
+name = "tao-format"
+description = "Tao 多媒体框架容器格式库"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tao-core.workspace = true
+tao-codec.workspace = true
+thiserror.workspace = true
+log.workspace = true
+bytes.workspace = true
+byteorder.workspace = true

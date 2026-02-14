@@ -1,0 +1,13 @@
+[package]
+name = "tao-filter"
+description = "Tao 多媒体框架滤镜库"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tao-core.workspace = true
+tao-codec.workspace = true
+thiserror.workspace = true
+log.workspace = true

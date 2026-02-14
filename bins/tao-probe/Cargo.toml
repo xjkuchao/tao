@@ -1,0 +1,21 @@
+[package]
+name = "tao-probe"
+description = "Tao 多媒体信息探测工具, 对标 ffprobe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "tao-probe"
+path = "src/main.rs"
+
+[dependencies]
+tao-core.workspace = true
+tao-codec.workspace = true
+tao-format.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+env_logger.workspace = true
