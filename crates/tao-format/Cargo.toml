@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+http = ["dep:ureq"]
+
 [dependencies]
 tao-core.workspace = true
 tao-codec.workspace = true
@@ -13,3 +17,4 @@ thiserror.workspace = true
 log.workspace = true
 bytes.workspace = true
 byteorder.workspace = true
+ureq = { workspace = true, optional = true }

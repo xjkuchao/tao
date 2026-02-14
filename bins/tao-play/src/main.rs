@@ -6,6 +6,7 @@
 //! - 音频播放 (通过 cpal 跨平台音频输出)
 //! - 视频显示 (通过 minifb 窗口渲染)
 //! - A/V 同步 (基于音频时钟)
+//! - HTTP/HTTPS URL 播放 (通过 ureq 下载)
 //! - 基本控制: 空格暂停, ESC/Q 退出
 
 mod audio;
@@ -20,7 +21,7 @@ use log::info;
 #[derive(Parser)]
 #[command(name = "tao-play", about = "Tao 多媒体播放器")]
 struct Args {
-    /// 输入文件路径
+    /// 输入文件路径或 URL (支持 http/https)
     input: String,
 
     /// 是否禁用视频
@@ -49,7 +50,7 @@ fn main() {
 
     let args = Args::parse();
 
-    info!("tao-play: 打开文件 {}", args.input);
+    info!("tao-play: 打开 {}", args.input);
 
     let config = player::PlayerConfig {
         input_path: args.input,

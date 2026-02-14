@@ -56,6 +56,9 @@ rayon = "1"
 # 基准测试
 criterion = { version = "0.5", features = ["html_reports"] }
 
+# HTTP 客户端
+ureq = "3"
+
 [package]
 name = "tao"
 description = "纯 Rust 实现的多媒体处理框架, 对标 FFmpeg"

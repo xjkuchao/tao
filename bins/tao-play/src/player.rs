@@ -37,8 +37,8 @@ pub struct Player {
 impl Player {
     /// 创建播放器
     pub fn new(config: PlayerConfig) -> Result<Self, String> {
-        // 检查文件存在
-        if !Path::new(&config.input_path).exists() {
+        // URL 不需要检查文件存在
+        if !is_url(&config.input_path) && !Path::new(&config.input_path).exists() {
             return Err(format!("文件不存在: {}", config.input_path));
         }
 
@@ -52,15 +52,24 @@ impl Player {
     pub fn run(&mut self) -> Result<(), String> {
         info!("正在打开: {}", self.config.input_path);
 
-        // 打开输入文件
-        let mut io = IoContext::open_read(&self.config.input_path)
-            .map_err(|e| format!("打开文件失败: {}", e))?;
+        // 根据输入类型打开 I/O
+        let mut io = if is_url(&self.config.input_path) {
+            IoContext::open_url(&self.config.input_path)
+                .map_err(|e| format!("打开 URL 失败: {}", e))?
+        } else {
+            IoContext::open_read(&self.config.input_path)
+                .map_err(|e| format!("打开文件失败: {}", e))?
+        };
 
         // 探测格式并创建解封装器
-        let filename = Path::new(&self.config.input_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(&self.config.input_path);
+        let filename = if is_url(&self.config.input_path) {
+            filename_from_url(&self.config.input_path)
+        } else {
+            Path::new(&self.config.input_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&self.config.input_path)
+        };
         let mut demuxer = self
             .registry
             .open_input(&mut io, Some(filename))
@@ -547,6 +556,19 @@ fn convert_frame_to_rgb24(vf: &tao_codec::frame::VideoFrame) -> Vec<u8> {
             vec![128u8; w * h * 3]
         }
     }
+}
+
+/// 判断路径是否为 URL
+fn is_url(path: &str) -> bool {
+    path.starts_with("http://") || path.starts_with("https://")
+}
+
+/// 从 URL 提取文件名 (用于格式探测)
+fn filename_from_url(url: &str) -> &str {
+    url.rsplit('/')
+        .next()
+        .and_then(|s| s.split('?').next())
+        .unwrap_or(url)
 }
 
 /// 从流信息构建编解码器参数

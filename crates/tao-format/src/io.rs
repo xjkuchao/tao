@@ -60,6 +60,36 @@ impl IoContext {
         Ok(Self::new(Box::new(FileBackend::new(file))))
     }
 
+    /// 从 URL 打开 (只读, HTTP/HTTPS)
+    ///
+    /// 将远程资源完整下载到内存后提供读取.
+    /// 适用于音频等中等大小的文件.
+    #[cfg(feature = "http")]
+    pub fn open_url(url: &str) -> TaoResult<Self> {
+        use std::io::Read as _;
+
+        log::info!("正在下载: {}", url);
+
+        let mut response = ureq::get(url).call().map_err(|e| {
+            tao_core::TaoError::Io(std::io::Error::other(format!("HTTP 请求失败: {}", e)))
+        })?;
+
+        let mut data = Vec::new();
+        response
+            .body_mut()
+            .as_reader()
+            .read_to_end(&mut data)
+            .map_err(tao_core::TaoError::Io)?;
+
+        log::info!(
+            "下载完成, 共 {} 字节 ({:.2} MB)",
+            data.len(),
+            data.len() as f64 / 1_048_576.0
+        );
+
+        Ok(Self::new(Box::new(MemoryBackend::from_data(data))))
+    }
+
     /// 从文件路径打开 (写入)
     pub fn open_write(path: &str) -> TaoResult<Self> {
         let file = std::fs::File::create(path)?;
