@@ -1,0 +1,23 @@
+# cbindgen 配置文件
+# 用于从 Rust FFI 代码自动生成 C 头文件
+# 运行: cbindgen --config cbindgen.toml --crate tao-ffi --output tao.h
+
+language = "C"
+tab_width = 4
+header = "/* tao.h - Tao 多媒体框架 C API */\n/* 自动生成, 请勿手动编辑 */"
+include_guard = "TAO_H"
+autogen_warning = "/* 由 cbindgen 自动生成 */"
+
+[export]
+prefix = "Tao"
+
+[fn]
+prefix = ""
+args = "vertical"
+rename_args = "None"
+
+[struct]
+rename_fields = "None"
+
+[enum]
+rename_variants = "None"

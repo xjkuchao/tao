@@ -133,9 +133,7 @@ impl Filter for CropFilter {
                 self.output = Some(Frame::Video(result));
                 Ok(())
             }
-            Frame::Audio(_) => Err(TaoError::InvalidArgument(
-                "crop 滤镜仅支持视频帧".into(),
-            )),
+            Frame::Audio(_) => Err(TaoError::InvalidArgument("crop 滤镜仅支持视频帧".into())),
         }
     }
 

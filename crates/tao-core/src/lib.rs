@@ -14,6 +14,7 @@ pub mod media_type;
 pub mod pixel_format;
 pub mod rational;
 pub mod sample_format;
+pub mod subtitle;
 pub mod timestamp;
 
 // 重导出常用类型

@@ -2,8 +2,8 @@
 //!
 //! 提供 A/V 同步所需的时间参考. 以音频回调时钟为主时钟.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Instant;
 
 /// 媒体时钟 (线程安全)

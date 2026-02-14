@@ -2,6 +2,7 @@
 
 pub mod aac;
 pub mod aiff;
+pub mod avi;
 pub mod flac;
 pub mod flv;
 pub mod mkv;
@@ -45,4 +46,7 @@ pub fn register_all_demuxers(registry: &mut FormatRegistry) {
 
     registry.register_demuxer(FormatId::MpegTs, "mpegts", mpegts::TsDemuxer::create);
     registry.register_probe(Box::new(mpegts::TsProbe));
+
+    registry.register_demuxer(FormatId::Avi, "avi", avi::AviDemuxer::create);
+    registry.register_probe(Box::new(avi::AviProbe));
 }

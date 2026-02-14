@@ -1,34 +1,28 @@
-//! # Tao (道)
+//! # Tao - 纯 Rust 多媒体框架
 //!
-//! 纯 Rust 实现的多媒体处理框架, 对标 FFmpeg.
+//! Tao 是一个对标 FFmpeg 的纯 Rust 多媒体框架, 提供:
 //!
-//! Tao 提供了完整的音视频处理能力:
-//! - **编解码**: 视频 (H.264, H.265, VP9, AV1...) 与音频 (AAC, MP3, FLAC, Opus...)
-//! - **容器格式**: 封装/解封装 (MP4, MKV, AVI, FLV, TS, WAV...)
-//! - **滤镜**: 音视频变换处理
-//! - **图像缩放**: 分辨率与像素格式转换
-//! - **音频重采样**: 采样率、声道、格式转换
+//! - **tao-core**: 核心数据类型和工具 (像素格式, 采样格式, 颜色空间等)
+//! - **tao-codec**: 编解码器 (PCM, FLAC, AAC, MP3, RawVideo, H.264 解析器)
+//! - **tao-format**: 容器格式 (WAV, FLAC, MP4, MKV, AVI, FLV, TS, Ogg, AIFF, ADTS, MP3)
+//! - **tao-filter**: 音视频滤镜 (volume, crop, pad, fade, overlay, drawtext, loudnorm, equalizer)
+//! - **tao-scale**: 图像缩放和像素格式转换 (最近邻, 双线性, 双三次, Lanczos, Area)
+//! - **tao-resample**: 音频重采样和格式转换
+//! - **tao-ffi**: C FFI 导出层
 //!
-//! # 快速开始
+//! ## 使用示例
 //!
 //! ```rust,no_run
-//! use tao::core::{PixelFormat, SampleFormat, Rational};
+//! use tao::codec::CodecRegistry;
+//! use tao::format::FormatRegistry;
 //!
-//! // 定义一个 29.97fps 的帧率
-//! let frame_rate = Rational::new(30000, 1001);
-//! println!("帧率: {frame_rate} ({:.2} fps)", frame_rate.to_f64());
+//! // 初始化注册表
+//! let mut codec_reg = CodecRegistry::new();
+//! tao::codec::register_all(&mut codec_reg);
+//!
+//! let mut format_reg = FormatRegistry::new();
+//! tao::format::register_all(&mut format_reg);
 //! ```
-//!
-//! # Crate 结构
-//!
-//! | Crate | 功能 |
-//! |-------|------|
-//! | `tao-core` | 核心类型与工具 |
-//! | `tao-codec` | 编解码器框架 |
-//! | `tao-format` | 容器格式框架 |
-//! | `tao-filter` | 滤镜框架 |
-//! | `tao-scale` | 图像缩放 |
-//! | `tao-resample` | 音频重采样 |
 
 /// 核心类型与工具 (对标 libavutil)
 pub use tao_core as core;

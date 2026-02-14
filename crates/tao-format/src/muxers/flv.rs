@@ -76,12 +76,7 @@ impl FlvMuxer {
     }
 
     /// 写入 FLV Tag
-    fn write_tag(
-        io: &mut IoContext,
-        tag_type: u8,
-        timestamp: u32,
-        data: &[u8],
-    ) -> TaoResult<()> {
+    fn write_tag(io: &mut IoContext, tag_type: u8, timestamp: u32, data: &[u8]) -> TaoResult<()> {
         let data_size = data.len() as u32;
 
         // Tag header (11 bytes)
@@ -192,8 +187,8 @@ impl Muxer for FlvMuxer {
 
         let stream = &self.streams[idx];
         let timestamp_ms = if stream.time_base.den > 0 {
-            (packet.pts as f64 * stream.time_base.num as f64 / stream.time_base.den as f64
-                * 1000.0) as u32
+            (packet.pts as f64 * stream.time_base.num as f64 / stream.time_base.den as f64 * 1000.0)
+                as u32
         } else {
             0
         };
@@ -265,9 +260,9 @@ impl Muxer for FlvMuxer {
 mod tests {
     use super::*;
     use crate::io::{IoContext, MemoryBackend};
-    use tao_core::{ChannelLayout, Rational, SampleFormat};
     use crate::stream::{AudioStreamParams, VideoStreamParams};
     use tao_core::PixelFormat;
+    use tao_core::{ChannelLayout, Rational, SampleFormat};
 
     fn make_audio_stream() -> Stream {
         Stream {

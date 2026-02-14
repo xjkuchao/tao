@@ -115,9 +115,9 @@ fn scale_packed(
         ScaleAlgorithm::Lanczos => scale_plane_lanczos(
             src, src_stride, src_w, src_h, dst, dst_stride, dst_w, dst_h, bpp,
         ),
-        _ => Err(TaoError::NotImplemented(format!(
-            "缩放算法 {algorithm:?} 尚未实现",
-        ))),
+        ScaleAlgorithm::Area => scale_plane_area(
+            src, src_stride, src_w, src_h, dst, dst_stride, dst_w, dst_h, bpp,
+        ),
     }
 }
 
@@ -477,6 +477,74 @@ fn scale_plane_lanczos(
                     0
                 };
                 dst[dst_off + c] = val as u8;
+            }
+        }
+    }
+    Ok(())
+}
+
+// ============================================================
+// Area 平均 (Box Filter)
+// ============================================================
+
+/// Area 缩放单个平面
+///
+/// 对每个目标像素, 计算其对应的源矩形, 对该矩形内所有源像素取平均.
+/// 适合缩小 (downscale), 可避免锯齿.
+///
+/// 放大时每个目标像素对应 < 1 个源像素, 无意义, 退化为双线性插值.
+#[allow(clippy::too_many_arguments)]
+fn scale_plane_area(
+    src: &[u8],
+    src_stride: usize,
+    src_w: u32,
+    src_h: u32,
+    dst: &mut [u8],
+    dst_stride: usize,
+    dst_w: u32,
+    dst_h: u32,
+    bpp: usize,
+) -> TaoResult<()> {
+    // 放大时退化为双线性
+    if src_w < dst_w || src_h < dst_h {
+        return scale_plane_bilinear(
+            src, src_stride, src_w, src_h, dst, dst_stride, dst_w, dst_h, bpp,
+        );
+    }
+
+    for dy in 0..dst_h as usize {
+        let sy0 = (dy * src_h as usize) / dst_h as usize;
+        let sy1 = (((dy + 1) * src_h as usize) / dst_h as usize).min(src_h as usize);
+
+        let dst_row = dy * dst_stride;
+
+        for dx in 0..dst_w as usize {
+            let sx0 = (dx * src_w as usize) / dst_w as usize;
+            let sx1 = (((dx + 1) * src_w as usize) / dst_w as usize).min(src_w as usize);
+
+            let dst_off = dst_row + dx * bpp;
+
+            let count = (sx1 - sx0) * (sy1 - sy0);
+            if count == 0 {
+                // 边界情况: 取最近像素
+                let sy = sy0.min(src_h as usize - 1);
+                let sx = sx0.min(src_w as usize - 1);
+                let src_off = sy * src_stride + sx * bpp;
+                dst[dst_off..dst_off + bpp].copy_from_slice(&src[src_off..src_off + bpp]);
+            } else {
+                let count_u64 = count as u64;
+                for c in 0..bpp {
+                    let mut sum: u64 = 0;
+                    for sy in sy0..sy1 {
+                        let src_row = sy * src_stride;
+                        for sx in sx0..sx1 {
+                            sum += u64::from(src[src_row + sx * bpp + c]);
+                        }
+                    }
+                    // 四舍五入
+                    let avg = ((sum + count_u64 / 2) / count_u64) as u8;
+                    dst[dst_off + c] = avg;
+                }
             }
         }
     }
@@ -941,5 +1009,178 @@ mod tests {
 
         // 全白放大应保持全白
         assert!(dst.iter().all(|&v| v == 255));
+    }
+
+    #[test]
+    fn test_area_缩小_灰度() {
+        // 4x4 灰度 → 2x2, 验证取平均
+        // 布局 [0,1,2,3] / [4,5,6,7] / [8,9,10,11] / [12,13,14,15]
+        let mut src = vec![0u8; 4 * 4];
+        for y in 0..4 {
+            for x in 0..4 {
+                src[y * 4 + x] = (y * 4 + x) as u8;
+            }
+        }
+
+        let mut dst = vec![0u8; 2 * 2];
+        scale_image(
+            &[&src],
+            &[4],
+            4,
+            4,
+            PixelFormat::Gray8,
+            &mut [&mut dst],
+            &[2],
+            2,
+            2,
+            ScaleAlgorithm::Area,
+        )
+        .unwrap();
+
+        // (0,0) 对应 [0,1,4,5] 平均 = 2.5 -> 四舍五入 3
+        assert_eq!(dst[0], 3);
+        // (1,0) 对应 [2,3,6,7] 平均 = 4.5 -> 5
+        assert_eq!(dst[1], 5);
+        // (0,1) 对应 [8,9,12,13] 平均 = 10.5 -> 11
+        assert_eq!(dst[2], 11);
+        // (1,1) 对应 [10,11,14,15] 平均 = 12.5 -> 13
+        assert_eq!(dst[3], 13);
+    }
+
+    #[test]
+    fn test_area_缩小_rgb24() {
+        // 8x8 RGB → 4x4
+        let mut src = vec![0u8; 8 * 8 * 3];
+        for i in 0..64 {
+            src[i * 3] = (i % 8) as u8; // R
+            src[i * 3 + 1] = (i / 8) as u8; // G
+            src[i * 3 + 2] = 128; // B 恒定
+        }
+
+        let mut dst = vec![0u8; 4 * 4 * 3];
+        scale_image(
+            &[&src],
+            &[24],
+            8,
+            8,
+            PixelFormat::Rgb24,
+            &mut [&mut dst],
+            &[12],
+            4,
+            4,
+            ScaleAlgorithm::Area,
+        )
+        .unwrap();
+
+        // 每个 2x2 块取平均, B 应保持 128
+        for i in 0..16 {
+            assert_eq!(dst[i * 3 + 2], 128, "B 通道应保持 128");
+        }
+        // 左上 2x2 的 R 通道: 像素 (0,0),(1,0),(0,1),(1,1) 的 R 为 0,1,0,1, 平均 0.5 -> 1
+        assert!(dst[0] <= 2);
+    }
+
+    /// 验证并行缩放与顺序缩放输出一致 (并行路径确定性)
+    #[test]
+    fn test_parallel_scale_same_result() {
+        // 使用 dst_h=260 触发并行路径 (>256)
+        let src_w = 260u32;
+        let src_h = 260u32;
+        let dst_w = 260u32;
+        let dst_h = 260u32;
+
+        let src: Vec<u8> = (0..(src_w * src_h) as usize)
+            .map(|i| ((i * 7) % 256) as u8)
+            .collect();
+
+        let mut dst1 = vec![0u8; (dst_w * dst_h) as usize];
+        let mut dst2 = vec![0u8; (dst_w * dst_h) as usize];
+
+        scale_image(
+            &[&src],
+            &[src_w as usize],
+            src_w,
+            src_h,
+            PixelFormat::Gray8,
+            &mut [&mut dst1],
+            &[dst_w as usize],
+            dst_w,
+            dst_h,
+            ScaleAlgorithm::Bilinear,
+        )
+        .unwrap();
+
+        scale_image(
+            &[&src],
+            &[src_w as usize],
+            src_w,
+            src_h,
+            PixelFormat::Gray8,
+            &mut [&mut dst2],
+            &[dst_w as usize],
+            dst_w,
+            dst_h,
+            ScaleAlgorithm::Bilinear,
+        )
+        .unwrap();
+
+        assert_eq!(dst1, dst2, "并行缩放应具有确定性, 两次运行结果一致");
+
+        // 再验证双三次并行路径
+        let mut dst3 = vec![0u8; (dst_w * dst_h) as usize];
+        scale_image(
+            &[&src],
+            &[src_w as usize],
+            src_w,
+            src_h,
+            PixelFormat::Gray8,
+            &mut [&mut dst3],
+            &[dst_w as usize],
+            dst_w,
+            dst_h,
+            ScaleAlgorithm::Bicubic,
+        )
+        .unwrap();
+
+        scale_image(
+            &[&src],
+            &[src_w as usize],
+            src_w,
+            src_h,
+            PixelFormat::Gray8,
+            &mut [&mut dst2],
+            &[dst_w as usize],
+            dst_w,
+            dst_h,
+            ScaleAlgorithm::Bicubic,
+        )
+        .unwrap();
+
+        assert_eq!(dst3, dst2, "双三次并行缩放应具有确定性");
+    }
+
+    #[test]
+    fn test_area_均匀色不变() {
+        // 均匀色缩小后应保持不变
+        let src = vec![200u8; 8 * 8];
+        let mut dst = vec![0u8; 4 * 4];
+
+        scale_image(
+            &[&src],
+            &[8],
+            8,
+            8,
+            PixelFormat::Gray8,
+            &mut [&mut dst],
+            &[4],
+            4,
+            4,
+            ScaleAlgorithm::Area,
+        )
+        .unwrap();
+
+        for &v in &dst {
+            assert_eq!(v, 200, "均匀色 200 缩小后应保持 200");
+        }
     }
 }

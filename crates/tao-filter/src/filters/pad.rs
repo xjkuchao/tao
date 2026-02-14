@@ -130,8 +130,7 @@ impl PadFilter {
             let dst_y = self.y as usize + row;
             let dst_off = dst_y * dst_stride + self.x as usize * bpp;
             if src_off + copy_w <= src.len() && dst_off + copy_w <= dst.len() {
-                dst[dst_off..dst_off + copy_w]
-                    .copy_from_slice(&src[src_off..src_off + copy_w]);
+                dst[dst_off..dst_off + copy_w].copy_from_slice(&src[src_off..src_off + copy_w]);
             }
         }
 
@@ -153,9 +152,7 @@ impl Filter for PadFilter {
                 self.output = Some(Frame::Video(result));
                 Ok(())
             }
-            Frame::Audio(_) => Err(TaoError::InvalidArgument(
-                "pad 滤镜仅支持视频帧".into(),
-            )),
+            Frame::Audio(_) => Err(TaoError::InvalidArgument("pad 滤镜仅支持视频帧".into())),
         }
     }
 
@@ -231,11 +228,7 @@ mod tests {
 
     #[test]
     fn test_pad_自定义颜色() {
-        let color = PadColor {
-            r: 0,
-            g: 255,
-            b: 0,
-        };
+        let color = PadColor { r: 0, g: 255, b: 0 };
         let mut filter = PadFilter::with_color(6, 6, 1, 1, color);
         let input = make_solid_rgb(4, 4, 255, 0, 0);
         filter.send_frame(&input).unwrap();

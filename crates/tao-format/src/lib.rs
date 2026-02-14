@@ -3,6 +3,24 @@
 //! Tao 多媒体框架容器格式库, 提供封装/解封装框架.
 //!
 //! 本 crate 对标 FFmpeg 的 libavformat, 负责处理多媒体容器格式的读写.
+//!
+//! ## 支持的格式
+//!
+//! - **解封装 (Demuxer)**: WAV, FLAC, MP4, MKV, AVI, FLV, MPEG-TS, Ogg, AIFF, ADTS, MP3
+//! - **封装 (Muxer)**: WAV, FLAC, MP4, MKV, AVI, FLV, MPEG-TS, Ogg, AIFF, ADTS, MP3
+//!
+//! ## 使用示例
+//!
+//! ```rust,no_run
+//! use tao_format::{FormatRegistry, IoContext};
+//!
+//! let mut reg = FormatRegistry::new();
+//! tao_format::register_all(&mut reg);
+//!
+//! // 打开文件并探测格式
+//! let mut io = IoContext::open_read("input.wav").unwrap();
+//! let probe = reg.probe_input(&mut io, None).unwrap();
+//! ```
 
 pub mod demuxer;
 pub mod demuxers;

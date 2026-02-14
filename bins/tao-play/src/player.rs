@@ -86,16 +86,10 @@ impl Player {
 
         // 打印流信息
         if let Some(a) = audio_stream {
-            info!(
-                "音频流 #{}: {} ({:?})",
-                a.index, a.codec_id, a.params
-            );
+            info!("音频流 #{}: {} ({:?})", a.index, a.codec_id, a.params);
         }
         if let Some(v) = video_stream {
-            info!(
-                "视频流 #{}: {} ({:?})",
-                v.index, v.codec_id, v.params
-            );
+            info!("视频流 #{}: {} ({:?})", v.index, v.codec_id, v.params);
         }
 
         // 创建解码器
@@ -216,6 +210,21 @@ impl Player {
         let start_time = Instant::now();
         let mut eof = false;
         let mut frames_rendered = 0u64;
+        let mut current_volume = (self.config.volume * 100.0) as u32;
+        let mut muted = false;
+        let mut _seek_target: Option<f64> = None;
+
+        // 计算总时长 (秒)
+        let total_duration_sec = streams
+            .iter()
+            .find_map(|s| {
+                if s.duration > 0 && s.time_base.den > 0 {
+                    Some(s.duration as f64 * s.time_base.num as f64 / s.time_base.den as f64)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0.0);
 
         loop {
             // 检查窗口关闭
@@ -226,24 +235,68 @@ impl Player {
                 }
             }
 
-            // 检查暂停
-            if let Some(display) = &video_display {
+            // 处理键盘控制
+            if let Some(display) = &mut video_display {
+                // 空格: 暂停/继续
                 if display.is_space_pressed() {
                     clock.toggle_pause();
-                    info!(
-                        "{}",
-                        if clock.is_paused() {
-                            "已暂停"
-                        } else {
-                            "继续播放"
-                        }
-                    );
+                    let msg = if clock.is_paused() {
+                        "已暂停"
+                    } else {
+                        "继续播放"
+                    };
+                    info!("{}", msg);
+                    display.show_osd(msg);
+                }
+
+                // 上/下: 音量控制
+                if display.is_up_pressed() {
+                    current_volume = (current_volume + 5).min(100);
+                    muted = false;
+                    info!("音量: {}%", current_volume);
+                    display.show_osd(&format!("音量: {}%", current_volume));
+                }
+                if display.is_down_pressed() {
+                    current_volume = current_volume.saturating_sub(5);
+                    info!("音量: {}%", current_volume);
+                    display.show_osd(&format!("音量: {}%", current_volume));
+                }
+
+                // M: 静音切换
+                if display.is_mute_pressed() {
+                    muted = !muted;
+                    let msg = if muted { "已静音" } else { "取消静音" };
+                    info!("{}", msg);
+                    display.show_osd(msg);
+                }
+
+                // 左/右: Seek (±10秒)
+                if display.is_left_pressed() {
+                    let seek_sec = (clock.current_time_us() as f64 / 1_000_000.0 - 10.0).max(0.0);
+                    _seek_target = Some(seek_sec);
+                    info!("快退到 {:.1}s", seek_sec);
+                    display.show_osd(&format!("快退: {:.0}s", seek_sec));
+                }
+                if display.is_right_pressed() {
+                    let seek_sec = clock.current_time_us() as f64 / 1_000_000.0 + 10.0;
+                    if seek_sec < total_duration_sec || total_duration_sec <= 0.0 {
+                        _seek_target = Some(seek_sec);
+                        info!("快进到 {:.1}s", seek_sec);
+                        display.show_osd(&format!("快进: {:.0}s", seek_sec));
+                    }
+                }
+
+                // F: 全屏提示
+                if display.is_fullscreen_pressed() {
+                    display.show_osd("全屏切换 (受限于 minifb)");
                 }
             }
 
             if clock.is_paused() {
                 if let Some(display) = &mut video_display {
-                    display.update();
+                    let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
+                    let vol = if muted { 0 } else { current_volume };
+                    display.draw_progress_bar(current_sec, total_duration_sec, vol, true);
                 }
                 std::thread::sleep(Duration::from_millis(16));
                 continue;
@@ -267,10 +320,18 @@ impl Player {
                                                     af.time_base.num,
                                                     af.time_base.den,
                                                 );
-                                                let samples =
+                                                let mut samples =
                                                     extract_f32_samples(af, &streams, stream_idx);
-                                                let chunk =
-                                                    AudioChunk { samples, pts_us };
+                                                // 应用实时音量控制
+                                                let effective_volume = if muted {
+                                                    0.0f32
+                                                } else {
+                                                    current_volume as f32 / 100.0
+                                                };
+                                                for s in &mut samples {
+                                                    *s *= effective_volume;
+                                                }
+                                                let chunk = AudioChunk { samples, pts_us };
                                                 if out.send(chunk).is_err() {
                                                     debug!("音频队列已满, 跳过");
                                                 }
@@ -306,10 +367,17 @@ impl Player {
                                             // 渲染帧
                                             if let Some(display) = &mut video_display {
                                                 let rgb_data = convert_frame_to_rgb24(vf);
-                                                display.display_rgb24(
-                                                    &rgb_data,
-                                                    vf.width,
-                                                    vf.height,
+                                                display
+                                                    .display_rgb24(&rgb_data, vf.width, vf.height);
+                                                // 绘制进度条
+                                                let current_sec =
+                                                    clock.current_time_us() as f64 / 1_000_000.0;
+                                                let vol = if muted { 0 } else { current_volume };
+                                                display.draw_progress_bar(
+                                                    current_sec,
+                                                    total_duration_sec,
+                                                    vol,
+                                                    clock.is_paused(),
                                                 );
                                                 frames_rendered += 1;
                                             }
@@ -407,12 +475,10 @@ fn extract_f32_samples(
                 .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
                 .collect()
         }
-        SampleFormat::S32 => {
-            af.data[0]
-                .chunks_exact(4)
-                .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32 / 2147483648.0)
-                .collect()
-        }
+        SampleFormat::S32 => af.data[0]
+            .chunks_exact(4)
+            .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32 / 2147483648.0)
+            .collect(),
         _ => {
             // 未知格式, 返回静音
             vec![0.0f32; af.nb_samples as usize * 2]
@@ -497,15 +563,13 @@ fn build_codec_params(stream: &Stream) -> CodecParameters {
             codec_id: stream.codec_id,
             bit_rate: v.bit_rate,
             extra_data: stream.extra_data.clone(),
-            params: CodecParamsType::Video(
-                tao_codec::codec_parameters::VideoCodecParams {
-                    width: v.width,
-                    height: v.height,
-                    pixel_format: v.pixel_format,
-                    frame_rate: v.frame_rate,
-                    sample_aspect_ratio: v.sample_aspect_ratio,
-                },
-            ),
+            params: CodecParamsType::Video(tao_codec::codec_parameters::VideoCodecParams {
+                width: v.width,
+                height: v.height,
+                pixel_format: v.pixel_format,
+                frame_rate: v.frame_rate,
+                sample_aspect_ratio: v.sample_aspect_ratio,
+            }),
         },
         _ => CodecParameters {
             codec_id: stream.codec_id,

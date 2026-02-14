@@ -8,10 +8,14 @@
 //! - 采样率转换 (如 44100Hz -> 48000Hz, 线性插值)
 
 mod convert;
+mod multichannel;
 
 use tao_core::{ChannelLayout, SampleFormat, TaoError, TaoResult};
 
 pub use convert::{convert_samples, mix_channels};
+pub use multichannel::{
+    downmix_51_to_stereo_f32, downmix_71_to_stereo_f32, upmix_stereo_to_51_f32,
+};
 
 /// 重采样上下文
 ///

@@ -50,6 +50,12 @@ bitflags = "2"
 bytes = "1"
 byteorder = "1"
 
+# 并行处理
+rayon = "1"
+
+# 基准测试
+criterion = { version = "0.5", features = ["html_reports"] }
+
 [package]
 name = "tao"
 description = "纯 Rust 实现的多媒体处理框架, 对标 FFmpeg"
@@ -72,3 +78,8 @@ tao-resample.workspace = true
 
 [dev-dependencies]
 bytes.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "codec_bench"
+harness = false

@@ -18,10 +18,7 @@ pub struct VolumeFilter {
 impl VolumeFilter {
     /// 使用线性增益创建 (1.0 = 不变, 2.0 = 加倍, 0.5 = 减半)
     pub fn new(gain: f64) -> Self {
-        Self {
-            gain,
-            output: None,
-        }
+        Self { gain, output: None }
     }
 
     /// 使用 dB 增益创建 (0 = 不变, 6 约 加倍, -6 约 减半)
@@ -92,9 +89,7 @@ impl Filter for VolumeFilter {
                 self.output = Some(Frame::Audio(result));
                 Ok(())
             }
-            Frame::Video(_) => Err(TaoError::InvalidArgument(
-                "volume 滤镜仅支持音频帧".into(),
-            )),
+            Frame::Video(_) => Err(TaoError::InvalidArgument("volume 滤镜仅支持音频帧".into())),
         }
     }
 

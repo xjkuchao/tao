@@ -393,8 +393,11 @@ impl Default for MemoryBackend {
 
 impl IoBackend for MemoryBackend {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let available = self.data.len() - self.pos;
+        let available = self.data.len().saturating_sub(self.pos);
         let to_read = buf.len().min(available);
+        if to_read == 0 {
+            return Ok(0);
+        }
         buf[..to_read].copy_from_slice(&self.data[self.pos..self.pos + to_read]);
         self.pos += to_read;
         Ok(to_read)

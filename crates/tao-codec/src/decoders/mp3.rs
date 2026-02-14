@@ -150,12 +150,8 @@ impl Mp3Decoder {
 
         let frame_size = if sample_rate > 0 {
             match version {
-                MpegVersion::V1 => {
-                    (144 * bitrate / sample_rate + padding) as usize
-                }
-                _ => {
-                    (72 * bitrate / sample_rate + padding) as usize
-                }
+                MpegVersion::V1 => (144 * bitrate / sample_rate + padding) as usize,
+                _ => (72 * bitrate / sample_rate + padding) as usize,
             }
         } else {
             return Err(TaoError::InvalidData("采样率为零".into()));
@@ -205,7 +201,11 @@ impl Mp3Decoder {
             let payload = &data[payload_start..];
             // 简化频谱解码: 将字节映射为低幅度频谱数据
             for c in 0..ch {
-                let granules = if header.version == MpegVersion::V1 { 2 } else { 1 };
+                let granules = if header.version == MpegVersion::V1 {
+                    2
+                } else {
+                    1
+                };
                 for gr in 0..granules {
                     let sub_start = gr * 576;
                     let mut spectrum = [0.0f32; 576];
@@ -230,8 +230,7 @@ impl Mp3Decoder {
                         pcm[c][sub_start + i] = windowed + self.overlap[c][i];
                     }
                     for i in 18..36 {
-                        self.overlap[c][i - 18] =
-                            time_out[i] * sine_window_36(i);
+                        self.overlap[c][i - 18] = time_out[i] * sine_window_36(i);
                     }
 
                     // 合成滤波器 (简化: 直接使用 IMDCT 输出)
@@ -244,8 +243,7 @@ impl Mp3Decoder {
                             if i >= 18 {
                                 let idx = byte_offset + i;
                                 if idx < payload.len() {
-                                    pcm[c][sub_idx] =
-                                        (payload[idx] as f32 - 128.0) * 0.000001;
+                                    pcm[c][sub_idx] = (payload[idx] as f32 - 128.0) * 0.000001;
                                 }
                             }
                         }

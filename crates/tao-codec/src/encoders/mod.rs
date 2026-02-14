@@ -1,5 +1,6 @@
 //! 编码器实现模块.
 
+pub mod aac;
 pub mod flac;
 pub mod pcm;
 pub mod rawvideo;
@@ -21,4 +22,5 @@ pub fn register_all_encoders(registry: &mut CodecRegistry) {
     registry.register_encoder(CodecId::PcmS32le, "pcm_s32le", pcm::PcmEncoder::new_s32le);
     registry.register_encoder(CodecId::PcmF32le, "pcm_f32le", pcm::PcmEncoder::new_f32le);
     registry.register_encoder(CodecId::Flac, "flac", flac::FlacEncoder::create);
+    registry.register_encoder(CodecId::Aac, "aac_lc", aac::AacEncoder::create);
 }

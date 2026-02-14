@@ -294,8 +294,7 @@ impl MpegTsMuxer {
                     packet[3] = 0x30 | (*cc & 0x0F);
                     *cc = cc.wrapping_add(1);
                     packet[4] = 0; // adaptation_field_length = 0
-                    packet[5..5 + remaining]
-                        .copy_from_slice(&pes[offset..offset + remaining]);
+                    packet[5..5 + remaining].copy_from_slice(&pes[offset..offset + remaining]);
                     // 填充剩余
                     for b in &mut packet[5 + remaining..TS_PACKET_SIZE] {
                         *b = 0xFF;
@@ -303,8 +302,7 @@ impl MpegTsMuxer {
                 } else {
                     packet[3] = 0x10 | (*cc & 0x0F);
                     *cc = cc.wrapping_add(1);
-                    packet[4..4 + remaining]
-                        .copy_from_slice(&pes[offset..offset + remaining]);
+                    packet[4..4 + remaining].copy_from_slice(&pes[offset..offset + remaining]);
                     for b in &mut packet[4 + remaining..TS_PACKET_SIZE] {
                         *b = 0xFF;
                     }
@@ -408,8 +406,8 @@ fn crc32_mpeg2(data: &[u8]) -> u32 {
 mod tests {
     use super::*;
     use crate::io::{IoContext, MemoryBackend};
-    use tao_core::{ChannelLayout, PixelFormat, Rational, SampleFormat};
     use crate::stream::{AudioStreamParams, StreamParams, VideoStreamParams};
+    use tao_core::{ChannelLayout, PixelFormat, Rational, SampleFormat};
 
     fn make_video_stream() -> Stream {
         Stream {

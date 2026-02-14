@@ -4,6 +4,24 @@
 //!
 //! 本 crate 对标 FFmpeg 的 libavfilter, 支持构建滤镜图 (FilterGraph)
 //! 对音视频数据进行各种变换处理.
+//!
+//! ## 支持的滤镜
+//!
+//! - **音频**: volume (音量), fade (淡入淡出), loudnorm (响度归一化), equalizer (均衡器)
+//! - **视频**: crop (裁剪), pad (填充), overlay (叠加), drawtext (文字绘制)
+//!
+//! ## 使用示例
+//!
+//! ```rust
+//! use tao_filter::FilterGraph;
+//! use tao_filter::filters::volume::VolumeFilter;
+//!
+//! let mut graph = FilterGraph::new();
+//! graph.add_filter(Box::new(VolumeFilter::new(2.0)));
+//!
+//! // 将帧送入滤镜链处理
+//! // let output = graph.process_frame(&input_frame).unwrap();
+//! ```
 
 pub mod filters;
 
@@ -107,7 +125,11 @@ impl Default for FilterGraph {
 
 // 便捷重导出
 pub use filters::crop::CropFilter;
+pub use filters::drawtext::DrawtextFilter;
+pub use filters::equalizer::EqualizerFilter;
 pub use filters::fade::{FadeFilter, FadeType};
+pub use filters::loudnorm::LoudnormFilter;
+pub use filters::overlay::OverlayFilter;
 pub use filters::pad::{PadColor, PadFilter};
 pub use filters::volume::VolumeFilter;
 

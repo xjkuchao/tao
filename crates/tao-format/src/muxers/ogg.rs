@@ -69,15 +69,15 @@ impl OggMuxer {
 
         // 构建页面头部 (不含 CRC)
         let mut header = Vec::with_capacity(27 + segments.len());
-        header.extend_from_slice(b"OggS");        // capture pattern
-        header.push(0);                             // version
-        header.push(header_type);                   // header type
+        header.extend_from_slice(b"OggS"); // capture pattern
+        header.push(0); // version
+        header.push(header_type); // header type
         header.extend_from_slice(&granule_position.to_le_bytes()); // granule
-        header.extend_from_slice(&serial_number.to_le_bytes());    // serial
-        header.extend_from_slice(&page_sequence.to_le_bytes());    // page seq
-        header.extend_from_slice(&0u32.to_le_bytes());             // CRC placeholder
-        header.push(num_segments);                  // num segments
-        header.extend_from_slice(&segments);        // segment table
+        header.extend_from_slice(&serial_number.to_le_bytes()); // serial
+        header.extend_from_slice(&page_sequence.to_le_bytes()); // page seq
+        header.extend_from_slice(&0u32.to_le_bytes()); // CRC placeholder
+        header.push(num_segments); // num segments
+        header.extend_from_slice(&segments); // segment table
 
         // 计算 CRC
         let crc = ogg_crc(&header, data);
@@ -238,9 +238,9 @@ fn ogg_crc(header: &[u8], data: &[u8]) -> u32 {
 mod tests {
     use super::*;
     use crate::io::{IoContext, MemoryBackend};
+    use crate::stream::AudioStreamParams;
     use tao_codec::CodecId;
     use tao_core::{ChannelLayout, MediaType, Rational, SampleFormat};
-    use crate::stream::AudioStreamParams;
 
     fn make_audio_stream() -> Stream {
         Stream {
