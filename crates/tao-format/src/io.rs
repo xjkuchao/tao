@@ -62,32 +62,13 @@ impl IoContext {
 
     /// 从 URL 打开 (只读, HTTP/HTTPS)
     ///
-    /// 将远程资源完整下载到内存后提供读取.
-    /// 适用于音频等中等大小的文件.
+    /// 后台线程流式下载数据, 主线程按需读取.
+    /// 支持在已下载区域内自由 seek, 大文件也能即时开始播放.
     #[cfg(feature = "http")]
     pub fn open_url(url: &str) -> TaoResult<Self> {
-        use std::io::Read as _;
-
-        log::info!("正在下载: {}", url);
-
-        let mut response = ureq::get(url).call().map_err(|e| {
-            tao_core::TaoError::Io(std::io::Error::other(format!("HTTP 请求失败: {}", e)))
-        })?;
-
-        let mut data = Vec::new();
-        response
-            .body_mut()
-            .as_reader()
-            .read_to_end(&mut data)
-            .map_err(tao_core::TaoError::Io)?;
-
-        log::info!(
-            "下载完成, 共 {} 字节 ({:.2} MB)",
-            data.len(),
-            data.len() as f64 / 1_048_576.0
-        );
-
-        Ok(Self::new(Box::new(MemoryBackend::from_data(data))))
+        log::info!("正在连接: {}", url);
+        let backend = HttpBackend::open(url).map_err(tao_core::TaoError::Io)?;
+        Ok(Self::new(Box::new(backend)))
     }
 
     /// 从文件路径打开 (写入)
@@ -480,5 +461,283 @@ impl IoBackend for MemoryBackend {
 
     fn is_seekable(&self) -> bool {
         true
+    }
+}
+
+// ========================
+// HTTP 流式 I/O 后端
+// ========================
+
+/// HTTP 流式下载共享缓冲区
+#[cfg(feature = "http")]
+struct HttpStreamBuffer {
+    /// 已下载的数据
+    data: Vec<u8>,
+    /// 总大小 (来自 Content-Length, None 表示未知)
+    total_size: Option<u64>,
+    /// 下载是否已完成
+    finished: bool,
+    /// 下载错误信息
+    error: Option<String>,
+    /// HTTP 连接是否已建立
+    connected: bool,
+    /// 是否请求中止下载
+    aborted: bool,
+}
+
+/// HTTP 流式 I/O 后端
+///
+/// 在后台线程中流式下载数据, 主线程按需读取.
+/// 已下载区域支持自由 seek, 前向 seek 等待数据下载到位.
+#[cfg(feature = "http")]
+struct HttpBackend {
+    /// 共享缓冲区和条件变量
+    shared: std::sync::Arc<(std::sync::Mutex<HttpStreamBuffer>, std::sync::Condvar)>,
+    /// 当前读取位置
+    pos: usize,
+    /// 总大小 (缓存, 避免频繁加锁)
+    total_size: Option<u64>,
+}
+
+#[cfg(feature = "http")]
+impl HttpBackend {
+    /// 打开 HTTP URL 并启动后台下载线程
+    fn open(url: &str) -> io::Result<Self> {
+        use std::sync::{Arc, Condvar, Mutex};
+
+        let shared = Arc::new((
+            Mutex::new(HttpStreamBuffer {
+                data: Vec::new(),
+                total_size: None,
+                finished: false,
+                error: None,
+                connected: false,
+                aborted: false,
+            }),
+            Condvar::new(),
+        ));
+
+        let shared_clone = Arc::clone(&shared);
+        let url_owned = url.to_string();
+        std::thread::spawn(move || {
+            http_download_worker(&url_owned, &shared_clone);
+        });
+
+        // 等待 HTTP 连接建立或失败
+        let (lock, cvar) = &*shared;
+        let mut sb = lock.lock().unwrap();
+        while !sb.connected && !sb.finished {
+            sb = cvar.wait(sb).unwrap();
+        }
+        if let Some(ref err) = sb.error {
+            return Err(io::Error::other(err.clone()));
+        }
+        let total_size = sb.total_size;
+        drop(sb);
+
+        Ok(Self {
+            shared,
+            pos: 0,
+            total_size,
+        })
+    }
+}
+
+#[cfg(feature = "http")]
+impl Drop for HttpBackend {
+    fn drop(&mut self) {
+        let (lock, cvar) = &*self.shared;
+        if let Ok(mut sb) = lock.lock() {
+            sb.aborted = true;
+            cvar.notify_all();
+        }
+    }
+}
+
+#[cfg(feature = "http")]
+impl IoBackend for HttpBackend {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let (lock, cvar) = &*self.shared;
+        loop {
+            let sb = lock.lock().unwrap();
+            if self.pos < sb.data.len() {
+                let available = sb.data.len() - self.pos;
+                let to_read = buf.len().min(available);
+                buf[..to_read].copy_from_slice(&sb.data[self.pos..self.pos + to_read]);
+                drop(sb);
+                self.pos += to_read;
+                return Ok(to_read);
+            }
+            // 当前位置无数据
+            if sb.finished {
+                if let Some(ref err) = sb.error {
+                    return Err(io::Error::other(err.clone()));
+                }
+                return Ok(0); // EOF
+            }
+            // 等待后台线程下载更多数据
+            let _sb = cvar.wait(sb).unwrap();
+        }
+    }
+
+    fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "HTTP 后端不支持写入",
+        ))
+    }
+
+    fn write_all(&mut self, _buf: &[u8]) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "HTTP 后端不支持写入",
+        ))
+    }
+
+    fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+        let new_pos = match pos {
+            io::SeekFrom::Start(offset) => offset as i64,
+            io::SeekFrom::End(offset) => {
+                let size = self.total_size.ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "HTTP: 文件大小未知, 无法从末尾 seek",
+                    )
+                })?;
+                size as i64 + offset
+            }
+            io::SeekFrom::Current(offset) => self.pos as i64 + offset,
+        };
+        if new_pos < 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seek 位置不能为负",
+            ));
+        }
+        self.pos = new_pos as usize;
+        Ok(self.pos as u64)
+    }
+
+    fn position(&mut self) -> io::Result<u64> {
+        Ok(self.pos as u64)
+    }
+
+    fn size(&self) -> Option<u64> {
+        self.total_size
+    }
+
+    fn is_seekable(&self) -> bool {
+        true
+    }
+}
+
+/// HTTP 后台下载工作线程
+///
+/// 发起 HTTP GET 请求, 流式读取响应体到共享缓冲区.
+/// 通过 condvar 通知主线程数据就绪.
+#[cfg(feature = "http")]
+fn http_download_worker(
+    url: &str,
+    shared: &std::sync::Arc<(std::sync::Mutex<HttpStreamBuffer>, std::sync::Condvar)>,
+) {
+    let (lock, cvar) = &**shared;
+
+    // 发起 HTTP 请求
+    let mut response = match ureq::get(url).call() {
+        Ok(resp) => resp,
+        Err(e) => {
+            let mut sb = lock.lock().unwrap();
+            sb.error = Some(format!("HTTP 请求失败: {}", e));
+            sb.finished = true;
+            sb.connected = true;
+            cvar.notify_all();
+            return;
+        }
+    };
+
+    // 提取 Content-Length 并通知主线程连接已建立
+    let content_length = response
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    http_signal_connected(lock, cvar, content_length);
+
+    // 流式读取响应体
+    let mut reader = response.body_mut().as_reader();
+    http_read_body_loop(&mut reader, lock, cvar);
+}
+
+/// 通知主线程 HTTP 连接已建立
+#[cfg(feature = "http")]
+fn http_signal_connected(
+    lock: &std::sync::Mutex<HttpStreamBuffer>,
+    cvar: &std::sync::Condvar,
+    content_length: Option<u64>,
+) {
+    let mut sb = lock.lock().unwrap();
+    sb.total_size = content_length;
+    sb.connected = true;
+    // 预分配缓冲区 (上限 64 MB 避免过度分配)
+    if let Some(len) = content_length {
+        sb.data.reserve((len as usize).min(64 * 1024 * 1024));
+    }
+    cvar.notify_all();
+    drop(sb);
+
+    log::info!(
+        "HTTP 连接成功{}",
+        content_length.map_or(String::new(), |len| {
+            format!(
+                ", 内容大小: {} 字节 ({:.2} MB)",
+                len,
+                len as f64 / 1_048_576.0
+            )
+        })
+    );
+}
+
+/// 循环读取 HTTP 响应体, 写入共享缓冲区
+#[cfg(feature = "http")]
+fn http_read_body_loop(
+    reader: &mut impl std::io::Read,
+    lock: &std::sync::Mutex<HttpStreamBuffer>,
+    cvar: &std::sync::Condvar,
+) {
+    const CHUNK_SIZE: usize = 32 * 1024;
+    let mut buf = [0u8; CHUNK_SIZE];
+
+    loop {
+        // 检查是否被中止
+        if lock.lock().unwrap().aborted {
+            log::debug!("HTTP 下载被中止");
+            return;
+        }
+
+        match reader.read(&mut buf) {
+            Ok(0) => {
+                let mut sb = lock.lock().unwrap();
+                log::info!("HTTP 下载完成, 共 {} 字节", sb.data.len());
+                sb.finished = true;
+                cvar.notify_all();
+                return;
+            }
+            Ok(n) => {
+                let mut sb = lock.lock().unwrap();
+                sb.data.extend_from_slice(&buf[..n]);
+                cvar.notify_all();
+            }
+            Err(e) => {
+                let mut sb = lock.lock().unwrap();
+                log::error!("HTTP 下载错误: {}", e);
+                sb.error = Some(format!("网络读取错误: {}", e));
+                sb.finished = true;
+                cvar.notify_all();
+                return;
+            }
+        }
     }
 }
