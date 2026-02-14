@@ -9,6 +9,7 @@ members = [
     "crates/tao-ffi",
     "bins/tao-cli",
     "bins/tao-probe",
+    "bins/tao-play",
 ]
 
 [workspace.package]
