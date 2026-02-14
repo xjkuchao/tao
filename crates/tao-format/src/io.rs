@@ -253,6 +253,11 @@ impl IoContext {
         self.write_all(&v.to_be_bytes())
     }
 
+    /// 写入 u64 大端
+    pub fn write_u64_be(&mut self, v: u64) -> TaoResult<()> {
+        self.write_all(&v.to_be_bytes())
+    }
+
     /// 写入 i16 大端
     pub fn write_i16_be(&mut self, v: i16) -> TaoResult<()> {
         self.write_all(&v.to_be_bytes())
