@@ -2,6 +2,7 @@
 
 pub mod aiff;
 pub mod flac;
+pub mod mkv;
 pub mod mp3;
 pub mod mp4;
 pub mod ogg;
@@ -29,4 +30,7 @@ pub fn register_all_demuxers(registry: &mut FormatRegistry) {
 
     registry.register_demuxer(FormatId::Mp3Container, "mp3", mp3::Mp3Demuxer::create);
     registry.register_probe(Box::new(mp3::Mp3Probe));
+
+    registry.register_demuxer(FormatId::Matroska, "matroska", mkv::MkvDemuxer::create);
+    registry.register_probe(Box::new(mkv::MkvProbe));
 }
