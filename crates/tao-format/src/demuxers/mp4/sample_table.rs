@@ -273,7 +273,13 @@ impl SampleTable {
             let content_size = (size as u64) - 8;
 
             match &tag {
-                b"avcC" | b"hvcC" | b"av1C" | b"vpcC" | b"esds" | b"dOps" => {
+                b"esds" => {
+                    let data = io.read_bytes(content_size as usize)?;
+                    // 从 esds 描述符中提取 DecoderSpecificInfo (AudioSpecificConfig)
+                    self.extra_data =
+                        extract_decoder_specific_info(&data).unwrap_or(data);
+                }
+                b"avcC" | b"hvcC" | b"av1C" | b"vpcC" | b"dOps" => {
                     let data = io.read_bytes(content_size as usize)?;
                     self.extra_data = data;
                 }
@@ -469,6 +475,88 @@ impl SampleTable {
             remaining -= entry.count;
         }
         0
+    }
+}
+
+/// 从 esds box 内容中提取 DecoderSpecificInfo (AudioSpecificConfig)
+///
+/// esds 结构: version(1) + flags(3) + ES_Descriptor(tag=0x03)
+///   → DecoderConfigDescriptor(tag=0x04)
+///     → DecoderSpecificInfo(tag=0x05) = AudioSpecificConfig
+fn extract_decoder_specific_info(esds_data: &[u8]) -> Option<Vec<u8>> {
+    if esds_data.len() < 4 {
+        return None;
+    }
+    // 跳过 version(1) + flags(3)
+    search_descriptor(&esds_data[4..], 0x05)
+}
+
+/// 在 MPEG-4 描述符数据中递归搜索指定 tag 的 payload
+fn search_descriptor(data: &[u8], target_tag: u8) -> Option<Vec<u8>> {
+    let mut pos = 0;
+    while pos < data.len() {
+        let tag = data[pos];
+        pos += 1;
+
+        // 读取可变长度 (每字节高位为续标志, 低 7 位为值)
+        let mut len = 0usize;
+        for _ in 0..4 {
+            if pos >= data.len() {
+                return None;
+            }
+            let b = data[pos];
+            pos += 1;
+            len = (len << 7) | (b & 0x7F) as usize;
+            if b & 0x80 == 0 {
+                break;
+            }
+        }
+
+        let desc_end = (pos + len).min(data.len());
+        if tag == target_tag {
+            return Some(data[pos..desc_end].to_vec());
+        }
+
+        // 跳过当前描述符的固定头部, 递归搜索子描述符
+        let header_skip = descriptor_header_size(tag, &data[pos..desc_end]);
+        let child_start = (pos + header_skip).min(desc_end);
+        if child_start < desc_end {
+            if let Some(result) = search_descriptor(&data[child_start..desc_end], target_tag) {
+                return Some(result);
+            }
+        }
+
+        pos = desc_end;
+    }
+    None
+}
+
+/// 获取 MPEG-4 描述符固定头部大小
+fn descriptor_header_size(tag: u8, payload: &[u8]) -> usize {
+    match tag {
+        0x03 => {
+            // ES_Descriptor: ES_ID(2) + flags(1) + 可选字段
+            if payload.len() < 3 {
+                return payload.len();
+            }
+            let flags = payload[2];
+            let mut skip = 3;
+            if flags & 0x80 != 0 {
+                skip += 2; // dependsOn_ES_ID
+            }
+            if flags & 0x40 != 0 {
+                // URL
+                if skip < payload.len() {
+                    skip += 1 + payload[skip] as usize;
+                }
+            }
+            if flags & 0x20 != 0 {
+                skip += 2; // OCR_ES_Id
+            }
+            skip
+        }
+        0x04 => 13, // DecoderConfigDescriptor: objectType(1)+stream(1)+buf(3)+max(4)+avg(4)
+        _ => 0,
     }
 }
 

@@ -27,6 +27,51 @@ pub struct AudioOutput {
     playing: Arc<Mutex<bool>>,
 }
 
+/// 查找设备支持的兼容音频配置
+fn find_compatible_config(
+    device: &cpal::Device,
+    sample_rate: u32,
+    channels: u32,
+) -> Option<cpal::StreamConfig> {
+    let supported = device.supported_output_configs().ok()?;
+    let target_rate = cpal::SampleRate(sample_rate);
+
+    // 优先: 精确匹配采样率和声道数
+    for cfg in supported {
+        if cfg.channels() == channels as u16
+            && cfg.min_sample_rate() <= target_rate
+            && cfg.max_sample_rate() >= target_rate
+        {
+            return Some(cpal::StreamConfig {
+                channels: channels as u16,
+                sample_rate: target_rate,
+                buffer_size: cpal::BufferSize::Default,
+            });
+        }
+    }
+
+    // 回退: 匹配声道数, 使用设备支持的采样率
+    let supported = device.supported_output_configs().ok()?;
+    for cfg in supported {
+        if cfg.channels() == channels as u16 {
+            let rate = if cfg.min_sample_rate() <= target_rate
+                && cfg.max_sample_rate() >= target_rate
+            {
+                target_rate
+            } else {
+                cfg.max_sample_rate()
+            };
+            return Some(cpal::StreamConfig {
+                channels: channels as u16,
+                sample_rate: rate,
+                buffer_size: cpal::BufferSize::Default,
+            });
+        }
+    }
+
+    None
+}
+
 impl AudioOutput {
     /// 创建音频输出
     ///
@@ -48,10 +93,24 @@ impl AudioOutput {
 
         info!("音频设备: {:?}", device.name().unwrap_or_default());
 
-        let config = cpal::StreamConfig {
-            channels: channels as u16,
-            sample_rate: cpal::SampleRate(sample_rate),
-            buffer_size: cpal::BufferSize::Default,
+        // 优先使用请求的配置, 失败则回退到设备默认配置
+        let config = match find_compatible_config(&device, sample_rate, channels) {
+            Some(cfg) => cfg,
+            None => {
+                let default_cfg = device
+                    .default_output_config()
+                    .map_err(|e| format!("获取默认音频配置失败: {}", e))?;
+                info!(
+                    "使用设备默认配置: {}Hz, {}ch",
+                    default_cfg.sample_rate().0,
+                    default_cfg.channels()
+                );
+                cpal::StreamConfig {
+                    channels: default_cfg.channels(),
+                    sample_rate: default_cfg.sample_rate(),
+                    buffer_size: cpal::BufferSize::Default,
+                }
+            }
         };
 
         // 音频数据通道 (有界缓冲, 防止 OOM)

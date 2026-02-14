@@ -2,6 +2,7 @@
 
 pub mod aac;
 pub mod flac;
+pub mod h264;
 pub mod mp3;
 pub mod pcm;
 pub mod rawvideo;
@@ -25,4 +26,5 @@ pub fn register_all_decoders(registry: &mut CodecRegistry) {
     registry.register_decoder(CodecId::Flac, "flac", flac::FlacDecoder::create);
     registry.register_decoder(CodecId::Aac, "aac", aac::AacDecoder::create);
     registry.register_decoder(CodecId::Mp3, "mp3", mp3::Mp3Decoder::create);
+    registry.register_decoder(CodecId::H264, "h264", h264::H264Decoder::create);
 }
