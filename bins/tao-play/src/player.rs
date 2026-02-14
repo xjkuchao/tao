@@ -409,8 +409,9 @@ impl Player {
 
             // 如果没有视频, 通过音频播放到结束
             if video_display.is_none() && eof {
-                // 等一会让音频播完
-                std::thread::sleep(Duration::from_millis(100));
+                // 等待音频缓冲区播放完毕
+                // 缓冲区大小: 32 chunks × 1024 samples / sample_rate ≈ 0.74s
+                std::thread::sleep(Duration::from_millis(2000));
                 break;
             }
 
