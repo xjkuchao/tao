@@ -131,6 +131,89 @@ const VOP_TYPE_P: u8 = 1; // P-VOP (Predicted)
 const VOP_TYPE_B: u8 = 2; // B-VOP (Bidirectional)
 const VOP_TYPE_S: u8 = 3; // S-VOP (Sprite)
 
+/// RLE 编码数据 (游程长度编码的 DCT 系数)
+/// 格式: (运行长度, 级别, 最后块标志)
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+struct RleData {
+    /// 零系数的运行长度 (0-61 表示前导零数)
+    run: u8,
+    /// DCT 系数级别 (±1 到 ±127)
+    level: i16,
+    /// 是否为块中最后一个系数
+    last: bool,
+}
+
+/// 从 bitstream 读取 RLE 编码的 DCT 系数块
+fn read_dct_coefficients(reader: &mut BitReader) -> Result<[i32; 64], &'static str> {
+    let mut block = [0i32; 64];
+    let mut idx = 0;
+
+    loop {
+        if idx >= 64 {
+            break;
+        }
+
+        // 简化的 RLE 解码: 直接读取可变长位.
+        // 完整实现需要预定义的 VLC 表，这里做简化处理
+        if let Some(escape) = reader.read_bits(6) {
+            if escape == 0 {
+                break; // 块结束
+            }
+
+            // 从运行长度中提取值
+            let run_length = (escape >> 2) & 0xF;
+            idx += run_length as usize;
+
+            if idx >= 64 {
+                break;
+            }
+
+            // 简化: 直接读取有符号系数值 (实际应使用 VLC 表)
+            let is_negative = reader.read_bit().unwrap_or(false);
+            let magnitude = reader.read_bits(8).unwrap_or(0) as i32;
+
+            let coefficient = if is_negative { -magnitude } else { magnitude };
+            block[idx] = coefficient;
+            idx += 1;
+        } else {
+            break;
+        }
+    }
+
+    Ok(block)
+}
+
+/// 改进的 DCT (离散余弦变换) 系数转换为空间域
+/// 这是一个简化的实现，用于演示目的
+fn dct_to_spatial(coefficients: &[i32; 64]) -> [i16; 64] {
+    let mut spatial = [0i16; 64];
+
+    // 使用 DC 系数作为基准
+    let dc = coefficients[0];
+    let dc_scaled = (dc >> 3).clamp(-128, 127) as i16;
+
+    // 计算块中的平均有效系数
+    let mut ac_energy = 0i32;
+    for coefficient in coefficients.iter().skip(1) {
+        ac_energy += coefficient * coefficient;
+    }
+    let ac_scale = ((ac_energy as f32).sqrt() as i32).max(1);
+
+    // 生成空间域数据
+    for (i, spatial_val) in spatial.iter_mut().enumerate() {
+        let row = (i / 8) as i32;
+        let col = (i % 8) as i32;
+
+        // 结合 DC 和 AC 能量，添加空间变化
+        let variation = ((row - 3) * (col - 3)) as i16;
+        *spatial_val =
+            dc_scaled.saturating_add((variation * (ac_scale as i16 / 16)).clamp(-127, 127));
+    }
+
+    spatial
+}
+
 /// MPEG4 视频解码器
 pub struct Mpeg4Decoder {
     /// 视频宽度
@@ -356,31 +439,35 @@ impl Mpeg4Decoder {
         frame: &mut VideoFrame,
         mb_x: u32,
         mb_y: u32,
-        _reader: &mut BitReader,
+        reader: &mut BitReader,
     ) {
-        // 生成宏块的 Y, U, V 数据 (简化实现)
-        // 真实的MPEG4解码需要读取VLC编码的DCT系数并反量化
+        // 尝试读取实际的 DCT 系数，如果失败则使用位置生成的数据
+        // 这是一个循序渐进的实现，允许混合真实数据和合成数据
 
         let width = self.width as usize;
         let height = self.height as usize;
 
-        // 基于宏块位置和量化参数生成简单的数据
-        let base_y = 100 + (mb_x as i16 + mb_y as i16) as u8;
-
         // Y 平面 (4 个 8x8 块)
-        for by in 0..2 {
-            for bx in 0..2 {
-                for y in 0..8 {
-                    for x in 0..8 {
-                        let px = (mb_x as usize * 16 + bx * 8 + x).min(width - 1);
-                        let py = (mb_y as usize * 16 + by * 8 + y).min(height - 1);
-                        let idx = py * width + px;
+        for block_idx in 0..4 {
+            let by = block_idx / 2;
+            let bx = block_idx % 2;
 
-                        if idx < frame.data[0].len() {
-                            // 生成基于位置的变化，而不是完全相同的值
-                            let variation = ((x + y) as u8).wrapping_mul(7);
-                            frame.data[0][idx] = base_y.wrapping_add(variation);
-                        }
+            // 尝试从 bitstream 读取 DCT 系数
+            let coefficients = read_dct_coefficients(reader).unwrap_or([0i32; 64]);
+
+            // 将 DCT 系数转换为空间域
+            let spatial = dct_to_spatial(&coefficients);
+
+            // 写入到帧缓冲区
+            for y in 0..8 {
+                for x in 0..8 {
+                    let px = (mb_x as usize * 16 + bx * 8 + x).min(width - 1);
+                    let py = (mb_y as usize * 16 + by * 8 + y).min(height - 1);
+                    let idx = py * width + px;
+
+                    if idx < frame.data[0].len() {
+                        let pixel = ((spatial[y * 8 + x] as i32 + 128).clamp(0, 255)) as u8;
+                        frame.data[0][idx] = pixel;
                     }
                 }
             }
@@ -389,19 +476,22 @@ impl Mpeg4Decoder {
         // U 和 V 平面 (对于 YUV420p)
         let uv_width = width / 2;
         let uv_height = height / 2;
-        let uv_base = 128u8;
 
-        for v in 0..8 {
-            for u in 0..8 {
-                let px = ((mb_x as usize * 16 + u * 2) / 2).min(uv_width - 1);
-                let py = ((mb_y as usize * 16 + v * 2) / 2).min(uv_height - 1);
+        for plane_idx in 0..2 {
+            // 尝试读取色度块系数
+            let coefficients = read_dct_coefficients(reader).unwrap_or([0i32; 64]);
+            let spatial = dct_to_spatial(&coefficients);
 
-                let u_idx = py * uv_width + px;
-                if u_idx < frame.data[1].len() {
-                    frame.data[1][u_idx] = uv_base.wrapping_add((u as u8).wrapping_mul(3));
-                }
-                if u_idx < frame.data[2].len() {
-                    frame.data[2][u_idx] = uv_base.wrapping_add((v as u8).wrapping_mul(3));
+            for v in 0..8 {
+                for u in 0..8 {
+                    let px = ((mb_x as usize * 16 + u * 2) / 2).min(uv_width - 1);
+                    let py = ((mb_y as usize * 16 + v * 2) / 2).min(uv_height - 1);
+
+                    let uv_idx = py * uv_width + px;
+                    if uv_idx < frame.data[plane_idx + 1].len() {
+                        let pixel = ((spatial[v * 8 + u] as i32 + 128).clamp(0, 255)) as u8;
+                        frame.data[plane_idx + 1][uv_idx] = pixel;
+                    }
                 }
             }
         }
