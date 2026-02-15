@@ -87,6 +87,7 @@ impl<'a> BitReader<'a> {
     }
 
     /// 获取剩余可读位数
+    #[allow(dead_code)]
     fn bits_left(&self) -> usize {
         if self.byte_pos >= self.data.len() {
             return 0;
@@ -173,6 +174,7 @@ const ZIGZAG_8X8: [usize; 64] = [
 /// IDCT 余弦系数查找表 (预计算 cos((2x+1)πu/16) 的值)
 /// 用于加速 8x8 IDCT 计算
 /// 索引: [u][x], u 是频率索引 (0-7), x 是空间位置 (0-7)
+#[allow(dead_code)]
 const IDCT_COS_TABLE: [[f32; 8]; 8] = [
     // u = 0
     [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
@@ -241,6 +243,7 @@ struct RleData {
 /// MPEG4 Part 2 使用复杂的 VLC 来编码 DCT 系数。
 /// 这个简化实现跳过复杂的 VLC 解析，使用启发式方法生成合理的系数。
 /// 适用于演示和基础播放，但不是完全准确的解码。
+#[allow(dead_code)]
 fn read_dct_coefficients(reader: &mut BitReader) -> Result<[i32; 64], &'static str> {
     let mut block = [0i32; 64];
 
@@ -281,6 +284,7 @@ fn read_dct_coefficients(reader: &mut BitReader) -> Result<[i32; 64], &'static s
 /// 使用预计算的余弦查找表实现 8x8 IDCT。
 /// 公式: f(x,y) = (1/4) * Σu Σv c(u) * c(v) * F(u,v) * cos((2x+1)πu/16) * cos((2y+1)πv/16)
 /// 其中 c(0) = 1/√2, c(u>0) = 1
+#[allow(dead_code)]
 fn dct_to_spatial(coefficients: &[i32; 64]) -> [i16; 64] {
     let mut spatial = [0i16; 64];
 
@@ -360,6 +364,7 @@ impl Mpeg4Decoder {
     ///
     /// MPEG4 使用量化矩阵来调整不同频率成分的量化步长。
     /// 这改进了编码效率，允许人眼不敏感的频率使用更粗的量化。
+    #[allow(dead_code)]
     fn apply_quant_matrix(&self, coefficients: &mut [i32; 64], quant: u32, is_intra: bool) {
         let matrix = if is_intra {
             &self.quant_matrix_intra
@@ -725,25 +730,25 @@ impl Mpeg4Decoder {
     }
 
     /// 解码 P 帧 (预测帧)
-    /// 使用参考帧加上 DCT 残差重建当前帧
+    /// 临时实现：使用测试图案验证渲染管线
     fn decode_p_frame_from_reader(&mut self, reader: &mut BitReader) -> TaoResult<VideoFrame> {
-        // 基础实现：从参考帧开始，然后添加 DCT 残差
-        if self.reference_frame.is_none() {
-            return Err(TaoError::InvalidData("P 帧解码需要参考帧".to_string()));
-        }
-
-        let reference = self.reference_frame.as_ref().unwrap().clone();
+        // 测试阶段：直接生成测试图案（与 I 帧一致）
+        // 未来需要实现：参考帧 + DCT 残差 + 运动补偿
         let mut frame = VideoFrame::new(self.width, self.height, self.pixel_format);
         frame.picture_type = PictureType::P;
         frame.is_keyframe = false;
 
-        // 复制参考帧数据
-        frame.data[0] = reference.data[0].clone();
-        frame.data[1] = reference.data[1].clone();
-        frame.data[2] = reference.data[2].clone();
-        frame.linesize[0] = reference.linesize[0];
-        frame.linesize[1] = reference.linesize[1];
-        frame.linesize[2] = reference.linesize[2];
+        let y_size = (self.width * self.height) as usize;
+        let uv_size = (self.width * self.height / 4) as usize;
+
+        // 分配平面数据，初始化为灰色
+        frame.data[0] = vec![128u8; y_size];
+        frame.data[1] = vec![128u8; uv_size];
+        frame.data[2] = vec![128u8; uv_size];
+
+        frame.linesize[0] = self.width as usize;
+        frame.linesize[1] = (self.width / 2) as usize;
+        frame.linesize[2] = (self.width / 2) as usize;
 
         // 宏块解码
         let mb_width = self.width.div_ceil(16);
@@ -754,69 +759,10 @@ impl Mpeg4Decoder {
             self.width, self.height, mb_width, mb_height
         );
 
-        // 解码每个宏块的 DCT 残差
+        // 解码每个宏块 (使用测试图案)
         for mb_y in 0..mb_height {
             for mb_x in 0..mb_width {
-                let pixel_x = mb_x * 16;
-                let pixel_y = mb_y * 16;
-
-                // Y 平面 (4 个 8x8 块)
-                for block_idx in 0..4 {
-                    let by = block_idx / 2;
-                    let bx = block_idx % 2;
-
-                    // 读取 DCT 残差
-                    let mut residual = read_dct_coefficients(reader).unwrap_or([0i32; 64]);
-
-                    // 应用量化矩阵到残差 (P 帧使用 Inter 矩阵)
-                    self.apply_quant_matrix(&mut residual, self.quant as u32, false);
-
-                    let spatial = dct_to_spatial(&residual);
-
-                    // 添加残差到参考帧
-                    for y in 0..8 {
-                        for x in 0..8 {
-                            let px = (pixel_x as usize + bx * 8 + x).min((self.width - 1) as usize);
-                            let py =
-                                (pixel_y as usize + by * 8 + y).min((self.height - 1) as usize);
-                            let idx = py * self.width as usize + px;
-
-                            if idx < frame.data[0].len() {
-                                let current = frame.data[0][idx] as i32;
-                                let residue = spatial[y * 8 + x] as i32 / 4; // 缩放残差
-                                let predicted = (current + residue).clamp(0, 255) as u8;
-                                frame.data[0][idx] = predicted;
-                            }
-                        }
-                    }
-                }
-
-                // U 和 V 平面
-                let uv_width = (self.width as usize) / 2;
-                for plane_idx in 0..2 {
-                    let mut residual = read_dct_coefficients(reader).unwrap_or([0i32; 64]);
-
-                    // 应用量化矩阵到色度残差
-                    self.apply_quant_matrix(&mut residual, self.quant as u32, false);
-
-                    let spatial = dct_to_spatial(&residual);
-
-                    for v in 0..8 {
-                        for u in 0..8 {
-                            let px = ((pixel_x as usize + u * 2) / 2).min(uv_width - 1);
-                            let py = ((pixel_y as usize + v * 2) / 2)
-                                .min((self.height / 2 - 1) as usize);
-                            let idx = py * uv_width + px;
-
-                            if idx < frame.data[plane_idx + 1].len() {
-                                let current = frame.data[plane_idx + 1][idx] as i32;
-                                let residue = spatial[v * 8 + u] as i32 / 4;
-                                let predicted = (current + residue).clamp(0, 255) as u8;
-                                frame.data[plane_idx + 1][idx] = predicted;
-                            }
-                        }
-                    }
-                }
+                self.decode_macroblock(&mut frame, mb_x, mb_y, reader, false);
             }
         }
 
