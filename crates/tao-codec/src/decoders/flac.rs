@@ -475,8 +475,18 @@ impl FlacDecoder {
             for (j, &coeff) in coefficients.iter().enumerate() {
                 predicted += coeff * samples[i - 1 - j] as i64;
             }
-            predicted >>= shift;
-            let residual = residuals[i - order as usize] as i64;
+            let predicted = if shift >= 0 {
+                predicted >> shift
+            } else {
+                predicted << (-shift)
+            };
+
+            let residual_index = i - order as usize;
+            if residual_index >= residuals.len() {
+                return Err(TaoError::InvalidData("残差索引越界".to_string()));
+            }
+
+            let residual = residuals[residual_index] as i64;
             samples.push((predicted + residual) as i32);
         }
 
@@ -514,22 +524,33 @@ impl FlacDecoder {
             let rice_param = br.read_bits(rice_param_bits)?;
 
             let partition_samples = if partition == 0 {
+                // 第一个分区需要减去预测器阶数
                 (block_size >> partition_order) - predictor_order
             } else {
+                // 其他分区正常计算
                 block_size >> partition_order
             };
+
+            // 确保不会读取超过总残差数量
+            let remaining_samples = total_residuals - residuals.len();
+            let samples_to_read = std::cmp::min(partition_samples as usize, remaining_samples);
+
+            // 如果没有样本要读取，跳过这个分区
+            if samples_to_read == 0 {
+                continue;
+            }
 
             let escape_code = if coding_method == 0 { 15 } else { 31 };
 
             if rice_param == escape_code {
                 // 逃逸编码: 每个样本用固定位数表示
                 let bits = br.read_bits(5)?;
-                for _ in 0..partition_samples {
+                for _ in 0..samples_to_read {
                     residuals.push(br.read_bits_signed(bits)?);
                 }
             } else {
                 // Rice 编码
-                for _ in 0..partition_samples {
+                for _ in 0..samples_to_read {
                     let quotient = br.read_unary(1)?;
                     let remainder = if rice_param > 0 {
                         br.read_bits(rice_param)?

@@ -96,6 +96,7 @@ tao (门面库, re-export 所有库 crate)
 ### 3.2 注册表模式
 
 编解码器和容器格式均采用注册表 (Registry) 模式:
+
 - 各编解码器/格式通过工厂函数注册到全局注册表
 - 运行时按 CodecId/FormatId 查找并创建实例
 - 支持按优先级选择多个同 ID 的实现
@@ -103,6 +104,7 @@ tao (门面库, re-export 所有库 crate)
 ### 3.3 I/O 抽象
 
 IoContext 提供统一的读写接口, 支持多种后端:
+
 - 文件 (FileBackend)
 - 内存缓冲区 (MemoryBackend, 待实现)
 - 网络流 (NetworkBackend, 待实现)
@@ -110,6 +112,7 @@ IoContext 提供统一的读写接口, 支持多种后端:
 ### 3.4 FFI 导出
 
 tao-ffi crate 编译为 cdylib + staticlib:
+
 - 所有导出函数以 `tao_` 前缀命名
 - 使用 `#[no_mangle]` 和 `extern "C"` 确保 ABI 兼容
 - 由 Tao 分配的内存必须通过对应的 `tao_*_free()` 释放
@@ -132,6 +135,7 @@ tao-ffi crate 编译为 cdylib + staticlib:
 ## 6. Rust 编码规范
 
 ### 6.1 类型与安全
+
 - **必须**: 为所有公开函数参数和返回值定义明确的类型.
 - **禁止**: 随意使用 `unwrap()` / `expect()`, 除非能确保不会 panic (如常量初始化).
 - **必须**: 使用 `TaoError` / `TaoResult` 作为统一错误类型; crate 内部特定错误使用 `thiserror` 定义.
@@ -139,15 +143,18 @@ tao-ffi crate 编译为 cdylib + staticlib:
 - **推荐**: trait 对象使用 `Box<dyn Trait>`, 泛型用于内部实现, trait 对象用于跨 crate 接口.
 
 ### 6.2 并发与 FFI
+
 - 所有 trait (Decoder, Encoder, Demuxer, Muxer, Filter) 要求 `Send`, 以支持多线程使用.
 - FFI 导出函数中禁止 panic; 必须使用 `catch_unwind` 包装或确保无 panic 路径.
 - FFI 函数的 `unsafe` 块必须添加 `// SAFETY:` 注释说明安全前提.
 
 ### 6.3 格式化
+
 - 代码格式化使用 `rustfmt`, 配置见 `.rustfmt.toml`.
 - 行宽上限 100 字符, 缩进 4 空格, 不使用 tab.
 
 ### 6.4 枚举设计
+
 - 编解码器 ID, 像素格式, 采样格式等枚举使用 `#[non_exhaustive]`, 以便后续扩展.
 - 枚举变体命名使用 PascalCase, 与 Rust 惯例一致.
 
@@ -161,18 +168,21 @@ tao-ffi crate 编译为 cdylib + staticlib:
 ## 8. 开发规则
 
 ### 8.1 新增编解码器
+
 - 每个编解码器在 `tao-codec/src/` 下创建独立子模块 (如 `decoders/h264/`, `encoders/aac/`).
 - 实现 `Decoder` 或 `Encoder` trait.
 - 提供工厂函数并注册到 `CodecRegistry`.
 - 编写单元测试验证基本编解码流程.
 
 ### 8.2 新增容器格式
+
 - 每个容器格式在 `tao-format/src/` 下创建独立子模块 (如 `demuxers/mp4/`, `muxers/wav/`).
 - 实现 `Demuxer` 或 `Muxer` trait.
 - 实现 `FormatProbe` trait 以支持自动格式识别.
 - 提供工厂函数并注册到 `FormatRegistry`.
 
 ### 8.3 FFI 规则
+
 - FFI 函数签名变更须向后兼容, 不得删除已发布的导出函数.
 - 新增导出函数须同步更新 C 头文件 (后续提供自动生成工具).
 - 所有指针参数必须检查 null.
@@ -183,10 +193,10 @@ tao-ffi crate 编译为 cdylib + staticlib:
 - 库 crate (tao-core, tao-codec 等) 只使用 `log` 宏, 不初始化日志后端.
 - 可执行文件 (tao-cli, tao-probe) 负责初始化日志后端 (使用 `env_logger`).
 - 日志内容使用中文, 关键操作必须有日志记录:
-  - `info!`: 打开文件, 识别格式, 开始/完成转码
-  - `debug!`: 流信息, 编解码器参数, 数据包细节
-  - `warn!`: 可恢复错误, 损坏但可跳过的数据
-  - `error!`: 致命错误, 无法继续处理
+    - `info!`: 打开文件, 识别格式, 开始/完成转码
+    - `debug!`: 流信息, 编解码器参数, 数据包细节
+    - `warn!`: 可恢复错误, 损坏但可跳过的数据
+    - `error!`: 致命错误, 无法继续处理
 
 ## 10. 安全规范
 
@@ -198,19 +208,19 @@ tao-ffi crate 编译为 cdylib + staticlib:
 ## 11. 代码提交规范
 
 - 使用规范的提交信息格式:
-  - `feat: 功能描述` - 新增功能
-  - `fix: 问题描述` - 修复 Bug
-  - `refactor: 重构描述` - 代码重构
-  - `style: 样式调整` - 代码格式调整
-  - `chore: 其他描述` - 构建/工具/依赖更新
-  - `test: 测试描述` - 新增或修改测试
-  - `docs: 文档描述` - 文档更新
+    - `feat: 功能描述` - 新增功能
+    - `fix: 问题描述` - 修复 Bug
+    - `refactor: 重构描述` - 代码重构
+    - `style: 样式调整` - 代码格式调整
+    - `chore: 其他描述` - 构建/工具/依赖更新
+    - `test: 测试描述` - 新增或修改测试
+    - `docs: 文档描述` - 文档更新
 - 提交信息必须使用中文, 简洁明了地描述变更内容.
 - **严格要求**: 提交前必须按以下顺序执行检查, 确保全部通过:
-  1. 运行 `cargo fmt --check` - 确认代码格式一致
-  2. 运行 `cargo clippy -- -D warnings` - 修复所有 Clippy 警告
-  3. 运行 `cargo check` - 确认编译通过
-  4. 运行 `cargo test` - 确认所有测试通过
+    1. 运行 `cargo fmt --check` - 确认代码格式一致
+    2. 运行 `cargo clippy -- -D warnings` - 修复所有 Clippy 警告
+    3. 运行 `cargo check` - 确认编译通过
+    4. 运行 `cargo test` - 确认所有测试通过
 - **0 警告容忍**: 任何 Clippy 警告都必须在提交前修复, 不允许忽略.
 - 禁止使用 `#[allow(...)]` 来绕过 Clippy 检查, 除非有充分理由并添加详细注释说明.
 - **自动提交**: 每完成一轮功能开发, 且代码检查 (`cargo fmt`, `cargo clippy`, `cargo test`) 全部通过后, 必须自动提交本次修改 (无需等待用户指令).
@@ -224,11 +234,11 @@ tao-ffi crate 编译为 cdylib + staticlib:
 - 避免硬编码的魔法数字或字符串, 使用常量或配置项替代.
 - 避免重复代码, 提取公共逻辑到工具函数或 trait 中.
 - **代码审查**: 每次修改后都应该自我审查代码, 确保:
-  - 没有未使用的 imports, variables, functions
-  - 没有重复代码
-  - 没有硬编码的魔法数字或字符串
-  - 遵循项目代码风格
-  - 所有错误都有适当的处理
+    - 没有未使用的 imports, variables, functions
+    - 没有重复代码
+    - 没有硬编码的魔法数字或字符串
+    - 遵循项目代码风格
+    - 所有错误都有适当的处理
 
 ## 13. 测试规范
 
@@ -259,3 +269,94 @@ tao-ffi crate 编译为 cdylib + staticlib:
 - 考虑使用 SIMD 指令优化关键路径 (通过 `std::arch` 或 `packed_simd`).
 - 帧缓冲区应支持复用, 避免每帧都重新分配内存.
 - 大块数据使用 `bytes::Bytes` 实现零拷贝传递.
+
+## 16. 手动播放测试规范
+
+### 16.1 播放时长限制
+
+- 手动测试音视频播放时, **禁止完整播放**整个文件.
+- 默认播放 **前 10 秒** 即可验证功能, 如有必要 (如需验证 seek/后段内容) 可增加到 **最多 30 秒**.
+- 播放结束后必须主动终止播放进程.
+
+### 16.2 终止播放进程 (Windows)
+
+- Windows 下终止 tao-play 进程时, **必须使用 `TASKKILL /F /IM tao-play.exe /T`**.
+- **禁止使用 `TASKKILL /F /PID <pid>`**, 因为在 Cursor/shell 环境中通常无法获取到正确的 PID.
+- 示例:
+  ```powershell
+  # 正确
+  TASKKILL /F /IM tao-play.exe /T
+  # 错误 (PID 不可靠)
+  TASKKILL /F /PID 12345
+  ```
+
+### 16.3 流式播放测试
+
+- `tao-play` 支持 http/https/rtmp 等流式 URL 播放.
+- 测试在线音视频文件时, **必须使用 URL 直接流式播放**, 不要先下载到本地再播放.
+- 仅当需要反复使用同一文件 (如单元测试/集成测试数据) 时, 才下载到 `data/samples/` 目录.
+- 示例:
+  ```powershell
+  # 正确: 直接流式播放
+  cargo run --package tao-play -- "https://samples.ffmpeg.org/flac/Yesterday.flac"
+  # 错误: 先下载再播放
+  curl -o data/samples/audio/test.flac "https://samples.ffmpeg.org/flac/Yesterday.flac"
+  cargo run --package tao-play -- "data/samples/audio/test.flac"
+  ```
+
+## 17. 测试文件和临时文件管理
+
+### 17.1 目录结构
+
+- **`data/`**: 所有测试用文件和数据的根目录
+    - **`data/samples/`**: 测试样本文件 (如测试视频、音频文件)
+    - **`data/test/`**: 单元测试和集成测试所需的数据文件
+    - **`data/tmp/`**: 临时文件目录
+
+### 17.2 文件放置规则
+
+- **测试样本文件**: 必须放在 `data/samples/` 目录下
+    - 按格式分类: `data/samples/video/`, `data/samples/audio/`, `data/samples/container/`
+    - 文件命名使用描述性名称, 如 `h264_test.mp4`, `theora_sample.ogg`
+- **测试数据文件**: 必须放在 `data/test/` 目录下
+    - 单元测试数据: `data/test/unit/`
+    - 集成测试数据: `data/test/integration/`
+    - 基准测试数据: `data/test/bench/`
+- **临时文件**: 必须放在 `data/tmp/` 目录下
+    - 运行时生成的临时文件
+    - 下载的测试文件
+    - 编解码过程中的中间文件
+
+### 17.3 临时文件管理
+
+- **创建**: 所有临时文件必须在 `data/tmp/` 目录下创建
+- **清理**: 测试结束后必须清理临时文件
+- **命名**: 临时文件使用前缀 `tmp_` 或进程 ID 命名
+- **权限**: 确保临时文件有适当的读写权限
+
+### 17.4 Git 管理
+
+- **`data/samples/`**: 小文件 (< 1MB) 可提交到 Git, 大文件使用 Git LFS
+- **`data/test/`**: 测试数据文件可提交到 Git
+- **`data/tmp/`**: 永不提交到 Git, 必须在 `.gitignore` 中排除
+
+### 17.5 代码规范
+
+- **路径使用**: 在代码中使用相对于项目根目录的路径
+- **环境变量**: 可使用环境变量 `TAO_DATA_DIR` 指定数据目录
+- **错误处理**: 文件不存在时提供清晰的错误信息
+- **跨平台**: 确保路径处理在 Windows/Linux/macOS 上兼容
+
+### 17.6 示例
+
+```rust
+// 正确的测试文件路径
+const SAMPLES_DIR: &str = "data/samples/";
+const TEST_FILE: &str = "data/samples/video/theora_test.ogg";
+
+// 临时文件创建
+use std::path::PathBuf;
+let temp_dir = PathBuf::from("data/tmp");
+std::fs::create_dir_all(&temp_dir)?;
+let temp_file = temp_dir.join(format!("tmp_test_{}.bin", std::process::id()));
+```

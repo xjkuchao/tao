@@ -7,6 +7,7 @@ pub mod h265;
 pub mod mp3;
 pub mod pcm;
 pub mod rawvideo;
+pub mod theora;
 pub mod vorbis;
 
 use crate::codec_id::CodecId;
@@ -30,5 +31,6 @@ pub fn register_all_decoders(registry: &mut CodecRegistry) {
     registry.register_decoder(CodecId::Mp3, "mp3", mp3::Mp3Decoder::create);
     registry.register_decoder(CodecId::H264, "h264", h264::H264Decoder::create);
     registry.register_decoder(CodecId::H265, "hevc", h265::HevcDecoder::create);
+    registry.register_decoder(CodecId::Theora, "theora", theora::TheoraDecoder::create);
     registry.register_decoder(CodecId::Vorbis, "vorbis", vorbis::VorbisDecoder::create);
 }
