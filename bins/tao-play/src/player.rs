@@ -150,6 +150,10 @@ impl Player {
             None
         };
 
+        if audio_decoder.is_none() && video_decoder.is_none() {
+            return Err("没有可用的解码器, 无法播放当前输入".into());
+        }
+
         // 创建时钟
         let clock = MediaClock::new();
 
@@ -216,6 +220,10 @@ impl Player {
         } else {
             None
         };
+
+        if audio_output.is_none() && video_display.is_none() {
+            return Err("没有可用的音视频输出, 无法播放".into());
+        }
 
         // 主播放循环
         info!("开始播放...");
