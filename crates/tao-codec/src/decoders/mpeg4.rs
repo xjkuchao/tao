@@ -238,6 +238,247 @@ struct RleData {
     last: bool,
 }
 
+/// VLC (变长编码) 表项
+/// 用于解码 MPEG-4 的 DCT 系数
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+struct VlcEntry {
+    /// 编码位模式
+    code: u16,
+    /// 编码位数
+    len: u8,
+    /// 运行长度 (前导零个数)
+    run: u8,
+    /// 系数级别
+    level: i8,
+    /// 是否为最后一个非零系数
+    last: bool,
+}
+
+/// Intra DC VLC 表 (Y 亮度通道)
+/// 基于 MPEG-4 Part 2 标准 Table B-13
+#[allow(dead_code)]
+const INTRA_DC_VLC_Y: &[(u8, u16, i16)] = &[
+    // (位数, 码字, DC差分值范围)
+    (3, 0b000, 1),          // 000 -> 1
+    (3, 0b001, 2),          // 001 -> 2
+    (3, 0b010, 3),          // 010 -> 3
+    (3, 0b011, 4),          // 011 -> 4
+    (3, 0b100, 5),          // 100 -> 5
+    (4, 0b1010, 6),         // 1010 -> 6
+    (5, 0b11110, 7),        // 11110 -> 7
+    (6, 0b111110, 8),       // 111110 -> 8
+    (7, 0b1111110, 9),      // 1111110 -> 9
+    (8, 0b11111110, 10),    // 11111110 -> 10
+    (9, 0b111111110, 11),   // 111111110 -> 11
+    (10, 0b1111111110, 12), // 1111111110 -> 12
+];
+
+/// Intra DC VLC 表 (UV 色度通道)
+/// 基于 MPEG-4 Part 2 标准 Table B-14
+#[allow(dead_code)]
+const INTRA_DC_VLC_UV: &[(u8, u16, i16)] = &[
+    (2, 0b00, 1),           // 00 -> 1
+    (2, 0b01, 2),           // 01 -> 2
+    (3, 0b100, 3),          // 100 -> 3
+    (3, 0b101, 4),          // 101 -> 4
+    (3, 0b110, 5),          // 110 -> 5
+    (4, 0b1110, 6),         // 1110 -> 6
+    (5, 0b11110, 7),        // 11110 -> 7
+    (6, 0b111110, 8),       // 111110 -> 8
+    (7, 0b1111110, 9),      // 1111110 -> 9
+    (8, 0b11111110, 10),    // 11111110 -> 10
+    (9, 0b111111110, 11),   // 111111110 -> 11
+    (10, 0b1111111110, 12), // 1111111110 -> 12
+];
+
+/// 简化的 MPEG-4 Intra AC VLC 表 (基于 Table B-16)
+/// 格式: (位数, 码字, last, run, level)
+#[allow(dead_code)]
+const INTRA_AC_VLC: &[(u8, u16, bool, u8, i8)] = &[
+    // EOB (End of Block) - 所有剩余系数为 0
+    (2, 0b11, true, 0, 0),
+    // 常见的短码 (高频模式)
+    (3, 0b011, false, 0, 1),     // s=0, run=0, level=1
+    (4, 0b0011, false, 1, 1),    // s=1, run=1, level=1
+    (5, 0b00011, false, 0, 2),   // s=2, run=0, level=2
+    (5, 0b00100, false, 2, 1),   // run=2, level=1
+    (5, 0b00101, false, 3, 1),   // run=3, level=1
+    (6, 0b000110, false, 4, 1),  // run=4, level=1
+    (6, 0b000111, false, 1, 2),  // run=1, level=2
+    (6, 0b001000, false, 5, 1),  // run=5, level=1
+    (6, 0b001001, false, 6, 1),  // run=6, level=1
+    (7, 0b0010100, false, 7, 1), // run=7, level=1
+    (7, 0b0010101, false, 0, 3), // run=0, level=3
+    (7, 0b0010110, false, 2, 2), // run=2, level=2
+    (7, 0b0010111, false, 8, 1), // run=8, level=1
+];
+
+/// 使用 VLC 表解码 Intra DC 系数
+///
+/// # 参数
+/// - `reader`: 位读取器
+/// - `is_luma`: true 为 Y (亮度), false 为 UV (色度)
+///
+/// # 返回
+/// DC 系数差分值 (需要与预测值相加得到实际 DC)
+#[allow(dead_code)]
+fn decode_intra_dc_vlc(reader: &mut BitReader, is_luma: bool) -> Option<i16> {
+    let table = if is_luma {
+        INTRA_DC_VLC_Y
+    } else {
+        INTRA_DC_VLC_UV
+    };
+
+    // 尝试不同长度的码字
+    for &(len, code, dc_size) in table {
+        // 窥视 len 位（不消耗）
+        let bits = reader.peek_bits(len)?;
+        if bits as u16 == code {
+            // 匹配！消耗这些位
+            reader.read_bits(len)?;
+
+            if dc_size == 0 {
+                return Some(0); // DC差分为 0
+            }
+
+            // 读取 dc_size 位的差分值
+            let diff = reader.read_bits(dc_size as u8)? as i16;
+
+            // 差分值可能是负数（使用补码表示）
+            // 如果最高位为 0，则为负数
+            let dc_diff = if diff < (1 << (dc_size - 1)) {
+                diff - (1 << dc_size) + 1
+            } else {
+                diff
+            };
+
+            return Some(dc_diff);
+        }
+    }
+
+    None // 未找到匹配的码字
+}
+
+/// 使用 VLC 表解码 AC 系数
+///
+/// # 返回
+/// Some((last, run, level)) 或 None 表示 EOB
+#[allow(dead_code)]
+fn decode_ac_vlc(reader: &mut BitReader) -> Option<(bool, u8, i16)> {
+    // 尝试不同长度的码字
+    for &(len, code, last, run, level) in INTRA_AC_VLC {
+        let bits = reader.peek_bits(len)?;
+        if bits as u16 == code {
+            reader.read_bits(len)?;
+
+            // EOB 标记
+            if last && run == 0 && level == 0 {
+                return None;
+            }
+
+            // 读取符号位
+            let sign = reader.read_bits(1)?;
+            let actual_level = if sign == 0 {
+                level as i16
+            } else {
+                -(level as i16)
+            };
+
+            return Some((last, run, actual_level));
+        }
+    }
+
+    // 未找到匹配 - 可能需要 ESCAPE 码或其他扩展表
+    // 简化处理：返回 EOB
+    None
+}
+
+/// 窥视位 (不消耗)
+impl<'a> BitReader<'a> {
+    #[allow(dead_code)]
+    fn peek_bits(&self, n: u8) -> Option<u32> {
+        if n == 0 || n > 32 {
+            return None;
+        }
+
+        let mut result = 0u32;
+        let mut byte_pos = self.byte_pos;
+        let mut bit_pos = self.bit_pos;
+
+        for _ in 0..n {
+            if byte_pos >= self.data.len() {
+                return None;
+            }
+
+            let bit = (self.data[byte_pos] >> (7 - bit_pos)) & 1;
+            result = (result << 1) | (bit as u32);
+
+            bit_pos += 1;
+            if bit_pos >= 8 {
+                bit_pos = 0;
+                byte_pos += 1;
+            }
+        }
+
+        Some(result)
+    }
+}
+
+/// 使用 VLC 解码 DCT 系数块 (Intra 宏块)
+///
+/// # 参数
+/// - `reader`: 位读取器
+/// - `is_luma`: true 为 Y (亮度), false 为 UV (色度)
+/// - `dc_predictor`: DC 预测值 (来自前一个块)
+///
+/// # 返回
+/// 64 个 DCT 系数 (zigzag 顺序)
+#[allow(dead_code)]
+fn decode_intra_block_vlc(
+    reader: &mut BitReader,
+    is_luma: bool,
+    dc_predictor: &mut i16,
+) -> Option<[i32; 64]> {
+    let mut block = [0i32; 64];
+
+    // 1. 解码 DC 系数
+    let dc_diff = decode_intra_dc_vlc(reader, is_luma)?;
+    *dc_predictor = dc_predictor.wrapping_add(dc_diff);
+    block[0] = *dc_predictor as i32;
+
+    // 2. 解码 AC 系数
+    let mut pos = 1; // zigzag 索引
+    loop {
+        // 解码一个 AC 系数
+        match decode_ac_vlc(reader) {
+            None => {
+                // EOB - 剩余系数全为 0
+                break;
+            }
+            Some((last, run, level)) => {
+                // 跳过 run 个零系数
+                pos += run as usize;
+
+                if pos >= 64 {
+                    break; // 超出块边界
+                }
+
+                // 放置系数（使用 zigzag 顺序）
+                let zigzag_pos = ZIGZAG_8X8[pos];
+                block[zigzag_pos] = level as i32;
+                pos += 1;
+
+                if last || pos >= 64 {
+                    break; // 最后一个系数或已填满
+                }
+            }
+        }
+    }
+
+    Some(block)
+}
+
 /// 从 bitstream 读取 DCT 系数块
 ///
 /// MPEG4 Part 2 使用复杂的 VLC 来编码 DCT 系数。
