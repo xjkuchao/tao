@@ -538,7 +538,10 @@ impl Mpeg4Decoder {
 
         if picture_type != PictureType::B {
             if let Some(quant) = reader.read_bits(5) {
-                self.quant = quant as u8;
+                // 量化参数必须至少为 1, 如果为 0 则保持上一帧的量化参数
+                if quant > 0 {
+                    self.quant = quant as u8;
+                }
                 debug!("量化参数: {}", self.quant);
             }
         }

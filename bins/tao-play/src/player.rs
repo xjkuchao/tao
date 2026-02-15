@@ -383,6 +383,10 @@ impl Player {
                                 if dec.send_packet(&packet).is_ok() {
                                     while let Ok(frame) = dec.receive_frame() {
                                         if let Frame::Video(vf) = &frame {
+                                            debug!(
+                                                "收到视频帧: {}x{}, PTS: {}, 类型: {:?}",
+                                                vf.width, vf.height, vf.pts, vf.picture_type
+                                            );
                                             // A/V 同步: 计算帧显示时间
                                             let frame_pts_us = pts_to_us(
                                                 vf.pts,
@@ -391,6 +395,10 @@ impl Player {
                                             );
                                             let current_us = clock.current_time_us();
                                             let delay_us = frame_pts_us - current_us;
+                                            debug!(
+                                                "视频同步: 帧 PTS={}us, 当前时间={}us, 延迟={}us",
+                                                frame_pts_us, current_us, delay_us
+                                            );
 
                                             // 如果帧还没到显示时间, 等待
                                             if delay_us > 1000 {
