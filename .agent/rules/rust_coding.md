@@ -1,0 +1,25 @@
+# Rust 编码规范
+
+## 6.1 类型与安全
+
+- **必须**: 为所有公开函数参数和返回值定义明确的类型.
+- **禁止**: 随意使用 `unwrap()` / `expect()`, 除非能确保不会 panic (如常量初始化).
+- **必须**: 使用 `TaoError` / `TaoResult` 作为统一错误类型; crate 内部特定错误使用 `thiserror` 定义.
+- **推荐**: 使用 `struct` 定义数据结构, 使用 `enum` 定义状态与变体, 使用 `type` 定义别名.
+- **推荐**: trait 对象使用 `Box<dyn Trait>`, 泛型用于内部实现, trait 对象用于跨 crate 接口.
+
+## 6.2 并发与 FFI
+
+- 所有 trait (Decoder, Encoder, Demuxer, Muxer, Filter) 要求 `Send`, 以支持多线程使用.
+- FFI 导出函数中禁止 panic; 必须使用 `catch_unwind` 包装或确保无 panic 路径.
+- FFI 函数的 `unsafe` 块必须添加 `// SAFETY:` 注释说明安全前提.
+
+## 6.3 格式化
+
+- 代码格式化使用 `rustfmt`, 配置见 `.rustfmt.toml`.
+- 行宽上限 100 字符, 缩进 4 空格, 不使用 tab.
+
+## 6.4 枚举设计
+
+- 编解码器 ID, 像素格式, 采样格式等枚举使用 `#[non_exhaustive]`, 以便后续扩展.
+- 枚举变体命名使用 PascalCase, 与 Rust 惯例一致.
