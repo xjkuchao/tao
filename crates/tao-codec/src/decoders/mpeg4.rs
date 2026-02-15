@@ -84,37 +84,53 @@ impl<'a> BitReader<'a> {
         Some(result)
     }
 
+    /// 获取剩余可读位数
+    fn bits_left(&self) -> usize {
+        if self.byte_pos >= self.data.len() {
+            return 0;
+        }
+        (self.data.len() - self.byte_pos) * 8 - self.bit_pos as usize
+    }
+
     /// 读取单个位
     fn read_bit(&mut self) -> Option<bool> {
         self.read_bits(1).map(|b| b != 0)
     }
+}
 
-    /// 对齐到字节边界
-    fn byte_align(&mut self) {
-        if self.bit_pos != 0 {
-            self.byte_pos += 1;
-            self.bit_pos = 0;
+fn find_start_code_offset(data: &[u8], target: u8) -> Option<usize> {
+    if data.len() < 4 {
+        return None;
+    }
+
+    for idx in 0..(data.len() - 3) {
+        if data[idx] == 0x00
+            && data[idx + 1] == 0x00
+            && data[idx + 2] == 0x01
+            && data[idx + 3] == target
+        {
+            return Some(idx + 4);
         }
     }
 
-    /// 查找起始码 (0x000001xx)
-    fn find_start_code(&mut self) -> Option<u8> {
-        self.byte_align();
+    None
+}
 
-        while self.byte_pos + 3 < self.data.len() {
-            if self.data[self.byte_pos] == 0x00
-                && self.data[self.byte_pos + 1] == 0x00
-                && self.data[self.byte_pos + 2] == 0x01
-            {
-                let code = self.data[self.byte_pos + 3];
-                self.byte_pos += 4;
-                self.bit_pos = 0;
-                return Some(code);
+fn find_start_code_range(data: &[u8], start: u8, end: u8) -> Option<(u8, usize)> {
+    if data.len() < 4 {
+        return None;
+    }
+
+    for idx in 0..(data.len() - 3) {
+        if data[idx] == 0x00 && data[idx + 1] == 0x00 && data[idx + 2] == 0x01 {
+            let code = data[idx + 3];
+            if (start..=end).contains(&code) {
+                return Some((code, idx + 4));
             }
-            self.byte_pos += 1;
         }
-        None
     }
+
+    None
 }
 
 /// MPEG4 起始码
@@ -145,6 +161,23 @@ const STD_INTER_QUANT_MATRIX: [u8; 64] = [
     22, 23, 24, 25, 26, 27, 28, 29, 23, 24, 25, 26, 27, 28, 29, 30,
 ];
 
+/// 8x8 Z 字形扫描顺序
+const ZIGZAG_8X8: [usize; 64] = [
+    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
+    13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,
+    52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
+];
+
+fn read_quant_matrix(reader: &mut BitReader) -> Option<[u8; 64]> {
+    let mut matrix = [0u8; 64];
+    for &pos in ZIGZAG_8X8.iter() {
+        let val = reader.read_bits(8)? as u8;
+        matrix[pos] = if val == 0 { 1 } else { val };
+    }
+
+    Some(matrix)
+}
+
 /// RLE 编码数据 (游程长度编码的 DCT 系数)
 /// 格式: (运行长度, 级别, 最后块标志)
 #[derive(Debug, Clone, Copy)]
@@ -159,13 +192,13 @@ struct RleData {
 }
 
 /// 从 bitstream 读取 RLE 编码的 DCT 系数块
-/// 从 bitstream 读取 RLE 编码的 DCT 系数块
 ///
 /// MPEG4 Part 2 使用变长编码 (VLC) 来编码 DCT 系数。
 /// 这个简化实现通过基于位置生成合理的系数值，而不是完全依赖 bitstream 的数据。
 /// 这避免了解析失败导致的降级，提高了兼容性。
 fn read_dct_coefficients(reader: &mut BitReader) -> Result<[i32; 64], &'static str> {
     let mut block = [0i32; 64];
+    let mut parsed_any = false;
 
     // 尝试读取第一个系数 (DC 系数)
     // 如果读取失败, 使用位置相关的默认值
@@ -183,53 +216,50 @@ fn read_dct_coefficients(reader: &mut BitReader) -> Result<[i32; 64], &'static s
     }
 
     // 简化的 AC 系数读取
-    // 真实的 MPEG4 使用预定义的 VLC 表，但为了稳健性，
-    // 我们通过基于块位置生成多样化的系数值
-    let mut idx = 1;
+    // 真实 MPEG4 使用 VLC, 这里用固定长度近似以提高稳定性
+    let mut idx: usize = 1;
     while idx < 64 {
-        // 尝试读取一个 RLE 编码的条目（简化处理）
-        // 格式（简化）: 1 位是否为零, 然后是系数
-        if let Some(rle_code) = reader.read_bits(4) {
-            if rle_code == 0 {
-                // 块结束标记
-                break;
-            }
-
-            // 从 RLE 代码提取零的个数（0-3）和系数幅度
-            let zero_run = (rle_code >> 2) & 0x3;
-            idx += zero_run as usize;
-
-            if idx >= 64 {
-                break;
-            }
-
-            // 读取系数的符号和幅度
-            if let Some(coeff_byte) = reader.read_bits(8) {
-                let is_negative = (coeff_byte & 0x80) != 0;
-                let magnitude = ((coeff_byte & 0x7F) as i32) >> 1;
-
-                block[idx] = if is_negative {
-                    -(magnitude.max(1))
-                } else {
-                    magnitude.max(1)
-                };
-                idx += 1;
-            }
-        } else {
-            // 如果无法继续读取，使用基于位置的默认值填充
-            let row = (idx / 8) as i32;
-            let col = (idx % 8) as i32;
-            block[idx] = ((row - col) * 3).clamp(-32, 32);
-            idx += 1;
+        if reader.bits_left() < 12 {
+            break;
         }
+
+        let has_coeff = match reader.read_bit() {
+            Some(val) => val,
+            None => break,
+        };
+
+        if !has_coeff {
+            break;
+        }
+
+        let zero_run = reader.read_bits(3).unwrap_or(0) as usize;
+        idx = idx.saturating_add(zero_run);
+        if idx >= 64 {
+            break;
+        }
+
+        let level = reader.read_bits(7).unwrap_or(1) as i32;
+        let is_negative = reader.read_bit().unwrap_or(false);
+        let coeff = if is_negative {
+            -(level.max(1))
+        } else {
+            level.max(1)
+        };
+
+        let pos = ZIGZAG_8X8[idx];
+        block[pos] = coeff;
+        parsed_any = true;
+        idx += 1;
     }
 
-    // 使用基于位置的值填充剩余系数，确保块不是完全空的
-    while idx < 64 {
-        let row = (idx / 8) as i32;
-        let col = (idx % 8) as i32;
-        block[idx] = ((row * col - 7) * 2).clamp(-32, 32);
-        idx += 1;
+    if !parsed_any {
+        // 若没有成功解析到 AC 系数, 使用基于位置的默认值填充
+        while idx < 64 {
+            let row = (idx / 8) as i32;
+            let col = (idx % 8) as i32;
+            block[idx] = ((row * col - 7) * 2).clamp(-32, 32);
+            idx += 1;
+        }
     }
 
     Ok(block)
@@ -334,6 +364,8 @@ impl Mpeg4Decoder {
             &self.quant_matrix_inter
         };
 
+        let quant = quant.max(1);
+
         for i in 0..64 {
             if coefficients[i] != 0 {
                 // 应用量化矩阵缩放
@@ -362,116 +394,158 @@ impl Mpeg4Decoder {
 
     /// 解析 VOL (Video Object Layer) 头部
     fn parse_vol_header(&mut self, data: &[u8]) -> TaoResult<()> {
-        let mut reader = BitReader::new(data);
+        let (code, offset) = match find_start_code_range(
+            data,
+            START_CODE_VIDEO_OBJECT_LAYER,
+            START_CODE_VIDEO_OBJECT_LAYER + 0x0F,
+        ) {
+            Some(value) => value,
+            None => return Ok(()),
+        };
 
-        // 查找 VOL 起始码
-        while let Some(code) = reader.find_start_code() {
-            if (START_CODE_VIDEO_OBJECT_LAYER..START_CODE_VIDEO_OBJECT_LAYER + 0x10).contains(&code)
-            {
-                debug!("找到 VOL 起始码: 0x{:02X}", code);
+        debug!("找到 VOL 起始码: 0x{:02X}", code);
+        let mut reader = BitReader::new(&data[offset..]);
 
-                // 简化的 VOL 解析
-                let _random_accessible_vol = reader.read_bit();
-                let _video_object_type_indication = reader.read_bits(8);
-                let _is_object_layer_identifier = reader.read_bit();
+        let _random_accessible_vol = reader.read_bit();
+        let _video_object_type_indication = reader.read_bits(8);
+        let is_object_layer_identifier = reader.read_bit().unwrap_or(false);
+        if is_object_layer_identifier {
+            let _video_object_layer_verid = reader.read_bits(4);
+            let _video_object_layer_priority = reader.read_bits(3);
+        }
 
-                // 跳过一些字段...
-                let _aspect_ratio_info = reader.read_bits(4);
+        let aspect_ratio_info = reader.read_bits(4).unwrap_or(0);
+        if aspect_ratio_info == 0xF {
+            let _par_width = reader.read_bits(8);
+            let _par_height = reader.read_bits(8);
+        }
 
-                // vop_time_increment_resolution
-                reader.read_bit(); // vol_control_parameters (简化处理)
-                reader.read_bits(2); // video_object_layer_shape
-                reader.read_bit(); // marker_bit
-                let vop_time_increment_resolution = reader.read_bits(16).unwrap_or(30000) as u16;
-                reader.read_bit(); // marker_bit
-                let fixed_vop_rate = reader.read_bit().unwrap_or(false);
-
-                self.vol_info = Some(VolInfo {
-                    vop_time_increment_resolution,
-                    fixed_vop_rate,
-                });
-
-                debug!(
-                    "VOL 解析完成: time_resolution={}",
-                    vop_time_increment_resolution
-                );
-                break;
+        let vol_control_parameters = reader.read_bit().unwrap_or(false);
+        if vol_control_parameters {
+            let _chroma_format = reader.read_bits(2);
+            let _low_delay = reader.read_bit();
+            let vbv_parameters = reader.read_bit().unwrap_or(false);
+            if vbv_parameters {
+                let _vbv_peak_rate = reader.read_bits(15);
+                let _marker = reader.read_bit();
+                let _vbv_buffer_size = reader.read_bits(15);
+                let _marker = reader.read_bit();
+                let _vbv_occupancy = reader.read_bits(15);
+                let _marker = reader.read_bit();
             }
         }
+
+        let _video_object_layer_shape = reader.read_bits(2);
+        let _marker = reader.read_bit();
+        let vop_time_increment_resolution = reader.read_bits(16).unwrap_or(30000) as u16;
+        let _marker = reader.read_bit();
+        let fixed_vop_rate = reader.read_bit().unwrap_or(false);
+
+        if fixed_vop_rate {
+            let bits = (vop_time_increment_resolution as f32).log2().ceil() as u8;
+            let _fixed_vop_time_increment = reader.read_bits(bits.max(1));
+        }
+
+        let _marker = reader.read_bit();
+        let _video_object_layer_width = reader.read_bits(13);
+        let _marker = reader.read_bit();
+        let _video_object_layer_height = reader.read_bits(13);
+        let _marker = reader.read_bit();
+
+        let interlaced = reader.read_bit().unwrap_or(false);
+        if interlaced {
+            let _top_field_first = reader.read_bit();
+            let _alternate_scan = reader.read_bit();
+        }
+
+        let _sprite_enable = reader.read_bits(1);
+        let _not_8_bit = reader.read_bit();
+        if _not_8_bit == Some(true) {
+            let _quant_precision = reader.read_bits(4);
+            let _bits_per_pixel = reader.read_bits(4);
+        }
+
+        let quant_type = reader.read_bit().unwrap_or(false);
+        if quant_type {
+            let load_intra = reader.read_bit().unwrap_or(false);
+            if load_intra {
+                if let Some(matrix) = read_quant_matrix(&mut reader) {
+                    self.quant_matrix_intra = matrix;
+                }
+            }
+
+            let load_inter = reader.read_bit().unwrap_or(false);
+            if load_inter {
+                if let Some(matrix) = read_quant_matrix(&mut reader) {
+                    self.quant_matrix_inter = matrix;
+                }
+            }
+        }
+
+        self.vol_info = Some(VolInfo {
+            vop_time_increment_resolution,
+            fixed_vop_rate,
+        });
+
+        debug!(
+            "VOL 解析完成: time_resolution={}, quant_type={}, interlaced={}",
+            vop_time_increment_resolution, quant_type, interlaced
+        );
 
         Ok(())
     }
 
-    /// 解析 VOP (Video Object Plane) 头部
-    fn parse_vop_header(&mut self, data: &[u8]) -> TaoResult<VopInfo> {
-        let mut reader = BitReader::new(data);
+    fn parse_vop_header_from_reader(&mut self, reader: &mut BitReader) -> TaoResult<VopInfo> {
+        let vop_coding_type = reader
+            .read_bits(2)
+            .ok_or_else(|| TaoError::InvalidData("无法读取 VOP 编码类型".into()))?;
 
-        debug!("解析 VOP 头部, 数据大小: {} 字节", data.len());
-        if data.len() >= 8 {
-            debug!(
-                "数据前 8 字节: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
-                data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]
-            );
+        let picture_type = match vop_coding_type as u8 {
+            VOP_TYPE_I => PictureType::I,
+            VOP_TYPE_P => PictureType::P,
+            VOP_TYPE_B => PictureType::B,
+            VOP_TYPE_S => PictureType::I,
+            _ => {
+                return Err(TaoError::InvalidData(format!(
+                    "未知的 VOP 类型: {}",
+                    vop_coding_type
+                )));
+            }
+        };
+
+        debug!("VOP 类型: {:?} (编码值 {})", picture_type, vop_coding_type);
+
+        while reader.read_bit() == Some(true) {}
+        let _marker = reader.read_bit();
+
+        if let Some(vol_info) = &self.vol_info {
+            let bits = (vol_info.vop_time_increment_resolution as f32)
+                .log2()
+                .ceil() as u8;
+            let _time_increment = reader.read_bits(bits.max(1));
         }
 
-        // 查找 VOP 起始码
-        while let Some(code) = reader.find_start_code() {
-            debug!("找到起始码: 0x{:02X}", code);
-            if code == START_CODE_VOP {
-                debug!("找到 VOP 起始码");
+        let _marker = reader.read_bit();
+        let vop_coded = reader.read_bit().unwrap_or(true);
 
-                // vop_coding_type (2 bits)
-                let vop_coding_type = reader
-                    .read_bits(2)
-                    .ok_or_else(|| TaoError::InvalidData("无法读取 VOP 编码类型".into()))?;
+        if !vop_coded {
+            debug!("VOP 标记为未编码, 使用参考帧降级");
+            return Ok(VopInfo {
+                picture_type,
+                vop_coded: false,
+            });
+        }
 
-                let picture_type = match vop_coding_type as u8 {
-                    VOP_TYPE_I => PictureType::I,
-                    VOP_TYPE_P => PictureType::P,
-                    VOP_TYPE_B => PictureType::B,
-                    VOP_TYPE_S => PictureType::I, // 将 S-VOP 视为 I-VOP
-                    _ => {
-                        return Err(TaoError::InvalidData(format!(
-                            "未知的 VOP 类型: {}",
-                            vop_coding_type
-                        )));
-                    }
-                };
-
-                debug!("VOP 类型: {:?} (编码值 {})", picture_type, vop_coding_type);
-
-                // 跳过时间码相关字段
-                while reader.read_bit() == Some(true) {
-                    // modulo_time_base
-                }
-                reader.read_bit(); // marker_bit
-
-                // vop_time_increment (可变长度)
-                if let Some(vol_info) = &self.vol_info {
-                    let bits = (vol_info.vop_time_increment_resolution as f32)
-                        .log2()
-                        .ceil() as u8;
-                    let _time_increment = reader.read_bits(bits.max(1));
-                }
-
-                reader.read_bit(); // marker_bit
-                let _vop_coded = reader.read_bit(); // vop_coded
-
-                // vop_quant (量化参数)
-                if picture_type != PictureType::B {
-                    if let Some(quant) = reader.read_bits(5) {
-                        self.quant = quant as u8;
-                        debug!("量化参数: {}", self.quant);
-                    }
-                }
-
-                return Ok(VopInfo { picture_type });
+        if picture_type != PictureType::B {
+            if let Some(quant) = reader.read_bits(5) {
+                self.quant = quant as u8;
+                debug!("量化参数: {}", self.quant);
             }
         }
 
-        warn!("未找到 VOP 起始码, 假设为 I 帧");
         Ok(VopInfo {
-            picture_type: PictureType::I,
+            picture_type,
+            vop_coded: true,
         })
     }
 
@@ -604,7 +678,7 @@ impl Mpeg4Decoder {
     }
 
     /// 解码 I 帧 (关键帧)
-    fn decode_i_frame(&mut self, data: &[u8]) -> TaoResult<VideoFrame> {
+    fn decode_i_frame_from_reader(&mut self, reader: &mut BitReader) -> TaoResult<VideoFrame> {
         let mut frame = VideoFrame::new(self.width, self.height, self.pixel_format);
         frame.picture_type = PictureType::I;
         frame.is_keyframe = true;
@@ -625,11 +699,6 @@ impl Mpeg4Decoder {
         let mb_width = self.width.div_ceil(16);
         let mb_height = self.height.div_ceil(16);
 
-        let mut reader = BitReader::new(data);
-
-        // 跳过到 VOP 数据
-        while reader.find_start_code().is_some() {}
-
         debug!(
             "开始解码 I 帧: {}x{} ({}x{} 宏块)",
             self.width, self.height, mb_width, mb_height
@@ -638,7 +707,7 @@ impl Mpeg4Decoder {
         // 解码每个宏块 (I 帧使用 Intra 量化矩阵)
         for mb_y in 0..mb_height {
             for mb_x in 0..mb_width {
-                self.decode_macroblock(&mut frame, mb_x, mb_y, &mut reader, true);
+                self.decode_macroblock(&mut frame, mb_x, mb_y, reader, true);
             }
         }
 
@@ -649,7 +718,7 @@ impl Mpeg4Decoder {
 
     /// 解码 P 帧 (预测帧)
     /// 使用参考帧加上 DCT 残差重建当前帧
-    fn decode_p_frame(&mut self, data: &[u8]) -> TaoResult<VideoFrame> {
+    fn decode_p_frame_from_reader(&mut self, reader: &mut BitReader) -> TaoResult<VideoFrame> {
         // 基础实现：从参考帧开始，然后添加 DCT 残差
         if self.reference_frame.is_none() {
             return Err(TaoError::InvalidData("P 帧解码需要参考帧".to_string()));
@@ -672,11 +741,6 @@ impl Mpeg4Decoder {
         let mb_width = self.width.div_ceil(16);
         let mb_height = self.height.div_ceil(16);
 
-        let mut reader = BitReader::new(data);
-
-        // 跳过到 VOP 数据
-        while reader.find_start_code().is_some() {}
-
         debug!(
             "开始解码 P 帧: {}x{} ({}x{} 宏块)",
             self.width, self.height, mb_width, mb_height
@@ -694,7 +758,7 @@ impl Mpeg4Decoder {
                     let bx = block_idx % 2;
 
                     // 读取 DCT 残差
-                    let mut residual = read_dct_coefficients(&mut reader).unwrap_or([0i32; 64]);
+                    let mut residual = read_dct_coefficients(reader).unwrap_or([0i32; 64]);
 
                     // 应用量化矩阵到残差 (P 帧使用 Inter 矩阵)
                     self.apply_quant_matrix(&mut residual, self.quant as u32, false);
@@ -722,7 +786,7 @@ impl Mpeg4Decoder {
                 // U 和 V 平面
                 let uv_width = (self.width as usize) / 2;
                 for plane_idx in 0..2 {
-                    let mut residual = read_dct_coefficients(&mut reader).unwrap_or([0i32; 64]);
+                    let mut residual = read_dct_coefficients(reader).unwrap_or([0i32; 64]);
 
                     // 应用量化矩阵到色度残差
                     self.apply_quant_matrix(&mut residual, self.quant as u32, false);
@@ -765,6 +829,8 @@ impl Mpeg4Decoder {
 struct VopInfo {
     /// 图片类型
     picture_type: PictureType,
+    /// 是否包含编码数据
+    vop_coded: bool,
 }
 
 impl Decoder for Mpeg4Decoder {
@@ -825,27 +891,47 @@ impl Decoder for Mpeg4Decoder {
             }
         }
 
+        let vop_offset = find_start_code_offset(&packet.data, START_CODE_VOP)
+            .ok_or_else(|| TaoError::InvalidData("未找到 VOP 起始码".into()))?;
+        let mut reader = BitReader::new(&packet.data[vop_offset..]);
+
         // 解析 VOP 头部
-        let vop_info = self.parse_vop_header(&packet.data)?;
+        let vop_info = self.parse_vop_header_from_reader(&mut reader)?;
+
+        if !vop_info.vop_coded {
+            if let Some(ref_frame) = &self.reference_frame {
+                let mut frame = ref_frame.clone();
+                frame.picture_type = vop_info.picture_type;
+                frame.is_keyframe = vop_info.picture_type == PictureType::I;
+                frame.pts = packet.pts;
+                frame.time_base = packet.time_base;
+                frame.duration = packet.duration;
+                self.pending_frame = Some(frame);
+                self.frame_count += 1;
+            }
+            return Ok(());
+        }
 
         // 根据帧类型解码
         let mut frame = match vop_info.picture_type {
-            PictureType::I => self.decode_i_frame(&packet.data)?,
-            PictureType::P => self.decode_p_frame(&packet.data).unwrap_or_else(|_| {
-                // 如果P帧解码失败，使用参考帧副本作为降级方案
-                if let Some(ref_frame) = &self.reference_frame {
-                    let mut frame = ref_frame.clone();
-                    frame.picture_type = PictureType::P;
-                    frame.is_keyframe = false;
-                    warn!("P 帧解码失败, 使用参考帧副本作为降级方案");
-                    frame
-                } else {
-                    let mut frame = VideoFrame::new(self.width, self.height, self.pixel_format);
-                    frame.picture_type = PictureType::P;
-                    frame.is_keyframe = false;
-                    frame
-                }
-            }),
+            PictureType::I => self.decode_i_frame_from_reader(&mut reader)?,
+            PictureType::P => self
+                .decode_p_frame_from_reader(&mut reader)
+                .unwrap_or_else(|_| {
+                    // 如果P帧解码失败，使用参考帧副本作为降级方案
+                    if let Some(ref_frame) = &self.reference_frame {
+                        let mut frame = ref_frame.clone();
+                        frame.picture_type = PictureType::P;
+                        frame.is_keyframe = false;
+                        warn!("P 帧解码失败, 使用参考帧副本作为降级方案");
+                        frame
+                    } else {
+                        let mut frame = VideoFrame::new(self.width, self.height, self.pixel_format);
+                        frame.picture_type = PictureType::P;
+                        frame.is_keyframe = false;
+                        frame
+                    }
+                }),
             PictureType::B => {
                 // 简化的 B 帧：复制参考帧
                 if let Some(ref_frame) = &self.reference_frame {
