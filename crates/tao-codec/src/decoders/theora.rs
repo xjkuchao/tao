@@ -30,7 +30,7 @@ enum InitPhase {
     /// 等待注释头
     WaitComment,
     /// 等待设置头
-    _WaitSetup,
+    WaitSetup,
     /// 就绪状态
     Ready,
 }
@@ -195,11 +195,10 @@ impl Decoder for TheoraDecoder {
                 (0x02, InitPhase::WaitComment) => {
                     // 注释头
                     self.parse_comment_header(&packet.data[1..])?;
-                    // 对于某些 Theora 文件，可能没有设置头，直接就绪
-                    self.phase = InitPhase::Ready;
-                    debug!("Theora 注释头解析完成，解码器就绪（无设置头）");
+                    self.phase = InitPhase::WaitSetup;
+                    debug!("Theora 注释头解析完成, 等待设置头");
                 }
-                (0x03, InitPhase::_WaitSetup) => {
+                (0x03, InitPhase::WaitSetup) => {
                     // 设置头
                     self.parse_setup_header(&packet.data[1..])?;
                     self.phase = InitPhase::Ready;
@@ -255,6 +254,15 @@ impl Decoder for TheoraDecoder {
 mod tests {
     use super::*;
 
+    /// 辅助函数: 直接创建 TheoraDecoder 实例, 方便测试内部状态
+    fn create_decoder() -> TheoraDecoder {
+        TheoraDecoder {
+            initialized: false,
+            header: None,
+            phase: InitPhase::WaitIdentification,
+        }
+    }
+
     #[test]
     fn test_theora_decoder_creation() {
         let decoder = TheoraDecoder::create().unwrap();
@@ -264,25 +272,120 @@ mod tests {
 
     #[test]
     fn test_identification_header_parsing() {
-        let mut decoder = TheoraDecoder::create().unwrap();
+        let mut decoder = create_decoder();
 
-        // 构造一个最小的 Theora 标识头
-        let mut header = vec![0x80, b't', b'h', b'e', b'o', b'r', b'a'];
-        header.extend_from_slice(&[3, 2, 1]); // 版本 3.2.1
-        header.extend_from_slice(&[0, 0, 0, 0, 0]); // 保留字段
-        header.extend_from_slice(&[0x12, 0x34, 0x56, 0x78]); // width (高位)
-        header.extend_from_slice(&[0x90, 0x12, 0x34, 0x56]); // height (低位)
-        header.extend_from_slice(&[0, 0, 0, 0]); // 保留字段
-        header.extend_from_slice(&[0, 0, 0, 25]); // frame numerator
-        header.extend_from_slice(&[0, 0, 0, 1]); // frame denominator
-        header.extend_from_slice(&[0, 0, 0, 1]); // aspect numerator
-        header.extend_from_slice(&[0, 0, 0, 1]); // aspect denominator
+        // 构造 42 字节的 Theora 标识头
+        let mut header = vec![0u8; 42];
+
+        // 字节 0-6: 魔数 0x80 + "theora"
+        header[0] = 0x80;
+        header[1..7].copy_from_slice(b"theora");
+
+        // 字节 7-9: 版本号 3.2.1
+        header[7] = 3;
+        header[8] = 2;
+        header[9] = 1;
+
+        // 字节 10-13: FMBW / FMBH (编码帧宏块宽高, 此处不使用)
+
+        // 字节 14-17: 图像宽高 (按位拼接)
+        // 解析逻辑:
+        //   pic_width  = (data[14]<<12) | (data[15]<<4) | (data[16]>>4)
+        //   pic_height = ((data[16] & 0x0F)<<8) | data[17]
+        //   width = pic_width * 16, height = pic_height * 16
+        // 设 pic_width=20 => width=320, pic_height=15 => height=240
+        header[14] = 0x00; // pic_width 高 8 位 = 0
+        header[15] = 0x01; // pic_width 中 8 位: (20 >> 4) = 1
+        header[16] = 0x40; // pic_width 低 4 位 | pic_height 高 4 位: (4<<4)|0 = 0x40
+        header[17] = 0x0F; // pic_height 低 8 位 = 15
+
+        // 字节 22-25: 帧率分子 (大端 u32 = 25)
+        header[22..26].copy_from_slice(&25u32.to_be_bytes());
+        // 字节 26-29: 帧率分母 (大端 u32 = 1)
+        header[26..30].copy_from_slice(&1u32.to_be_bytes());
+        // 字节 30-33: 像素宽高比分子 (大端 u32 = 1)
+        header[30..34].copy_from_slice(&1u32.to_be_bytes());
+        // 字节 34-37: 像素宽高比分母 (大端 u32 = 1)
+        header[34..38].copy_from_slice(&1u32.to_be_bytes());
 
         let result = decoder.parse_identification_header(&header);
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "解析标识头失败: {:?}", result);
 
         let header_info = decoder.header.as_ref().unwrap();
-        assert_eq!(header_info.version, (3, 2, 1));
-        assert_eq!(header_info.frame_rate, Rational::new(25, 1));
+        assert_eq!(header_info.width, 320);
+        assert_eq!(header_info.height, 240);
+        assert_eq!(header_info._version, (3, 2, 1));
+        assert_eq!(header_info._frame_rate, Rational::new(25, 1));
+    }
+
+    #[test]
+    fn test_identification_header_too_short() {
+        let mut decoder = create_decoder();
+        let short_data = vec![0x80, b't', b'h', b'e', b'o', b'r', b'a'];
+        let result = decoder.parse_identification_header(&short_data);
+        assert!(result.is_err(), "数据不足时应返回错误");
+    }
+
+    #[test]
+    fn test_identification_header_invalid_magic() {
+        let mut decoder = create_decoder();
+        let mut bad_header = vec![0x80, b'b', b'a', b'd', b'd', b'a', b't'];
+        bad_header.extend_from_slice(&[0; 35]); // 填充到 42 字节
+        let result = decoder.parse_identification_header(&bad_header);
+        assert!(result.is_err(), "魔数错误时应返回错误");
+    }
+
+    #[test]
+    fn test_unsupported_version() {
+        let mut decoder = create_decoder();
+        // 版本 4.0.0 不支持
+        let mut header = vec![0x80, b't', b'h', b'e', b'o', b'r', b'a'];
+        header.extend_from_slice(&[4, 0, 0]); // 版本 4.0.0
+        header.extend_from_slice(&[0; 32]); // 填充到 42 字节
+        let result = decoder.parse_identification_header(&header);
+        assert!(result.is_err(), "不支持的版本应返回错误");
+    }
+
+    #[test]
+    fn test_flush_resets_state() {
+        let mut decoder = create_decoder();
+        decoder.initialized = true;
+        decoder.phase = InitPhase::Ready;
+        decoder.header = Some(TheoraHeader {
+            width: 320,
+            height: 240,
+            _frame_rate: Rational::new(25, 1),
+            _pixel_aspect_ratio: Rational::new(1, 1),
+            _version: (3, 2, 1),
+        });
+
+        decoder.flush();
+
+        assert!(decoder.header.is_none());
+        assert!(matches!(decoder.phase, InitPhase::WaitIdentification));
+    }
+
+    #[test]
+    fn test_send_packet_without_init() {
+        let mut decoder = create_decoder();
+        let packet = Packet::from_data(vec![0x00, 0x01, 0x02]);
+        let result = decoder.send_packet(&packet);
+        assert!(result.is_err(), "未初始化时发送数据包应返回错误");
+    }
+
+    #[test]
+    fn test_receive_frame_without_init() {
+        let mut decoder = create_decoder();
+        let result = decoder.receive_frame();
+        assert!(result.is_err(), "未初始化时接收帧应返回错误");
+    }
+
+    #[test]
+    fn test_empty_packet_accepted() {
+        let mut decoder = create_decoder();
+        decoder.initialized = true;
+        let packet = Packet::empty();
+        let result = decoder.send_packet(&packet);
+        assert!(result.is_ok(), "空数据包应被接受");
     }
 }

@@ -206,9 +206,7 @@ impl FlacDemuxer {
         }
         for i in start..buf.len() - 1 {
             let word = u16::from_be_bytes([buf[i], buf[i + 1]]);
-            if word & FLAC_SYNC_MASK == FLAC_SYNC_CODE
-                && Self::validate_frame_header(&buf[i..])
-            {
+            if word & FLAC_SYNC_MASK == FLAC_SYNC_CODE && Self::validate_frame_header(&buf[i..]) {
                 return Some(i);
             }
         }
