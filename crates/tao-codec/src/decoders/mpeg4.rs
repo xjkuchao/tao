@@ -538,6 +538,7 @@ impl Mpeg4Decoder {
         mb_x: u32,
         mb_y: u32,
         reader: &mut BitReader,
+        use_intra_matrix: bool,
     ) {
         // 尝试读取实际的 DCT 系数，如果失败则使用位置生成的数据
         // 这是一个循序渐进的实现，允许混合真实数据和合成数据
@@ -553,9 +554,8 @@ impl Mpeg4Decoder {
             // 尝试从 bitstream 读取 DCT 系数
             let mut coefficients = read_dct_coefficients(reader).unwrap_or([0i32; 64]);
 
-            // 应用量化矩阵 (亮度使用 Intra 矩阵在此简化版本中)
-            // 在完整实现中应根据 I/P 帧类型选择
-            self.apply_quant_matrix(&mut coefficients, self.quant as u32, true);
+            // 应用量化矩阵 (根据帧类型选择 Intra/Inter)
+            self.apply_quant_matrix(&mut coefficients, self.quant as u32, use_intra_matrix);
 
             // 将 DCT 系数转换为空间域
             let spatial = dct_to_spatial(&coefficients);
@@ -583,8 +583,8 @@ impl Mpeg4Decoder {
             // 尝试读取色度块系数
             let mut coefficients = read_dct_coefficients(reader).unwrap_or([0i32; 64]);
 
-            // 应用量化矩阵 (色度使用 Inter 矩阵在此简化版本中)
-            self.apply_quant_matrix(&mut coefficients, self.quant as u32, false);
+            // 应用量化矩阵 (色度使用同样的矩阵选择)
+            self.apply_quant_matrix(&mut coefficients, self.quant as u32, use_intra_matrix);
 
             let spatial = dct_to_spatial(&coefficients);
 
@@ -635,10 +635,10 @@ impl Mpeg4Decoder {
             self.width, self.height, mb_width, mb_height
         );
 
-        // 解码每个宏块
+        // 解码每个宏块 (I 帧使用 Intra 量化矩阵)
         for mb_y in 0..mb_height {
             for mb_x in 0..mb_width {
-                self.decode_macroblock(&mut frame, mb_x, mb_y, &mut reader);
+                self.decode_macroblock(&mut frame, mb_x, mb_y, &mut reader, true);
             }
         }
 
@@ -694,7 +694,11 @@ impl Mpeg4Decoder {
                     let bx = block_idx % 2;
 
                     // 读取 DCT 残差
-                    let residual = read_dct_coefficients(&mut reader).unwrap_or([0i32; 64]);
+                    let mut residual = read_dct_coefficients(&mut reader).unwrap_or([0i32; 64]);
+
+                    // 应用量化矩阵到残差 (P 帧使用 Inter 矩阵)
+                    self.apply_quant_matrix(&mut residual, self.quant as u32, false);
+
                     let spatial = dct_to_spatial(&residual);
 
                     // 添加残差到参考帧
@@ -718,7 +722,11 @@ impl Mpeg4Decoder {
                 // U 和 V 平面
                 let uv_width = (self.width as usize) / 2;
                 for plane_idx in 0..2 {
-                    let residual = read_dct_coefficients(&mut reader).unwrap_or([0i32; 64]);
+                    let mut residual = read_dct_coefficients(&mut reader).unwrap_or([0i32; 64]);
+
+                    // 应用量化矩阵到色度残差
+                    self.apply_quant_matrix(&mut residual, self.quant as u32, false);
+
                     let spatial = dct_to_spatial(&residual);
 
                     for v in 0..8 {
