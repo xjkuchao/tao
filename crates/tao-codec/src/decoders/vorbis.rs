@@ -203,9 +203,12 @@ impl Decoder for VorbisDecoder {
                 // 解码音频数据包
                 let ident = self.ident.as_ref().unwrap();
                 let setup = self.setup.as_ref().unwrap();
-                let pwr = self.pwr.as_mut().unwrap();
+                let decoded_result = {
+                    let pwr = self.pwr.as_mut().unwrap();
+                    lewton::audio::read_audio_packet(ident, setup, data, pwr)
+                };
 
-                match lewton::audio::read_audio_packet(ident, setup, data, pwr) {
+                match decoded_result {
                     Ok(decoded) => {
                         // decoded: Vec<Vec<i16>>, 每声道一个 Vec
                         let nb_samples = if !decoded.is_empty() {
@@ -227,9 +230,17 @@ impl Decoder for VorbisDecoder {
                         // nb_samples == 0 时 (如首个音频包) 不输出帧
                         Ok(())
                     }
+                    Err(lewton::audio::AudioReadError::AudioIsHeader) => {
+                        debug!("Vorbis: 音频包被识别为头部, 已跳过");
+                        // 该错误通常表示遇到链式 bitstream 的头部或损坏包.
+                        // 重置窗口状态, 防止坏包污染后续重叠计算.
+                        self.pwr = Some(lewton::audio::PreviousWindowRight::new());
+                        Ok(())
+                    }
                     Err(e) => {
-                        debug!("Vorbis: 解码音频包失败: {e:?}");
-                        // 解码失败不一定是致命错误, 跳过损坏的包
+                        debug!("Vorbis: 解码音频包失败: {e:?}, 已重置窗口状态");
+                        // 对坏包执行软恢复, 尽快恢复后续可解码音频.
+                        self.pwr = Some(lewton::audio::PreviousWindowRight::new());
                         Ok(())
                     }
                 }

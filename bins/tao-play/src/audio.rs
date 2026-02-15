@@ -35,11 +35,11 @@ fn find_compatible_config(
     sample_rate: u32,
     channels: u32,
 ) -> Option<cpal::StreamConfig> {
-    let supported = device.supported_output_configs().ok()?;
+    let supported: Vec<_> = device.supported_output_configs().ok()?.collect();
     let target_rate = cpal::SampleRate(sample_rate);
 
     // 优先: 精确匹配采样率和声道数
-    for cfg in supported {
+    for cfg in &supported {
         if cfg.channels() == channels as u16
             && cfg.min_sample_rate() <= target_rate
             && cfg.max_sample_rate() >= target_rate
@@ -52,25 +52,60 @@ fn find_compatible_config(
         }
     }
 
-    // 回退: 匹配声道数, 使用设备支持的采样率
-    let supported = device.supported_output_configs().ok()?;
-    for cfg in supported {
-        if cfg.channels() == channels as u16 {
-            let rate =
-                if cfg.min_sample_rate() <= target_rate && cfg.max_sample_rate() >= target_rate {
-                    target_rate
-                } else {
-                    cfg.max_sample_rate()
-                };
-            return Some(cpal::StreamConfig {
-                channels: channels as u16,
-                sample_rate: rate,
+    // 次优: 采样率可精确匹配, 选择声道差距最小的配置.
+    let mut best_rate_match: Option<(u32, cpal::StreamConfig)> = None;
+    for cfg in &supported {
+        if cfg.min_sample_rate() <= target_rate && cfg.max_sample_rate() >= target_rate {
+            let ch = u32::from(cfg.channels());
+            let diff = ch.abs_diff(channels);
+            let candidate = cpal::StreamConfig {
+                channels: cfg.channels(),
+                sample_rate: target_rate,
                 buffer_size: cpal::BufferSize::Default,
-            });
+            };
+
+            match &best_rate_match {
+                None => best_rate_match = Some((diff, candidate)),
+                Some((best_diff, _)) if diff < *best_diff => {
+                    best_rate_match = Some((diff, candidate))
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some((_, cfg)) = best_rate_match {
+        return Some(cfg);
+    }
+
+    // 兜底: 选择总体最接近的采样率/声道配置.
+    let mut best_any: Option<(u64, cpal::StreamConfig)> = None;
+    for cfg in &supported {
+        let chosen_rate = if target_rate < cfg.min_sample_rate() {
+            cfg.min_sample_rate()
+        } else if target_rate > cfg.max_sample_rate() {
+            cfg.max_sample_rate()
+        } else {
+            target_rate
+        };
+
+        let rate_diff = chosen_rate.0.abs_diff(sample_rate) as u64;
+        let channel_diff = u32::from(cfg.channels()).abs_diff(channels) as u64;
+        // 采样率差异权重更高, 优先减少速度/音高偏差风险.
+        let score = rate_diff * 10 + channel_diff;
+        let candidate = cpal::StreamConfig {
+            channels: cfg.channels(),
+            sample_rate: chosen_rate,
+            buffer_size: cpal::BufferSize::Default,
+        };
+
+        match &best_any {
+            None => best_any = Some((score, candidate)),
+            Some((best_score, _)) if score < *best_score => best_any = Some((score, candidate)),
+            _ => {}
         }
     }
 
-    None
+    best_any.map(|(_, cfg)| cfg)
 }
 
 impl AudioOutput {

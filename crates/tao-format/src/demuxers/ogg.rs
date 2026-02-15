@@ -35,6 +35,8 @@ use crate::stream::{AudioStreamParams, Stream, StreamParams, VideoStreamParams};
 
 /// Ogg 同步字 (capture pattern)
 const OGG_SYNC: &[u8; 4] = b"OggS";
+/// Ogg CRC-32 多项式
+const OGG_CRC_POLY: u32 = 0x04C11DB7;
 
 /// 页面头部标志
 const FLAG_CONTINUED: u8 = 0x01;
@@ -110,6 +112,8 @@ struct OggLogicalStream {
     _codec_id: CodecId,
     /// 累积的不完整 packet 数据
     partial_packet: Vec<u8>,
+    /// 正在丢弃无头续包 (缺少起始片段)
+    discarding_orphan_continued: bool,
     /// 上一个粒度位置
     last_granule: i64,
 }
@@ -137,6 +141,22 @@ impl OggDemuxer {
         }))
     }
 
+    /// 计算 Ogg 页面 CRC-32
+    fn ogg_crc32(data: &[u8]) -> u32 {
+        let mut crc = 0u32;
+        for &byte in data {
+            crc ^= u32::from(byte) << 24;
+            for _ in 0..8 {
+                if crc & 0x8000_0000 != 0 {
+                    crc = (crc << 1) ^ OGG_CRC_POLY;
+                } else {
+                    crc <<= 1;
+                }
+            }
+        }
+        crc
+    }
+
     /// 读取一个 Ogg 页面
     fn read_page(io: &mut IoContext) -> TaoResult<OggPage> {
         // 读取同步字
@@ -157,14 +177,16 @@ impl OggDemuxer {
         let header_type = io.read_u8()?;
 
         // 粒度位置 (8 bytes, little-endian)
-        let granule_low = io.read_u32_le()? as u64;
-        let granule_high = io.read_u32_le()? as u64;
+        let granule_low_raw = io.read_u32_le()?;
+        let granule_high_raw = io.read_u32_le()?;
+        let granule_low = u64::from(granule_low_raw);
+        let granule_high = u64::from(granule_high_raw);
         let granule_position = (granule_high << 32 | granule_low) as i64;
 
         let serial_number = io.read_u32_le()?;
         let page_sequence = io.read_u32_le()?;
 
-        let _crc = io.read_u32_le()?; // CRC (暂不校验)
+        let crc = io.read_u32_le()?;
         let num_segments = io.read_u8()? as usize;
 
         // 读取段表
@@ -175,6 +197,26 @@ impl OggDemuxer {
         let data_size: usize = segment_table.iter().map(|&s| s as usize).sum();
         let mut data = vec![0u8; data_size];
         io.read_exact(&mut data)?;
+
+        // Ogg CRC 覆盖整个页面, 其中 CRC 字段本身按 0 参与计算.
+        let mut crc_page = Vec::with_capacity(27 + num_segments + data_size);
+        crc_page.extend_from_slice(OGG_SYNC);
+        crc_page.push(version);
+        crc_page.push(header_type);
+        crc_page.extend_from_slice(&granule_low_raw.to_le_bytes());
+        crc_page.extend_from_slice(&granule_high_raw.to_le_bytes());
+        crc_page.extend_from_slice(&serial_number.to_le_bytes());
+        crc_page.extend_from_slice(&page_sequence.to_le_bytes());
+        crc_page.extend_from_slice(&0u32.to_le_bytes());
+        crc_page.push(num_segments as u8);
+        crc_page.extend_from_slice(&segment_table);
+        crc_page.extend_from_slice(&data);
+        let crc_calc = Self::ogg_crc32(&crc_page);
+        if crc != crc_calc {
+            return Err(TaoError::InvalidData(format!(
+                "Ogg 页面 CRC 校验失败: 读取=0x{crc:08X}, 计算=0x{crc_calc:08X}",
+            )));
+        }
 
         Ok(OggPage {
             header_type,
@@ -192,6 +234,12 @@ impl OggDemuxer {
         match Self::read_page(io) {
             Ok(page) => return Ok(page),
             Err(TaoError::Eof) => return Err(TaoError::Eof),
+            Err(TaoError::InvalidData(msg)) if msg.starts_with("Ogg 页面 CRC 校验失败") => {
+                // CRC 失败说明坏页已被完整消费, 先尝试从当前位置直接读取下一页.
+                if let Ok(page) = Self::read_page(io) {
+                    return Ok(page);
+                }
+            }
             Err(_) => {} // 不对齐, 需要重新同步
         }
 
@@ -214,13 +262,36 @@ impl OggDemuxer {
                 let granule_position = (granule_high << 32 | granule_low) as i64;
                 let serial_number = io.read_u32_le()?;
                 let page_sequence = io.read_u32_le()?;
-                let _crc = io.read_u32_le()?;
+                let crc = io.read_u32_le()?;
                 let num_segments = io.read_u8()? as usize;
                 let mut segment_table = vec![0u8; num_segments];
                 io.read_exact(&mut segment_table)?;
                 let data_size: usize = segment_table.iter().map(|&s| s as usize).sum();
                 let mut data = vec![0u8; data_size];
                 io.read_exact(&mut data)?;
+
+                // 重同步分支同样执行 CRC 校验.
+                let mut crc_page = Vec::with_capacity(27 + num_segments + data_size);
+                crc_page.extend_from_slice(OGG_SYNC);
+                crc_page.push(version);
+                crc_page.push(header_type);
+                crc_page.extend_from_slice(&(granule_low as u32).to_le_bytes());
+                crc_page.extend_from_slice(&(granule_high as u32).to_le_bytes());
+                crc_page.extend_from_slice(&serial_number.to_le_bytes());
+                crc_page.extend_from_slice(&page_sequence.to_le_bytes());
+                crc_page.extend_from_slice(&0u32.to_le_bytes());
+                crc_page.push(num_segments as u8);
+                crc_page.extend_from_slice(&segment_table);
+                crc_page.extend_from_slice(&data);
+                let crc_calc = Self::ogg_crc32(&crc_page);
+                if crc != crc_calc {
+                    // 当前候选同步点对应坏页, 从当前位置继续搜索.
+                    if io.read_exact(&mut buf).is_err() {
+                        return Err(TaoError::Eof);
+                    }
+                    continue;
+                }
+
                 return Ok(OggPage {
                     header_type,
                     granule_position,
@@ -362,6 +433,7 @@ impl OggDemuxer {
             stream_index,
             _codec_id: codec_id,
             partial_packet: Vec::new(),
+            discarding_orphan_continued: false,
             last_granule: -1,
         });
     }
@@ -380,6 +452,31 @@ impl OggDemuxer {
             None => return, // 未知流, 跳过
         };
 
+        // 若当前页面未标记 continued, 但存在残留 partial:
+        // 1) 正常情况: 上一页最后 lacing=255 且包恰好在页尾结束, 需要在此处补发.
+        // 2) 异常情况: 处于 orphan continued 丢弃状态, 则直接清理残片.
+        if !page.is_continued() && !self.logical_streams[ls_idx].partial_packet.is_empty() {
+            if self.logical_streams[ls_idx].discarding_orphan_continued {
+                debug!(
+                    "Ogg: 流 #{} 结束 orphan 丢弃状态, 丢弃 {} 字节残片",
+                    self.logical_streams[ls_idx].stream_index,
+                    self.logical_streams[ls_idx].partial_packet.len(),
+                );
+                self.logical_streams[ls_idx].partial_packet.clear();
+                self.logical_streams[ls_idx].discarding_orphan_continued = false;
+            } else {
+                let stream_idx = self.logical_streams[ls_idx].stream_index;
+                let granule = self.logical_streams[ls_idx].last_granule;
+                let data = std::mem::take(&mut self.logical_streams[ls_idx].partial_packet);
+                debug!(
+                    "Ogg: 流 #{} 检测到页边界完整包, 补发 {} 字节",
+                    stream_idx,
+                    data.len(),
+                );
+                self.emit_packet(stream_idx, granule, data);
+            }
+        }
+
         let packets = page.extract_packets();
 
         for (i, &(offset, length, complete)) in packets.iter().enumerate() {
@@ -387,19 +484,42 @@ impl OggDemuxer {
 
             // 如果是第一个 packet 且页面标记为 continued
             if i == 0 && page.is_continued() {
+                // 没有前置残片时, 该 continued 包缺少起始数据, 需要整包丢弃.
+                if self.logical_streams[ls_idx].partial_packet.is_empty() {
+                    self.logical_streams[ls_idx].discarding_orphan_continued = !complete;
+                    debug!(
+                        "Ogg: 流 #{} 遇到无头续包, 丢弃当前片段 (len={}, complete={})",
+                        self.logical_streams[ls_idx].stream_index, length, complete,
+                    );
+                    continue;
+                }
+
                 self.logical_streams[ls_idx]
                     .partial_packet
                     .extend_from_slice(chunk);
 
                 if complete {
                     let data = std::mem::take(&mut self.logical_streams[ls_idx].partial_packet);
+                    self.logical_streams[ls_idx].discarding_orphan_continued = false;
                     let stream_idx = self.logical_streams[ls_idx].stream_index;
                     self.emit_packet(stream_idx, page.granule_position, data);
                 }
             } else if complete {
+                if self.logical_streams[ls_idx].discarding_orphan_continued {
+                    // 还在丢弃缺失起始片段的续包, 直到遇到首个 complete 才恢复.
+                    self.logical_streams[ls_idx].discarding_orphan_continued = false;
+                    debug!(
+                        "Ogg: 流 #{} 结束无头续包丢弃状态",
+                        self.logical_streams[ls_idx].stream_index,
+                    );
+                    continue;
+                }
                 let stream_idx = self.logical_streams[ls_idx].stream_index;
                 self.emit_packet(stream_idx, page.granule_position, chunk.to_vec());
             } else {
+                if self.logical_streams[ls_idx].discarding_orphan_continued {
+                    continue;
+                }
                 // packet 未完成, 缓存
                 self.logical_streams[ls_idx]
                     .partial_packet
