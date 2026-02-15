@@ -244,6 +244,11 @@ impl OggDemuxer {
         if packet_data.len() >= 8 && &packet_data[0..8] == b"OpusHead" {
             return CodecId::Opus;
         }
+        // 兼容旧版 FLAC-in-Ogg 映射:
+        // 某些历史样本的 BOS 包只有原生 FLAC 标记 "fLaC".
+        if packet_data.len() >= 4 && &packet_data[0..4] == b"fLaC" {
+            return CodecId::Flac;
+        }
         if packet_data.len() >= 5 && &packet_data[0..5] == b"\x7fFLAC" {
             return CodecId::Flac;
         }
@@ -698,6 +703,12 @@ mod tests {
     #[test]
     fn test_识别_flac() {
         let data = b"\x7fFLAC\x01\x00";
+        assert_eq!(OggDemuxer::identify_codec(data), CodecId::Flac);
+    }
+
+    #[test]
+    fn test_识别_flac_旧版_ogg_包头() {
+        let data = b"fLaC";
         assert_eq!(OggDemuxer::identify_codec(data), CodecId::Flac);
     }
 
