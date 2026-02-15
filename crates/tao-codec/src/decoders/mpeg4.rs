@@ -99,6 +99,21 @@ impl<'a> BitReader<'a> {
     fn read_bit(&mut self) -> Option<bool> {
         self.read_bits(1).map(|b| b != 0)
     }
+
+    /// 字节对齐 - 将读取位置对齐到下一个字节边界
+    /// 用于VOP头解析后和resync marker后
+    fn align_to_byte(&mut self) {
+        if self.bit_pos != 0 {
+            self.byte_pos += 1;
+            self.bit_pos = 0;
+        }
+    }
+
+    /// 获取当前字节位置（用于调试）
+    #[allow(dead_code)]
+    fn byte_position(&self) -> usize {
+        self.byte_pos
+    }
 }
 
 fn find_start_code_offset(data: &[u8], target: u8) -> Option<usize> {
@@ -356,43 +371,48 @@ const INTRA_AC_VLC: &[(u8, u16, bool, u8, i8)] = &[
 
 /// MCBPC (Macroblock Type and Coded Block Pattern for Chrominance) VLC 表
 /// 用于 I-VOP (I 帧) 宏块类型解码
-/// 基于 MPEG-4 Part 2 标准 Table B-3
+/// 基于 FFmpeg libavcodec/h263data.c ff_h263_intra_MCBPC
 /// 格式: (位数, 码字, mb_type, cbpc)
 /// mb_type: 0=Intra, 1=Intra+Q (with quant change)
 /// cbpc: U/V 色度块编码标志 (bit 1=U, bit 0=V)
 const MCBPC_I: &[(u8, u16, u8, u8)] = &[
-    (1, 0b1, 0, 0),      // Intra, CBPC=00
-    (3, 0b011, 0, 1),    // Intra, CBPC=01
-    (3, 0b010, 0, 2),    // Intra, CBPC=10
-    (3, 0b001, 0, 3),    // Intra, CBPC=11
-    (4, 0b0001, 1, 0),   // Intra+Q, CBPC=00
-    (6, 0b000011, 1, 1), // Intra+Q, CBPC=01
-    (6, 0b000010, 1, 2), // Intra+Q, CBPC=10
-    (6, 0b000001, 1, 3), // Intra+Q, CBPC=11
+    (1, 0b1, 0, 0),           // Intra, CBPC=0
+    (3, 0b001, 0, 1),         // Intra, CBPC=1
+    (3, 0b010, 0, 2),         // Intra, CBPC=2
+    (3, 0b011, 0, 3),         // Intra, CBPC=3
+    (4, 0b0001, 1, 0),        // IntraQ, CBPC=0
+    (6, 0b000001, 1, 1),      // IntraQ, CBPC=1
+    (6, 0b000010, 1, 2),      // IntraQ, CBPC=2
+    (6, 0b000011, 1, 3),      // IntraQ, CBPC=3
+    (9, 0b000000001, 255, 0), // 填充码 (stuffing code, 应跳过)
 ];
 
 /// CBPY (Coded Block Pattern for Luminance) VLC 表
 /// 用于解码 Y (亮度) 4 个 8x8 块的编码标志
 /// 基于 MPEG-4 Part 2 标准 Table B-6
 /// 格式: (位数, 码字, cbpy)
-/// cbpy: 4 bits 表示 4 个 Y 块是否有非零 DCT 系数 (bit 3=左上, 2=右上, 1=左下, 0=右下)
+/// CBPY (Coded Block Pattern for Y) VLC 表
+/// 用于 MPEG-4 Part 2, 与 H.263 相同
+/// 基于 FFmpeg h263data.c ff_h263_cbpy_tab
+/// 格式: (位数, 码字, cbpy 值)
+/// cbpy 值表示 4 个 Y 块是否被编码 (bit 3-0 = 左上/右上/左下/右下)
 const CBPY: &[(u8, u16, u8)] = &[
-    (4, 0b0011, 0b0000),  // 0000: 所有块为空
-    (5, 0b00101, 0b0001), // 0001: 仅右下有系数
-    (5, 0b00111, 0b0010), // 0010: 仅左下有系数
-    (5, 0b01000, 0b0011), // 0011: 下半部分有系数
-    (5, 0b01001, 0b0100), // 0100: 仅右上有系数
-    (4, 0b0010, 0b0101),  // 0101: 右侧有系数
-    (3, 0b111, 0b0110),   // 0110: 上半/下半交叉
-    (3, 0b110, 0b0111),   // 0111: 除左上外都有
-    (5, 0b01011, 0b1000), // 1000: 仅左上有系数
-    (3, 0b101, 0b1001),   // 1001: 上半/下半交叉
-    (4, 0b0001, 0b1010),  // 1010: 左侧有系数
-    (3, 0b100, 0b1011),   // 1011: 除右上外都有
-    (5, 0b01010, 0b1100), // 1100: 上半部分有系数
-    (3, 0b011, 0b1101),   // 1101: 除左下外都有
-    (3, 0b010, 0b1110),   // 1110: 除右下外都有
-    (2, 0b11, 0b1111),    // 1111: 所有块都有系数
+    (4, 0x3, 0),   // 0011: 所有块为空 (0000)
+    (5, 0x5, 1),   // 00101: 仅右下有系数 (0001)
+    (5, 0x4, 2),   // 00100: 仅左下有系数 (0010)
+    (4, 0x9, 3),   // 1001: 下半部分有系数 (0011)
+    (5, 0x3, 4),   // 00011: 仅右上有系数 (0100)
+    (4, 0x7, 5),   // 0111: 右侧有系数 (0101)
+    (6, 0x2, 6),   // 000010: 上右/下左有系数 (0110)
+    (6, 0xC, 7),   // 001100: 除左上外都有 (0111)
+    (10, 0x1, 8),  // 0000000001: 仅左上有系数 (1000)
+    (7, 0x1, 9),   // 0000001: 交叉1 (1001)
+    (8, 0x1, 10),  // 00000001: 左侧有系数 (1010)
+    (10, 0x2, 11), // 0000000010: 除右上外都有 (1011)
+    (10, 0x3, 12), // 0000000011: 上半部分有系数 (1100)
+    (7, 0x0, 13),  // 0000000: 除左下外都有 (1101)
+    (8, 0x0, 14),  // 00000000: 除右下外都有 (1110)
+    (4, 0xB, 15),  // 1011: 所有块都有系数 (1111)
 ];
 
 /// 宏块类型
@@ -426,20 +446,47 @@ fn decode_mcbpc_i(reader: &mut BitReader) -> Option<(MbType, u8)> {
             } else {
                 MbType::IntraQ
             };
+            debug!(
+                "MCBPC_I 成功解码: {} 位 = {:0width$b}, mb_type={:?}, cbpc={:02b}",
+                len,
+                code,
+                mb_type,
+                cbpc,
+                width = len as usize
+            );
             return Some((mb_type, cbpc));
         }
+    }
+    // 调试：记录失败的比特值
+    if let Some(dbg_bits) = reader.peek_bits(3) {
+        debug!(
+            "MCBPC_I 解码失败: 前 3 位 = {:03b}, 字节位置 = {}",
+            dbg_bits,
+            reader.byte_position()
+        );
     }
     None
 }
 
 /// 解码 CBPY
 fn decode_cbpy(reader: &mut BitReader) -> Option<u8> {
+    // 尝试匹配最长的码字先（通常 VLC 表应先排长后短，但我们需要搜索所有）
     for &(len, code, cbpy_val) in CBPY {
         let bits = reader.peek_bits(len)?;
         if bits as u16 == code {
             reader.read_bits(len)?;
             return Some(cbpy_val);
         }
+    }
+
+    // 调试：记录失败的比特值
+    if let Some(dbg_bits) = reader.peek_bits(5) {
+        debug!(
+            "CBPY 解码失败: 前 5 位 = {:05b} (十进制: {}), 字节位置 = {}",
+            dbg_bits,
+            dbg_bits,
+            reader.byte_position()
+        );
     }
     None
 }
@@ -947,6 +994,14 @@ impl Mpeg4Decoder {
                 debug!("量化参数: {}", self.quant);
             }
         }
+
+        // MPEG-4 标准要求：VOP header 后需要字节对齐
+        // 这对于正确解码宏块数据至关重要
+        reader.align_to_byte();
+        debug!(
+            "VOP 头解析完成，已字节对齐，当前字节位置: {}",
+            reader.byte_position()
+        );
 
         Ok(VopInfo {
             picture_type,
