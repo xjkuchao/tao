@@ -444,7 +444,7 @@ impl Demuxer for OggDemuxer {
     fn open(&mut self, io: &mut IoContext) -> TaoResult<()> {
         // 读取所有 BOS 页面
         loop {
-            let page = Self::read_page(io)?;
+            let page = Self::sync_to_page(io)?;
             if page.is_bos() {
                 self.handle_bos_page(&page);
             } else {
@@ -533,6 +533,17 @@ impl FormatProbe for OggProbe {
         // 魔数匹配
         if data.len() >= 4 && &data[0..4] == OGG_SYNC {
             return Some(crate::probe::SCORE_MAX);
+        }
+        // 某些文件会在 Ogg 前附带 ID3v2 标签，尝试从标签后匹配。
+        if data.len() >= 14 && &data[0..3] == b"ID3" {
+            let size = ((data[6] & 0x7F) as usize) << 21
+                | ((data[7] & 0x7F) as usize) << 14
+                | ((data[8] & 0x7F) as usize) << 7
+                | (data[9] & 0x7F) as usize;
+            let ogg_offset = 10 + size;
+            if data.len() >= ogg_offset + 4 && &data[ogg_offset..ogg_offset + 4] == OGG_SYNC {
+                return Some(crate::probe::SCORE_MAX - 2);
+            }
         }
 
         // 扩展名匹配
@@ -655,6 +666,14 @@ mod tests {
     }
 
     #[test]
+    fn test_探测_ogg_id3_前缀() {
+        let probe = OggProbe;
+        // ID3(size=0) + OggS
+        let data = b"ID3\x04\x00\x00\x00\x00\x00\x00OggS";
+        assert!(probe.probe(data, None).is_some());
+    }
+
+    #[test]
     fn test_探测_ogg_扩展名() {
         let probe = OggProbe;
         assert!(probe.probe(&[], Some("test.ogg")).is_some());
@@ -710,6 +729,27 @@ mod tests {
             }
             _ => panic!("期望音频流参数"),
         }
+    }
+
+    #[test]
+    fn test_解封装_支持_id3_前缀() {
+        let mut data = Vec::new();
+        // ID3 header + size=4 + 4 bytes payload
+        data.extend_from_slice(b"ID3");
+        data.extend_from_slice(&[4, 0, 0]);
+        data.extend_from_slice(&[0, 0, 0, 4]);
+        data.extend_from_slice(&[0u8; 4]);
+        data.extend_from_slice(&build_minimal_ogg_vorbis());
+
+        let backend = MemoryBackend::from_data(data);
+        let mut io = IoContext::new(Box::new(backend));
+
+        let mut demuxer = OggDemuxer::create().unwrap();
+        demuxer.open(&mut io).unwrap();
+
+        let streams = demuxer.streams();
+        assert_eq!(streams.len(), 1);
+        assert_eq!(streams[0].codec_id, CodecId::Vorbis);
     }
 
     #[test]

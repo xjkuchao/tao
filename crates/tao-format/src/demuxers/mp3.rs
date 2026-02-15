@@ -481,14 +481,24 @@ pub struct Mp3Probe;
 
 impl FormatProbe for Mp3Probe {
     fn probe(&self, data: &[u8], filename: Option<&str>) -> Option<crate::probe::ProbeScore> {
-        // 检查 ID3v2 标签
-        if data.len() >= 3 && &data[0..3] == b"ID3" {
-            return Some(crate::probe::SCORE_MAX);
+        // MP3 可带 ID3v2 前缀；若存在，优先检查标签后的真实帧头。
+        let mut start = 0usize;
+        if data.len() >= 10 && &data[0..3] == b"ID3" {
+            let size = ((data[6] & 0x7F) as usize) << 21
+                | ((data[7] & 0x7F) as usize) << 14
+                | ((data[8] & 0x7F) as usize) << 7
+                | (data[9] & 0x7F) as usize;
+            start = 10 + size;
         }
 
-        // 检查帧同步码
-        if data.len() >= 4 {
-            let header = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+        // 检查起始位置是否存在有效帧同步码（含 ID3 偏移场景）
+        if data.len() >= start + 4 {
+            let header = u32::from_be_bytes([
+                data[start],
+                data[start + 1],
+                data[start + 2],
+                data[start + 3],
+            ]);
             if parse_frame_header(header).is_some() {
                 return Some(crate::probe::SCORE_MAX - 5);
             }
@@ -587,6 +597,14 @@ mod tests {
         let probe = Mp3Probe;
         let header = make_mp3_frame_header(9, 0, false);
         assert!(probe.probe(&header, None).is_some());
+    }
+
+    #[test]
+    fn test_探测_id3_后非_mp3_帧() {
+        let probe = Mp3Probe;
+        // ID3(size=0) + "OggS"：不应被识别为 MP3
+        let data = b"ID3\x04\x00\x00\x00\x00\x00\x00OggS";
+        assert!(probe.probe(data, None).is_none());
     }
 
     #[test]
