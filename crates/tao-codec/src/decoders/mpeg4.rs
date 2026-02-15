@@ -314,6 +314,96 @@ const INTRA_AC_VLC: &[(u8, u16, bool, u8, i8)] = &[
     (7, 0b0010111, false, 8, 1), // run=8, level=1
 ];
 
+/// MCBPC (Macroblock Type and Coded Block Pattern for Chrominance) VLC 表
+/// 用于 I-VOP (I 帧) 宏块类型解码
+/// 基于 MPEG-4 Part 2 标准 Table B-3
+/// 格式: (位数, 码字, mb_type, cbpc)
+/// mb_type: 0=Intra, 1=Intra+Q (with quant change)
+/// cbpc: U/V 色度块编码标志 (bit 1=U, bit 0=V)
+const MCBPC_I: &[(u8, u16, u8, u8)] = &[
+    (1, 0b1, 0, 0),      // Intra, CBPC=00
+    (3, 0b011, 0, 1),    // Intra, CBPC=01
+    (3, 0b010, 0, 2),    // Intra, CBPC=10
+    (3, 0b001, 0, 3),    // Intra, CBPC=11
+    (4, 0b0001, 1, 0),   // Intra+Q, CBPC=00
+    (6, 0b000011, 1, 1), // Intra+Q, CBPC=01
+    (6, 0b000010, 1, 2), // Intra+Q, CBPC=10
+    (6, 0b000001, 1, 3), // Intra+Q, CBPC=11
+];
+
+/// CBPY (Coded Block Pattern for Luminance) VLC 表
+/// 用于解码 Y (亮度) 4 个 8x8 块的编码标志
+/// 基于 MPEG-4 Part 2 标准 Table B-6
+/// 格式: (位数, 码字, cbpy)
+/// cbpy: 4 bits 表示 4 个 Y 块是否有非零 DCT 系数 (bit 3=左上, 2=右上, 1=左下, 0=右下)
+const CBPY: &[(u8, u16, u8)] = &[
+    (4, 0b0011, 0b0000),  // 0000: 所有块为空
+    (5, 0b00101, 0b0001), // 0001: 仅右下有系数
+    (5, 0b00111, 0b0010), // 0010: 仅左下有系数
+    (5, 0b01000, 0b0011), // 0011: 下半部分有系数
+    (5, 0b01001, 0b0100), // 0100: 仅右上有系数
+    (4, 0b0010, 0b0101),  // 0101: 右侧有系数
+    (3, 0b111, 0b0110),   // 0110: 上半/下半交叉
+    (3, 0b110, 0b0111),   // 0111: 除左上外都有
+    (5, 0b01011, 0b1000), // 1000: 仅左上有系数
+    (3, 0b101, 0b1001),   // 1001: 上半/下半交叉
+    (4, 0b0001, 0b1010),  // 1010: 左侧有系数
+    (3, 0b100, 0b1011),   // 1011: 除右上外都有
+    (5, 0b01010, 0b1100), // 1100: 上半部分有系数
+    (3, 0b011, 0b1101),   // 1101: 除左下外都有
+    (3, 0b010, 0b1110),   // 1110: 除右下外都有
+    (2, 0b11, 0b1111),    // 1111: 所有块都有系数
+];
+
+/// 宏块类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MbType {
+    /// Intra 宏块 (I-VOP)
+    Intra,
+    /// Intra 宏块 + 量化参数变化
+    IntraQ,
+}
+
+/// 宏块信息 (从 MCBPC + CBPY 解析)
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+struct MacroblockInfo {
+    /// 宏块类型
+    mb_type: MbType,
+    /// CBP (Coded Block Pattern) - 6 bits: [Y0 Y1 Y2 Y3 U V]
+    /// 1 表示该块有非零 DCT 系数需要解码
+    cbp: u8,
+}
+
+/// 解码 MCBPC (I-VOP)
+fn decode_mcbpc_i(reader: &mut BitReader) -> Option<(MbType, u8)> {
+    for &(len, code, mb_type_val, cbpc) in MCBPC_I {
+        let bits = reader.peek_bits(len)?;
+        if bits as u16 == code {
+            reader.read_bits(len)?;
+            let mb_type = if mb_type_val == 0 {
+                MbType::Intra
+            } else {
+                MbType::IntraQ
+            };
+            return Some((mb_type, cbpc));
+        }
+    }
+    None
+}
+
+/// 解码 CBPY
+fn decode_cbpy(reader: &mut BitReader) -> Option<u8> {
+    for &(len, code, cbpy_val) in CBPY {
+        let bits = reader.peek_bits(len)?;
+        if bits as u16 == code {
+            reader.read_bits(len)?;
+            return Some(cbpy_val);
+        }
+    }
+    None
+}
+
 /// 使用 VLC 表解码 Intra DC 系数
 ///
 /// # 参数
@@ -322,7 +412,6 @@ const INTRA_AC_VLC: &[(u8, u16, bool, u8, i8)] = &[
 ///
 /// # 返回
 /// DC 系数差分值 (需要与预测值相加得到实际 DC)
-#[allow(dead_code)]
 fn decode_intra_dc_vlc(reader: &mut BitReader, is_luma: bool) -> Option<i16> {
     let table = if is_luma {
         INTRA_DC_VLC_Y
@@ -364,7 +453,6 @@ fn decode_intra_dc_vlc(reader: &mut BitReader, is_luma: bool) -> Option<i16> {
 ///
 /// # 返回
 /// Some((last, run, level)) 或 None 表示 EOB
-#[allow(dead_code)]
 fn decode_ac_vlc(reader: &mut BitReader) -> Option<(bool, u8, i16)> {
     // 尝试不同长度的码字
     for &(len, code, last, run, level) in INTRA_AC_VLC {
@@ -396,7 +484,6 @@ fn decode_ac_vlc(reader: &mut BitReader) -> Option<(bool, u8, i16)> {
 
 /// 窥视位 (不消耗)
 impl<'a> BitReader<'a> {
-    #[allow(dead_code)]
     fn peek_bits(&self, n: u8) -> Option<u32> {
         if n == 0 || n > 32 {
             return None;
@@ -434,7 +521,6 @@ impl<'a> BitReader<'a> {
 ///
 /// # 返回
 /// 64 个 DCT 系数 (zigzag 顺序)
-#[allow(dead_code)]
 fn decode_intra_block_vlc(
     reader: &mut BitReader,
     is_luma: bool,
@@ -858,9 +944,8 @@ impl Mpeg4Decoder {
         block
     }
 
-    /// 解码宏块数据 (启发式方法)
-    /// 注意：完整的 MPEG-4 VLC 解码需要更多基础设施（宏块类型、dquant、完整 VLC 表等）
-    /// 当前使用启发式方法生成合理的 DCT 系数
+    /// 解码宏块数据 (使用 VLC)
+    /// 实现真正的 MPEG-4 Part 2 宏块解码流程
     fn decode_macroblock(
         &mut self,
         frame: &mut VideoFrame,
@@ -872,36 +957,84 @@ impl Mpeg4Decoder {
         let width = self.width as usize;
         let height = self.height as usize;
 
-        // 尝试读取一些位以消耗 bitstream（保持同步）
-        let _sync_bits = reader.read_bits(12);
+        // 1. 解码 MCBPC (宏块类型 + 色度 coded block pattern)
+        let (mb_type, cbpc) = match decode_mcbpc_i(reader) {
+            Some(result) => result,
+            None => {
+                warn!("宏块 ({}, {}) MCBPC VLC 解码失败，使用默认值", mb_x, mb_y);
+                (MbType::Intra, 0)
+            }
+        };
 
-        // Y 平面 (4 个 8x8 块) - 亮度
+        // 如果是 IntraQ，需要读取量化参数变化
+        if mb_type == MbType::IntraQ {
+            if let Some(dquant) = reader.read_bits(2) {
+                // dquant: 0=−2, 1=−1, 2=+1, 3=+2
+                let delta = match dquant {
+                    0 => -2,
+                    1 => -1,
+                    2 => 1,
+                    3 => 2,
+                    _ => 0,
+                };
+                self.quant = ((self.quant as i32 + delta).clamp(1, 31)) as u8;
+            }
+        }
+
+        // 2. 解码 CBPY (亮度 coded block pattern)
+        let cbpy = match decode_cbpy(reader) {
+            Some(val) => val,
+            None => {
+                warn!(
+                    "宏块 ({}, {}) CBPY VLC 解码失败，假设所有亮度块都有系数",
+                    mb_x, mb_y
+                );
+                0b1111 // 假设所有 4 个 Y 块都有系数
+            }
+        };
+
+        // 3. 组合 CBP (6 bits: Y0 Y1 Y2 Y3 U V)
+        // CBPY 是 4 bits (Y 块), CBPC 是 2 bits (U, V 块)
+        let cbp = (cbpy << 2) | cbpc;
+
+        // 4. 解码各个 8x8 块
+        // Y 平面 (4 个 8x8 块)
         for block_idx in 0..4 {
             let by = (block_idx / 2) as u32;
             let bx = (block_idx % 2) as u32;
 
-            // 生成启发式 DCT 系数
-            let mut block = [0i32; 64];
+            // 检查是否需要解码这个块 (CBP bit 5-2 对应 Y0-Y3)
+            let coded = (cbp >> (5 - block_idx)) & 1 != 0;
 
-            // DC 系数：基于位置的合理值
-            let dc_base = 128i32;
-            block[0] = dc_base + ((mb_x as i32 - mb_y as i32) * 2);
-
-            // AC 系数：低频为主，基于 bitstream 调制
-            for i in 1..16 {
-                let bits = reader.read_bits(2).unwrap_or(0);
-                let u = i % 8;
-                let v = i / 8;
-                let freq = u + v;
-                let mag = ((8 - freq.min(7)) * 3) as i32;
-                block[ZIGZAG_8X8[i]] = if bits & 1 != 0 { mag } else { -mag };
-            }
+            let block = if coded {
+                // 使用 VLC 解码真实的 DCT 系数
+                match decode_intra_block_vlc(reader, true, &mut self.dc_predictors[0]) {
+                    Some(coeffs) => coeffs,
+                    None => {
+                        warn!(
+                            "宏块 ({}, {}) Y 块 {} VLC 解码失败，使用零块",
+                            mb_x, mb_y, block_idx
+                        );
+                        [0i32; 64]
+                    }
+                }
+            } else {
+                // CBP 表示此块全零（跳过）
+                // 但 DC 系数仍需更新预测器
+                let mut zero_block = [0i32; 64];
+                if let Some(dc_diff) = decode_intra_dc_vlc(reader, true) {
+                    self.dc_predictors[0] = self.dc_predictors[0].wrapping_add(dc_diff);
+                    zero_block[0] = self.dc_predictors[0] as i32;
+                }
+                zero_block
+            };
 
             // 应用反量化
-            self.apply_quant_matrix(&mut block, self.quant as u32, use_intra_matrix);
+            let mut dequant_block = block;
+            self.apply_quant_matrix(&mut dequant_block, self.quant as u32, use_intra_matrix);
 
             // IDCT 转换到空间域
-            let spatial = dct_to_spatial(&block);
+            let spatial = dct_to_spatial(&dequant_block);
 
             // 写入 Y 平面
             for y in 0..8 {
@@ -919,26 +1052,46 @@ impl Mpeg4Decoder {
             }
         }
 
-        // U 和 V 平面 (对于 YUV420p) - 色度
+        // U 和 V 平面 (各 1 个 8x8 块，对于 YUV420p)
         let uv_width = width / 2;
         let uv_height = height / 2;
 
         for plane_idx in 0..2 {
-            // 生成启发式 DCT 系数
-            let mut block = [0i32; 64];
-            block[0] = 128; // DC
+            // 检查是否需要解码这个色度块 (CBP bit 1-0 对应 U, V)
+            let coded = (cbp >> (1 - plane_idx)) & 1 != 0;
 
-            // 简单的 AC 系数
-            for i in 1..8 {
-                let bits = reader.read_bits(2).unwrap_or(0);
-                block[ZIGZAG_8X8[i]] = if bits & 1 != 0 { 15 } else { -15 };
-            }
+            let block = if coded {
+                // 使用 VLC 解码 UV 块
+                match decode_intra_block_vlc(reader, false, &mut self.dc_predictors[plane_idx + 1])
+                {
+                    Some(coeffs) => coeffs,
+                    None => {
+                        warn!(
+                            "宏块 ({}, {}) {} 块 VLC 解码失败，使用零块",
+                            mb_x,
+                            mb_y,
+                            if plane_idx == 0 { "U" } else { "V" }
+                        );
+                        [0i32; 64]
+                    }
+                }
+            } else {
+                // CBP 表示此块全零
+                let mut zero_block = [0i32; 64];
+                if let Some(dc_diff) = decode_intra_dc_vlc(reader, false) {
+                    self.dc_predictors[plane_idx + 1] =
+                        self.dc_predictors[plane_idx + 1].wrapping_add(dc_diff);
+                    zero_block[0] = self.dc_predictors[plane_idx + 1] as i32;
+                }
+                zero_block
+            };
 
             // 应用反量化
-            self.apply_quant_matrix(&mut block, self.quant as u32, use_intra_matrix);
+            let mut dequant_block = block;
+            self.apply_quant_matrix(&mut dequant_block, self.quant as u32, use_intra_matrix);
 
             // IDCT
-            let spatial = dct_to_spatial(&block);
+            let spatial = dct_to_spatial(&dequant_block);
 
             // 写入 U/V 平面
             for v in 0..8 {
