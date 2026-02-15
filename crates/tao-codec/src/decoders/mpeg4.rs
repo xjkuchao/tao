@@ -1620,15 +1620,34 @@ impl Mpeg4Decoder {
             // P-Frame uses MCBPC_P
             decode_mcbpc_p(reader).unwrap_or((MbType::Inter, 0)) // Default to Inter 0?
         };
+        if mb_x == 1 && mb_y == 0 {
+            warn!(
+                "MB(1,0): MCBPC result: mb_type={:?}, cbpc={}",
+                mb_type, cbpc
+            );
+        }
 
         // 1.5 AC/DC Prediction Flag (Intra-only)
         let _ac_pred_flag = if matches!(mb_type, MbType::Intra | MbType::IntraQ) {
-            reader.read_bit().unwrap_or(false)
+            let flag = reader.read_bit().unwrap_or(false);
+            if mb_x == 1 && mb_y == 0 {
+                warn!("MB(1,0): mb_type={:?}, 读取ac_pred_flag={}", mb_type, flag);
+            }
+            flag
         } else {
             false
         };
 
         // 2. 解码 CBPY (亮度 coded block pattern)
+        if mb_x < 3 && mb_y == 0 {
+            warn!(
+                "MB({},{}) 解码CBPY前: 字节位置={}, 接下来12位={:012b}",
+                mb_x,
+                mb_y,
+                reader.byte_position(),
+                reader.peek_bits(12).unwrap_or(0)
+            );
+        }
         let mut cbpy = match decode_cbpy(reader) {
             Some(val) => val,
             None => {
@@ -1898,6 +1917,15 @@ impl Mpeg4Decoder {
                     }
                 }
             }
+        }
+
+        // Debug: MB(0,0) 完成
+        if mb_x == 0 && mb_y == 0 {
+            warn!(
+                "MB(0,0) 解码完成: 最终字节位置={}, bit={}",
+                reader.byte_position(),
+                reader.bit_position()
+            );
         }
     }
 
