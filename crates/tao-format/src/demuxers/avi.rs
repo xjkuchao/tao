@@ -117,7 +117,7 @@ impl AviDemuxer {
                         "VP80" => Ok(CodecId::Vp8),
                         "VP90" => Ok(CodecId::Vp9),
                         "MJPG" => Ok(CodecId::Mjpeg),
-                        "MP4V" | "XVID" => Ok(CodecId::Mpeg4),
+                        "MP4V" | "XVID" | "DIVX" | "DX50" => Ok(CodecId::Mpeg4),
                         _ => Ok(CodecId::None),
                     }
                 }
@@ -199,8 +199,16 @@ impl AviDemuxer {
         let end = start + list_size as u64;
         let mut stream_index = 0;
 
+        debug!("开始解析 hdrl, list_size={}", list_size);
+
         while io.position()? < end {
             let (chunk_id, chunk_size, is_list) = Self::read_riff_chunk_header(io)?;
+            debug!(
+                "hdrl 中的块: {:?}, size={}, is_list={}",
+                String::from_utf8_lossy(&chunk_id),
+                chunk_size,
+                is_list
+            );
 
             match (&chunk_id, is_list) {
                 (b"avih", false) => {
@@ -214,10 +222,21 @@ impl AviDemuxer {
                     let _total_frames = io.read_u32_le()?;
                     let _initial_frames = io.read_u32_le()?;
                     let _streams = io.read_u32_le()?;
-                    io.skip(32)?;
+                    let _suggested_buffer_size = io.read_u32_le()?;
+                    let _width = io.read_u32_le()?;
+                    let _height = io.read_u32_le()?;
+                    let _reserved = io.read_u32_le()?; // reserved[0]
+                    let _reserved = io.read_u32_le()?; // reserved[1]
+                    let _reserved = io.read_u32_le()?; // reserved[2]
+                    let _reserved = io.read_u32_le()?; // reserved[3]
+                    // 总共 14 * 4 = 56 字节
+                    if chunk_size > 56 {
+                        io.skip((chunk_size - 56) as usize)?;
+                    }
                     debug!("avih 解析完成");
                 }
                 (b"strl", true) => {
+                    debug!("进入 strl 块处理, chunk_size={}", chunk_size);
                     let strl_end = io.position()? + chunk_size as u64;
                     let mut fcc_type = [0u8; 4];
                     let mut fcc_handler = [0u8; 4];
@@ -227,6 +246,12 @@ impl AviDemuxer {
 
                     while io.position()? < strl_end {
                         let (sub_id, sub_size, sub_is_list) = Self::read_riff_chunk_header(io)?;
+                        debug!(
+                            "strl 中的子块: {:?}, size={}, is_list={}",
+                            String::from_utf8_lossy(&sub_id),
+                            sub_size,
+                            sub_is_list
+                        );
                         if sub_is_list {
                             io.skip(sub_size as usize)?;
                             continue;
@@ -239,22 +264,33 @@ impl AviDemuxer {
                                         "strh 块不足 48 字节".into(),
                                     ));
                                 }
-                                fcc_type = io.read_tag()?;
-                                fcc_handler = io.read_tag()?;
-                                let _flags = io.read_u32_le()?;
-                                let _priority = io.read_u16_le()?;
-                                let _language = io.read_u16_le()?;
-                                let _initial_frames = io.read_u32_le()?;
-                                scale = io.read_u32_le()?;
-                                rate = io.read_u32_le()?;
-                                let _start = io.read_u32_le()?;
-                                let length = io.read_u32_le()?;
-                                io.skip((sub_size - 48) as usize)?;
+                                fcc_type = io.read_tag()?; // 4 bytes
+                                fcc_handler = io.read_tag()?; // 4 bytes
+                                let _flags = io.read_u32_le()?; // 4 bytes
+                                let _priority = io.read_u16_le()?; // 2 bytes
+                                let _language = io.read_u16_le()?; // 2 bytes
+                                let _initial_frames = io.read_u32_le()?; // 4 bytes
+                                scale = io.read_u32_le()?; // 4 bytes
+                                rate = io.read_u32_le()?; // 4 bytes
+                                let _start = io.read_u32_le()?; // 4 bytes
+                                let length = io.read_u32_le()?; // 4 bytes
+                                // 已读取 36 字节
+                                // 跳过剩余字段 (dwSuggestedBufferSize, dwQuality, dwSampleSize, rcFrame)
+                                io.skip((sub_size - 36) as usize)?;
+
+                                debug!(
+                                    "strh: type={:?}, handler={:?}, scale={}, rate={}",
+                                    String::from_utf8_lossy(&fcc_type),
+                                    String::from_utf8_lossy(&fcc_handler),
+                                    scale,
+                                    rate
+                                );
 
                                 if &fcc_type == FCC_VIDS {
                                     let codec_id = Self::resolve_video_codec(&fcc_handler, 0)?;
+                                    debug!("视频流 codec_id: {:?}", codec_id);
                                     if codec_id == CodecId::None {
-                                        io.skip((sub_size - 48) as usize)?;
+                                        debug!("跳过不支持的视频编解码器");
                                         continue;
                                     }
                                     let time_base = Rational::new(scale as i32, rate as i32);
