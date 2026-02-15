@@ -322,7 +322,6 @@ const INTRA_AC_VLC: &[(u8, u16, bool, u8, i8)] = &[
 ///
 /// # 返回
 /// DC 系数差分值 (需要与预测值相加得到实际 DC)
-#[allow(dead_code)]
 fn decode_intra_dc_vlc(reader: &mut BitReader, is_luma: bool) -> Option<i16> {
     let table = if is_luma {
         INTRA_DC_VLC_Y
@@ -364,7 +363,6 @@ fn decode_intra_dc_vlc(reader: &mut BitReader, is_luma: bool) -> Option<i16> {
 ///
 /// # 返回
 /// Some((last, run, level)) 或 None 表示 EOB
-#[allow(dead_code)]
 fn decode_ac_vlc(reader: &mut BitReader) -> Option<(bool, u8, i16)> {
     // 尝试不同长度的码字
     for &(len, code, last, run, level) in INTRA_AC_VLC {
@@ -396,7 +394,6 @@ fn decode_ac_vlc(reader: &mut BitReader) -> Option<(bool, u8, i16)> {
 
 /// 窥视位 (不消耗)
 impl<'a> BitReader<'a> {
-    #[allow(dead_code)]
     fn peek_bits(&self, n: u8) -> Option<u32> {
         if n == 0 || n > 32 {
             return None;
@@ -434,7 +431,6 @@ impl<'a> BitReader<'a> {
 ///
 /// # 返回
 /// 64 个 DCT 系数 (zigzag 顺序)
-#[allow(dead_code)]
 fn decode_intra_block_vlc(
     reader: &mut BitReader,
     is_luma: bool,
@@ -525,7 +521,6 @@ fn read_dct_coefficients(reader: &mut BitReader) -> Result<[i32; 64], &'static s
 /// 使用预计算的余弦查找表实现 8x8 IDCT。
 /// 公式: f(x,y) = (1/4) * Σu Σv c(u) * c(v) * F(u,v) * cos((2x+1)πu/16) * cos((2y+1)πv/16)
 /// 其中 c(0) = 1/√2, c(u>0) = 1
-#[allow(dead_code)]
 fn dct_to_spatial(coefficients: &[i32; 64]) -> [i16; 64] {
     let mut spatial = [0i16; 64];
 
@@ -589,7 +584,6 @@ pub struct Mpeg4Decoder {
     /// 外部量化矩阵 (Inter)
     quant_matrix_inter: [u8; 64],
     /// DC 预测器 (用于 Intra 块) - [Y, U, V]
-    #[allow(dead_code)]
     dc_predictors: [i16; 3],
 }
 
@@ -608,7 +602,6 @@ impl Mpeg4Decoder {
     ///
     /// MPEG4 使用量化矩阵来调整不同频率成分的量化步长。
     /// 这改进了编码效率，允许人眼不敏感的频率使用更粗的量化。
-    #[allow(dead_code)]
     fn apply_quant_matrix(&self, coefficients: &mut [i32; 64], quant: u32, is_intra: bool) {
         let matrix = if is_intra {
             &self.quant_matrix_intra
@@ -861,28 +854,41 @@ impl Mpeg4Decoder {
         block
     }
 
-    /// 解码宏块数据 (简化版)
+    /// 解码宏块数据 (使用 VLC 解码)
     fn decode_macroblock(
         &mut self,
         frame: &mut VideoFrame,
         mb_x: u32,
         mb_y: u32,
         reader: &mut BitReader,
-        _use_intra_matrix: bool,
+        use_intra_matrix: bool,
     ) {
         let width = self.width as usize;
         let height = self.height as usize;
-
-        // 消耗 bitstream 数据以保持同步
-        // 每个宏块大约消耗一定量的位（这是估算值）
-        let _bits_consumed = reader.read_bits(16); // 粗略估算
 
         // Y 平面 (4 个 8x8 块) - 亮度
         for block_idx in 0..4 {
             let by = (block_idx / 2) as u32;
             let bx = (block_idx % 2) as u32;
 
-            // 生成基于位置的测试图案（棋盘格 + 渐变）
+            // 使用 VLC 解码 DCT 系数
+            let block = match decode_intra_block_vlc(reader, true, &mut self.dc_predictors[0]) {
+                Some(coeffs) => coeffs,
+                None => {
+                    // VLC 解码失败，使用零块（灰色）
+                    warn!("I 帧 Y 块 VLC 解码失败，使用零块");
+                    [0i32; 64]
+                }
+            };
+
+            // 应用反量化
+            let mut dequant_block = block;
+            self.apply_quant_matrix(&mut dequant_block, self.quant as u32, use_intra_matrix);
+
+            // IDCT 转换到空间域
+            let spatial = dct_to_spatial(&dequant_block);
+
+            // 写入 Y 平面
             for y in 0..8 {
                 for x in 0..8 {
                     let px = (mb_x as usize * 16 + bx as usize * 8 + x).min(width - 1);
@@ -890,17 +896,9 @@ impl Mpeg4Decoder {
                     let idx = py * width + px;
 
                     if idx < frame.data[0].len() {
-                        // 创建一个可见的图案：
-                        // - 棋盘格基础图案
-                        // - 叠加位置相关的渐变
-                        let checker = if ((mb_x + mb_y + bx + by) % 2) == 0 {
-                            192
-                        } else {
-                            64
-                        };
-                        let gradient_x = ((px * 255) / width.max(1)) as u8;
-                        let gradient_y = ((py * 255) / height.max(1)) as u8;
-                        let pixel = ((checker + gradient_x / 4 + gradient_y / 4) as u16 / 3) as u8;
+                        let val = spatial[y * 8 + x];
+                        // 限制到 [0, 255]
+                        let pixel = val.clamp(0, 255) as u8;
                         frame.data[0][idx] = pixel;
                     }
                 }
@@ -912,6 +910,26 @@ impl Mpeg4Decoder {
         let uv_height = height / 2;
 
         for plane_idx in 0..2 {
+            // 使用 VLC 解码 U/V 块
+            let block =
+                match decode_intra_block_vlc(reader, false, &mut self.dc_predictors[plane_idx + 1])
+                {
+                    Some(coeffs) => coeffs,
+                    None => {
+                        // VLC 解码失败，使用零块
+                        warn!("I 帧 UV 块 VLC 解码失败，使用零块");
+                        [0i32; 64]
+                    }
+                };
+
+            // 应用反量化
+            let mut dequant_block = block;
+            self.apply_quant_matrix(&mut dequant_block, self.quant as u32, use_intra_matrix);
+
+            // IDCT 转换到空间域
+            let spatial = dct_to_spatial(&dequant_block);
+
+            // 写入 U/V 平面
             for v in 0..8 {
                 for u in 0..8 {
                     let px = ((mb_x as usize * 16 + u * 2) / 2).min(uv_width - 1);
@@ -919,16 +937,10 @@ impl Mpeg4Decoder {
 
                     let uv_idx = py * uv_width + px;
                     if uv_idx < frame.data[plane_idx + 1].len() {
-                        // U/V 平面：创建颜色渐变
-                        if plane_idx == 0 {
-                            // U 平面：蓝-黄渐变
-                            let val = ((px * 255) / uv_width.max(1)) as u8;
-                            frame.data[1][uv_idx] = val;
-                        } else {
-                            // V 平面：绿-红渐变
-                            let val = ((py * 255) / uv_height.max(1)) as u8;
-                            frame.data[2][uv_idx] = val;
-                        }
+                        let val = spatial[v * 8 + u];
+                        // 限制到 [0, 255]
+                        let pixel = val.clamp(0, 255) as u8;
+                        frame.data[plane_idx + 1][uv_idx] = pixel;
                     }
                 }
             }
@@ -937,6 +949,9 @@ impl Mpeg4Decoder {
 
     /// 解码 I 帧 (关键帧)
     fn decode_i_frame_from_reader(&mut self, reader: &mut BitReader) -> TaoResult<VideoFrame> {
+        // 重置 DC 预测器 (I 帧开始时)
+        self.dc_predictors = [0; 3];
+
         let mut frame = VideoFrame::new(self.width, self.height, self.pixel_format);
         frame.picture_type = PictureType::I;
         frame.is_keyframe = true;
