@@ -1,0 +1,95 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug tao-cli",
+            "cargo": {
+                "args": ["build", "-p", "tao-cli"],
+                "filter": {
+                    "name": "tao-cli",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "tao-cli: Debug Build"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Release tao-cli",
+            "cargo": {
+                "args": ["build", "-p", "tao-cli", "--release"],
+                "filter": {
+                    "name": "tao-cli",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "tao-cli: Release Build"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug tao-play",
+            "cargo": {
+                "args": ["build", "-p", "tao-play"],
+                "filter": {
+                    "name": "tao-play",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "tao-play: Debug Build"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Release tao-play",
+            "cargo": {
+                "args": ["build", "-p", "tao-play", "--release"],
+                "filter": {
+                    "name": "tao-play",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "tao-play: Release Build"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug tao-probe",
+            "cargo": {
+                "args": ["build", "-p", "tao-probe"],
+                "filter": {
+                    "name": "tao-probe",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "tao-probe: Debug Build"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Release tao-probe",
+            "cargo": {
+                "args": ["build", "-p", "tao-probe", "--release"],
+                "filter": {
+                    "name": "tao-probe",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "tao-probe: Release Build"
+        }
+    ]
+}

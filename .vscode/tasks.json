@@ -1,0 +1,53 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "tao-cli: Debug Build",
+            "type": "cargo",
+            "command": "build",
+            "args": ["-p", "tao-cli"],
+            "problemMatcher": ["$rustc"],
+            "group": "build"
+        },
+        {
+            "label": "tao-cli: Release Build",
+            "type": "cargo",
+            "command": "build",
+            "args": ["-p", "tao-cli", "--release"],
+            "problemMatcher": ["$rustc"],
+            "group": "build"
+        },
+        {
+            "label": "tao-play: Debug Build",
+            "type": "cargo",
+            "command": "build",
+            "args": ["-p", "tao-play"],
+            "problemMatcher": ["$rustc"],
+            "group": "build"
+        },
+        {
+            "label": "tao-play: Release Build",
+            "type": "cargo",
+            "command": "build",
+            "args": ["-p", "tao-play", "--release"],
+            "problemMatcher": ["$rustc"],
+            "group": "build"
+        },
+        {
+            "label": "tao-probe: Debug Build",
+            "type": "cargo",
+            "command": "build",
+            "args": ["-p", "tao-probe"],
+            "problemMatcher": ["$rustc"],
+            "group": "build"
+        },
+        {
+            "label": "tao-probe: Release Build",
+            "type": "cargo",
+            "command": "build",
+            "args": ["-p", "tao-probe", "--release"],
+            "problemMatcher": ["$rustc"],
+            "group": "build"
+        }
+    ]
+}

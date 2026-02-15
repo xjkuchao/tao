@@ -5,6 +5,8 @@
 
 use log::{debug, info, warn};
 use std::path::Path;
+use std::sync::mpsc::{Receiver, Sender};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use tao_codec::codec_parameters::{AudioCodecParams, CodecParameters, CodecParamsType};
@@ -16,7 +18,38 @@ use tao_format::stream::{Stream, StreamParams};
 
 use crate::audio::{AudioChunk, AudioOutput};
 use crate::clock::MediaClock;
-use crate::video::VideoDisplay;
+
+/// 视频帧数据
+#[derive(Clone)]
+pub struct VideoFrame {
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u8>,
+    #[allow(dead_code)]
+    pub pts: f64,
+}
+
+/// 播放器控制命令
+#[derive(Debug, Clone)]
+pub enum PlayerCommand {
+    TogglePause,
+    Seek(f64), // 相对时间 (秒)
+    VolumeUp,
+    VolumeDown,
+    ToggleMute,
+    Stop,
+}
+
+/// 播放器状态更新
+#[derive(Debug, Clone)]
+pub enum PlayerStatus {
+    Time(f64, f64), // 当前时间, 总时长
+    Paused(bool),
+    Volume(f32),
+    End,
+    #[allow(dead_code)]
+    Error(String),
+}
 
 /// 播放器配置
 pub struct PlayerConfig {
@@ -24,8 +57,6 @@ pub struct PlayerConfig {
     pub no_video: bool,
     pub no_audio: bool,
     pub volume: f32,
-    pub window_width: u32,
-    pub window_height: u32,
 }
 
 /// 播放器
@@ -48,11 +79,21 @@ impl Player {
         Ok(Self { config, registry })
     }
 
-    /// 运行播放器主循环
-    pub fn run(&mut self) -> Result<(), String> {
+    /// 准备播放并获取视频尺寸（一次性打开文件）
+    /// 返回 (video_size, io, demuxer) 供后续使用
+    pub fn prepare_and_get_size(
+        &self,
+    ) -> Result<
+        (
+            Option<(u32, u32)>,
+            IoContext,
+            Box<dyn tao_format::demuxer::Demuxer>,
+        ),
+        String,
+    > {
         info!("正在打开: {}", self.config.input_path);
 
-        // 根据输入类型打开 I/O
+        // 打开 I/O
         let mut io = if is_url(&self.config.input_path) {
             IoContext::open_url(&self.config.input_path)
                 .map_err(|e| format!("打开 URL 失败: {}", e))?
@@ -61,7 +102,7 @@ impl Player {
                 .map_err(|e| format!("打开文件失败: {}", e))?
         };
 
-        // 探测格式并创建解封装器
+        // 探测格式
         let filename = if is_url(&self.config.input_path) {
             filename_from_url(&self.config.input_path)
         } else {
@@ -70,10 +111,138 @@ impl Player {
                 .and_then(|n| n.to_str())
                 .unwrap_or(&self.config.input_path)
         };
-        let mut demuxer = self
+
+        let demuxer = self
             .registry
             .open_input(&mut io, Some(filename))
             .map_err(|e| format!("探测格式失败: {}", e))?;
+
+        let streams = demuxer.streams();
+
+        // 查找视频流尺寸
+        let video_size = streams
+            .iter()
+            .find(|s| s.media_type == MediaType::Video)
+            .and_then(|stream| {
+                if let StreamParams::Video(v) = &stream.params {
+                    Some((v.width, v.height))
+                } else {
+                    None
+                }
+            });
+
+        Ok((video_size, io, demuxer))
+    }
+
+    /// 获取视频流尺寸（探测但不开始播放）
+    #[allow(dead_code)]
+    pub fn get_video_size(&self) -> Option<(u32, u32)> {
+        // 打开 I/O
+        let mut io = if is_url(&self.config.input_path) {
+            IoContext::open_url(&self.config.input_path).ok()?
+        } else {
+            IoContext::open_read(&self.config.input_path).ok()?
+        };
+
+        // 探测格式
+        let filename = if is_url(&self.config.input_path) {
+            filename_from_url(&self.config.input_path)
+        } else {
+            Path::new(&self.config.input_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&self.config.input_path)
+        };
+
+        let demuxer = self.registry.open_input(&mut io, Some(filename)).ok()?;
+        let streams = demuxer.streams();
+
+        // 查找视频流
+        let video_stream = streams.iter().find(|s| s.media_type == MediaType::Video)?;
+
+        // 提取尺寸
+        if let StreamParams::Video(v) = &video_stream.params {
+            Some((v.width, v.height))
+        } else {
+            None
+        }
+    }
+
+    /// 在后台线程运行播放器
+    #[allow(dead_code)]
+    pub fn run_async(
+        mut self,
+        frame_tx: Sender<VideoFrame>,
+        status_tx: Sender<PlayerStatus>,
+        command_rx: Receiver<PlayerCommand>,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            if let Err(e) = self.run_loop(None, None, frame_tx, status_tx, command_rx) {
+                // Ignore error sending if channel closed
+                // status_tx.send(PlayerStatus::Error(e)).ok();
+                warn!("Playback error: {}", e);
+            }
+        })
+    }
+
+    /// 使用预打开的 IO 和 Demuxer 在后台线程运行播放器（避免重复打开文件）
+    pub fn run_with_prepared(
+        mut self,
+        io: IoContext,
+        demuxer: Box<dyn tao_format::demuxer::Demuxer>,
+        frame_tx: Sender<VideoFrame>,
+        status_tx: Sender<PlayerStatus>,
+        command_rx: Receiver<PlayerCommand>,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            if let Err(e) = self.run_loop(Some(io), Some(demuxer), frame_tx, status_tx, command_rx)
+            {
+                warn!("Playback error: {}", e);
+            }
+        })
+    }
+
+    fn run_loop(
+        &mut self,
+        pre_opened_io: Option<IoContext>,
+        pre_opened_demuxer: Option<Box<dyn tao_format::demuxer::Demuxer>>,
+        frame_tx: Sender<VideoFrame>,
+        status_tx: Sender<PlayerStatus>,
+        command_rx: Receiver<PlayerCommand>,
+    ) -> Result<(), String> {
+        // 使用预打开的 IO/Demuxer 或打开新的
+        let (mut io, mut demuxer) =
+            if let (Some(io), Some(demuxer)) = (pre_opened_io, pre_opened_demuxer) {
+                // 使用已打开的（避免重复下载）
+                (io, demuxer)
+            } else {
+                // 重新打开
+                info!("正在打开: {}", self.config.input_path);
+
+                let mut io = if is_url(&self.config.input_path) {
+                    IoContext::open_url(&self.config.input_path)
+                        .map_err(|e| format!("打开 URL 失败: {}", e))?
+                } else {
+                    IoContext::open_read(&self.config.input_path)
+                        .map_err(|e| format!("打开文件失败: {}", e))?
+                };
+
+                let filename = if is_url(&self.config.input_path) {
+                    filename_from_url(&self.config.input_path)
+                } else {
+                    Path::new(&self.config.input_path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(&self.config.input_path)
+                };
+
+                let demuxer = self
+                    .registry
+                    .open_input(&mut io, Some(filename))
+                    .map_err(|e| format!("探测格式失败: {}", e))?;
+
+                (io, demuxer)
+            };
 
         let streams = demuxer.streams().to_vec();
         info!("发现 {} 条流", streams.len());
@@ -92,14 +261,6 @@ impl Player {
 
         if audio_stream.is_none() && video_stream.is_none() {
             return Err("没有找到可播放的音视频流".into());
-        }
-
-        // 打印流信息
-        if let Some(a) = audio_stream {
-            info!("音频流 #{}: {} ({:?})", a.index, a.codec_id, a.params);
-        }
-        if let Some(v) = video_stream {
-            info!("视频流 #{}: {} ({:?})", v.index, v.codec_id, v.params);
         }
 
         // 创建解码器
@@ -150,10 +311,6 @@ impl Player {
             None
         };
 
-        if audio_decoder.is_none() && video_decoder.is_none() {
-            return Err("没有可用的解码器, 无法播放当前输入".into());
-        }
-
         // 创建时钟
         let clock = MediaClock::new();
 
@@ -179,52 +336,6 @@ impl Player {
             None
         };
 
-        // 创建视频窗口
-        let mut video_display = if video_decoder.is_some() {
-            if let Some(stream) = video_stream {
-                if let StreamParams::Video(v) = &stream.params {
-                    let w = if self.config.window_width > 0 {
-                        self.config.window_width
-                    } else {
-                        v.width.max(320)
-                    };
-                    let h = if self.config.window_height > 0 {
-                        self.config.window_height
-                    } else {
-                        v.height.max(240)
-                    };
-
-                    let title = format!(
-                        "tao-play - {} ({}x{})",
-                        Path::new(&self.config.input_path)
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy(),
-                        v.width,
-                        v.height
-                    );
-
-                    match VideoDisplay::new(w, h, &title) {
-                        Ok(display) => Some(display),
-                        Err(e) => {
-                            warn!("创建视频窗口失败: {}", e);
-                            None
-                        }
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        if audio_output.is_none() && video_display.is_none() {
-            return Err("没有可用的音视频输出, 无法播放".into());
-        }
-
         // 主播放循环
         info!("开始播放...");
         let start_time = Instant::now();
@@ -247,77 +358,56 @@ impl Player {
             .unwrap_or(0.0);
 
         loop {
-            // 检查窗口关闭
-            if let Some(display) = &video_display {
-                if !display.is_open() || display.should_quit() {
-                    info!("用户关闭窗口");
-                    break;
+            // 处理命令
+            while let Ok(cmd) = command_rx.try_recv() {
+                match cmd {
+                    PlayerCommand::TogglePause => {
+                        clock.toggle_pause();
+                        status_tx.send(PlayerStatus::Paused(clock.is_paused())).ok();
+                    }
+                    PlayerCommand::Seek(offset) => {
+                        // TODO: Implement seek properly
+                        info!("Seek request (not implemented completely): {}s", offset);
+                    }
+                    PlayerCommand::VolumeUp => {
+                        current_volume = (current_volume + 5).min(100);
+                        muted = false;
+                        status_tx
+                            .send(PlayerStatus::Volume(current_volume as f32 / 100.0))
+                            .ok();
+                    }
+                    PlayerCommand::VolumeDown => {
+                        current_volume = current_volume.saturating_sub(5);
+                        status_tx
+                            .send(PlayerStatus::Volume(current_volume as f32 / 100.0))
+                            .ok();
+                    }
+                    PlayerCommand::ToggleMute => {
+                        muted = !muted;
+                        status_tx
+                            .send(PlayerStatus::Volume(if muted {
+                                0.0
+                            } else {
+                                current_volume as f32 / 100.0
+                            }))
+                            .ok();
+                    }
+                    PlayerCommand::Stop => {
+                        info!("停止播放");
+                        return Ok(());
+                    }
                 }
             }
 
-            // 处理键盘控制
-            if let Some(display) = &mut video_display {
-                // 空格: 暂停/继续
-                if display.is_space_pressed() {
-                    clock.toggle_pause();
-                    let msg = if clock.is_paused() {
-                        "已暂停"
-                    } else {
-                        "继续播放"
-                    };
-                    info!("{}", msg);
-                    display.show_osd(msg);
-                }
-
-                // 上/下: 音量控制
-                if display.is_up_pressed() {
-                    current_volume = (current_volume + 5).min(100);
-                    muted = false;
-                    info!("音量: {}%", current_volume);
-                    display.show_osd(&format!("音量: {}%", current_volume));
-                }
-                if display.is_down_pressed() {
-                    current_volume = current_volume.saturating_sub(5);
-                    info!("音量: {}%", current_volume);
-                    display.show_osd(&format!("音量: {}%", current_volume));
-                }
-
-                // M: 静音切换
-                if display.is_mute_pressed() {
-                    muted = !muted;
-                    let msg = if muted { "已静音" } else { "取消静音" };
-                    info!("{}", msg);
-                    display.show_osd(msg);
-                }
-
-                // 左/右: Seek (±10秒)
-                if display.is_left_pressed() {
-                    let seek_sec = (clock.current_time_us() as f64 / 1_000_000.0 - 10.0).max(0.0);
-                    _seek_target = Some(seek_sec);
-                    info!("快退到 {:.1}s", seek_sec);
-                    display.show_osd(&format!("快退: {:.0}s", seek_sec));
-                }
-                if display.is_right_pressed() {
-                    let seek_sec = clock.current_time_us() as f64 / 1_000_000.0 + 10.0;
-                    if seek_sec < total_duration_sec || total_duration_sec <= 0.0 {
-                        _seek_target = Some(seek_sec);
-                        info!("快进到 {:.1}s", seek_sec);
-                        display.show_osd(&format!("快进: {:.0}s", seek_sec));
-                    }
-                }
-
-                // F: 全屏提示
-                if display.is_fullscreen_pressed() {
-                    display.show_osd("全屏切换 (受限于 minifb)");
-                }
+            // 发送状态更新 (Low frequency)
+            if frames_rendered % 30 == 0 {
+                let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
+                status_tx
+                    .send(PlayerStatus::Time(current_sec, total_duration_sec))
+                    .ok();
             }
 
             if clock.is_paused() {
-                if let Some(display) = &mut video_display {
-                    let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
-                    let vol = if muted { 0 } else { current_volume };
-                    display.draw_progress_bar(current_sec, total_duration_sec, vol, true);
-                }
                 std::thread::sleep(Duration::from_millis(16));
                 continue;
             }
@@ -331,45 +421,28 @@ impl Player {
                         // 解码音频
                         if Some(stream_idx) == audio_stream_idx {
                             if let Some(dec) = &mut audio_decoder {
-                                match dec.send_packet(&packet) {
-                                    Ok(()) => {}
-                                    Err(ref e) => {
-                                        debug!("音频解码跳过坏帧: {}", e);
-                                    }
-                                }
-                                while let Ok(frame) = dec.receive_frame() {
-                                    if let Frame::Audio(af) = &frame {
-                                        debug!(
-                                            "收到音频帧: {} 样本, 格式: {:?}",
-                                            af.nb_samples, af.sample_format
-                                        );
-                                        if let Some(out) = &audio_output {
-                                            let pts_us = pts_to_us(
-                                                af.pts,
-                                                af.time_base.num,
-                                                af.time_base.den,
-                                            );
-                                            let mut samples =
-                                                extract_f32_samples(af, &streams, stream_idx);
-                                            // 应用实时音量控制
-                                            let effective_volume = if muted {
-                                                0.0f32
-                                            } else {
-                                                current_volume as f32 / 100.0
-                                            };
-                                            for s in &mut samples {
-                                                *s *= effective_volume;
-                                            }
-                                            let samples_count = samples.len();
-                                            let chunk = AudioChunk { samples, pts_us };
-                                            debug!(
-                                                "发送音频数据: {} 样本, PTS: {}",
-                                                samples_count, pts_us
-                                            );
-                                            if out.send(chunk).is_err() {
-                                                debug!("音频队列已满, 跳过");
-                                            } else {
-                                                debug!("音频数据发送成功");
+                                if dec.send_packet(&packet).is_ok() {
+                                    while let Ok(frame) = dec.receive_frame() {
+                                        if let Frame::Audio(af) = &frame {
+                                            if let Some(out) = &audio_output {
+                                                let pts_us = pts_to_us(
+                                                    af.pts,
+                                                    af.time_base.num,
+                                                    af.time_base.den,
+                                                );
+                                                let mut samples =
+                                                    extract_f32_samples(af, &streams, stream_idx);
+                                                // 应用实时音量控制
+                                                let effective_volume = if muted {
+                                                    0.0f32
+                                                } else {
+                                                    current_volume as f32 / 100.0
+                                                };
+                                                for s in &mut samples {
+                                                    *s *= effective_volume;
+                                                }
+                                                let chunk = AudioChunk { samples, pts_us };
+                                                let _ = out.send(chunk);
                                             }
                                         }
                                     }
@@ -383,10 +456,6 @@ impl Player {
                                 if dec.send_packet(&packet).is_ok() {
                                     while let Ok(frame) = dec.receive_frame() {
                                         if let Frame::Video(vf) = &frame {
-                                            debug!(
-                                                "收到视频帧: {}x{}, PTS: {}, 类型: {:?}",
-                                                vf.width, vf.height, vf.pts, vf.picture_type
-                                            );
                                             // A/V 同步: 计算帧显示时间
                                             let frame_pts_us = pts_to_us(
                                                 vf.pts,
@@ -395,10 +464,6 @@ impl Player {
                                             );
                                             let current_us = clock.current_time_us();
                                             let delay_us = frame_pts_us - current_us;
-                                            debug!(
-                                                "视频同步: 帧 PTS={}us, 当前时间={}us, 延迟={}us",
-                                                frame_pts_us, current_us, delay_us
-                                            );
 
                                             // 如果帧还没到显示时间, 等待
                                             if delay_us > 1000 {
@@ -407,23 +472,20 @@ impl Player {
                                                 ));
                                             }
 
-                                            // 渲染帧
-                                            if let Some(display) = &mut video_display {
-                                                let rgb_data = convert_frame_to_rgb24(vf);
-                                                display
-                                                    .display_rgb24(&rgb_data, vf.width, vf.height);
-                                                // 绘制进度条
-                                                let current_sec =
-                                                    clock.current_time_us() as f64 / 1_000_000.0;
-                                                let vol = if muted { 0 } else { current_volume };
-                                                display.draw_progress_bar(
-                                                    current_sec,
-                                                    total_duration_sec,
-                                                    vol,
-                                                    clock.is_paused(),
-                                                );
-                                                frames_rendered += 1;
+                                            // 发送帧给 UI
+                                            let rgb_data = convert_frame_to_rgb24(vf);
+                                            let display_frame = VideoFrame {
+                                                width: vf.width,
+                                                height: vf.height,
+                                                data: rgb_data,
+                                                pts: frame_pts_us as f64 / 1_000_000.0,
+                                            };
+
+                                            if frame_tx.send(display_frame).is_err() {
+                                                // UI closed, exit
+                                                return Ok(());
                                             }
+                                            frames_rendered += 1;
                                         }
                                     }
                                 }
@@ -436,7 +498,8 @@ impl Player {
                     }
                     Err(e) => {
                         debug!("读取数据包错误: {}", e);
-                        eof = true;
+                        // Continue if possible?
+                        // eof = true;
                     }
                 }
             }
@@ -448,28 +511,19 @@ impl Player {
             }
 
             // 如果没有视频, 通过音频播放到结束
-            if video_display.is_none() && eof {
-                // 等待音频缓冲区播放完毕
-                // 缓冲区大小: 32 chunks × 1024 samples / sample_rate ≈ 0.74s
+            if video_stream.is_none() && eof {
                 std::thread::sleep(Duration::from_millis(2000));
                 break;
             }
 
-            // 如果有视频但 EOF, 再显示一会
             if eof {
-                if let Some(display) = &mut video_display {
-                    display.update();
-                    if display.should_quit() || !display.is_open() {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(16));
+                // Check if we should quit
+                // For now, just exit
+                break;
             }
 
             // 帧率限制 (避免 CPU 100%)
-            if video_display.is_none() {
+            if video_stream.is_none() {
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
@@ -478,6 +532,8 @@ impl Player {
         if let Some(out) = &audio_output {
             out.stop();
         }
+
+        status_tx.send(PlayerStatus::End).ok();
 
         let elapsed = start_time.elapsed();
         info!(

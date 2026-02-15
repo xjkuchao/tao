@@ -708,9 +708,9 @@ fn decode_cbpy(reader: &mut BitReader) -> Option<u8> {
     }
 
     // 调试：记录失败的比特值
-    if let Some(dbg_bits) = reader.peek_bits(5) {
-        debug!(
-            "CBPY 解码失败: 前 5 位 = {:05b} (十进制: {}), 字节位置 = {}",
+    if let Some(dbg_bits) = reader.peek_bits(12) {
+        warn!(
+            "CBPY 解码失败: 前 12 位 = {:012b} (0x{:03X}), 字节位置 = {}",
             dbg_bits,
             dbg_bits,
             reader.byte_position()
@@ -1399,37 +1399,18 @@ impl Mpeg4Decoder {
             }
         }
 
-        // complexity_estimation_disable etc. are only present if shape != rectangular
-        // But for Simple Profile (Rectangular), they might be skipped?
-        // Standard says:
-        // if (video_object_layer_shape != 0) { // 0 is rectangular
-        //    complexity_estimation_disable
-        //    resync_marker_disable
-        //    data_partitioned
-        // }
-        // BUT actually most docs say:
-        // if (shape != rectangular)
-        //    ...
-        // else {
-        //    // Rectangular
-        //    complexity_estimation_disable (1)
-        //    resync_marker_disable (1)
-        //    data_partitioned (1)
-        //    if (data_partitioned) reversible_vlc (1)
-        // }
-        // So they ARE present for Rectangular.
-
-        // We need to know shape. We read `video_object_layer_shape` earlier.
-        // It was stored in local var `_video_object_layer_shape`.
-        // We need to access it. I'll note it's skipped in original code, so I assume Rectangular (0).
-
-        // Assuming Rectangular for standard AVI/MPEG4:
+        // TODO: complexity_estimation_disable, resync_marker_disable, data_partitioned
+        // These flags may or may not be present depending on video_object_layer_shape
+        // For now, skip them to avoid desync. Need to properly parse video_object_layer_shape first.
+        /*
         let _complexity_estimation_disable = reader.read_bit();
         let _resync_marker_disable = reader.read_bit();
         let data_partitioned = reader.read_bit().unwrap_or(false);
         if data_partitioned {
             let _reversible_vlc = reader.read_bit();
         }
+        */
+        let data_partitioned = false;
 
         self.vol_info = Some(VolInfo {
             vop_time_increment_resolution,
@@ -1728,14 +1709,11 @@ impl Mpeg4Decoder {
                     decode_inter_block_vlc(reader).unwrap_or([0i32; 64])
                 }
             } else {
-                // CBP 表示此块全零（跳过）
-                // 但 DC 系数仍需更新预测器
-                let mut zero_block = [0i32; 64];
-                if let Some(dc_diff) = decode_intra_dc_vlc(reader, true) {
-                    self.dc_predictors[0] = self.dc_predictors[0].wrapping_add(dc_diff);
-                    zero_block[0] = self.dc_predictors[0] as i32;
-                }
-                zero_block
+                // CBP=0: 块未编码
+                // MPEG-4 规范: 当 CBP bit = 0 时，不读取任何数据
+                // Intra块: DC预测器保持不变（不重置），所有系数为0
+                // Inter块: 直接使用运动补偿，无残差
+                [0i32; 64]
             };
 
             // 应用反量化
@@ -1835,14 +1813,8 @@ impl Mpeg4Decoder {
                     decode_inter_block_vlc(reader).unwrap_or([0i32; 64])
                 }
             } else {
-                // CBP 表示此块全零
-                let mut zero_block = [0i32; 64];
-                if let Some(dc_diff) = decode_intra_dc_vlc(reader, false) {
-                    self.dc_predictors[plane_idx + 1] =
-                        self.dc_predictors[plane_idx + 1].wrapping_add(dc_diff);
-                    zero_block[0] = self.dc_predictors[plane_idx + 1] as i32;
-                }
-                zero_block
+                // CBP=0: 色度块未编码，不读取任何数据
+                [0i32; 64]
             };
 
             // 应用反量化

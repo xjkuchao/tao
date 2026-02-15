@@ -6,9 +6,9 @@
 # Cargo.lock
 
 # IDE 和编辑器
-.idea/
-.vscode/
-.cursor/
+# .idea/
+# .vscode/
+# .cursor/
 *.swp
 *.swo
 *~
@@ -36,6 +36,9 @@ config.toml
 # 测试产物
 *.profraw
 *.profdata
+
+# Cargo.lock
+Cargo.lock
 
 # 数据文件
 /data
