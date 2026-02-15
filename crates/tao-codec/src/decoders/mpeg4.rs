@@ -324,57 +324,22 @@ const INTRA_DC_VLC_UV: &[(u8, u16, i16)] = &[
 /// 参考: FFmpeg libavcodec/mpeg4data.h - ff_mpeg4_intra_vlc
 #[allow(dead_code)]
 const INTRA_AC_VLC: &[(u8, u16, bool, u8, i8)] = &[
-    // EOB (End of Block) - 所有剩余系数为 0
-    (2, 0b11, true, 0, 0),
+    // EOB (End of Block)
+    (2, 0x3, true, 0, 0),
     // Last=0 (中间系数)
-    (3, 0b011, false, 0, 1),          // run=0, level=1 **最常用**
-    (4, 0b0011, false, 1, 1),         // run=1, level=1
-    (5, 0b00100, false, 2, 1),        // run=2, level=1
-    (5, 0b00101, false, 3, 1),        // run=3, level=1
-    (6, 0b001000, false, 4, 1),       // run=4, level=1
-    (6, 0b001001, false, 5, 1),       // run=5, level=1
-    (6, 0b001010, false, 6, 1),       // run=6, level=1
-    (7, 0b0010110, false, 7, 1),      // run=7, level=1
-    (7, 0b0010111, false, 8, 1),      // run=8, level=1
-    (8, 0b00101100, false, 9, 1),     // run=9, level=1
-    (8, 0b00101101, false, 10, 1),    // run=10, level=1
-    (9, 0b001011100, false, 11, 1),   // run=11, level=1
-    (9, 0b001011101, false, 12, 1),   // run=12, level=1
-    (5, 0b00011, false, 0, 2),        // run=0, level=2
-    (6, 0b000111, false, 1, 2),       // run=1, level=2
-    (7, 0b0010100, false, 2, 2),      // run=2, level=2
-    (8, 0b00101010, false, 3, 2),     // run=3, level=2
-    (9, 0b001011010, false, 4, 2),    // run=4, level=2
-    (7, 0b0010101, false, 0, 3),      // run=0, level=3
-    (8, 0b00101011, false, 1, 3),     // run=1, level=3
-    (9, 0b001011011, false, 2, 3),    // run=2, level=3
-    (8, 0b00101000, false, 0, 4),     // run=0, level=4
-    (9, 0b001011000, false, 1, 4),    // run=1, level=4
-    (9, 0b001011001, false, 0, 5),    // run=0, level=5
-    (9, 0b001010110, false, 0, 6),    // run=0, level=6
-    (9, 0b001010111, false, 0, 7),    // run=0, level=7
-    (10, 0b0010101100, false, 13, 1), // run=13, level=1
-    (10, 0b0010101101, false, 14, 1), // run=14, level=1
-    (10, 0b0010101110, false, 15, 1), // run=15, level=1
-    (10, 0b0010101111, false, 16, 1), // run=16, level=1
-    // Last=1 (最后一个非零系数)
-    (4, 0b0010, true, 0, 1),         // last, run=0, level=1
-    (6, 0b000110, true, 1, 1),       // last, run=1, level=1
-    (7, 0b0010010, true, 2, 1),      // last, run=2, level=1
-    (7, 0b0010011, true, 3, 1),      // last, run=3, level=1
-    (8, 0b00100110, true, 4, 1),     // last, run=4, level=1
-    (8, 0b00100111, true, 5, 1),     // last, run=5, level=1
-    (9, 0b001001100, true, 6, 1),    // last, run=6, level=1
-    (9, 0b001001101, true, 7, 1),    // last, run=7, level=1
-    (9, 0b001001110, true, 8, 1),    // last, run=8, level=1
-    (9, 0b001001111, true, 9, 1),    // last, run=9, level=1
-    (10, 0b0010011100, true, 10, 1), // last, run=10, level=1
-    (10, 0b0010011101, true, 11, 1), // last, run=11, level=1
-    (6, 0b001011, true, 0, 2),       // last, run=0, level=2
-    (8, 0b00100100, true, 1, 2),     // last, run=1, level=2
-    (9, 0b001001010, true, 2, 2),    // last, run=2, level=2
-    (8, 0b00100101, true, 0, 3),     // last, run=0, level=3
-    (9, 0b001001011, true, 1, 3),    // last, run=1, level=3
+    (3, 0x3, false, 0, 1), // 011s -> level 1
+    (4, 0x3, false, 1, 1), // 0011 s
+    (5, 0x3, false, 0, 2), // 00011 s
+    (5, 0x5, false, 2, 1), // 00101 s
+    (5, 0x4, false, 3, 1), // 00100 s
+    (6, 0x6, false, 1, 2), // 000110 s
+    (6, 0x9, false, 4, 1), // 001001 s
+    (6, 0x8, false, 5, 1), // 001000 s
+    (6, 0x7, false, 6, 1), // 000111 s
+    // Last=1
+    (4, 0x2, true, 0, 1), // 0010 s
+    (6, 0x5, true, 1, 1), // 000101 s
+    (6, 0xB, true, 0, 2), // 001011 s
 ];
 
 /// MCBPC (Macroblock Type and Coded Block Pattern for Chrominance) VLC 表
@@ -766,54 +731,52 @@ fn decode_intra_dc_vlc(reader: &mut BitReader, is_luma: bool) -> Option<i16> {
 
 /// 使用 VLC 表解码 AC 系数
 ///
+/// # 参数
+/// * `reader` - 位流读取器
+/// * `table` - VLC 表 (len, code, last, run, level)
+///
 /// # 返回
-/// Some((last, run, level)) 或 None 表示 EOB
+/// `Ok(Some((last, run, level)))` - 成功解码一个系数
+/// `Ok(None)` - 解码到 EOB (End of Block)
+/// `Err(())` - 未找到匹配的码字 (解码错误)
 fn decode_ac_vlc(
     reader: &mut BitReader,
     table: &[(u8, u16, bool, u8, i8)],
-) -> Option<(bool, u8, i16)> {
+) -> Result<Option<(bool, u8, i16)>, ()> {
     // 尝试匹配 VLC 表
     for &(len, code, last, run, level) in table {
-        let bits = reader.peek_bits(len)?;
+        let bits = reader.peek_bits(len).ok_or(())?;
         if bits as u16 == code {
-            reader.read_bits(len)?;
+            reader.read_bits(len).ok_or(())?;
 
             // EOB 标记
             if last && run == 0 && level == 0 {
-                return None;
+                return Ok(None);
             }
 
-            // Escape 标记: MPEG-4 table usually has (0, 0, false) or specific code for Escape
-            // If table entry is explicit escape
+            // Escape 标记
             if !last && run == 0 && level == 0 {
-                // Trigger Escape parsing below
-                // break to escape handling? No, rust `loop` control
-                // We can just verify escape check here
-                return decode_ac_escape(reader);
+                return decode_ac_escape(reader).map(Some).ok_or(());
             }
 
             // 读取符号位
-            let sign = reader.read_bits(1)?;
-            let actual_level = if sign == 0 {
-                level as i16
-            } else {
-                -(level as i16)
-            };
+            let sign = reader.read_bit().ok_or(())?;
+            let actual_level = if !sign { level as i16 } else { -(level as i16) };
 
-            return Some((last, run, actual_level));
+            return Ok(Some((last, run, actual_level)));
         }
     }
 
-    // 如果没有匹配到 (可能是 H.263 短头模式或者其他)
     // 尝试直接检查 Escape 代码 (如果不在表中)
     // 0000 011 -> 7 bits
-    let escape_check = reader.peek_bits(7)?;
-    if escape_check == 3 {
-        reader.read_bits(7)?;
-        return decode_ac_escape(reader);
+    if let Some(escape_check) = reader.peek_bits(7) {
+        if escape_check == 3 {
+            reader.read_bits(7).ok_or(())?;
+            return decode_ac_escape(reader).map(Some).ok_or(());
+        }
     }
 
-    None
+    Err(())
 }
 
 fn decode_ac_escape(reader: &mut BitReader) -> Option<(bool, u8, i16)> {
@@ -879,93 +842,59 @@ fn decode_intra_block_vlc(
     reader: &mut BitReader,
     is_luma: bool,
     dc_predictor: &mut i16,
+    ac_coded: bool,
 ) -> Option<[i32; 64]> {
     let mut block = [0i32; 64];
 
-    // 1. 解码 DC 系数
+    // 1. DC 系数 (ALWAYS present in Intra)
     let dc_diff = decode_intra_dc_vlc(reader, is_luma)?;
     *dc_predictor = dc_predictor.wrapping_add(dc_diff);
     block[0] = *dc_predictor as i32;
 
-    // 2. 解码 AC 系数
-    let mut pos = 1; // zigzag 索引
-    let mut ac_count = 0;
-    loop {
-        // 解码一个 AC 系数
-        match decode_ac_vlc(reader, INTRA_AC_VLC) {
-            None => {
-                // EOB - 剩余系数全为 0
-                break;
-            }
-            Some((last, run, level)) => {
-                // 跳过 run 个零系数
-                pos += run as usize;
-
-                if pos >= 64 {
-                    break; // 超出块边界
+    // 2. AC 系数 (conditional)
+    if ac_coded {
+        let mut pos = 1;
+        while pos < 64 {
+            match decode_ac_vlc(reader, INTRA_AC_VLC) {
+                Ok(None) => break, // EOB
+                Ok(Some((last, run, level))) => {
+                    pos += run as usize;
+                    if pos >= 64 {
+                        break;
+                    }
+                    block[ZIGZAG_8X8[pos]] = level as i32;
+                    pos += 1;
+                    if last {
+                        break;
+                    }
                 }
-
-                // 放置系数（使用 zigzag 顺序）
-                let zigzag_pos = ZIGZAG_8X8[pos];
-                block[zigzag_pos] = level as i32;
-                pos += 1;
-                ac_count += 1;
-
-                if last || pos >= 64 {
-                    break; // 最后一个系数或已填满
-                }
+                Err(_) => return None,
             }
         }
-    }
-
-    // Debug: log AC count for first few blocks
-    static AC_BLOCK_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let count = AC_BLOCK_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if count < 10 {
-        debug!(
-            "Intra块#{}: DC={}, AC系数数={}",
-            count, *dc_predictor, ac_count
-        );
     }
 
     Some(block)
 }
 
-/// 使用 VLC 解码 DCT 系数块 (Inter 宏块)
-///
-/// # 参数
-/// - `reader`: 位读取器
-///
-/// # 返回
-/// 64 个 DCT 系数 (zigzag 顺序)
 fn decode_inter_block_vlc(reader: &mut BitReader) -> Option<[i32; 64]> {
     let mut block = [0i32; 64];
-    let mut pos = 0; // Inter 块的 DC 系数也是通过 AC VLC 编码的，所以从 0 开始
+    let mut pos = 0;
 
-    loop {
-        // 解码一个 AC 系数
+    while pos < 64 {
         match decode_ac_vlc(reader, INTER_AC_VLC) {
-            None => {
-                // EOB - 剩余系数全为 0
-                break;
-            }
-            Some((last, run, level)) => {
-                // 跳过 run 个零系数
+            Ok(None) => break, // EOB
+            Ok(Some((last, run, level))) => {
                 pos += run as usize;
-
                 if pos >= 64 {
-                    break; // 超出块边界
+                    break;
                 }
-
-                // 放置系数（使用 zigzag 顺序）
-                let zigzag_pos = ZIGZAG_8X8[pos];
-                block[zigzag_pos] = level as i32;
+                block[ZIGZAG_8X8[pos]] = level as i32;
                 pos += 1;
-
-                if last || pos >= 64 {
-                    break; // 最后一个系数或已填满
+                if last {
+                    break;
                 }
             }
+            Err(_) => return None,
         }
     }
 
@@ -1483,6 +1412,10 @@ impl Mpeg4Decoder {
         // VOP Header is mostly same.
 
         if picture_type != PictureType::B {
+            // intra_dc_vlc_thr (3 bits)
+            let _intra_dc_vlc_thr = reader.read_bits(3).unwrap_or(0);
+            // debug!("VOP intra_dc_vlc_thr: {}", _intra_dc_vlc_thr);
+
             if let Some(quant) = reader.read_bits(5) {
                 // 量化参数必须至少为 1, 如果为 0 则保持上一帧的量化参数
                 if quant > 0 {
@@ -1490,15 +1423,13 @@ impl Mpeg4Decoder {
                 }
                 debug!("量化参数: {}", self.quant);
             }
+        }
 
-            // f_code_forward (3 bits) - Only if not Intra?
-            // Actually, I-VOPs do not have f_code. P-VOPs do.
-            // Section 6.2.5: f_code_forward is present if vop_coding_type == P (or B or S).
-            if picture_type != PictureType::I {
-                if let Some(f_code) = reader.read_bits(3) {
-                    self.f_code_forward = f_code as u8;
-                    // debug!("f_code_forward: {}", self.f_code_forward);
-                }
+        if picture_type == PictureType::P {
+            // f_code_forward (3 bits)
+            if let Some(f_code) = reader.read_bits(3) {
+                self.f_code_forward = f_code as u8;
+                // debug!("f_code_forward: {}", self.f_code_forward);
             }
         }
 
@@ -1507,10 +1438,10 @@ impl Mpeg4Decoder {
 
         // MPEG-4 标准要求：VOP header 后需要字节对齐
         // 这对于正确解码宏块数据至关重要
-        reader.align_to_byte();
         debug!(
-            "VOP 头解析完成，已字节对齐，当前字节位置: {}",
-            reader.byte_position()
+            "VOP 头解析完成, 当前位置: byte={}, bit={}",
+            reader.byte_position(),
+            reader.bit_position() % 8
         );
 
         Ok(VopInfo {
@@ -1735,32 +1666,17 @@ impl Mpeg4Decoder {
             let by = (block_idx / 2) as u32;
             let bx = (block_idx % 2) as u32;
 
-            // 检查是否需要解码这个块 (CBP bit 5-2 对应 Y0-Y3)
-            let coded = (cbp >> (5 - block_idx)) & 1 != 0;
+            // 检查是否需要解码这个块的 AC 系数 (CBP bit 5-2 对应 Y0-Y3)
+            let ac_coded = (cbp >> (5 - block_idx)) & 1 != 0;
 
-            let block = if coded {
-                // 使用 VLC 解码真实的 DCT 系数
-                // 根据宏块类型选择 Intra 或 Inter 解码方式
-                if matches!(mb_type, MbType::Intra | MbType::IntraQ) {
-                    match decode_intra_block_vlc(reader, true, &mut self.dc_predictors[0]) {
-                        Some(coeffs) => coeffs,
-                        None => {
-                            warn!(
-                                "宏块 ({}, {}) Y 块 {} Intra VLC 解码失败",
-                                mb_x, mb_y, block_idx
-                            );
-                            [0i32; 64]
-                        }
-                    }
-                } else {
-                    // Inter block
-                    decode_inter_block_vlc(reader).unwrap_or([0i32; 64])
-                }
+            let block = if use_intra_matrix {
+                // Intra 块: DC 总是存在，AC 取决于 CBP
+                decode_intra_block_vlc(reader, true, &mut self.dc_predictors[0], ac_coded)
+                    .unwrap_or([0i32; 64])
+            } else if ac_coded {
+                // Inter 块: 仅当 coded 时读取数据 (DC+AC)
+                decode_inter_block_vlc(reader).unwrap_or([0i32; 64])
             } else {
-                // CBP=0: 块未编码
-                // MPEG-4 规范: 当 CBP bit = 0 时，不读取任何数据
-                // Intra块: DC预测器保持不变（不重置），所有系数为0
-                // Inter块: 直接使用运动补偿，无残差
                 [0i32; 64]
             };
 
@@ -1835,33 +1751,21 @@ impl Mpeg4Decoder {
         let uv_height = height / 2;
 
         for plane_idx in 0..2 {
-            // 检查是否需要解码这个色度块 (CBP bit 1-0 对应 U, V)
-            let coded = (cbp >> (1 - plane_idx)) & 1 != 0;
+            // 检查是否需要解码这个色度块的 AC 系数 (CBP bit 1-0 对应 U, V)
+            let ac_coded = (cbp >> (1 - plane_idx)) & 1 != 0;
 
-            let block = if coded {
-                // 使用 VLC 解码 UV 块
-                if matches!(mb_type, MbType::Intra | MbType::IntraQ) {
-                    match decode_intra_block_vlc(
-                        reader,
-                        false,
-                        &mut self.dc_predictors[plane_idx + 1],
-                    ) {
-                        Some(coeffs) => coeffs,
-                        None => {
-                            warn!(
-                                "宏块 ({}, {}) {} 块 Intra VLC 解码失败",
-                                mb_x,
-                                mb_y,
-                                if plane_idx == 0 { "U" } else { "V" }
-                            );
-                            [0i32; 64]
-                        }
-                    }
-                } else {
-                    decode_inter_block_vlc(reader).unwrap_or([0i32; 64])
-                }
+            let block = if use_intra_matrix {
+                // Intra 块: DC 总是存在，AC 取决于 CBP
+                decode_intra_block_vlc(
+                    reader,
+                    false,
+                    &mut self.dc_predictors[plane_idx + 1],
+                    ac_coded,
+                )
+                .unwrap_or([0i32; 64])
+            } else if ac_coded {
+                decode_inter_block_vlc(reader).unwrap_or([0i32; 64])
             } else {
-                // CBP=0: 色度块未编码，不读取任何数据
                 [0i32; 64]
             };
 
