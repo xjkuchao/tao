@@ -588,6 +588,9 @@ pub struct Mpeg4Decoder {
     quant_matrix_intra: [u8; 64],
     /// 外部量化矩阵 (Inter)
     quant_matrix_inter: [u8; 64],
+    /// DC 预测器 (用于 Intra 块) - [Y, U, V]
+    #[allow(dead_code)]
+    dc_predictors: [i16; 3],
 }
 
 /// VOL (Video Object Layer) 信息
@@ -638,6 +641,7 @@ impl Mpeg4Decoder {
             vol_info: None,
             quant_matrix_intra: STD_INTRA_QUANT_MATRIX,
             quant_matrix_inter: STD_INTER_QUANT_MATRIX,
+            dc_predictors: [0; 3], // Y, U, V 的 DC 预测器初始化为 0
         }))
     }
 
