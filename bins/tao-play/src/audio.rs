@@ -6,6 +6,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use log::{debug, error, info};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use tao_core::{ChannelLayout, SampleFormat};
+use tao_resample::ResampleContext;
 
 use crate::clock::MediaClock;
 
@@ -111,6 +113,16 @@ impl AudioOutput {
                 }
             }
         };
+        let output_sample_rate = config.sample_rate.0;
+        let output_channels = u32::from(config.channels);
+        let converter =
+            build_f32_converter(sample_rate, channels, output_sample_rate, output_channels);
+        if converter.is_some() {
+            info!(
+                "音频参数转换: {}Hz/{}ch -> {}Hz/{}ch",
+                sample_rate, channels, output_sample_rate, output_channels
+            );
+        }
 
         // 音频数据通道 (有界缓冲, 防止 OOM)
         let (sender, receiver) = mpsc::sync_channel::<AudioChunk>(32);
@@ -145,7 +157,17 @@ impl AudioOutput {
                             Ok(chunk) => {
                                 // 更新时钟
                                 clock_clone.update_audio_pts(chunk.pts_us);
-                                buf.extend_from_slice(&chunk.samples);
+                                if let Some(conv) = &converter {
+                                    match convert_chunk_f32(&chunk.samples, channels, conv) {
+                                        Ok(samples) => buf.extend_from_slice(&samples),
+                                        Err(e) => {
+                                            debug!("音频转换失败, 回退原始数据: {}", e);
+                                            buf.extend_from_slice(&chunk.samples);
+                                        }
+                                    }
+                                } else {
+                                    buf.extend_from_slice(&chunk.samples);
+                                }
                             }
                             Err(_) => break,
                         }
@@ -177,7 +199,10 @@ impl AudioOutput {
             .play()
             .map_err(|e| format!("启动音频播放失败: {}", e))?;
 
-        debug!("音频输出已启动: {}Hz, {}ch", sample_rate, channels);
+        debug!(
+            "音频输出已启动: 输入 {}Hz/{}ch, 设备 {}Hz/{}ch",
+            sample_rate, channels, output_sample_rate, output_channels
+        );
 
         Ok(Self {
             _stream: stream,
@@ -197,4 +222,57 @@ impl AudioOutput {
     pub fn stop(&self) {
         *self.playing.lock().unwrap() = false;
     }
+}
+
+/// 构建 F32 交错音频转换器.
+///
+/// 当输入参数与设备输出参数不一致时, 启用重采样和声道映射.
+fn build_f32_converter(
+    input_rate: u32,
+    input_channels: u32,
+    output_rate: u32,
+    output_channels: u32,
+) -> Option<ResampleContext> {
+    if input_rate == output_rate && input_channels == output_channels {
+        return None;
+    }
+    Some(ResampleContext::new(
+        input_rate,
+        SampleFormat::F32,
+        ChannelLayout::from_channels(input_channels),
+        output_rate,
+        SampleFormat::F32,
+        ChannelLayout::from_channels(output_channels),
+    ))
+}
+
+/// 将一个 F32 交错音频块转换为目标设备参数.
+fn convert_chunk_f32(
+    input_samples: &[f32],
+    input_channels: u32,
+    converter: &ResampleContext,
+) -> Result<Vec<f32>, String> {
+    if input_channels == 0 {
+        return Ok(Vec::new());
+    }
+    let channels = input_channels as usize;
+    let nb_samples = input_samples.len() / channels;
+    if nb_samples == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut input_bytes = Vec::with_capacity(input_samples.len() * 4);
+    for sample in input_samples {
+        input_bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+
+    let (output_bytes, _) = converter
+        .convert(&input_bytes, nb_samples as u32)
+        .map_err(|e| format!("重采样失败: {}", e))?;
+
+    let mut output_samples = Vec::with_capacity(output_bytes.len() / 4);
+    for chunk in output_bytes.chunks_exact(4) {
+        output_samples.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(output_samples)
 }
