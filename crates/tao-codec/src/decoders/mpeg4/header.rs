@@ -199,14 +199,41 @@ impl Mpeg4Decoder {
 
         debug!("VOP 类型: {:?}", picture_type);
 
-        // modulo_time_base
-        while reader.read_bit() == Some(true) {}
+        // modulo_time_base (计数 '1' 位)
+        let mut modulo_time_incr = 0i32;
+        while reader.read_bit() == Some(true) {
+            modulo_time_incr += 1;
+        }
         reader.read_bit(); // marker
 
         // vop_time_increment
-        if let Some(vol) = &self.vol_info {
-            let bits = (vol.vop_time_increment_resolution as f32).log2().ceil() as u8;
-            reader.read_bits(bits.max(1));
+        let time_inc_resolution = self
+            .vol_info
+            .as_ref()
+            .map(|v| v.vop_time_increment_resolution)
+            .unwrap_or(30000);
+        let time_inc_bits = if time_inc_resolution > 1 {
+            (time_inc_resolution as f32).log2().ceil() as u8
+        } else {
+            1
+        };
+        let vop_time_increment = reader.read_bits(time_inc_bits.max(1)).unwrap_or(0) as i32;
+
+        // 时间跟踪 (计算 TRD/TRB, 用于 B 帧 Direct 模式)
+        let resolution = time_inc_resolution as i32;
+        if picture_type != PictureType::B {
+            self.last_time_base = self.time_base_acc;
+            self.time_base_acc += modulo_time_incr;
+            let abs_time = self.time_base_acc * resolution + vop_time_increment;
+            self.time_pp = abs_time - self.last_non_b_time;
+            if self.time_pp <= 0 {
+                self.time_pp = 1;
+            }
+            self.last_non_b_time = abs_time;
+        } else {
+            let abs_time =
+                (self.last_time_base + modulo_time_incr) * resolution + vop_time_increment;
+            self.time_bp = abs_time - self.last_non_b_time;
         }
 
         reader.read_bit(); // marker
@@ -260,8 +287,15 @@ impl Mpeg4Decoder {
         }
 
         debug!(
-            "VOP 头: quant={}, rounding={}, f_code_fwd={}, dc_thr={}",
-            self.quant, self.rounding_control, self.f_code_forward, intra_dc_vlc_thr
+            "VOP 头: type={:?}, quant={}, rounding={}, f_fwd={}, f_bwd={}, dc_thr={}, time_pp={}, time_bp={}",
+            picture_type,
+            self.quant,
+            self.rounding_control,
+            self.f_code_forward,
+            self.f_code_backward,
+            intra_dc_vlc_thr,
+            self.time_pp,
+            self.time_bp
         );
 
         Ok(VopInfo {

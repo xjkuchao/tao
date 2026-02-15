@@ -2,11 +2,13 @@
 //!
 //! 包含 MCBPC, CBPY, Intra DC, MVD, AC 系数的 VLC 表和解码逻辑.
 
+use std::sync::OnceLock;
+
 use log::warn;
 
 use super::bitreader::BitReader;
 use super::tables::*;
-use super::types::MbType;
+use super::types::{BframeMbMode, MbType};
 
 // ============================================================================
 // VLC 表定义
@@ -278,6 +280,85 @@ pub(super) const INTER_AC_VLC: &[(u8, u16, bool, u8, i8)] = &[
 ];
 
 // ============================================================================
+// VLC O(1) 快速查找表 (阶段 6.1 性能优化)
+// ============================================================================
+
+/// AC VLC 快速查找表条目
+#[derive(Clone, Copy, Default)]
+struct AcVlcFastEntry {
+    /// 码长 (0 = 无效条目)
+    len: u8,
+    /// 特殊标记: 0=普通系数, 1=EOB, 2=Escape
+    special: u8,
+    /// last 标志
+    last: bool,
+    /// 游程
+    run: u8,
+    /// 级别绝对值
+    level: u8,
+}
+
+/// 快速查找表位宽 (12 bits 覆盖所有 AC VLC 码字)
+const AC_FAST_BITS: u8 = 12;
+const AC_FAST_SIZE: usize = 1 << AC_FAST_BITS;
+
+/// 构建 AC VLC 快速查找表
+///
+/// 对每个 VLC 条目, 将其映射到所有可能的 peek(12) 值:
+/// - 码字左移 (12-len) 位作为 base index
+/// - 填充低位 2^(12-len) 个条目
+fn build_ac_vlc_fast(table: &[(u8, u16, bool, u8, i8)]) -> Box<[AcVlcFastEntry; AC_FAST_SIZE]> {
+    let mut entries = vec![AcVlcFastEntry::default(); AC_FAST_SIZE];
+
+    for &(len, code, last, run, level) in table {
+        if len == 0 || len > AC_FAST_BITS {
+            continue;
+        }
+
+        let special = if last && run == 0 && level == 0 {
+            1 // EOB
+        } else if !last && run == 0 && level == 0 {
+            2 // Escape
+        } else {
+            0 // 普通系数
+        };
+
+        let padding = AC_FAST_BITS - len;
+        let base = (code as usize) << padding;
+        for extra in 0..(1usize << padding) {
+            entries[base | extra] = AcVlcFastEntry {
+                len,
+                special,
+                last,
+                run,
+                level: level.unsigned_abs(),
+            };
+        }
+    }
+
+    // Vec<T> -> Box<[T; N]>
+    let boxed_slice = entries.into_boxed_slice();
+    // SAFETY: 长度已确保为 AC_FAST_SIZE
+    unsafe {
+        let raw = Box::into_raw(boxed_slice) as *mut [AcVlcFastEntry; AC_FAST_SIZE];
+        Box::from_raw(raw)
+    }
+}
+
+/// 全局 Intra AC 快速查找表 (延迟初始化)
+static INTRA_AC_FAST: OnceLock<Box<[AcVlcFastEntry; AC_FAST_SIZE]>> = OnceLock::new();
+/// 全局 Inter AC 快速查找表 (延迟初始化)
+static INTER_AC_FAST: OnceLock<Box<[AcVlcFastEntry; AC_FAST_SIZE]>> = OnceLock::new();
+
+fn get_intra_ac_fast() -> &'static [AcVlcFastEntry; AC_FAST_SIZE] {
+    INTRA_AC_FAST.get_or_init(|| build_ac_vlc_fast(INTRA_AC_VLC))
+}
+
+fn get_inter_ac_fast() -> &'static [AcVlcFastEntry; AC_FAST_SIZE] {
+    INTER_AC_FAST.get_or_init(|| build_ac_vlc_fast(INTER_AC_VLC))
+}
+
+// ============================================================================
 // VLC 解码函数
 // ============================================================================
 
@@ -414,6 +495,8 @@ fn get_max_run(is_intra: bool, last: bool, level: usize) -> u8 {
 
 /// 使用 VLC 表解码 AC 系数 (支持 Escape Mode 1/2/3)
 ///
+/// 使用 O(1) 快速查找表 (4096 项) + escape 慢路径.
+///
 /// 返回:
 /// - `Ok(Some((last, run, level)))` - 成功解码
 /// - `Ok(None)` - EOB
@@ -423,59 +506,56 @@ pub(super) fn decode_ac_vlc(
     table: &[(u8, u16, bool, u8, i8)],
     is_intra: bool,
 ) -> Result<Option<(bool, u8, i16)>, ()> {
-    // 检查 escape 码 (7 位 = 0000011)
-    if let Some(escape_check) = reader.peek_bits(7) {
-        if escape_check == 3 {
-            reader.read_bits(7).ok_or(())?;
-            let mode_bit1 = reader.peek_bits(1).ok_or(())?;
-            if mode_bit1 == 0 {
-                // Escape Mode 1: level 偏移
-                reader.read_bits(1).ok_or(())?;
-                if let Some(result) = decode_vlc_entry(reader, table)? {
-                    let (last, run, level) = result;
-                    let max_lev = get_max_level(is_intra, last, run as usize) as i16;
-                    let abs_level = level.unsigned_abs() + max_lev as u16;
-                    let final_level = if level < 0 {
-                        -(abs_level as i16)
+    // O(1) 快速路径: peek 12 bits, 查找表直接命中
+    let fast = if is_intra {
+        get_intra_ac_fast()
+    } else {
+        get_inter_ac_fast()
+    };
+
+    if let Some(peek) = reader.peek_bits(AC_FAST_BITS) {
+        let entry = &fast[peek as usize];
+
+        if entry.len > 0 {
+            match entry.special {
+                1 => {
+                    // EOB
+                    reader.read_bits(entry.len).ok_or(())?;
+                    return Ok(None);
+                }
+                2 => {
+                    // Escape: 消耗 7-bit escape 码, 进入 escape 模式处理
+                    reader.read_bits(7).ok_or(())?;
+                    return decode_ac_escape_modes(reader, table, is_intra);
+                }
+                _ => {
+                    // 普通系数: 消耗码字 + 读取符号位
+                    reader.read_bits(entry.len).ok_or(())?;
+                    let sign = reader.read_bit().ok_or(())?;
+                    let level = if sign {
+                        -(entry.level as i16)
                     } else {
-                        abs_level as i16
+                        entry.level as i16
                     };
-                    return Ok(Some((last, run, final_level)));
+                    return Ok(Some((entry.last, entry.run, level)));
                 }
-                return Err(());
             }
-            let mode_bit2 = reader.peek_bits(2).ok_or(())?;
-            if mode_bit2 == 2 {
-                // 10 -> Escape Mode 2: run 偏移
-                reader.read_bits(2).ok_or(())?;
-                if let Some(result) = decode_vlc_entry(reader, table)? {
-                    let (last, run, level) = result;
-                    let max_r = get_max_run(is_intra, last, level.unsigned_abs() as usize);
-                    let final_run = run + max_r + 1;
-                    return Ok(Some((last, final_run, level)));
-                }
-                return Err(());
-            }
-            // 11 -> Escape Mode 3: FLC
-            reader.read_bits(2).ok_or(())?;
-            return decode_ac_escape_flc(reader).map(Some).ok_or(());
         }
     }
 
-    // 尝试匹配 VLC 表中的普通条目
+    // 回退: 数据不足, 尝试逐条匹配 (处理剩余位不足 12 bits 的边界情况)
     for &(len, code, last, run, level) in table {
-        let bits = reader.peek_bits(len).ok_or(())?;
+        let Some(bits) = reader.peek_bits(len) else {
+            continue;
+        };
         if bits as u16 == code {
             reader.read_bits(len).ok_or(())?;
-            // EOB
             if last && run == 0 && level == 0 {
                 return Ok(None);
             }
-            // Escape (已在上面处理)
             if !last && run == 0 && level == 0 {
                 return decode_ac_escape_flc(reader).map(Some).ok_or(());
             }
-            // 正常系数: 读取符号位
             let sign = reader.read_bit().ok_or(())?;
             let actual_level = if !sign { level as i16 } else { -(level as i16) };
             return Ok(Some((last, run, actual_level)));
@@ -484,6 +564,48 @@ pub(super) fn decode_ac_vlc(
 
     warn!("AC VLC 解码失败: 字节位置 = {}", reader.byte_position());
     Err(())
+}
+
+/// Escape 模式处理 (Mode 1/2/3)
+///
+/// 在 7-bit escape 码已被消耗后调用.
+fn decode_ac_escape_modes(
+    reader: &mut BitReader,
+    table: &[(u8, u16, bool, u8, i8)],
+    is_intra: bool,
+) -> Result<Option<(bool, u8, i16)>, ()> {
+    let mode_bit1 = reader.peek_bits(1).ok_or(())?;
+    if mode_bit1 == 0 {
+        // Escape Mode 1: level 偏移
+        reader.read_bits(1).ok_or(())?;
+        if let Some(result) = decode_vlc_entry(reader, table)? {
+            let (last, run, level) = result;
+            let max_lev = get_max_level(is_intra, last, run as usize) as i16;
+            let abs_level = level.unsigned_abs() + max_lev as u16;
+            let final_level = if level < 0 {
+                -(abs_level as i16)
+            } else {
+                abs_level as i16
+            };
+            return Ok(Some((last, run, final_level)));
+        }
+        return Err(());
+    }
+    let mode_bit2 = reader.peek_bits(2).ok_or(())?;
+    if mode_bit2 == 2 {
+        // 10 → Escape Mode 2: run 偏移
+        reader.read_bits(2).ok_or(())?;
+        if let Some(result) = decode_vlc_entry(reader, table)? {
+            let (last, run, level) = result;
+            let max_r = get_max_run(is_intra, last, level.unsigned_abs() as usize);
+            let final_run = run + max_r + 1;
+            return Ok(Some((last, final_run, level)));
+        }
+        return Err(());
+    }
+    // 11 → Escape Mode 3: FLC
+    reader.read_bits(2).ok_or(())?;
+    decode_ac_escape_flc(reader).map(Some).ok_or(())
 }
 
 /// 从 VLC 表解码一个条目 (用于 escape mode 1/2 后续解码)
@@ -519,4 +641,70 @@ fn decode_ac_escape_flc(reader: &mut BitReader) -> Option<(bool, u8, i16)> {
         level_bits
     };
     Some((last, run, level))
+}
+
+// ============================================================================
+// B 帧 VLC 解码函数
+// ============================================================================
+
+/// 解码 MODB (B-VOP 宏块类型标志)
+///
+/// 返回 `(mb_type_present, cbp_present)`:
+/// - MODB = "1": 两者均不存在, 使用 Direct 模式, CBP=0
+/// - MODB = "01": mb_type 存在, CBP=0
+/// - MODB = "00": 两者均存在
+pub(super) fn decode_modb(reader: &mut BitReader) -> (bool, bool) {
+    match reader.read_bit() {
+        Some(true) => (false, false),
+        Some(false) => match reader.read_bit() {
+            Some(true) => (true, false),
+            Some(false) => (true, true),
+            None => (false, false),
+        },
+        None => (false, false),
+    }
+}
+
+/// 解码 B-VOP 宏块类型
+///
+/// VLC 编码:
+/// - "1" → Direct
+/// - "01" → Interpolate
+/// - "001" → Backward
+/// - "0001" → Forward
+/// - "00001" → DirectNoneMv (fallback)
+pub(super) fn decode_b_mb_type(reader: &mut BitReader) -> BframeMbMode {
+    for mode_idx in 0..4u8 {
+        match reader.read_bit() {
+            Some(true) => {
+                return match mode_idx {
+                    0 => BframeMbMode::Direct,
+                    1 => BframeMbMode::Interpolate,
+                    2 => BframeMbMode::Backward,
+                    3 => BframeMbMode::Forward,
+                    _ => BframeMbMode::Direct,
+                };
+            }
+            Some(false) => continue,
+            None => return BframeMbMode::Direct,
+        }
+    }
+    BframeMbMode::DirectNoneMv
+}
+
+/// 解码 DBQUANT (B-VOP 量化变化)
+///
+/// - "0" → 0 (无变化)
+/// - "10" → -2
+/// - "11" → +2
+pub(super) fn decode_dbquant(reader: &mut BitReader) -> i32 {
+    match reader.read_bit() {
+        Some(false) => 0,
+        Some(true) => match reader.read_bit() {
+            Some(false) => -2,
+            Some(true) => 2,
+            None => 0,
+        },
+        None => 0,
+    }
 }

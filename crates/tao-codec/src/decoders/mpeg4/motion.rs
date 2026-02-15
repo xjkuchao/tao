@@ -219,7 +219,6 @@ impl Mpeg4Decoder {
     }
 
     /// MV 合法性验证
-    #[allow(dead_code)]
     pub(super) fn validate_vector(&self, mv: &mut MotionVector, mb_x: u32, mb_y: u32) {
         let shift = 5;
         let x_high = ((self.mb_stride as i16 - mb_x as i16) << shift) - 1;
@@ -230,5 +229,115 @@ impl Mpeg4Decoder {
 
         mv.x = mv.x.clamp(x_low, x_high);
         mv.y = mv.y.clamp(y_low, y_high);
+    }
+
+    // ========================================================================
+    // Quarter-Pixel 运动补偿 (6-tap FIR 滤波器)
+    // ========================================================================
+
+    /// 水平 6-tap FIR 半像素滤波器: h = [-1, 5, 20, 20, 5, -1] / 32
+    fn qpel_h_filter(ref_frame: &VideoFrame, plane: usize, x: isize, y: isize) -> i32 {
+        let get = |xx: isize| -> i32 { Self::get_ref_pixel(ref_frame, plane, xx, y) as i32 };
+        let val = -get(x - 2) + 5 * get(x - 1) + 20 * get(x) + 20 * get(x + 1) + 5 * get(x + 2)
+            - get(x + 3);
+        ((val + 16) >> 5).clamp(0, 255)
+    }
+
+    /// 垂直 6-tap FIR 半像素滤波器
+    fn qpel_v_filter(ref_frame: &VideoFrame, plane: usize, x: isize, y: isize) -> i32 {
+        let get = |yy: isize| -> i32 { Self::get_ref_pixel(ref_frame, plane, x, yy) as i32 };
+        let val = -get(y - 2) + 5 * get(y - 1) + 20 * get(y) + 20 * get(y + 1) + 5 * get(y + 2)
+            - get(y + 3);
+        ((val + 16) >> 5).clamp(0, 255)
+    }
+
+    /// 对角线 6-tap FIR 半像素滤波器 (先水平后垂直)
+    fn qpel_hv_filter(ref_frame: &VideoFrame, plane: usize, x: isize, y: isize) -> i32 {
+        let h_row = |yy: isize| -> i32 {
+            let get = |xx: isize| -> i32 { Self::get_ref_pixel(ref_frame, plane, xx, yy) as i32 };
+            -get(x - 2) + 5 * get(x - 1) + 20 * get(x) + 20 * get(x + 1) + 5 * get(x + 2)
+                - get(x + 3)
+        };
+        let val =
+            -h_row(y - 2) + 5 * h_row(y - 1) + 20 * h_row(y) + 20 * h_row(y + 1) + 5 * h_row(y + 2)
+                - h_row(y + 3);
+        ((val + 512) >> 10).clamp(0, 255)
+    }
+
+    /// Quarter-Pixel 运动补偿 (单像素)
+    ///
+    /// MV 使用四分之一像素精度: MV=4 表示偏移 1 个整像素.
+    /// 对 16 种 (dx, dy) 组合使用 6-tap FIR 和双线性插值.
+    pub(super) fn qpel_motion_compensation(
+        ref_frame: &VideoFrame,
+        plane: usize,
+        base_x: isize,
+        base_y: isize,
+        mv_x: i16,
+        mv_y: i16,
+    ) -> u8 {
+        let ix = (mv_x >> 2) as isize;
+        let iy = (mv_y >> 2) as isize;
+        let dx = ((mv_x & 3) + 4) as usize % 4;
+        let dy = ((mv_y & 3) + 4) as usize % 4;
+
+        let sx = base_x + ix;
+        let sy = base_y + iy;
+
+        let f = |ox: isize, oy: isize| -> i32 {
+            Self::get_ref_pixel(ref_frame, plane, sx + ox, sy + oy) as i32
+        };
+        let h = |ox: isize, oy: isize| -> i32 {
+            Self::qpel_h_filter(ref_frame, plane, sx + ox, sy + oy)
+        };
+        let v = |ox: isize, oy: isize| -> i32 {
+            Self::qpel_v_filter(ref_frame, plane, sx + ox, sy + oy)
+        };
+        let hv = |ox: isize, oy: isize| -> i32 {
+            Self::qpel_hv_filter(ref_frame, plane, sx + ox, sy + oy)
+        };
+
+        let avg = |a: i32, b: i32| -> i32 { (a + b + 1) >> 1 };
+
+        let result = match (dx, dy) {
+            (0, 0) => f(0, 0),
+            (1, 0) => avg(f(0, 0), h(0, 0)),
+            (2, 0) => h(0, 0),
+            (3, 0) => avg(h(0, 0), f(1, 0)),
+            (0, 1) => avg(f(0, 0), v(0, 0)),
+            (0, 2) => v(0, 0),
+            (0, 3) => avg(v(0, 0), f(0, 1)),
+            (2, 2) => hv(0, 0),
+            (1, 1) => avg(f(0, 0), hv(0, 0)),
+            (3, 1) => avg(f(1, 0), hv(0, 0)),
+            (1, 3) => avg(f(0, 1), hv(0, 0)),
+            (3, 3) => avg(f(1, 1), hv(0, 0)),
+            (2, 1) => avg(h(0, 0), hv(0, 0)),
+            (2, 3) => avg(hv(0, 0), h(0, 1)),
+            (1, 2) => avg(v(0, 0), hv(0, 0)),
+            (3, 2) => avg(hv(0, 0), v(1, 0)),
+            _ => f(0, 0),
+        };
+
+        result.clamp(0, 255) as u8
+    }
+
+    /// 通用运动补偿入口 (根据 quarterpel 标志选择半像素或四分之一像素 MC)
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn motion_compensate(
+        ref_frame: &VideoFrame,
+        plane: usize,
+        base_x: isize,
+        base_y: isize,
+        mv_x: i16,
+        mv_y: i16,
+        rounding: u8,
+        quarterpel: bool,
+    ) -> u8 {
+        if quarterpel {
+            Self::qpel_motion_compensation(ref_frame, plane, base_x, base_y, mv_x, mv_y)
+        } else {
+            Self::motion_compensation(ref_frame, plane, base_x, base_y, mv_x, mv_y, rounding)
+        }
     }
 }
