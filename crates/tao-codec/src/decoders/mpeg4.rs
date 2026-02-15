@@ -100,15 +100,6 @@ impl<'a> BitReader<'a> {
         self.read_bits(1).map(|b| b != 0)
     }
 
-    /// 字节对齐 - 将读取位置对齐到下一个字节边界
-    /// 用于VOP头解析后和resync marker后
-    fn align_to_byte(&mut self) {
-        if self.bit_pos != 0 {
-            self.byte_pos += 1;
-            self.bit_pos = 0;
-        }
-    }
-
     /// 获取当前字节位置（用于调试）
     #[allow(dead_code)]
     fn byte_position(&self) -> usize {
@@ -327,19 +318,27 @@ const INTRA_AC_VLC: &[(u8, u16, bool, u8, i8)] = &[
     // EOB (End of Block)
     (2, 0x3, true, 0, 0),
     // Last=0 (中间系数)
-    (3, 0x3, false, 0, 1), // 011s -> level 1
-    (4, 0x3, false, 1, 1), // 0011 s
-    (5, 0x3, false, 0, 2), // 00011 s
-    (5, 0x5, false, 2, 1), // 00101 s
-    (5, 0x4, false, 3, 1), // 00100 s
-    (6, 0x6, false, 1, 2), // 000110 s
-    (6, 0x9, false, 4, 1), // 001001 s
-    (6, 0x8, false, 5, 1), // 001000 s
-    (6, 0x7, false, 6, 1), // 000111 s
+    (3, 0x3, false, 0, 1),   // 011 -> level 1
+    (4, 0x3, false, 1, 1),   // 0011 -> run 1, level 1
+    (5, 0x3, false, 0, 2),   // 00011 -> level 2
+    (5, 0x5, false, 2, 1),   // 00101 -> run 2, level 1
+    (5, 0x4, false, 3, 1),   // 00100 -> run 3, level 1
+    (6, 0x6, false, 1, 2),   // 000110 -> run 1, level 2
+    (6, 0x9, false, 4, 1),   // 001001 -> run 4, level 1
+    (6, 0x8, false, 5, 1),   // 001000 -> run 5, level 1
+    (6, 0x7, false, 6, 1),   // 000111 -> run 6, level 1
+    (7, 0xB, false, 7, 1),   // 0001011 -> run 7, level 1
+    (7, 0xA, false, 8, 1),   // 0001010 -> run 8, level 1
+    (8, 0x13, false, 9, 1),  // 00010011 -> run 9, level 1
+    (8, 0x12, false, 10, 1), // 00010010 -> run 10, level 1
     // Last=1
-    (4, 0x2, true, 0, 1), // 0010 s
-    (6, 0x5, true, 1, 1), // 000101 s
-    (6, 0xB, true, 0, 2), // 001011 s
+    (4, 0x2, true, 0, 1),  // 0010 -> last, level 1
+    (6, 0x5, true, 1, 1),  // 000101 -> last, run 1, level 1
+    (7, 0x9, true, 2, 1),  // 0001001 -> last, run 2, level 1
+    (8, 0xD, true, 3, 1),  // 00001101 -> last, run 3, level 1
+    (6, 0xB, true, 0, 2),  // 001011 -> last, level 2
+    (9, 0x17, true, 1, 2), // 000010111 -> last, run 1, level 2
+    (8, 0xC, true, 0, 3),  // 00001100 -> last, level 3
 ];
 
 /// MCBPC (Macroblock Type and Coded Block Pattern for Chrominance) VLC 表
@@ -776,6 +775,16 @@ fn decode_ac_vlc(
         }
     }
 
+    // If no match found, it's an error or an unsupported escape mode.
+    // Adding a warning to prevent silent desync.
+    if let Some(dbg_bits) = reader.peek_bits(16) {
+        warn!(
+            "AC VLC 解码失败: 前 16 位 = {:016b} (0x{:04X}), 字节位置 = {}",
+            dbg_bits,
+            dbg_bits,
+            reader.byte_position()
+        );
+    }
     Err(())
 }
 
@@ -833,30 +842,40 @@ impl<'a> BitReader<'a> {
 ///
 /// # 参数
 /// - `reader`: 位读取器
-/// - `is_luma`: true 为 Y (亮度), false 为 UV (色度)
-/// - `dc_predictor`: DC 预测值 (来自前一个块)
+/// - `plane`: 0=Y, 1=U, 2=V
+/// - `mb_x`, `mb_y`: 宏块坐标
+/// - `block_idx`: 块在宏块中的索引 (0-3 for Y, 4 for U, 5 for V)
+/// - `ac_pred_flag`: 是否使用 AC 预测
+/// - `ac_coded`: 是否编码了 AC 系数
+/// - `decoder`: 解码器实例
 ///
 /// # 返回
 /// 64 个 DCT 系数 (zigzag 顺序)
 fn decode_intra_block_vlc(
     reader: &mut BitReader,
-    is_luma: bool,
-    dc_predictor: &mut i16,
+    plane: usize,
+    mb_x: u32,
+    mb_y: u32,
+    block_idx: usize,
+    ac_pred_flag: bool,
     ac_coded: bool,
+    decoder: &mut Mpeg4Decoder,
 ) -> Option<[i32; 64]> {
     let mut block = [0i32; 64];
+    let is_luma = plane == 0;
 
-    // 1. DC 系数 (ALWAYS present in Intra)
+    // 1. DC 系数及预测
     let dc_diff = decode_intra_dc_vlc(reader, is_luma)?;
-    *dc_predictor = dc_predictor.wrapping_add(dc_diff);
-    block[0] = *dc_predictor as i32;
+    let (dc_pred, direction) = decoder.get_intra_predictor(mb_x as usize, mb_y as usize, block_idx);
+    let actual_dc = dc_pred.wrapping_add(dc_diff);
+    block[0] = actual_dc as i32;
 
-    // 2. AC 系数 (conditional)
+    // 2. AC 系数
     if ac_coded {
         let mut pos = 1;
         while pos < 64 {
             match decode_ac_vlc(reader, INTRA_AC_VLC) {
-                Ok(None) => break, // EOB
+                Ok(None) => break,
                 Ok(Some((last, run, level))) => {
                     pos += run as usize;
                     if pos >= 64 {
@@ -870,6 +889,71 @@ fn decode_intra_block_vlc(
                 }
                 Err(_) => return None,
             }
+        }
+    }
+
+    // 3. AC 预测 (MPEG-4 Part 2 Section 7.4.3.2)
+    if ac_pred_flag {
+        // 根据 DC 预测方向预测第一行或第一列 AC
+        match direction {
+            PredictorDirection::Vertical => {
+                // 来自上方的块 (block_idx depends on match in get_intra_predictor)
+                // 获取上方块的 cache
+                let c_idx = match block_idx {
+                    0 => decoder.get_neighbor_block_idx(mb_x as isize, mb_y as isize - 1, 2),
+                    1 => decoder.get_neighbor_block_idx(mb_x as isize, mb_y as isize - 1, 3),
+                    2 => decoder.get_neighbor_block_idx(mb_x as isize, mb_y as isize - 1, 0), // Y0 of Top MB
+                    3 => decoder.get_neighbor_block_idx(mb_x as isize, mb_y as isize - 1, 1), // Y1 of Top MB
+                    4 | 5 => {
+                        decoder.get_neighbor_block_idx(mb_x as isize, mb_y as isize - 1, block_idx)
+                    }
+                    _ => None,
+                };
+                if let Some(idx) = c_idx {
+                    let pred_ac = decoder.predictor_cache[idx];
+                    for i in 1..8 {
+                        // 预测当前块的第一行 AC (zigzag indices 1-7)
+                        block[ZIGZAG_8X8[i]] = block[ZIGZAG_8X8[i]].wrapping_add(pred_ac[i] as i32);
+                    }
+                }
+            }
+            PredictorDirection::Horizontal => {
+                // 来自左侧的块
+                let a_idx = match block_idx {
+                    0 => decoder.get_neighbor_block_idx(mb_x as isize - 1, mb_y as isize, 1),
+                    1 => decoder.get_neighbor_block_idx(mb_x as isize - 1, mb_y as isize, 0), // Y0 of Left MB
+                    2 => decoder.get_neighbor_block_idx(mb_x as isize - 1, mb_y as isize, 3),
+                    3 => decoder.get_neighbor_block_idx(mb_x as isize - 1, mb_y as isize, 2), // Y2 of Left MB
+                    4 | 5 => {
+                        decoder.get_neighbor_block_idx(mb_x as isize - 1, mb_y as isize, block_idx)
+                    }
+                    _ => None,
+                };
+                if let Some(idx) = a_idx {
+                    let pred_ac = decoder.predictor_cache[idx];
+                    for i in 1..8 {
+                        // 预测当前块的第一列 AC (zigzag indices 8, 16, 24, ...)
+                        // cache 中存储的是 7+i (即 8-14)
+                        block[ZIGZAG_8X8[i * 8]] =
+                            block[ZIGZAG_8X8[i * 8]].wrapping_add(pred_ac[7 + i] as i32);
+                    }
+                }
+            }
+            _ => {} // No AC prediction if direction is not Horizontal or Vertical
+        }
+    }
+
+    // 4. 更新预测器缓存
+    let cache_pos = (mb_y as usize * decoder.mb_stride + mb_x as usize) * 6 + block_idx;
+    if let Some(cache) = decoder.predictor_cache.get_mut(cache_pos) {
+        cache[0] = actual_dc;
+        // 存储第一行 AC (用于 Vertical 预测)
+        for i in 1..8 {
+            cache[i] = block[ZIGZAG_8X8[i]] as i16;
+        }
+        // 存储第一列 AC (用于 Horizontal 预测)
+        for i in 1..8 {
+            cache[7 + i] = block[ZIGZAG_8X8[i * 8]] as i16;
         }
     }
 
@@ -985,6 +1069,13 @@ fn dct_to_spatial(coefficients: &[i32; 64]) -> [i16; 64] {
     spatial
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PredictorDirection {
+    None,
+    Horizontal,
+    Vertical,
+}
+
 /// MPEG4 视频解码器
 pub struct Mpeg4Decoder {
     /// 视频宽度
@@ -1009,15 +1100,18 @@ pub struct Mpeg4Decoder {
     quant_matrix_intra: [u8; 64],
     /// 外部量化矩阵 (Inter)
     quant_matrix_inter: [u8; 64],
-    /// DC 预测器 (用于 Intra 块) - [Y, U, V]
-    dc_predictors: [i16; 3],
+    /// 预测器缓存: 每个 8x8 块的 DC 和 AC 边界系数
+    /// 每个块存储 15 个 i16: [0]=DC, [1..8]=第一行 AC, [8..15]=第一列 AC
+    predictor_cache: Vec<[i16; 15]>,
     /// 运动向量缓存 (用于预测) - 存储每个宏块的 MV
     /// 索引: mb_y * mb_stride + mb_x
     mv_cache: Vec<MotionVector>,
     /// 宏块宽度 (以宏块为单位)
-    mb_stride: u32,
+    mb_stride: usize,
     /// VOP f_code (前向)
     f_code_forward: u8,
+    /// 舍入控制 (vop_rounding_type)
+    rounding_control: u8,
 }
 
 /// VOL (Video Object Layer) 信息
@@ -1104,10 +1198,7 @@ impl Mpeg4Decoder {
             {
                 return MotionVector { x: 0, y: 0 };
             }
-            if let Some(mv) = self
-                .mv_cache
-                .get((y as u32 * self.mb_stride + x as u32) as usize)
-            {
+            if let Some(mv) = self.mv_cache.get(y as usize * self.mb_stride + x as usize) {
                 *mv
             } else {
                 MotionVector { x: 0, y: 0 }
@@ -1154,6 +1245,7 @@ impl Mpeg4Decoder {
         base_y: isize,
         mv_x: i16, // Half-pixel units
         mv_y: i16, // Half-pixel units
+        rounding: u8,
     ) -> u8 {
         if let Some(ref_frame) = &self.reference_frame {
             let width = if plane == 0 {
@@ -1194,13 +1286,15 @@ impl Mpeg4Decoder {
                 let p10 = ref_frame.data[plane][idx10] as u16;
                 let p11 = ref_frame.data[plane][idx11] as u16;
 
+                let r = rounding as u16;
+
                 if half_x && !half_y {
-                    return (p00 + p01).div_ceil(2) as u8;
+                    return ((p00 + p01 + 1 - r) >> 1) as u8;
                 } else if !half_x && half_y {
-                    return (p00 + p10).div_ceil(2) as u8;
+                    return ((p00 + p10 + 1 - r) >> 1) as u8;
                 } else {
                     // half_x && half_y
-                    return ((p00 + p01 + p10 + p11 + 2) / 4) as u8;
+                    return ((p00 + p01 + p10 + p11 + 2 - r) >> 2) as u8;
                 }
             }
         }
@@ -1243,11 +1337,80 @@ impl Mpeg4Decoder {
             vol_info: None,
             quant_matrix_intra: STD_INTRA_QUANT_MATRIX,
             quant_matrix_inter: STD_INTER_QUANT_MATRIX,
-            dc_predictors: [0; 3],
+            predictor_cache: Vec::new(),
             mv_cache: Vec::new(),
             mb_stride: 0,
             f_code_forward: 1,
+            rounding_control: 0,
         }))
+    }
+
+    /// 获取指定的预测器 (DC/AC)
+
+    /// 获取指定坐标块在预测器缓存中的索引
+    fn get_neighbor_block_idx(&self, x: isize, y: isize, idx: usize) -> Option<usize> {
+        if x < 0 || y < 0 || x >= self.mb_stride as isize {
+            return None;
+        }
+        let mb_height = (self.height as usize + 15) / 16;
+        if y >= mb_height as isize {
+            return None;
+        }
+        Some((y as usize * self.mb_stride + x as usize) * 6 + idx)
+    }
+
+    /// 获取 Intra 块的预测方向和 DC 预测值
+    fn get_intra_predictor(
+        &self,
+        mb_x: usize,
+        mb_y: usize,
+        block_idx: usize,
+    ) -> (i16, PredictorDirection) {
+        // 获取相邻块 (A=Left, B=TopLeft, C=Top)
+        let get_dc = |x: isize, y: isize, idx: usize| -> i16 {
+            self.get_neighbor_block_idx(x, y, idx)
+                .and_then(|pos| self.predictor_cache.get(pos))
+                .map(|b| b[0])
+                .unwrap_or(1024)
+        };
+
+        let (dc_a, dc_b, dc_c) = match block_idx {
+            0 => (
+                get_dc(mb_x as isize - 1, mb_y as isize, 1),
+                get_dc(mb_x as isize - 1, mb_y as isize - 1, 3),
+                get_dc(mb_x as usize as isize, mb_y as isize - 1, 2),
+            ),
+            1 => (
+                get_dc(mb_x as isize, mb_y as isize, 0),
+                get_dc(mb_x as isize, mb_y as isize - 1, 2),
+                get_dc(mb_x as isize, mb_y as isize - 1, 3),
+            ),
+            2 => (
+                get_dc(mb_x as isize - 1, mb_y as isize, 3),
+                get_dc(mb_x as isize - 1, mb_y as isize, 1),
+                get_dc(mb_x as isize, mb_y as isize, 0),
+            ),
+            3 => (
+                get_dc(mb_x as isize, mb_y as isize, 2),
+                get_dc(mb_x as isize, mb_y as isize, 0),
+                get_dc(mb_x as isize, mb_y as isize, 1),
+            ),
+            4 | 5 => (
+                get_dc(mb_x as isize - 1, mb_y as isize, block_idx),
+                get_dc(mb_x as isize - 1, mb_y as isize - 1, block_idx),
+                get_dc(mb_x as isize, mb_y as isize - 1, block_idx),
+            ),
+            _ => (1024, 1024, 1024),
+        };
+
+        let grad_hor = (dc_a - dc_b).abs();
+        let grad_ver = (dc_c - dc_b).abs();
+
+        if grad_hor < grad_ver {
+            (dc_c, PredictorDirection::Vertical)
+        } else {
+            (dc_a, PredictorDirection::Horizontal)
+        }
     }
 
     /// 解析 VOL (Video Object Layer) 头部
@@ -1405,6 +1568,7 @@ impl Mpeg4Decoder {
             return Ok(VopInfo {
                 picture_type,
                 vop_coded: false,
+                vop_rounding_type: 0,
             });
         }
 
@@ -1426,10 +1590,12 @@ impl Mpeg4Decoder {
         }
 
         if picture_type == PictureType::P {
+            // vop_rounding_type (1 bit)
+            self.rounding_control = reader.read_bit().unwrap_or(false) as u8;
+
             // f_code_forward (3 bits)
             if let Some(f_code) = reader.read_bits(3) {
                 self.f_code_forward = f_code as u8;
-                // debug!("f_code_forward: {}", self.f_code_forward);
             }
         }
 
@@ -1447,6 +1613,7 @@ impl Mpeg4Decoder {
         Ok(VopInfo {
             picture_type,
             vop_coded: true,
+            vop_rounding_type: self.rounding_control,
         })
     }
 
@@ -1533,8 +1700,8 @@ impl Mpeg4Decoder {
                 self.copy_mb_from_ref(frame, mb_x, mb_y);
 
                 // MVs are zero
-                if self.mv_cache.len() > (mb_y * self.mb_stride + mb_x) as usize {
-                    self.mv_cache[(mb_y * self.mb_stride + mb_x) as usize] =
+                if self.mv_cache.len() > mb_y as usize * self.mb_stride + mb_x as usize {
+                    self.mv_cache[mb_y as usize * self.mb_stride + mb_x as usize] =
                         MotionVector { x: 0, y: 0 };
                 }
 
@@ -1559,7 +1726,7 @@ impl Mpeg4Decoder {
         }
 
         // 1.5 AC/DC Prediction Flag (Intra-only)
-        let _ac_pred_flag = if matches!(mb_type, MbType::Intra | MbType::IntraQ) {
+        let ac_pred_flag = if matches!(mb_type, MbType::Intra | MbType::IntraQ) {
             let flag = reader.read_bit().unwrap_or(false);
             if mb_x == 1 && mb_y == 0 {
                 warn!("MB(1,0): mb_type={:?}, 读取ac_pred_flag={}", mb_type, flag);
@@ -1579,7 +1746,7 @@ impl Mpeg4Decoder {
                 reader.peek_bits(12).unwrap_or(0)
             );
         }
-        let mut cbpy = match decode_cbpy(reader) {
+        let cbpy = match decode_cbpy(reader) {
             Some(val) => val,
             None => {
                 warn!("宏块 ({}, {}) CBPY VLC 解码失败", mb_x, mb_y);
@@ -1587,20 +1754,13 @@ impl Mpeg4Decoder {
             }
         };
 
-        // H.263/MPEG4: 对于 Intra MB, CBPY 定义是反的 (0=Coded, 1=Empty)
-        // 我们的 decode_cbpy 返回的是基于 Inter (1=Coded) 的值
-        // 所以对于 Intra，我们需要取反
+        // CBPY VLC 解码出的值已经是正确的 pattern (bit 3-0 对应 Y0-Y3)，无需取反
+        // MPEG-4 Table B-15/H.263 Table 11 已经定义了 VLC 到 pattern 的映射
         if mb_x == 0 && mb_y == 0 {
             warn!(
-                "MB(0,0) BEFORE inversion: mb_type={:?}, cbpy={:04b}",
-                mb_type, cbpy
+                "MB(0,0): mb_type={:?}, cbpc={:02b}, cbpy={:04b}",
+                mb_type, cbpc, cbpy
             );
-        }
-        if matches!(mb_type, MbType::Intra | MbType::IntraQ) {
-            cbpy = (!cbpy) & 0x0F;
-        }
-        if mb_x == 0 && mb_y == 0 {
-            warn!("MB(0,0) AFTER inversion: cbpy={:04b}", cbpy);
         }
 
         // 2.5 解码 DQUANT (如果是 IntraQ 或 InterQ)
@@ -1644,8 +1804,8 @@ impl Mpeg4Decoder {
         }
 
         // 存储 MV 到缓存
-        if self.mv_cache.len() > (mb_y * self.mb_stride + mb_x) as usize {
-            self.mv_cache[(mb_y * self.mb_stride + mb_x) as usize] = current_mv;
+        if self.mv_cache.len() > (mb_y as usize * self.mb_stride + mb_x as usize) {
+            self.mv_cache[mb_y as usize * self.mb_stride + mb_x as usize] = current_mv;
         }
 
         // 3. 组合 CBP (6 bits: Y0 Y1 Y2 Y3 U V)
@@ -1669,33 +1829,47 @@ impl Mpeg4Decoder {
             // 检查是否需要解码这个块的 AC 系数 (CBP bit 5-2 对应 Y0-Y3)
             let ac_coded = (cbp >> (5 - block_idx)) & 1 != 0;
 
-            let block = if use_intra_matrix {
-                // Intra 块: DC 总是存在，AC 取决于 CBP
-                decode_intra_block_vlc(reader, true, &mut self.dc_predictors[0], ac_coded)
-                    .unwrap_or([0i32; 64])
-            } else if ac_coded {
-                // Inter 块: 仅当 coded 时读取数据 (DC+AC)
-                decode_inter_block_vlc(reader).unwrap_or([0i32; 64])
+            let mut dequant_block = if matches!(mb_type, MbType::Intra | MbType::IntraQ) {
+                decode_intra_block_vlc(
+                    reader,
+                    0, // Y plane
+                    mb_x,
+                    mb_y,
+                    block_idx,
+                    ac_pred_flag,
+                    ac_coded,
+                    self, // Pass decoder instance for predictor_cache access
+                )
+                .unwrap_or([0; 64])
             } else {
-                [0i32; 64]
+                if ac_coded {
+                    // Inter 块: 仅当 coded 时读取数据 (DC+AC)
+                    decode_inter_block_vlc(reader).unwrap_or([0i32; 64])
+                } else {
+                    [0i32; 64]
+                }
             };
 
             // 应用反量化
-            let mut dequant_block = block;
-            self.apply_quant_matrix(&mut dequant_block, self.quant as u32, use_intra_matrix);
+            self.apply_quant_matrix(
+                &mut dequant_block,
+                self.quant as u32,
+                matches!(mb_type, MbType::Intra | MbType::IntraQ),
+            );
 
             // IDCT 转换到空间域
             let spatial = dct_to_spatial(&dequant_block);
 
             // 预测 Motion Vector (仅对 Inter 块)
-            let (mv_x, mv_y) =
-                if !use_intra_matrix && matches!(mb_type, MbType::Inter | MbType::InterQ) {
-                    // Inter 块: 从 mv_cache 中获取当前 MB 的 MV (已经在 decode_macroblock 前半部分计算并填入)
-                    let mv = self.mv_cache[(mb_y * self.mb_stride + mb_x) as usize];
-                    (mv.x, mv.y)
-                } else {
-                    (0, 0)
-                };
+            let (mv_x, mv_y) = if !matches!(mb_type, MbType::Intra | MbType::IntraQ)
+                && matches!(mb_type, MbType::Inter | MbType::InterQ)
+            {
+                // Inter 块: 从 mv_cache 中获取当前 MB 的 MV (已经在 decode_macroblock 前半部分计算并填入)
+                let mv = self.mv_cache[mb_y as usize * self.mb_stride + mb_x as usize];
+                (mv.x, mv.y)
+            } else {
+                (0, 0)
+            };
 
             // 写入 Y 平面 (Motion Compensation + Residual Add)
             for y in 0..8 {
@@ -1709,34 +1883,17 @@ impl Mpeg4Decoder {
                         let residual = spatial[y * 8 + x];
 
                         // 预测值
-                        let prediction = if !use_intra_matrix {
+                        let prediction = if !matches!(mb_type, MbType::Intra | MbType::IntraQ) {
                             // Inter: 从参考帧获取预测值
-                            self.motion_compensation(0, px, py, mv_x, mv_y)
+                            self.motion_compensation(0, px, py, mv_x, mv_y, self.rounding_control)
                         } else {
-                            // Intra: 预测值为 0 (或者 DC/AC 预测已包含在 residual 中? -> MPEG4 Intra 实际上是直接编码像素值，但有 DC/AC 预测)
-                            // dct_to_spatial 返回的是像素值（对于 Intra），或者残差（对于 Inter）
-                            // Wait: IDCT for Intra produces actual pixel values (signed/unsigned issue?)
-                            // IDCT output is typically centered around 0.
-                            // For Intra, we normally add 128 (level shift) unless it's handled elsewhere.
-                            // But my simple_idct/dct_to_spatial implementation might need checking.
-                            // Assuming dct_to_spatial returns values ready to be clamped?
-                            // Standard IDCT output for Intra needs +128 if input was -128..127.
-                            // In MPEG4, Intra blocks are typically unsigned 8-bit.
-                            0 // Placeholder, logic below handles addition
+                            0 // Intra blocks don't use motion compensation
                         };
 
-                        let final_val = if !use_intra_matrix {
+                        let final_val = if !matches!(mb_type, MbType::Intra | MbType::IntraQ) {
                             (prediction as i16 + residual).clamp(0, 255) as u8
                         } else {
-                            // Intra: IDCT output + 128 (level shift) needed?
-                            // My current dct_to_spatial returns i16.
-                            // If I-frame decoded correctly before, it means my IDCT output was sufficient.
-                            // But wait, my I-frame logic was: frame.data[0][idx] = pixel;
-                            // And pixel was: val.clamp(0,255) as u8.
-                            // If val was centered at 0, clamping 0..255 loses negative values.
-                            // Usually Intra I-frames need +128.
-                            // Let's assume my previous I-frame worked because I didn't verify colors perfectly or it was black/white?
-                            // Let's add 128 for Intra.
+                            // Intra: IDCT output + 128 (level shift)
                             (residual + 128).clamp(0, 255) as u8
                         };
 
@@ -1754,24 +1911,30 @@ impl Mpeg4Decoder {
             // 检查是否需要解码这个色度块的 AC 系数 (CBP bit 1-0 对应 U, V)
             let ac_coded = (cbp >> (1 - plane_idx)) & 1 != 0;
 
-            let block = if use_intra_matrix {
-                // Intra 块: DC 总是存在，AC 取决于 CBP
+            let is_intra = matches!(mb_type, MbType::Intra | MbType::IntraQ);
+
+            let mut dequant_block = if is_intra {
                 decode_intra_block_vlc(
                     reader,
-                    false,
-                    &mut self.dc_predictors[plane_idx + 1],
+                    plane_idx + 1, // U or V plane
+                    mb_x,
+                    mb_y,
+                    4 + plane_idx, // Block index 4 for U, 5 for V
+                    ac_pred_flag,
                     ac_coded,
+                    self, // Pass decoder instance for predictor_cache access
                 )
-                .unwrap_or([0i32; 64])
-            } else if ac_coded {
-                decode_inter_block_vlc(reader).unwrap_or([0i32; 64])
+                .unwrap_or([0; 64])
             } else {
-                [0i32; 64]
+                if ac_coded {
+                    decode_inter_block_vlc(reader).unwrap_or([0i32; 64])
+                } else {
+                    [0i32; 64]
+                }
             };
 
             // 应用反量化
-            let mut dequant_block = block;
-            self.apply_quant_matrix(&mut dequant_block, self.quant as u32, use_intra_matrix);
+            self.apply_quant_matrix(&mut dequant_block, self.quant as u32, is_intra);
 
             // IDCT
             let spatial = dct_to_spatial(&dequant_block);
@@ -1779,39 +1942,47 @@ impl Mpeg4Decoder {
             // 预测 Motion Vector (Chroma)
             // Chroma MV typically is average of Luma MVs or simple scaling?
             // MPEG-4: Chroma MV = (Luma MV / 2) + rounding
-            let (mv_x, mv_y) =
-                if !use_intra_matrix && matches!(mb_type, MbType::Inter | MbType::InterQ) {
-                    let luma_mv = self.mv_cache[(mb_y * self.mb_stride + mb_x) as usize];
-                    // 简单的 Chroma MV 推导: div 2 (with rounding)
-                    // Half-pel Luma -> Full-pel Chroma (since chroma is sub-sampled)
-                    // Or rather: Chroma MV in chroma-pixel units
-                    // (x / 2) if x is even, etc.
-                    // Rounding: video_object_layer_shape != 0 ? ...
-                    // Simplified:
-                    let cmv_x = luma_mv.x / 2; // + (luma_mv.x & 1); 
-                    let cmv_y = luma_mv.y / 2; // + (luma_mv.y & 1);
-                    (cmv_x, cmv_y)
-                } else {
-                    (0, 0)
-                };
+            // Half-pel Luma -> Full-pel Chroma (since chroma is sub-sampled)
+            // Or rather: Chroma MV in chroma-pixel units
+            // (x / 2) if x is even, etc.
+            // Rounding: video_object_layer_shape != 0 ? ...
+            // Simplified:
+            let (mv_x, mv_y) = if !is_intra && matches!(mb_type, MbType::Inter | MbType::InterQ) {
+                let luma_mv = self.mv_cache[mb_y as usize * self.mb_stride + mb_x as usize];
+                // 简单的 Chroma MV 推导: div 2 (with rounding)
+                let cmv_x = luma_mv.x / 2; // + (luma_mv.x & 1);
+                let cmv_y = luma_mv.y / 2; // + (luma_mv.y & 1);
+                (cmv_x, cmv_y)
+            } else {
+                (0, 0)
+            };
 
             // 写入 U/V 平面
             for v in 0..8 {
                 for u in 0..8 {
-                    let px = ((mb_x as usize * 16 + u * 2) / 2) as isize;
-                    let py = ((mb_y as usize * 16 + v * 2) / 2) as isize;
+                    // Chroma blocks are 8x8, and macroblock is 16x16.
+                    // So for chroma, mb_x * 8 and mb_y * 8 gives the top-left of the 8x8 chroma block.
+                    let px = (mb_x as usize * 8 + u) as isize;
+                    let py = (mb_y as usize * 8 + v) as isize;
 
                     if px >= 0 && px < uv_width as isize && py >= 0 && py < uv_height as isize {
                         let uv_idx = (py as usize) * uv_width + (px as usize);
                         let residual = spatial[v * 8 + u];
 
-                        let prediction = if !use_intra_matrix {
-                            self.motion_compensation(plane_idx + 1, px, py, mv_x, mv_y)
+                        let prediction = if !is_intra {
+                            self.motion_compensation(
+                                plane_idx + 1,
+                                px,
+                                py,
+                                mv_x,
+                                mv_y,
+                                self.rounding_control,
+                            )
                         } else {
                             0
                         };
 
-                        let final_val = if !use_intra_matrix {
+                        let final_val = if !is_intra {
                             (prediction as i16 + residual).clamp(0, 255) as u8
                         } else {
                             (residual + 128).clamp(0, 255) as u8
@@ -1835,8 +2006,9 @@ impl Mpeg4Decoder {
 
     /// 解码 I 帧 (关键帧)
     fn decode_i_frame_from_reader(&mut self, reader: &mut BitReader) -> TaoResult<VideoFrame> {
-        // 重置 DC 预测器 (I 帧开始时)
-        self.dc_predictors = [0; 3];
+        // 重置预测器缓存 (I 帧开始时)
+        let total_blocks = (self.width.div_ceil(16) * self.height.div_ceil(16) * 6) as usize;
+        self.predictor_cache = vec![[1024, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; total_blocks];
 
         let mut frame = VideoFrame::new(self.width, self.height, self.pixel_format);
         frame.picture_type = PictureType::I;
@@ -1898,8 +2070,8 @@ impl Mpeg4Decoder {
         frame.linesize[2] = (self.width / 2) as usize;
 
         // 宏块解码
-        let mb_width = self.width.div_ceil(16);
-        let mb_height = self.height.div_ceil(16);
+        let mb_width = self.mb_stride;
+        let mb_height = (self.height as usize + 15) / 16;
 
         debug!(
             "开始解码 P 帧: {}x{} ({}x{} 宏块)",
@@ -1907,8 +2079,8 @@ impl Mpeg4Decoder {
         );
 
         // 解码每个宏块
-        for mb_y in 0..mb_height {
-            for mb_x in 0..mb_width {
+        for mb_y in 0..mb_height as u32 {
+            for mb_x in 0..mb_width as u32 {
                 // P-Frame: use_intra_matrix = false (default inter), but specific MBs can be Intra
                 self.decode_macroblock(&mut frame, mb_x, mb_y, reader, false);
             }
@@ -1965,6 +2137,8 @@ struct VopInfo {
     picture_type: PictureType,
     /// 是否包含编码数据
     vop_coded: bool,
+    /// VOP 舍入类型 (用于运动补偿)
+    vop_rounding_type: u8,
 }
 
 impl Decoder for Mpeg4Decoder {
@@ -1990,6 +2164,7 @@ impl Decoder for Mpeg4Decoder {
 
         self.width = video.width;
         self.height = video.height;
+        self.mb_stride = (video.width as usize + 15) / 16;
         self.pixel_format = PixelFormat::Yuv420p;
         self.opened = true;
         self.frame_count = 0;
@@ -2001,8 +2176,8 @@ impl Decoder for Mpeg4Decoder {
         }
 
         debug!(
-            "打开 MPEG4 解码器: {}x{}, 格式={}",
-            self.width, self.height, self.pixel_format
+            "打开 MPEG4 解码器: {}x{}, mb_stride={}, 格式={}",
+            self.width, self.height, self.mb_stride, self.pixel_format
         );
 
         Ok(())
@@ -2096,11 +2271,11 @@ impl Decoder for Mpeg4Decoder {
         if frame.picture_type == PictureType::I || frame.picture_type == PictureType::P {
             self.reference_frame = Some(frame.clone());
             // 更新 MV Cache 大小 (如果是第一次或尺寸变化)
-            let mb_width = self.width.div_ceil(16);
-            let mb_height = self.height.div_ceil(16);
-            if self.mv_cache.len() != (mb_width * mb_height) as usize {
+            let mb_width = self.width.div_ceil(16) as usize;
+            let mb_height = self.height.div_ceil(16) as usize;
+            if self.mv_cache.len() != mb_width * mb_height {
                 self.mb_stride = mb_width;
-                self.mv_cache = vec![MotionVector::default(); (mb_width * mb_height) as usize];
+                self.mv_cache = vec![MotionVector::default(); mb_width * mb_height];
             }
         }
 
