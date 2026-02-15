@@ -1,0 +1,11 @@
+---
+description: 项目开发规范入口
+globs:
+alwaysApply: true
+---
+
+本项目的完整开发规范定义在仓库根目录的 `AGENTS.md` 文件中.
+
+所有 AI 工具 (Cursor, Copilot, Codex, Claude Code 等) 在开发本项目时, 必须遵循 `AGENTS.md` 中的全部规则.
+
+请在每次会话开始时读取 `AGENTS.md` 获取最新规范.
