@@ -6,7 +6,7 @@
 //!
 //! ## 支持的编解码器
 //!
-//! - **解码器**: PCM (U8/S16/S24/S32/F32), FLAC, AAC, MP3, RawVideo, H.264 解析器
+//! - **解码器**: PCM (U8/S16/S24/S32/F32), FLAC, AAC, MP3, Vorbis, RawVideo, H.264 解析器
 //! - **编码器**: PCM (多种格式), FLAC, AAC, RawVideo
 //!
 //! ## 使用示例

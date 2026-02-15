@@ -297,10 +297,15 @@ impl OggDemuxer {
                     _ => (44100, 2),
                 };
 
+                let sample_format = match codec_id {
+                    CodecId::Vorbis => SampleFormat::S16,
+                    _ => SampleFormat::F32,
+                };
+
                 StreamParams::Audio(AudioStreamParams {
                     sample_rate,
                     channel_layout: ChannelLayout::from_channels(channels),
-                    sample_format: SampleFormat::F32,
+                    sample_format,
                     bit_rate: 0,
                     frame_size: 0,
                 })
