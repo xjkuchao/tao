@@ -889,6 +889,7 @@ fn decode_intra_block_vlc(
 
     // 2. 解码 AC 系数
     let mut pos = 1; // zigzag 索引
+    let mut ac_count = 0;
     loop {
         // 解码一个 AC 系数
         match decode_ac_vlc(reader, INTRA_AC_VLC) {
@@ -908,12 +909,23 @@ fn decode_intra_block_vlc(
                 let zigzag_pos = ZIGZAG_8X8[pos];
                 block[zigzag_pos] = level as i32;
                 pos += 1;
+                ac_count += 1;
 
                 if last || pos >= 64 {
                     break; // 最后一个系数或已填满
                 }
             }
         }
+    }
+
+    // Debug: log AC count for first few blocks
+    static AC_BLOCK_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let count = AC_BLOCK_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if count < 10 {
+        debug!(
+            "Intra块#{}: DC={}, AC系数数={}",
+            count, *dc_predictor, ac_count
+        );
     }
 
     Some(block)
@@ -1628,8 +1640,17 @@ impl Mpeg4Decoder {
         // H.263/MPEG4: 对于 Intra MB, CBPY 定义是反的 (0=Coded, 1=Empty)
         // 我们的 decode_cbpy 返回的是基于 Inter (1=Coded) 的值
         // 所以对于 Intra，我们需要取反
+        if mb_x == 0 && mb_y == 0 {
+            warn!(
+                "MB(0,0) BEFORE inversion: mb_type={:?}, cbpy={:04b}",
+                mb_type, cbpy
+            );
+        }
         if matches!(mb_type, MbType::Intra | MbType::IntraQ) {
             cbpy = (!cbpy) & 0x0F;
+        }
+        if mb_x == 0 && mb_y == 0 {
+            warn!("MB(0,0) AFTER inversion: cbpy={:04b}", cbpy);
         }
 
         // 2.5 解码 DQUANT (如果是 IntraQ 或 InterQ)
@@ -1680,6 +1701,14 @@ impl Mpeg4Decoder {
         // 3. 组合 CBP (6 bits: Y0 Y1 Y2 Y3 U V)
         // CBPY 是 4 bits (Y 块), CBPC 是 2 bits (U, V 块)
         let cbp = (cbpy << 2) | cbpc;
+
+        // Debug: log CBP for first macroblock
+        if mb_x == 0 && mb_y == 0 {
+            warn!(
+                "MB(0,0): cbpc={:02b}, cbpy={:04b}, cbp={:06b} (0x{:02X})",
+                cbpc, cbpy, cbp, cbp
+            );
+        }
 
         // 4. 解码各个 8x8 块
         // Y 平面 (4 个 8x8 块)
