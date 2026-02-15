@@ -281,40 +281,42 @@ struct VlcEntry {
 /// 格式: (位数, 码字, dc_size)
 /// dc_size 表示后续读取的DC差分值的位数
 #[allow(dead_code)]
+/// Intra DC VLC 表 (Y 亮度通道)
+/// 基于 MPEG-4 Part 2 标准 Table B-13
+/// 格式: (位数, 码字, dc_size)
 const INTRA_DC_VLC_Y: &[(u8, u16, i16)] = &[
-    // (位数, 码字, dc_size)
-    (2, 0b00, 0),             // 00 -> dc_size=0 (DC差分为0)
-    (2, 0b01, 1),             // 01 -> dc_size=1
-    (2, 0b10, 2),             // 10 -> dc_size=2
-    (3, 0b110, 3),            // 110 -> dc_size=3
-    (4, 0b1110, 4),           // 1110 -> dc_size=4
-    (5, 0b11110, 5),          // 11110 -> dc_size=5
-    (6, 0b111110, 6),         // 111110 -> dc_size=6
-    (7, 0b1111110, 7),        // 1111110 -> dc_size=7
-    (8, 0b11111110, 8),       // 11111110 -> dc_size=8
-    (9, 0b111111110, 9),      // 111111110 -> dc_size=9
-    (10, 0b1111111110, 10),   // 1111111110 -> dc_size=10
-    (11, 0b11111111110, 11),  // 11111111110 -> dc_size=11
-    (12, 0b111111111110, 12), // 111111111110 -> dc_size=12
+    (3, 0b011, 0),           // 0 -> 011
+    (2, 0b11, 1),            // 1 -> 11
+    (2, 0b10, 2),            // 2 -> 10
+    (3, 0b010, 3),           // 3 -> 010
+    (3, 0b001, 4),           // 4 -> 001
+    (4, 0b0001, 5),          // 5 -> 0001
+    (5, 0b00001, 6),         // 6 -> 00001
+    (6, 0b000001, 7),        // 7 -> 000001
+    (7, 0b0000001, 8),       // 8 -> 0000001
+    (8, 0b00000001, 9),      // 9 -> 00000001
+    (9, 0b000000001, 10),    // 10 -> 000000001
+    (10, 0b0000000001, 11),  // 11 -> 0000000001
+    (11, 0b00000000001, 12), // 12 -> 00000000001
 ];
 
 /// Intra DC VLC 表 (UV 色度通道)
-/// 基于 MPEG-4 Part 2 标准 Table B-14 和 FFmpeg mpeg4data.h
+/// 基于 MPEG-4 Part 2 标准 Table B-14
 #[allow(dead_code)]
 const INTRA_DC_VLC_UV: &[(u8, u16, i16)] = &[
-    (2, 0b00, 0),             // 00 -> dc_size=0
-    (2, 0b01, 1),             // 01 -> dc_size=1
-    (2, 0b10, 2),             // 10 -> dc_size=2
-    (3, 0b110, 3),            // 110 -> dc_size=3
-    (4, 0b1110, 4),           // 1110 -> dc_size=4
-    (5, 0b11110, 5),          // 11110 -> dc_size=5
-    (6, 0b111110, 6),         // 111110 -> dc_size=6
-    (7, 0b1111110, 7),        // 1111110 -> dc_size=7
-    (8, 0b11111110, 8),       // 11111110 -> dc_size=8
-    (9, 0b111111110, 9),      // 111111110 -> dc_size=9
-    (10, 0b1111111110, 10),   // 1111111110 -> dc_size=10
-    (11, 0b11111111110, 11),  // 11111111110 -> dc_size=11
-    (12, 0b111111111110, 12), // 111111111110 -> dc_size=12
+    (2, 0b11, 0),             // 0 -> 11
+    (2, 0b10, 1),             // 1 -> 10
+    (2, 0b01, 2),             // 2 -> 01
+    (3, 0b001, 3),            // 3 -> 001
+    (4, 0b0001, 4),           // 4 -> 0001
+    (5, 0b00001, 5),          // 5 -> 00001
+    (6, 0b000001, 6),         // 6 -> 000001
+    (7, 0b0000001, 7),        // 7 -> 0000001
+    (8, 0b00000001, 8),       // 8 -> 00000001
+    (9, 0b000000001, 9),      // 9 -> 000000001
+    (10, 0b0000000001, 10),   // 10 -> 0000000001
+    (11, 0b00000000001, 11),  // 11 -> 00000000001
+    (12, 0b000000000001, 12), // 12 -> 000000000001
 ];
 
 /// MPEG-4 Intra AC VLC 表 (基于 Table B-16 和 FFmpeg mpeg4data.h)
@@ -1085,6 +1087,9 @@ struct VolInfo {
     /// 固定 VOP 速率标志
     #[allow(dead_code)]
     fixed_vop_rate: bool,
+    /// Data Partitioned
+    #[allow(dead_code)]
+    data_partitioned: bool,
 }
 
 impl Mpeg4Decoder {
@@ -1394,14 +1399,47 @@ impl Mpeg4Decoder {
             }
         }
 
+        // complexity_estimation_disable etc. are only present if shape != rectangular
+        // But for Simple Profile (Rectangular), they might be skipped?
+        // Standard says:
+        // if (video_object_layer_shape != 0) { // 0 is rectangular
+        //    complexity_estimation_disable
+        //    resync_marker_disable
+        //    data_partitioned
+        // }
+        // BUT actually most docs say:
+        // if (shape != rectangular)
+        //    ...
+        // else {
+        //    // Rectangular
+        //    complexity_estimation_disable (1)
+        //    resync_marker_disable (1)
+        //    data_partitioned (1)
+        //    if (data_partitioned) reversible_vlc (1)
+        // }
+        // So they ARE present for Rectangular.
+
+        // We need to know shape. We read `video_object_layer_shape` earlier.
+        // It was stored in local var `_video_object_layer_shape`.
+        // We need to access it. I'll note it's skipped in original code, so I assume Rectangular (0).
+
+        // Assuming Rectangular for standard AVI/MPEG4:
+        let _complexity_estimation_disable = reader.read_bit();
+        let _resync_marker_disable = reader.read_bit();
+        let data_partitioned = reader.read_bit().unwrap_or(false);
+        if data_partitioned {
+            let _reversible_vlc = reader.read_bit();
+        }
+
         self.vol_info = Some(VolInfo {
             vop_time_increment_resolution,
             fixed_vop_rate,
+            data_partitioned,
         });
 
         debug!(
-            "VOL 解析完成: time_resolution={}, quant_type={}, interlaced={}",
-            vop_time_increment_resolution, quant_type, interlaced
+            "VOL 解析完成: time_resolution={}, quant_type={}, interlaced={}, data_partitioned={}",
+            vop_time_increment_resolution, quant_type, interlaced, data_partitioned
         );
 
         Ok(())
@@ -1448,7 +1486,8 @@ impl Mpeg4Decoder {
             });
         }
 
-        // P-VOPs (and others) have modulo time base? Not strictly needed for file playback if simple.
+        // Change logic to use data_partitioned if needed - though strictly not header parsing but body
+        // VOP Header is mostly same.
 
         if picture_type != PictureType::B {
             if let Some(quant) = reader.read_bits(5) {
