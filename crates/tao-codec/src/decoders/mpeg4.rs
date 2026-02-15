@@ -292,26 +292,62 @@ const INTRA_DC_VLC_UV: &[(u8, u16, i16)] = &[
     (10, 0b1111111110, 12), // 1111111110 -> 12
 ];
 
-/// 简化的 MPEG-4 Intra AC VLC 表 (基于 Table B-16)
+/// MPEG-4 Intra AC VLC 表 (基于 Table B-16 和 FFmpeg mpeg4data.h)
 /// 格式: (位数, 码字, last, run, level)
+/// 参考: FFmpeg libavcodec/mpeg4data.h - ff_mpeg4_intra_vlc
 #[allow(dead_code)]
 const INTRA_AC_VLC: &[(u8, u16, bool, u8, i8)] = &[
     // EOB (End of Block) - 所有剩余系数为 0
     (2, 0b11, true, 0, 0),
-    // 常见的短码 (高频模式)
-    (3, 0b011, false, 0, 1),     // s=0, run=0, level=1
-    (4, 0b0011, false, 1, 1),    // s=1, run=1, level=1
-    (5, 0b00011, false, 0, 2),   // s=2, run=0, level=2
-    (5, 0b00100, false, 2, 1),   // run=2, level=1
-    (5, 0b00101, false, 3, 1),   // run=3, level=1
-    (6, 0b000110, false, 4, 1),  // run=4, level=1
-    (6, 0b000111, false, 1, 2),  // run=1, level=2
-    (6, 0b001000, false, 5, 1),  // run=5, level=1
-    (6, 0b001001, false, 6, 1),  // run=6, level=1
-    (7, 0b0010100, false, 7, 1), // run=7, level=1
-    (7, 0b0010101, false, 0, 3), // run=0, level=3
-    (7, 0b0010110, false, 2, 2), // run=2, level=2
-    (7, 0b0010111, false, 8, 1), // run=8, level=1
+    // Last=0 (中间系数)
+    (3, 0b011, false, 0, 1),        // run=0, level=1 **最常用**
+    (4, 0b0011, false, 1, 1),       // run=1, level=1
+    (5, 0b00100, false, 2, 1),      // run=2, level=1
+    (5, 0b00101, false, 3, 1),      // run=3, level=1
+    (6, 0b001000, false, 4, 1),     // run=4, level=1
+    (6, 0b001001, false, 5, 1),     // run=5, level=1
+    (6, 0b001010, false, 6, 1),     // run=6, level=1
+    (7, 0b0010110, false, 7, 1),    // run=7, level=1
+    (7, 0b0010111, false, 8, 1),    // run=8, level=1
+    (8, 0b00101100, false, 9, 1),   // run=9, level=1
+    (8, 0b00101101, false, 10, 1),  // run=10, level=1
+    (9, 0b001011100, false, 11, 1), // run=11, level=1
+    (9, 0b001011101, false, 12, 1), // run=12, level=1
+    (5, 0b00011, false, 0, 2),      // run=0, level=2
+    (6, 0b000111, false, 1, 2),     // run=1, level=2
+    (7, 0b0010100, false, 2, 2),    // run=2, level=2
+    (8, 0b00101010, false, 3, 2),   // run=3, level=2
+    (9, 0b001011010, false, 4, 2),  // run=4, level=2
+    (7, 0b0010101, false, 0, 3),    // run=0, level=3
+    (8, 0b00101011, false, 1, 3),   // run=1, level=3
+    (9, 0b001011011, false, 2, 3),  // run=2, level=3
+    (8, 0b00101000, false, 0, 4),   // run=0, level=4
+    (9, 0b001011000, false, 1, 4),  // run=1, level=4
+    (9, 0b001011001, false, 0, 5),  // run=0, level=5
+    (9, 0b001010110, false, 0, 6),  // run=0, level=6
+    (9, 0b001010111, false, 0, 7),  // run=0, level=7
+    (10, 0b0010101100, false, 13, 1), // run=13, level=1
+    (10, 0b0010101101, false, 14, 1), // run=14, level=1
+    (10, 0b0010101110, false, 15, 1), // run=15, level=1
+    (10, 0b0010101111, false, 16, 1), // run=16, level=1
+    // Last=1 (最后一个非零系数)
+    (4, 0b0010, true, 0, 1),         // last, run=0, level=1
+    (6, 0b000110, true, 1, 1),       // last, run=1, level=1
+    (7, 0b0010010, true, 2, 1),      // last, run=2, level=1
+    (7, 0b0010011, true, 3, 1),      // last, run=3, level=1
+    (8, 0b00100110, true, 4, 1),     // last, run=4, level=1
+    (8, 0b00100111, true, 5, 1),     // last, run=5, level=1
+    (9, 0b001001100, true, 6, 1),    // last, run=6, level=1
+    (9, 0b001001101, true, 7, 1),    // last, run=7, level=1
+    (9, 0b001001110, true, 8, 1),    // last, run=8, level=1
+    (9, 0b001001111, true, 9, 1),    // last, run=9, level=1
+    (10, 0b0010011100, true, 10, 1), // last, run=10, level=1
+    (10, 0b0010011101, true, 11, 1), // last, run=11, level=1
+    (6, 0b001011, true, 0, 2),       // last, run=0, level=2
+    (8, 0b00100100, true, 1, 2),     // last, run=1, level=2
+    (9, 0b001001010, true, 2, 2),    // last, run=2, level=2
+    (8, 0b00100101, true, 0, 3),     // last, run=0, level=3
+    (9, 0b001001011, true, 1, 3),    // last, run=1, level=3
 ];
 
 /// MCBPC (Macroblock Type and Coded Block Pattern for Chrominance) VLC 表
@@ -454,7 +490,7 @@ fn decode_intra_dc_vlc(reader: &mut BitReader, is_luma: bool) -> Option<i16> {
 /// # 返回
 /// Some((last, run, level)) 或 None 表示 EOB
 fn decode_ac_vlc(reader: &mut BitReader) -> Option<(bool, u8, i16)> {
-    // 尝试不同长度的码字
+    // 尝试匹配 VLC 表
     for &(len, code, last, run, level) in INTRA_AC_VLC {
         let bits = reader.peek_bits(len)?;
         if bits as u16 == code {
@@ -477,8 +513,34 @@ fn decode_ac_vlc(reader: &mut BitReader) -> Option<(bool, u8, i16)> {
         }
     }
 
-    // 未找到匹配 - 可能需要 ESCAPE 码或其他扩展表
-    // 简化处理：返回 EOB
+    // 未找到匹配 - 尝试 ESCAPE 码
+    // MPEG-4 ESCAPE 格式: 前缀 + last(1) + run(6) + marker(1) + level(12) + marker(1)
+    // 或简化格式: 检查是否以 0000000 开头（7个0）
+    let escape_check = reader.peek_bits(7)?;
+    if escape_check == 0 {
+        // 这是 ESCAPE 码
+        reader.read_bits(7)?; // 消耗 ESCAPE 前缀
+
+        let last = reader.read_bits(1)? != 0;
+        let run = reader.read_bits(6)? as u8;
+
+        // 读取level (带marker位的12-bit编码)
+        let _marker1 = reader.read_bits(1)?; // marker bit (应该是1)
+        let level_bits = reader.read_bits(12)? as i16;
+        let _marker2 = reader.read_bits(1)?; // marker bit (应该是1)
+
+        // level是12位有符号数（补码表示）
+        let level = if level_bits >= 2048 {
+            // 负数（最高位为1）
+            level_bits - 4096
+        } else {
+            level_bits
+        };
+
+        return Some((last, run, level));
+    }
+
+    // 仍未匹配 - 可能是损坏的数据，返回 EOB
     None
 }
 
