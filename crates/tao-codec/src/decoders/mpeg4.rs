@@ -131,6 +131,20 @@ const VOP_TYPE_P: u8 = 1; // P-VOP (Predicted)
 const VOP_TYPE_B: u8 = 2; // B-VOP (Bidirectional)
 const VOP_TYPE_S: u8 = 3; // S-VOP (Sprite)
 
+/// 标准 MPEG4 量化矩阵 (Intra)
+const STD_INTRA_QUANT_MATRIX: [u8; 64] = [
+    8, 16, 19, 22, 26, 27, 29, 34, 16, 16, 22, 24, 27, 29, 34, 37, 19, 22, 26, 27, 29, 34, 34, 38,
+    22, 22, 26, 27, 29, 34, 37, 40, 22, 26, 27, 29, 32, 35, 40, 48, 26, 27, 29, 32, 35, 40, 48, 58,
+    26, 27, 29, 34, 38, 46, 56, 69, 27, 29, 35, 38, 46, 56, 69, 83,
+];
+
+/// 标准 MPEG4 量化矩阵 (Inter/非内向)
+const STD_INTER_QUANT_MATRIX: [u8; 64] = [
+    16, 17, 18, 19, 20, 21, 22, 23, 17, 18, 19, 20, 21, 22, 23, 24, 18, 19, 20, 21, 22, 23, 24, 25,
+    19, 20, 21, 22, 23, 24, 25, 26, 20, 21, 22, 23, 24, 25, 26, 27, 21, 22, 23, 24, 25, 26, 27, 28,
+    22, 23, 24, 25, 26, 27, 28, 29, 23, 24, 25, 26, 27, 28, 29, 30,
+];
+
 /// RLE 编码数据 (游程长度编码的 DCT 系数)
 /// 格式: (运行长度, 级别, 最后块标志)
 #[derive(Debug, Clone, Copy)]
@@ -146,13 +160,13 @@ struct RleData {
 
 /// 从 bitstream 读取 RLE 编码的 DCT 系数块
 /// 从 bitstream 读取 RLE 编码的 DCT 系数块
-/// 
+///
 /// MPEG4 Part 2 使用变长编码 (VLC) 来编码 DCT 系数。
 /// 这个简化实现通过基于位置生成合理的系数值，而不是完全依赖 bitstream 的数据。
 /// 这避免了解析失败导致的降级，提高了兼容性。
 fn read_dct_coefficients(reader: &mut BitReader) -> Result<[i32; 64], &'static str> {
     let mut block = [0i32; 64];
-    
+
     // 尝试读取第一个系数 (DC 系数)
     // 如果读取失败, 使用位置相关的默认值
     if let Some(dc) = reader.read_bits(8) {
@@ -180,20 +194,20 @@ fn read_dct_coefficients(reader: &mut BitReader) -> Result<[i32; 64], &'static s
                 // 块结束标记
                 break;
             }
-            
+
             // 从 RLE 代码提取零的个数（0-3）和系数幅度
             let zero_run = (rle_code >> 2) & 0x3;
             idx += zero_run as usize;
-            
+
             if idx >= 64 {
                 break;
             }
-            
+
             // 读取系数的符号和幅度
             if let Some(coeff_byte) = reader.read_bits(8) {
                 let is_negative = (coeff_byte & 0x80) != 0;
                 let magnitude = ((coeff_byte & 0x7F) as i32) >> 1;
-                
+
                 block[idx] = if is_negative {
                     -(magnitude.max(1))
                 } else {
@@ -209,7 +223,7 @@ fn read_dct_coefficients(reader: &mut BitReader) -> Result<[i32; 64], &'static s
             idx += 1;
         }
     }
-    
+
     // 使用基于位置的值填充剩余系数，确保块不是完全空的
     while idx < 64 {
         let row = (idx / 8) as i32;
@@ -222,7 +236,7 @@ fn read_dct_coefficients(reader: &mut BitReader) -> Result<[i32; 64], &'static s
 }
 
 /// 改进的 DCT (离散余弦变换) 系数转换为空间域
-/// 
+///
 /// 这是一个简化的实现，使用线性近似而不是完整的 IDCT。
 /// 对于一个更准确的实现，应该使用 Arai-Agui-Nakajima IDCT 或类似的快速算法。
 fn dct_to_spatial(coefficients: &[i32; 64]) -> [i16; 64] {
@@ -292,6 +306,10 @@ pub struct Mpeg4Decoder {
     quant: u8,
     /// VOL 信息
     vol_info: Option<VolInfo>,
+    /// 内部量化矩阵 (Intra)
+    quant_matrix_intra: [u8; 64],
+    /// 外部量化矩阵 (Inter)
+    quant_matrix_inter: [u8; 64],
 }
 
 /// VOL (Video Object Layer) 信息
@@ -305,7 +323,27 @@ struct VolInfo {
 }
 
 impl Mpeg4Decoder {
-    /// 创建 MPEG4 解码器实例
+    /// 应用量化矩阵到 DCT 系数块
+    ///
+    /// MPEG4 使用量化矩阵来调整不同频率成分的量化步长。
+    /// 这改进了编码效率，允许人眼不敏感的频率使用更粗的量化。
+    fn apply_quant_matrix(&self, coefficients: &mut [i32; 64], quant: u32, is_intra: bool) {
+        let matrix = if is_intra {
+            &self.quant_matrix_intra
+        } else {
+            &self.quant_matrix_inter
+        };
+
+        for i in 0..64 {
+            if coefficients[i] != 0 {
+                // 应用量化矩阵缩放
+                let scale = matrix[i] as u32;
+                // 反量化公式: coefficient = (coeff * quant * scale) >> 5
+                // (右移5位相当于除以32)
+                coefficients[i] = (coefficients[i] * (quant as i32) * (scale as i32)) >> 5;
+            }
+        }
+    }
     pub fn create() -> TaoResult<Box<dyn Decoder>> {
         Ok(Box::new(Self {
             width: 0,
@@ -317,6 +355,8 @@ impl Mpeg4Decoder {
             frame_count: 0,
             quant: 1,
             vol_info: None,
+            quant_matrix_intra: STD_INTRA_QUANT_MATRIX,
+            quant_matrix_inter: STD_INTER_QUANT_MATRIX,
         }))
     }
 
@@ -493,7 +533,7 @@ impl Mpeg4Decoder {
 
     /// 解码宏块数据 (简化版)
     fn decode_macroblock(
-        &self,
+        &mut self,
         frame: &mut VideoFrame,
         mb_x: u32,
         mb_y: u32,
@@ -505,13 +545,17 @@ impl Mpeg4Decoder {
         let width = self.width as usize;
         let height = self.height as usize;
 
-        // Y 平面 (4 个 8x8 块)
+        // Y 平面 (4 个 8x8 块) - 亮度
         for block_idx in 0..4 {
             let by = block_idx / 2;
             let bx = block_idx % 2;
 
             // 尝试从 bitstream 读取 DCT 系数
-            let coefficients = read_dct_coefficients(reader).unwrap_or([0i32; 64]);
+            let mut coefficients = read_dct_coefficients(reader).unwrap_or([0i32; 64]);
+
+            // 应用量化矩阵 (亮度使用 Intra 矩阵在此简化版本中)
+            // 在完整实现中应根据 I/P 帧类型选择
+            self.apply_quant_matrix(&mut coefficients, self.quant as u32, true);
 
             // 将 DCT 系数转换为空间域
             let spatial = dct_to_spatial(&coefficients);
@@ -531,13 +575,17 @@ impl Mpeg4Decoder {
             }
         }
 
-        // U 和 V 平面 (对于 YUV420p)
+        // U 和 V 平面 (对于 YUV420p) - 色度
         let uv_width = width / 2;
         let uv_height = height / 2;
 
         for plane_idx in 0..2 {
             // 尝试读取色度块系数
-            let coefficients = read_dct_coefficients(reader).unwrap_or([0i32; 64]);
+            let mut coefficients = read_dct_coefficients(reader).unwrap_or([0i32; 64]);
+
+            // 应用量化矩阵 (色度使用 Inter 矩阵在此简化版本中)
+            self.apply_quant_matrix(&mut coefficients, self.quant as u32, false);
+
             let spatial = dct_to_spatial(&coefficients);
 
             for v in 0..8 {
