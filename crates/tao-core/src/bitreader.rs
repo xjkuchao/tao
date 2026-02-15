@@ -136,9 +136,15 @@ impl<'a> BitReader<'a> {
     /// 读取有符号整数 (二进制补码)
     pub fn read_bits_signed(&mut self, n: u32) -> TaoResult<i32> {
         let val = self.read_bits(n)?;
-        // 符号扩展
-        if n > 0 && (val >> (n - 1)) & 1 != 0 {
-            // 负数: 填充高位
+        if n == 0 {
+            return Ok(0);
+        }
+        // n == 32 时, val 的全部 32 位有效, 直接转换为 i32 (二进制补码)
+        if n >= 32 {
+            return Ok(val as i32);
+        }
+        // 符号扩展: 若最高有效位为 1, 则填充高位
+        if (val >> (n - 1)) & 1 != 0 {
             Ok(val as i32 | !((1i32 << n) - 1))
         } else {
             Ok(val as i32)

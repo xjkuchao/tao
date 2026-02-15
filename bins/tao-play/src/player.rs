@@ -331,30 +331,45 @@ impl Player {
                         // 解码音频
                         if Some(stream_idx) == audio_stream_idx {
                             if let Some(dec) = &mut audio_decoder {
-                                if dec.send_packet(&packet).is_ok() {
-                                    while let Ok(frame) = dec.receive_frame() {
-                                        if let Frame::Audio(af) = &frame {
-                                            if let Some(out) = &audio_output {
-                                                let pts_us = pts_to_us(
-                                                    af.pts,
-                                                    af.time_base.num,
-                                                    af.time_base.den,
-                                                );
-                                                let mut samples =
-                                                    extract_f32_samples(af, &streams, stream_idx);
-                                                // 应用实时音量控制
-                                                let effective_volume = if muted {
-                                                    0.0f32
-                                                } else {
-                                                    current_volume as f32 / 100.0
-                                                };
-                                                for s in &mut samples {
-                                                    *s *= effective_volume;
-                                                }
-                                                let chunk = AudioChunk { samples, pts_us };
-                                                if out.send(chunk).is_err() {
-                                                    debug!("音频队列已满, 跳过");
-                                                }
+                                match dec.send_packet(&packet) {
+                                    Ok(()) => {}
+                                    Err(ref e) => {
+                                        debug!("音频解码跳过坏帧: {}", e);
+                                    }
+                                }
+                                while let Ok(frame) = dec.receive_frame() {
+                                    if let Frame::Audio(af) = &frame {
+                                        debug!(
+                                            "收到音频帧: {} 样本, 格式: {:?}",
+                                            af.nb_samples, af.sample_format
+                                        );
+                                        if let Some(out) = &audio_output {
+                                            let pts_us = pts_to_us(
+                                                af.pts,
+                                                af.time_base.num,
+                                                af.time_base.den,
+                                            );
+                                            let mut samples =
+                                                extract_f32_samples(af, &streams, stream_idx);
+                                            // 应用实时音量控制
+                                            let effective_volume = if muted {
+                                                0.0f32
+                                            } else {
+                                                current_volume as f32 / 100.0
+                                            };
+                                            for s in &mut samples {
+                                                *s *= effective_volume;
+                                            }
+                                            let samples_count = samples.len();
+                                            let chunk = AudioChunk { samples, pts_us };
+                                            debug!(
+                                                "发送音频数据: {} 样本, PTS: {}",
+                                                samples_count, pts_us
+                                            );
+                                            if out.send(chunk).is_err() {
+                                                debug!("音频队列已满, 跳过");
+                                            } else {
+                                                debug!("音频数据发送成功");
                                             }
                                         }
                                     }

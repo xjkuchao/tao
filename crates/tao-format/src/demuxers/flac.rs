@@ -26,7 +26,7 @@
 
 use log::{debug, warn};
 use tao_codec::CodecId;
-use tao_core::{ChannelLayout, MediaType, Rational, SampleFormat, TaoError, TaoResult};
+use tao_core::{ChannelLayout, MediaType, Rational, SampleFormat, TaoError, TaoResult, crc};
 
 use crate::demuxer::{Demuxer, SeekFlags};
 use crate::format_id::FormatId;
@@ -194,17 +194,139 @@ impl FlacDemuxer {
     /// 在缓冲区中搜索下一个 FLAC 帧同步码
     ///
     /// 返回同步码在缓冲区中的偏移.
+    /// 对每个候选位置都验证帧头有效性 (CRC-8), 以排除假同步码.
     fn find_sync_code(buf: &[u8]) -> Option<usize> {
-        if buf.len() < 2 {
+        Self::find_sync_code_from(buf, 0)
+    }
+
+    /// 从指定偏移开始搜索下一个有效 FLAC 帧同步码
+    fn find_sync_code_from(buf: &[u8], start: usize) -> Option<usize> {
+        if buf.len() < start + 2 {
             return None;
         }
-        for i in 0..buf.len() - 1 {
+        for i in start..buf.len() - 1 {
             let word = u16::from_be_bytes([buf[i], buf[i + 1]]);
-            if word & FLAC_SYNC_MASK == FLAC_SYNC_CODE {
+            if word & FLAC_SYNC_MASK == FLAC_SYNC_CODE
+                && Self::validate_frame_header(&buf[i..])
+            {
                 return Some(i);
             }
         }
         None
+    }
+
+    /// 验证候选帧头的有效性
+    ///
+    /// 检查帧头字段合法性并验证 CRC-8, 以区分真正的帧同步码和数据中的巧合匹配.
+    fn validate_frame_header(data: &[u8]) -> bool {
+        // 至少需要 5 字节: sync(2) + byte2 + byte3 + utf8(1至少) 才能做基本验证
+        if data.len() < 5 {
+            return false;
+        }
+
+        let byte2 = data[2];
+        let byte3 = data[3];
+
+        let bs_code = byte2 >> 4;
+        let sr_code = byte2 & 0x0F;
+        let ch_code = byte3 >> 4;
+        let ss_code = (byte3 >> 1) & 0x07;
+        let reserved_bit = byte3 & 0x01;
+
+        // 保留位必须为 0
+        if reserved_bit != 0 {
+            return false;
+        }
+
+        // 块大小编码 0 是保留的
+        if bs_code == 0 {
+            return false;
+        }
+
+        // 采样率编码 15 是无效的
+        if sr_code == 15 {
+            return false;
+        }
+
+        // 声道分配: 0-10 有效, 11-15 保留
+        if ch_code > 10 {
+            return false;
+        }
+
+        // 采样大小: 3 是保留的
+        if ss_code == 3 {
+            return false;
+        }
+
+        // 尝试计算帧头长度并验证 CRC-8
+        Self::verify_header_crc8(data, bs_code, sr_code)
+    }
+
+    /// 计算帧头长度并验证 CRC-8
+    ///
+    /// 帧头结构: sync(2) + byte2 + byte3 + utf8(1-7) + [ext_bs] + [ext_sr] + crc8(1)
+    fn verify_header_crc8(data: &[u8], bs_code: u8, sr_code: u8) -> bool {
+        // UTF-8 编码的帧/采样号从 byte 4 开始
+        if data.len() < 5 {
+            return false;
+        }
+
+        let first_utf8 = data[4];
+        let utf8_len = if first_utf8 & 0x80 == 0 {
+            1
+        } else if first_utf8 & 0xE0 == 0xC0 {
+            2
+        } else if first_utf8 & 0xF0 == 0xE0 {
+            3
+        } else if first_utf8 & 0xF8 == 0xF0 {
+            4
+        } else if first_utf8 & 0xFC == 0xF8 {
+            5
+        } else if first_utf8 & 0xFE == 0xFC {
+            6
+        } else if first_utf8 == 0xFE {
+            7
+        } else {
+            // 无效的 UTF-8 首字节
+            return false;
+        };
+
+        // 验证 UTF-8 后续字节 (必须以 10xxxxxx 开头)
+        let utf8_end = 4 + utf8_len;
+        if utf8_end > data.len() {
+            return false;
+        }
+        for &b in &data[5..utf8_end] {
+            if b & 0xC0 != 0x80 {
+                return false;
+            }
+        }
+
+        let mut pos = utf8_end;
+
+        // 扩展块大小
+        match bs_code {
+            6 => pos += 1, // 8-bit
+            7 => pos += 2, // 16-bit
+            _ => {}
+        }
+
+        // 扩展采样率
+        match sr_code {
+            12 => pos += 1,      // 8-bit (kHz)
+            13 | 14 => pos += 2, // 16-bit (Hz 或 10*Hz)
+            _ => {}
+        }
+
+        // CRC-8 在 pos 位置
+        if pos >= data.len() {
+            // 数据不足以包含 CRC-8, 按基本验证结果通过
+            return true;
+        }
+
+        let crc_read = data[pos];
+        let crc_calc = crc::crc8(&data[..pos]);
+        crc_read == crc_calc
     }
 }
 
@@ -383,8 +505,8 @@ impl Demuxer for FlacDemuxer {
 
         // 验证当前位置是帧同步码
         let first_word = u16::from_be_bytes([buf[0], buf[1]]);
-        if first_word & FLAC_SYNC_MASK != FLAC_SYNC_CODE {
-            // 尝试搜索下一个同步码
+        if first_word & FLAC_SYNC_MASK != FLAC_SYNC_CODE || !Self::validate_frame_header(&buf) {
+            // 尝试搜索下一个有效同步码
             if let Some(offset) = Self::find_sync_code(&buf) {
                 self.current_pos += offset as u64;
                 io.seek(std::io::SeekFrom::Start(self.current_pos))?;
@@ -393,9 +515,10 @@ impl Demuxer for FlacDemuxer {
             return Err(TaoError::Eof);
         }
 
-        // 搜索下一个帧同步码来确定当前帧大小
+        // 搜索下一个有效帧同步码来确定当前帧大小
+        // 从偏移 2 开始搜索, 使用带 CRC-8 验证的搜索方法
         let frame_end = if buf.len() > 2 {
-            Self::find_sync_code(&buf[2..]).map(|pos| pos + 2)
+            Self::find_sync_code_from(&buf, 2)
         } else {
             None
         };
