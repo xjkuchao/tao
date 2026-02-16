@@ -8,58 +8,370 @@ globs:
 
 # 测试文件和临时文件管理
 
-> 完整规范参见 [samples/SAMPLES.md](samples/SAMPLES.md)
+> 完整规范参见 [samples/SAMPLES.md](../../samples/SAMPLES.md)
+
+## 核心原则
+
+- **所有样本使用 URL 方式访问，不下载到本地**
+- **所有临时文件放在 `data/` 目录下**
+- **`data/` 整体被 Git 忽略，永不提交任何文件**
+- **所有测试代码应遵循 [samples/SAMPLES.md](../../samples/SAMPLES.md) 规范**
 
 ## 目录结构
 
-- **`tests/`**: 集成测试代码
-    - `{feature}_pipeline.rs` - 集成测试文件
-- **`samples/`**: 样本清单和规范
-    - `SAMPLES.md` - 样本使用规范
-    - `SAMPLE_URLS.md` - 测试样本 URL 清单
-- **`data/`**: 临时文件目录 (不提交到 Git)
-    - `.gitkeep` - 确保目录存在
-    - 所有其他文件都被忽略
+```
+project/
+├── tests/
+│   ├── {feature}_pipeline.rs         # 集成测试
+│   ├── logging_system.rs             # 日志系统测试
+│   └── ...
+├── benches/
+│   └── *.rs                          # 基准测试
+├── samples/
+│   ├── SAMPLES.md                    # 样本使用规范 (Git 跟踪)
+│   └── SAMPLE_URLS.md                # 样本 URL 清单 (Git 跟踪)
+├── data/
+│   ├── .gitkeep                      # 确保目录在 Git 中
+│   ├── tmp_*/                        # 测试产生的临时文件
+│   ├── logs/                         # 日志文件（备选放置位置）
+│   ├── ffmpeg/                       # 编解码临时输出
+│   └── ...                           # 其他临时文件
+├── logs/ (可选)
+│   ├── .gitkeep                      # 日志目录标记
+│   ├── tao.2026-02-16.log            # tao-cli 日志
+│   ├── tao-probe.2026-02-16.log      # tao-probe 日志
+│   ├── tao-play.2026-02-16.log       # tao-play 日志
+│   └── ...
+└── .gitignore                        # 忽略 data/ 和 logs/
+```
 
-## 文件放置规则
+## 文件管理规则
 
-### 测试代码
+### 测试代码位置
 
-- 集成测试: `tests/{feature}_pipeline.rs`
-- 单元测试: 在源文件中使用 `#[cfg(test)]` 模块
-- 基准测试: `benches/` 目录
+- **单元测试**: 在 `crates/*/src/` 源文件中使用 `#[cfg(test)]` 模块
+- **集成测试**: 在 `tests/{feature}_pipeline.rs` 文件中（例如 h264_decode_pipeline.rs）
+- **基准测试**: 在 `benches/*.rs` 文件中
+- **测试命名**: 使用 `test_{component}_{scenario}` 格式
+- 参考示例: 
+  - `test_h264_decode_basic` (基本功能)
+  - `test_h264_decode_corrupted_data` (错误处理)
+  - `test_mp4_demux_seek` (格式特性)
 
-### 测试样本
+### 样本文件 (samples/SAMPLE_URLS.md)
 
-- **所有样本使用 URL 方式访问, 不下载到本地**
-- 样本来源: https://samples.ffmpeg.org/
-- 样本清单: `samples/SAMPLE_URLS.md`
-- 直接使用 URL 创建 Demuxer/Decoder
+**重要: 所有样本使用 HTTPS URL，无需下载到本地**
 
-### 临时文件
+- **样本来源**: https://samples.ffmpeg.org/ (FFmpeg 官方测试样本库)
+- **样本清单**: `samples/SAMPLE_URLS.md` 记录所有测试样本的 URL 和用途
+- **测试用例**: 直接使用 URL 创建 Demuxer/Decoder，无需下载文件
+- **样本大小**: 从 KB 级别小文件到 MB 级别大文件，均可直接通过 URL 访问
+- **包含类别**:
+  - 视频编解码器: H.264, H.265, MPEG-4 Part 2, Theora, VP8, VP9, AV1 等
+  - 音频编解码器: AAC, MP3, FLAC, Vorbis, Opus, PCM, ALAC 等
+  - 容器格式: MP4, MKV, AVI, FLV, MPEG-TS, Ogg, WAV, AIFF 等
 
-- 必须放在 `data/` 目录下
-- 运行时生成的临时文件
-- 编解码过程中的中间文件
-- 永不提交到 Git
+### 临时文件 (data/)
 
-## 测试样本 URL 规范
+- 项目运行时生成的所有临时文件都应放在 `data/` 目录下
+- 用途包括:
+  - 编解码过程中的中间文件
+  - 测试输出的视频/音频文件
+  - 日志文件（可选）
+  - 调试数据和性能分析信息
+- **永不提交到 Git** (整体被 `.gitignore` 忽略)
 
-- 优先使用 https://samples.ffmpeg.org/ 提供的公开测试样本
-- 所有样本使用 URL 方式访问, 不下载到本地
-- URL 格式: `https://samples.ffmpeg.org/<category>/<filename>`
-- 所有样本 URL 记录在 `samples/SAMPLE_URLS.md` 中
+## 样本 URL 使用规范
+
+### 基本原则
+
+1. **所有样本使用 HTTPS URL** 直接访问
+2. **无需下载到本地** - 直接通过 URL 创建 Demuxer/Decoder
+3. **URL 来源**: https://samples.ffmpeg.org/ 官方测试样本库
+4. **验证方式**: 使用 `ffprobe <URL>` 检查编解码器和格式信息
+5. **版本管理**: 所有有效 URL 记录在 `samples/SAMPLE_URLS.md` 中
+
+### 查找样本
+
+```bash
+# 方法 1: 在 samples/SAMPLE_URLS.md 中搜索
+grep -i "h264" samples/SAMPLE_URLS.md
+
+# 方法 2: 浏览官方样本库
+https://samples.ffmpeg.org/
+
+# 方法 3: 查看完整样本列表
+https://samples.ffmpeg.org/allsamples.txt
+https://samples.ffmpeg.org/allsamples-old.txt
+```
+
+### 使用示例
+
+```rust
+use tao_format::demuxer::DemuxerRegistry;
+use tao_codec::decoder::DecoderRegistry;
+use tao_core::MediaType;
+
+#[test]
+fn test_h264_decode_from_url() {
+    // 1. 从 samples/SAMPLE_URLS.md 查找合适的 URL
+    let sample_url = "https://samples.ffmpeg.org/HDTV/Channel9_HD.ts";
+
+    // 2. 直接使用 URL 创建 Demuxer
+    let mut demuxer = DemuxerRegistry::open(sample_url)
+        .expect("打开网络样本文件失败");
+
+    // 3. 查找视频流
+    let video_stream = demuxer.streams()
+        .iter()
+        .find(|s| s.media_type() == MediaType::Video)
+        .expect("应该有视频流");
+
+    let mut decoder = DecoderRegistry::create_decoder(
+        video_stream.codec_id(),
+        video_stream.codec_params(),
+    ).expect("创建解码器失败");
+
+    // 4. 只解码前几帧 (5-10 帧) 验证功能
+    // 重要: 限制帧数可以加快测试执行速度
+    let mut frame_count = 0;
+    while let Some(packet) = demuxer.read_packet()
+        .expect("读取数据包失败") {
+        if packet.stream_index() == video_stream.index() {
+            let frames = decoder.decode(&packet)
+                .expect("解码失败");
+            frame_count += frames.len();
+            if frame_count >= 10 { 
+                break;  // 解码足够的帧后停止
+            }
+        }
+    }
+
+    assert!(
+        frame_count >= 10,
+        "应该至少解码 10 帧，实际解码 {} 帧",
+        frame_count
+    );
+}
+```
+
+### 验证样本
+
+```bash
+# 使用 ffprobe 验证样本编解码器和格式信息
+ffprobe https://samples.ffmpeg.org/HDTV/Channel9_HD.ts
+
+# 输出示例:
+# Input #0, mpegts, from 'https://samples.ffmpeg.org/HDTV/Channel9_HD.ts':
+#   Duration: 00:05:00.00, start: 17.900000, bitrate: 4500 kb/s
+#     Stream #0:0[0x100]: Video: h264 (Main), yuv420p, 1280x720 [SAR 1:1 DAR 16:9], 29.97 fps
+#     Stream #0:1[0x101]: Audio: ac3, 48000 Hz, 5.1(side), fltp, 448 kb/s
+
+# 验证支持的编解码器
+ffprobe -show_entries stream=codec_name https://samples.ffmpeg.org/HDTV/Channel9_HD.ts
+```
 
 ## 新增测试样本
 
-1. 访问 https://samples.ffmpeg.org/ 查找样本
-2. 使用 `ffprobe <URL>` 验证样本信息
-3. 在 `samples/SAMPLE_URLS.md` 对应章节添加 URL 和说明
-4. 提交更改: `git add samples/SAMPLE_URLS.md && git commit -m "docs: 添加 XXX 样本 URL"`
+### 查找样本
+
+1. **浏览官方库**: 访问 https://samples.ffmpeg.org/ 
+2. **搜索样本**: 使用浏览器搜索或查看完整列表
+3. **过滤条件**:
+   - 编解码器: H.264, AAC, FLAC 等
+   - 容器格式: MP4, MKV, TS 等
+   - 分辨率: 480p, 720p, 1080p
+   - 采样率: 44.1kHz, 48kHz, 96kHz
+
+### 验证样本
+
+```bash
+# 验证编解码器支持
+ffprobe https://samples.ffmpeg.org/path/to/sample.mp4
+
+# 验证特定属性
+ffprobe -show_entries stream=codec_name,width,height,sample_rate \
+        https://samples.ffmpeg.org/path/to/sample.mp4
+
+# 检查是否支持 seek
+ffprobe -show_entries stream=duration \
+        https://samples.ffmpeg.org/path/to/sample.mp4
+```
+
+### 添加到清单
+
+**编辑 `samples/SAMPLE_URLS.md`**:
+
+1. 在对应编解码器/容器格式章节添加表格行
+2. 格式: `| 用途描述 | URL | 详细说明 |`
+3. 示例:
+   ```markdown
+   | H.265 解码 | https://samples.ffmpeg.org/path/to/hevc.mp4 | 1080p HEVC + AAC, MP4 容器 |
+   ```
+
+**提交更新**:
+
+```bash
+git add samples/SAMPLE_URLS.md samples/SAMPLES.md
+git commit -m "docs: 添加 XXXX 编解码器测试样本 URL
+
+- 新增 H.265 样本: 1080p HEVC + AAC, MP4 容器
+- 新增 FLAC 样本: 96kHz 无损音频
+- 来源: ffmpeg.org 官方测试样本库"
+```
+
+### 维护检查
+
+- **定期检查**: 每季度验证 URL 是否有效
+- **更新失效 URL**: 从官方库查找替代样本
+- **版本同步**: 保持 `samples/SAMPLE_URLS.md` 的更新
 
 ## 临时文件管理
 
-- 创建: 所有临时文件必须在 `data/` 目录下创建
-- 命名: 使用前缀 `tmp_` 或进程 ID
-- 清理: 测试结束后必须清理
-- Git: 永不提交到版本控制
+### 创建习惯
+
+```rust
+use std::path::PathBuf;
+
+// 创建 data 目录
+let data_dir = PathBuf::from("data");
+std::fs::create_dir_all(&data_dir)?;
+
+// 创建临时文件 (使用进程 ID 或时间戳避免冲突)
+let temp_file = data_dir.join(format!(
+    "tmp_test_{}_output.bin",
+    std::process::id()
+));
+
+let mut file = std::fs::File::create(&temp_file)?;
+
+// ... 处理文件 ...
+
+// 测试完成后清理
+std::fs::remove_file(&temp_file)?;
+
+Ok(())
+```
+
+### 命名规范
+
+- 格式: `tmp_` + 标识信息 + 扩展名
+- 示例:
+  - `tmp_h264_decode_output_12345.yuv`
+  - `tmp_transcode_12345.mp4`
+  - `tmp_filter_output_12345.bin`
+- **推荐使用进程 ID 避免并发冲突**: `std::process::id()`
+- **可选**: 使用时间戳: `std::time::SystemTime::now()`
+
+### 清理规则
+
+- **测试结束后必须清理**: 默认清理(不保留中间文件)
+- **或在子目录中组织**: 使用 `data/test_name/` 子目录分组
+- **永不提交到 Git**: 整体被 `.gitignore` 忽略
+- **异常处理**: 即使发生 panic，也应该在 drop 时清理
+
+```rust
+// 推荐使用 RAII 模式自动清理
+struct TempFile(PathBuf);
+
+impl TempFile {
+    fn new(name: &str) -> std::io::Result<Self> {
+        let path = PathBuf::from("data")
+            .join(format!("tmp_{}", name));
+        std::fs::File::create(&path)?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+```
+
+## 日志文件管理
+
+### 日志保存位置
+
+- 优先: `logs/` 目录（在项目根目录）
+- 备选: `data/logs/` 子目录（其他临时数据旁边）
+- 日志命名: `{prefix}.{YYYY-MM-DD}.log`
+
+### 文件前缀规范
+
+| 工具      | 前缀        | 示例日志文件         |
+|-----------|-------------|----------------------|
+| tao-cli   | tao         | tao.2026-02-16.log   |
+| tao-probe | tao-probe   | tao-probe.2026-02-16.log |
+| tao-play  | tao-play    | tao-play.2026-02-16.log  |
+
+### AI 调试指南
+
+当调试代码时遵循本规范：
+
+1. **优先查看日志文件** 而非控制台输出
+   - 日志文件位于 `logs/{prefix}.{date}.log`
+   - 或 `data/logs/` 内的日志文件
+2. **清理旧日志避免污染**
+   - 调试前可删除相关日志文件
+   - 重新运行程序生成新日志
+3. **快速分析执行流程**
+   - 通过日志文件追踪程序执行
+   - 识别错误发生的位置
+   - 减少频繁读取控制台输出
+
+## 手动清理 data 目录
+
+### Linux / macOS
+
+```bash
+# 查看 data 目录大小
+du -sh data/
+
+# 清理所有临时文件 (保留 .gitkeep)
+rm -rf data/*
+git checkout data/.gitkeep
+
+# 或仅清理特定类型文件
+rm -f data/*.log data/*.bin data/*.tmp
+```
+
+### Windows PowerShell
+
+```powershell
+# 查看 data 目录大小
+(Get-ChildItem -Path data -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
+
+# 清理所有临时文件 (保留 .gitkeep)
+Remove-Item -Path data/* -Force -Recurse -Exclude ".gitkeep"
+
+# 或仅清理特定类型文件
+Remove-Item -Path data/*.log, data/*.bin, data/*.tmp -Force
+```
+
+## 注意事项
+
+### 网络连接
+
+- 所有测试假设有 **稳定的网络连接**
+- URL 无法访问时，测试会失败或超时
+- 网络不稳定的环境建议标记为 `#[ignore]` 并离线测试
+
+### 临时文件清理
+
+- 测试异常终止时，临时文件可能不被清理
+- 定期手动清理 `data/` 目录
+- 生产环境应定时清理脚本
+
+### 磁盘空间
+
+- 大型编解码测试可能占用大量临时空间
+- 监控 `data/` 目录大小
+- 必要时使用 `cleanup_test_logs(name)` 之类的函数主动清理
+
+### 安全性
+
+- 不在临时文件中存储敏感信息
+- 不提交 API 密钥或认证令牌到 Git
+- `.gitignore` 中应包含所有需要忽略的临时文件类型
