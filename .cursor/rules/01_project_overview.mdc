@@ -14,7 +14,7 @@ globs:
 
 1. **Rust 库**: 其他 Rust 项目可通过 `tao` crate 直接调用
 2. **C FFI (DLL/SO)**: 通过 `tao-ffi` crate 导出 C 兼容接口, 供 C/C++ 等语言调用
-3. **命令行工具**: `tao` (对标 ffmpeg) 和 `tao-probe` (对标 ffprobe) 可执行文件
+3. **命令行工具**: `tao` (对标 ffmpeg), `tao-probe` (对标 ffprobe) 和 `tao-play` (对标 ffplay) 可执行文件
 
 ## 2. 项目结构
 

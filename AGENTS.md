@@ -10,7 +10,7 @@
 
 1. **Rust 库**: 其他 Rust 项目可通过 `tao` crate 直接调用
 2. **C FFI (DLL/SO)**: 通过 `tao-ffi` crate 导出 C 兼容接口, 供 C/C++ 等语言调用
-3. **命令行工具**: `tao` (对标 ffmpeg) 和 `tao-probe` (对标 ffprobe) 可执行文件
+3. **命令行工具**: `tao` (对标 ffmpeg), `tao-probe` (对标 ffprobe) 和 `tao-play` (对标 ffplay) 可执行文件
 
 ## 2. 项目结构
 
@@ -62,7 +62,8 @@ tao/
 │   └── tao-ffi/            # C FFI 导出层 (cdylib + staticlib)
 ├── bins/                   # 可执行文件 crate
 │   ├── tao-cli/            # tao 命令行工具 (对标 ffmpeg)
-│   └── tao-probe/          # tao-probe 探测工具 (对标 ffprobe)
+│   ├── tao-probe/          # tao-probe 探测工具 (对标 ffprobe)
+│   └── tao-play/           # 播放器 (对标 ffplay)
 ├── tests/                  # 集成测试
 ├── examples/               # 使用示例 (crate 调用示例)
 ├── samples/                # 测试样本清单 (SAMPLE_URLS.md, SAMPLES.md)
