@@ -165,6 +165,39 @@ impl Mpeg4Decoder {
         ref_frame.data[plane][cy * width as usize + cx]
     }
 
+    /// 从参考帧获取场像素 (限定到顶场或底场)
+    pub(super) fn get_ref_pixel_field(
+        ref_frame: &VideoFrame,
+        plane: usize,
+        x: isize,
+        y: isize,
+        field_select: bool,
+    ) -> u8 {
+        let width = ref_frame.linesize[plane] as isize;
+        let height = if plane == 0 {
+            ref_frame.height as isize
+        } else {
+            (ref_frame.height / 2) as isize
+        };
+        let max_y = height - 1;
+        let min_y = if field_select { 1 } else { 0 };
+        let max_field_y = if field_select {
+            if max_y & 1 == 1 { max_y } else { max_y - 1 }
+        } else if max_y & 1 == 0 {
+            max_y
+        } else {
+            max_y - 1
+        };
+        let mut cy = if field_select { y | 1 } else { y & !1 };
+        if cy < min_y {
+            cy = min_y;
+        } else if cy > max_field_y {
+            cy = max_field_y;
+        }
+        let cx = x.clamp(0, width - 1) as usize;
+        ref_frame.data[plane][cy as usize * width as usize + cx]
+    }
+
     /// 运动补偿: 半像素精度
     pub(super) fn motion_compensation(
         ref_frame: &VideoFrame,
@@ -277,6 +310,7 @@ impl Mpeg4Decoder {
         base_y: isize,
         mv_x: i16,
         mv_y: i16,
+        rounding: u8,
     ) -> u8 {
         let ix = (mv_x >> 2) as isize;
         let iy = (mv_y >> 2) as isize;
@@ -299,7 +333,129 @@ impl Mpeg4Decoder {
             Self::qpel_hv_filter(ref_frame, plane, sx + ox, sy + oy)
         };
 
-        let avg = |a: i32, b: i32| -> i32 { (a + b + 1) >> 1 };
+        // qpel 平均同样遵循 rounding_control.
+        let r = rounding as i32;
+        let avg = |a: i32, b: i32| -> i32 { (a + b + 1 - r) >> 1 };
+
+        let result = match (dx, dy) {
+            (0, 0) => f(0, 0),
+            (1, 0) => avg(f(0, 0), h(0, 0)),
+            (2, 0) => h(0, 0),
+            (3, 0) => avg(h(0, 0), f(1, 0)),
+            (0, 1) => avg(f(0, 0), v(0, 0)),
+            (0, 2) => v(0, 0),
+            (0, 3) => avg(v(0, 0), f(0, 1)),
+            (2, 2) => hv(0, 0),
+            (1, 1) => avg(f(0, 0), hv(0, 0)),
+            (3, 1) => avg(f(1, 0), hv(0, 0)),
+            (1, 3) => avg(f(0, 1), hv(0, 0)),
+            (3, 3) => avg(f(1, 1), hv(0, 0)),
+            (2, 1) => avg(h(0, 0), hv(0, 0)),
+            (2, 3) => avg(hv(0, 0), h(0, 1)),
+            (1, 2) => avg(v(0, 0), hv(0, 0)),
+            (3, 2) => avg(hv(0, 0), v(1, 0)),
+            _ => f(0, 0),
+        };
+
+        result.clamp(0, 255) as u8
+    }
+
+    /// 水平 6-tap FIR 半像素滤波器 (场预测)
+    fn qpel_h_filter_field(
+        ref_frame: &VideoFrame,
+        plane: usize,
+        x: isize,
+        y: isize,
+        field_select: bool,
+    ) -> i32 {
+        let get = |xx: isize| -> i32 {
+            Self::get_ref_pixel_field(ref_frame, plane, xx, y, field_select) as i32
+        };
+        let val = -get(x - 2) + 5 * get(x - 1) + 20 * get(x) + 20 * get(x + 1) + 5 * get(x + 2)
+            - get(x + 3);
+        ((val + 16) >> 5).clamp(0, 255)
+    }
+
+    /// 垂直 6-tap FIR 半像素滤波器 (场预测)
+    fn qpel_v_filter_field(
+        ref_frame: &VideoFrame,
+        plane: usize,
+        x: isize,
+        y: isize,
+        field_select: bool,
+    ) -> i32 {
+        let step = 2;
+        let get = |yy: isize| -> i32 {
+            Self::get_ref_pixel_field(ref_frame, plane, x, yy, field_select) as i32
+        };
+        let val = -get(y - 2 * step)
+            + 5 * get(y - step)
+            + 20 * get(y)
+            + 20 * get(y + step)
+            + 5 * get(y + 2 * step)
+            - get(y + 3 * step);
+        ((val + 16) >> 5).clamp(0, 255)
+    }
+
+    /// 对角线 6-tap FIR 半像素滤波器 (场预测)
+    fn qpel_hv_filter_field(
+        ref_frame: &VideoFrame,
+        plane: usize,
+        x: isize,
+        y: isize,
+        field_select: bool,
+    ) -> i32 {
+        let step = 2;
+        let h_row = |yy: isize| -> i32 {
+            let get = |xx: isize| -> i32 {
+                Self::get_ref_pixel_field(ref_frame, plane, xx, yy, field_select) as i32
+            };
+            -get(x - 2) + 5 * get(x - 1) + 20 * get(x) + 20 * get(x + 1) + 5 * get(x + 2)
+                - get(x + 3)
+        };
+
+        let val = -h_row(y - 2 * step)
+            + 5 * h_row(y - step)
+            + 20 * h_row(y)
+            + 20 * h_row(y + step)
+            + 5 * h_row(y + 2 * step)
+            - h_row(y + 3 * step);
+        ((val + 16) >> 5).clamp(0, 255)
+    }
+
+    /// Quarter-Pixel 运动补偿 (场预测)
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn qpel_motion_compensation_field(
+        ref_frame: &VideoFrame,
+        plane: usize,
+        base_x: isize,
+        base_y: isize,
+        mv_x: i16,
+        mv_y: i16,
+        rounding: u8,
+        field_select: bool,
+    ) -> u8 {
+        let base_x = base_x + (mv_x >> 2) as isize;
+        let base_y = base_y + (mv_y >> 2) as isize;
+        let dx = (mv_x & 3) as i32;
+        let dy = (mv_y & 3) as i32;
+
+        let f = |ox: isize, oy: isize| -> i32 {
+            Self::get_ref_pixel_field(ref_frame, plane, base_x + ox, base_y + oy, field_select)
+                as i32
+        };
+        let h = |ox: isize, oy: isize| -> i32 {
+            Self::qpel_h_filter_field(ref_frame, plane, base_x + ox, base_y + oy, field_select)
+        };
+        let v = |ox: isize, oy: isize| -> i32 {
+            Self::qpel_v_filter_field(ref_frame, plane, base_x + ox, base_y + oy, field_select)
+        };
+        let hv = |ox: isize, oy: isize| -> i32 {
+            Self::qpel_hv_filter_field(ref_frame, plane, base_x + ox, base_y + oy, field_select)
+        };
+
+        let r = rounding as i32;
+        let avg = |a: i32, b: i32| -> i32 { (a + b + 1 - r) >> 1 };
 
         let result = match (dx, dy) {
             (0, 0) => f(0, 0),
@@ -337,9 +493,89 @@ impl Mpeg4Decoder {
         quarterpel: bool,
     ) -> u8 {
         if quarterpel {
-            Self::qpel_motion_compensation(ref_frame, plane, base_x, base_y, mv_x, mv_y)
+            Self::qpel_motion_compensation(ref_frame, plane, base_x, base_y, mv_x, mv_y, rounding)
         } else {
             Self::motion_compensation(ref_frame, plane, base_x, base_y, mv_x, mv_y, rounding)
+        }
+    }
+
+    /// 场预测运动补偿: 仅支持半像素精度
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn motion_compensation_field(
+        ref_frame: &VideoFrame,
+        plane: usize,
+        base_x: isize,
+        base_y: isize,
+        mv_x: i16,
+        mv_y: i16,
+        rounding: u8,
+        field_select: bool,
+    ) -> u8 {
+        let full_x = (mv_x >> 1) as isize;
+        let full_y = (mv_y >> 1) as isize;
+        let half_x = (mv_x & 1) != 0;
+        let half_y = (mv_y & 1) != 0;
+
+        let sx = base_x + full_x;
+        let sy = base_y + full_y;
+        let step_y = 2;
+
+        if !half_x && !half_y {
+            Self::get_ref_pixel_field(ref_frame, plane, sx, sy, field_select)
+        } else {
+            let p00 = Self::get_ref_pixel_field(ref_frame, plane, sx, sy, field_select) as u16;
+            let p01 = Self::get_ref_pixel_field(ref_frame, plane, sx + 1, sy, field_select) as u16;
+            let p10 =
+                Self::get_ref_pixel_field(ref_frame, plane, sx, sy + step_y, field_select) as u16;
+            let p11 = Self::get_ref_pixel_field(ref_frame, plane, sx + 1, sy + step_y, field_select)
+                as u16;
+            let r = rounding as u16;
+
+            if half_x && !half_y {
+                ((p00 + p01 + 1 - r) >> 1) as u8
+            } else if !half_x && half_y {
+                ((p00 + p10 + 1 - r) >> 1) as u8
+            } else {
+                ((p00 + p01 + p10 + p11 + 2 - r) >> 2) as u8
+            }
+        }
+    }
+
+    /// 通用场预测运动补偿入口 (支持 quarterpel)
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn motion_compensate_field(
+        ref_frame: &VideoFrame,
+        plane: usize,
+        base_x: isize,
+        base_y: isize,
+        mv_x: i16,
+        mv_y: i16,
+        rounding: u8,
+        quarterpel: bool,
+        field_select: bool,
+    ) -> u8 {
+        if quarterpel {
+            Self::qpel_motion_compensation_field(
+                ref_frame,
+                plane,
+                base_x,
+                base_y,
+                mv_x,
+                mv_y,
+                rounding,
+                field_select,
+            )
+        } else {
+            Self::motion_compensation_field(
+                ref_frame,
+                plane,
+                base_x,
+                base_y,
+                mv_x,
+                mv_y,
+                rounding,
+                field_select,
+            )
         }
     }
 }

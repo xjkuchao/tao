@@ -7,6 +7,90 @@ pub(super) struct BitReader<'a> {
     bit_pos: u8,
 }
 
+/// 反向位流读取器 (从末尾向前读取)
+pub(super) struct ReverseBitReader<'a> {
+    data: &'a [u8],
+    bit_index: isize,
+}
+
+impl<'a> ReverseBitReader<'a> {
+    #[allow(dead_code)]
+    pub fn new(data: &'a [u8]) -> Self {
+        let total_bits = data.len() as isize * 8;
+        Self {
+            data,
+            bit_index: total_bits - 1,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn new_from_end(data: &'a [u8], end_bit: usize) -> Self {
+        let total_bits = data.len() as isize * 8;
+        let end_bit = (end_bit as isize).clamp(0, total_bits);
+        Self {
+            data,
+            bit_index: end_bit - 1,
+        }
+    }
+
+    pub fn read_bits(&mut self, n: u8) -> Option<u32> {
+        if n == 0 || n > 32 {
+            return None;
+        }
+        let mut result = 0u32;
+        for _ in 0..n {
+            let bit = self.read_bit()? as u32;
+            result = (result << 1) | bit;
+        }
+        Some(result)
+    }
+
+    pub fn peek_bits(&self, n: u8) -> Option<u32> {
+        if n == 0 || n > 32 {
+            return None;
+        }
+        let mut result = 0u32;
+        let mut idx = self.bit_index;
+        for _ in 0..n {
+            if idx < 0 {
+                return None;
+            }
+            let byte_pos = (idx / 8) as usize;
+            let bit_pos = (idx % 8) as u8;
+            if byte_pos >= self.data.len() {
+                return None;
+            }
+            let bit = (self.data[byte_pos] >> (7 - bit_pos)) & 1;
+            result = (result << 1) | (bit as u32);
+            idx -= 1;
+        }
+        Some(result)
+    }
+
+    pub fn read_bit(&mut self) -> Option<u8> {
+        if self.bit_index < 0 {
+            return None;
+        }
+        let byte_pos = (self.bit_index / 8) as usize;
+        let bit_pos = (self.bit_index % 8) as u8;
+        if byte_pos >= self.data.len() {
+            return None;
+        }
+        let bit = (self.data[byte_pos] >> (7 - bit_pos)) & 1;
+        self.bit_index -= 1;
+        Some(bit)
+    }
+
+    #[allow(dead_code)]
+    pub fn bits_left(&self) -> usize {
+        if self.bit_index < 0 {
+            0
+        } else {
+            (self.bit_index as usize) + 1
+        }
+    }
+}
+
 impl<'a> BitReader<'a> {
     pub fn new(data: &'a [u8]) -> Self {
         Self {

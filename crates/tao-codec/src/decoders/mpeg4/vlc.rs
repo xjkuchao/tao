@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use log::warn;
 
-use super::bitreader::BitReader;
+use super::bitreader::{BitReader, ReverseBitReader};
 use super::tables::*;
 use super::types::{BframeMbMode, MbType};
 
@@ -74,6 +74,397 @@ pub(super) const INTRA_AC_VLC: &[(u8, u16, bool, u8, i8)] = &[
     (9, 0x17, true, 1, 2),
     (8, 0xC, true, 0, 3),
     (7, 0x3, false, 0, 0), // Escape
+];
+
+// ============================================================================
+// RVLC (可逆 VLC) 表定义
+// ============================================================================
+
+const RVLC_EOB_INDEX: usize = 169;
+const RVLC_INTER_LAST_INDEX: usize = 103;
+const RVLC_INTRA_LAST_INDEX: usize = 103;
+
+const RVLC_INTER_VLC: [(u16, u8); 170] = [
+    (0x0006, 3),
+    (0x0001, 4),
+    (0x0004, 5),
+    (0x001C, 7),
+    (0x003C, 8),
+    (0x003D, 8),
+    (0x007C, 9),
+    (0x00FC, 10),
+    (0x00FD, 10),
+    (0x01FC, 11),
+    (0x01FD, 11),
+    (0x03FC, 12),
+    (0x07FC, 13),
+    (0x07FD, 13),
+    (0x0BFC, 13),
+    (0x0BFD, 13),
+    (0x0FFC, 14),
+    (0x0FFD, 14),
+    (0x1FFC, 15),
+    (0x0007, 3),
+    (0x000C, 6),
+    (0x005C, 8),
+    (0x007D, 9),
+    (0x017C, 10),
+    (0x02FC, 11),
+    (0x03FD, 12),
+    (0x0DFC, 13),
+    (0x17FC, 14),
+    (0x17FD, 14),
+    (0x000A, 4),
+    (0x001D, 7),
+    (0x00BC, 9),
+    (0x02FD, 11),
+    (0x05FC, 12),
+    (0x1BFC, 14),
+    (0x1BFD, 14),
+    (0x0005, 5),
+    (0x005D, 8),
+    (0x017D, 10),
+    (0x05FD, 12),
+    (0x0DFD, 13),
+    (0x1DFC, 14),
+    (0x1FFD, 15),
+    (0x0008, 5),
+    (0x006C, 8),
+    (0x037C, 11),
+    (0x0EFC, 13),
+    (0x2FFC, 15),
+    (0x0009, 5),
+    (0x00BD, 9),
+    (0x037D, 11),
+    (0x0EFD, 13),
+    (0x000D, 6),
+    (0x01BC, 10),
+    (0x06FC, 12),
+    (0x1DFD, 14),
+    (0x0014, 6),
+    (0x01BD, 10),
+    (0x06FD, 12),
+    (0x2FFD, 15),
+    (0x0015, 6),
+    (0x01DC, 10),
+    (0x0F7C, 13),
+    (0x002C, 7),
+    (0x01DD, 10),
+    (0x1EFC, 14),
+    (0x002D, 7),
+    (0x03BC, 11),
+    (0x0034, 7),
+    (0x077C, 12),
+    (0x006D, 8),
+    (0x0F7D, 13),
+    (0x0074, 8),
+    (0x1EFD, 14),
+    (0x0075, 8),
+    (0x1F7C, 14),
+    (0x00DC, 9),
+    (0x1F7D, 14),
+    (0x00DD, 9),
+    (0x1FBC, 14),
+    (0x00EC, 9),
+    (0x37FC, 15),
+    (0x01EC, 10),
+    (0x01ED, 10),
+    (0x01F4, 10),
+    (0x03BD, 11),
+    (0x03DC, 11),
+    (0x03DD, 11),
+    (0x03EC, 11),
+    (0x03ED, 11),
+    (0x03F4, 11),
+    (0x077D, 12),
+    (0x07BC, 12),
+    (0x07BD, 12),
+    (0x0FBC, 13),
+    (0x0FBD, 13),
+    (0x0FDC, 13),
+    (0x0FDD, 13),
+    (0x1FBD, 14),
+    (0x1FDC, 14),
+    (0x1FDD, 14),
+    (0x37FD, 15),
+    (0x3BFC, 15),
+    (0x000B, 4),
+    (0x0078, 8),
+    (0x03F5, 11),
+    (0x0FEC, 13),
+    (0x1FEC, 14),
+    (0x0012, 5),
+    (0x00ED, 9),
+    (0x07DC, 12),
+    (0x1FED, 14),
+    (0x3BFD, 15),
+    (0x0013, 5),
+    (0x03F8, 11),
+    (0x3DFC, 15),
+    (0x0018, 6),
+    (0x07DD, 12),
+    (0x0019, 6),
+    (0x07EC, 12),
+    (0x0022, 6),
+    (0x0FED, 13),
+    (0x0023, 6),
+    (0x0FF4, 13),
+    (0x0035, 7),
+    (0x0FF5, 13),
+    (0x0038, 7),
+    (0x0FF8, 13),
+    (0x0039, 7),
+    (0x0FF9, 13),
+    (0x0042, 7),
+    (0x1FF4, 14),
+    (0x0043, 7),
+    (0x1FF5, 14),
+    (0x0079, 8),
+    (0x1FF8, 14),
+    (0x0082, 8),
+    (0x3DFD, 15),
+    (0x0083, 8),
+    (0x00F4, 9),
+    (0x00F5, 9),
+    (0x00F8, 9),
+    (0x00F9, 9),
+    (0x0102, 9),
+    (0x0103, 9),
+    (0x01F5, 10),
+    (0x01F8, 10),
+    (0x01F9, 10),
+    (0x0202, 10),
+    (0x0203, 10),
+    (0x03F9, 11),
+    (0x0402, 11),
+    (0x0403, 11),
+    (0x07ED, 12),
+    (0x07F4, 12),
+    (0x07F5, 12),
+    (0x07F8, 12),
+    (0x07F9, 12),
+    (0x0802, 12),
+    (0x0803, 12),
+    (0x1002, 13),
+    (0x1003, 13),
+    (0x1FF9, 14),
+    (0x2002, 14),
+    (0x2003, 14),
+    (0x3EFC, 15),
+    (0x3EFD, 15),
+    (0x3F7C, 15),
+    (0x3F7D, 15),
+    (0x0000, 4),
+];
+
+const RVLC_INTER_RUN: [i8; 169] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2,
+    2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 9,
+    9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15, 16, 16, 17, 17, 18, 19, 20, 21, 22, 23,
+    24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2,
+    2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 15, 16, 17,
+    18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
+    42, 43, 44,
+];
+
+const RVLC_INTER_LEVEL: [i8; 169] = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    10, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3,
+    4, 1, 2, 3, 1, 2, 3, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 2, 3, 1, 2, 1, 2, 1, 2, 1,
+    2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+];
+
+const RVLC_INTRA_VLC: [(u16, u8); 170] = [
+    (0x0006, 3),
+    (0x0007, 3),
+    (0x000A, 4),
+    (0x0009, 5),
+    (0x0014, 6),
+    (0x0015, 6),
+    (0x0034, 7),
+    (0x0074, 8),
+    (0x0075, 8),
+    (0x00DD, 9),
+    (0x00EC, 9),
+    (0x01EC, 10),
+    (0x01ED, 10),
+    (0x01F4, 10),
+    (0x03EC, 11),
+    (0x03ED, 11),
+    (0x03F4, 11),
+    (0x077D, 12),
+    (0x07BC, 12),
+    (0x0FBD, 13),
+    (0x0FDC, 13),
+    (0x07BD, 12),
+    (0x0FDD, 13),
+    (0x1FBD, 14),
+    (0x1FDC, 14),
+    (0x1FDD, 14),
+    (0x1FFC, 15),
+    (0x0001, 4),
+    (0x0008, 5),
+    (0x002D, 7),
+    (0x006C, 8),
+    (0x006D, 8),
+    (0x00DC, 9),
+    (0x01DD, 10),
+    (0x03DC, 11),
+    (0x03DD, 11),
+    (0x077C, 12),
+    (0x0FBC, 13),
+    (0x1F7D, 14),
+    (0x1FBC, 14),
+    (0x0004, 5),
+    (0x002C, 7),
+    (0x00BC, 9),
+    (0x01DC, 10),
+    (0x03BC, 11),
+    (0x03BD, 11),
+    (0x0EFD, 13),
+    (0x0F7C, 13),
+    (0x0F7D, 13),
+    (0x1EFD, 14),
+    (0x1F7C, 14),
+    (0x0005, 5),
+    (0x005C, 8),
+    (0x00BD, 9),
+    (0x037D, 11),
+    (0x06FC, 12),
+    (0x0EFC, 13),
+    (0x1DFD, 14),
+    (0x1EFC, 14),
+    (0x1FFD, 15),
+    (0x000C, 6),
+    (0x005D, 8),
+    (0x01BD, 10),
+    (0x03FD, 12),
+    (0x06FD, 12),
+    (0x1BFD, 14),
+    (0x000D, 6),
+    (0x007D, 9),
+    (0x02FC, 11),
+    (0x05FC, 12),
+    (0x1BFC, 14),
+    (0x1DFC, 14),
+    (0x001C, 7),
+    (0x017C, 10),
+    (0x02FD, 11),
+    (0x05FD, 12),
+    (0x2FFC, 15),
+    (0x001D, 7),
+    (0x017D, 10),
+    (0x037C, 11),
+    (0x0DFD, 13),
+    (0x2FFD, 15),
+    (0x003C, 8),
+    (0x01BC, 10),
+    (0x0BFD, 13),
+    (0x17FD, 14),
+    (0x003D, 8),
+    (0x01FD, 11),
+    (0x0DFC, 13),
+    (0x37FC, 15),
+    (0x007C, 9),
+    (0x03FC, 12),
+    (0x00FC, 10),
+    (0x0BFC, 13),
+    (0x00FD, 10),
+    (0x37FD, 15),
+    (0x01FC, 11),
+    (0x07FC, 13),
+    (0x07FD, 13),
+    (0x0FFC, 14),
+    (0x0FFD, 14),
+    (0x17FC, 14),
+    (0x3BFC, 15),
+    (0x000B, 4),
+    (0x0078, 8),
+    (0x03F5, 11),
+    (0x0FEC, 13),
+    (0x1FEC, 14),
+    (0x0012, 5),
+    (0x00ED, 9),
+    (0x07DC, 12),
+    (0x1FED, 14),
+    (0x3BFD, 15),
+    (0x0013, 5),
+    (0x03F8, 11),
+    (0x3DFC, 15),
+    (0x0018, 6),
+    (0x07DD, 12),
+    (0x0019, 6),
+    (0x07EC, 12),
+    (0x0022, 6),
+    (0x0FED, 13),
+    (0x0023, 6),
+    (0x0FF4, 13),
+    (0x0035, 7),
+    (0x0FF5, 13),
+    (0x0038, 7),
+    (0x0FF8, 13),
+    (0x0039, 7),
+    (0x0FF9, 13),
+    (0x0042, 7),
+    (0x1FF4, 14),
+    (0x0043, 7),
+    (0x1FF5, 14),
+    (0x0079, 8),
+    (0x1FF8, 14),
+    (0x0082, 8),
+    (0x3DFD, 15),
+    (0x0083, 8),
+    (0x00F4, 9),
+    (0x00F5, 9),
+    (0x00F8, 9),
+    (0x00F9, 9),
+    (0x0102, 9),
+    (0x0103, 9),
+    (0x01F5, 10),
+    (0x01F8, 10),
+    (0x01F9, 10),
+    (0x0202, 10),
+    (0x0203, 10),
+    (0x03F9, 11),
+    (0x0402, 11),
+    (0x0403, 11),
+    (0x07ED, 12),
+    (0x07F4, 12),
+    (0x07F5, 12),
+    (0x07F8, 12),
+    (0x07F9, 12),
+    (0x0802, 12),
+    (0x0803, 12),
+    (0x1002, 13),
+    (0x1003, 13),
+    (0x1FF9, 14),
+    (0x2002, 14),
+    (0x2003, 14),
+    (0x3EFC, 15),
+    (0x3EFD, 15),
+    (0x3F7C, 15),
+    (0x3F7D, 15),
+    (0x0000, 4),
+];
+
+const RVLC_INTRA_RUN: [i8; 169] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4,
+    4, 4, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 8, 8, 8, 8, 9, 9, 9, 9, 10, 10, 11, 11,
+    12, 12, 13, 14, 15, 16, 17, 18, 19, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 3, 3, 4, 4, 5, 5, 6,
+    6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+    24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
+];
+
+const RVLC_INTRA_LEVEL: [i8; 169] = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+    27, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 1, 2, 3, 4,
+    5, 6, 7, 8, 9, 1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 2, 3, 4, 1,
+    2, 3, 4, 1, 2, 1, 2, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 1, 2, 3, 1, 2, 1,
+    2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
 ];
 
 /// MCBPC VLC 表 (I-VOP)
@@ -496,7 +887,7 @@ pub(super) fn decode_intra_dc_vlc(reader: &mut BitReader, is_luma: bool) -> Opti
 ///    - 当错误发生时，使用未损坏部分的数据
 ///
 /// 4. **分区 B 解码流程**:
-///    ```rust
+///    ```rust,ignore
 ///    // 伪代码示例
 ///    let mut forward_reader = BitReader::new(partition_b_data);
 ///    let mut backward_reader = ReverseBitReader::new(partition_b_data);
@@ -505,7 +896,7 @@ pub(super) fn decode_intra_dc_vlc(reader: &mut BitReader, is_luma: bool) -> Opti
 ///    
 ///    // 前向解码低频
 ///    while forward_pos < 32 {
-///        if let Ok(Some((last, run, level))) = decode_ac_rvlc(&mut forward_reader, ..., true) {
+///        if let Ok(Some((last, run, level))) = decode_ac_rvlc_forward(&mut forward_reader, true) {
 ///            block[forward_pos] = level;
 ///            forward_pos += run + 1;
 ///        } else { break; }
@@ -513,7 +904,7 @@ pub(super) fn decode_intra_dc_vlc(reader: &mut BitReader, is_luma: bool) -> Opti
 ///    
 ///    // 后向解码高频
 ///    while backward_pos > 32 {
-///        if let Ok(Some((last, run, level))) = decode_ac_rvlc(&mut backward_reader, ..., false) {
+///        if let Ok(Some((last, run, level))) = decode_ac_rvlc_backward(&mut backward_reader, true) {
 ///            backward_pos -= run + 1;
 ///            block[backward_pos] = level;
 ///        } else { break; }
@@ -522,9 +913,7 @@ pub(super) fn decode_intra_dc_vlc(reader: &mut BitReader, is_luma: bool) -> Opti
 ///
 /// # 参数
 /// - `reader`: 位流读取器
-/// - `table`: 使用的 AC VLC 表 (Intra 或 Inter) - TODO: 应使用 RVLC 表
 /// - `is_intra`: 是否 Intra 块
-/// - `forward`: 若 true 前向解码; 若 false 后向解码
 ///
 /// # 返回
 /// - `Ok(Some((last, run, level)))` - 成功解码; last = true 表示最后一个非零系数
@@ -533,52 +922,118 @@ pub(super) fn decode_intra_dc_vlc(reader: &mut BitReader, is_luma: bool) -> Opti
 ///
 /// # 当前实现状态
 ///
-/// - ✅ 前向路径: 使用标准 VLC 解码（功能正常但非RVLC标准）
-/// - ❌ 后向路径: 未实现，暂时回退到前向路径
-/// - ❌ RVLC 码表: 未实现，使用标准 VLC 表代替
-/// - ❌ 反向 BitReader: 未实现
+/// - ✅ 前向路径: 使用 RVLC 码表
+/// - ✅ 后向路径: 使用 ReverseBitReader 与 RVLC 码表
 ///
 /// # 使用场景
 ///
 /// 在 data_partitioned 模式下解码 Partition B 的 DC 系数时调用。
-/// 即使当前简化实现（仅前向路径）也能正确解码大多数 data_partitioned 流，
-/// 只是在出现位流错误时无法利用 RVLC 的错误恢复能力。
+/// 当前仅提供基础双向解码流程, 错误恢复同步仍需上层处理。
 #[allow(dead_code)]
-pub(super) fn decode_ac_rvlc(
+pub(super) fn decode_ac_rvlc_forward(
     reader: &mut BitReader,
-    table: &[(u8, u16, bool, u8, i8)],
     is_intra: bool,
-    forward: bool,
 ) -> Result<Option<(bool, u8, i16)>, ()> {
-    // 当前版本: 统一使用前向解码路径（标准 VLC）
-    // 完整的 RVLC 需要:
-    // 1. 独立的 RVLC 码表
-    // 2. ReverseBitReader 实现
-    // 3. 双向同步和错误检测逻辑
-
-    if forward {
-        // 前向解码：使用标准 VLC 路径（简化实现）
-        decode_ac_vlc(reader, table, is_intra)
+    let (vlc, run_table, level_table, last_index) = if is_intra {
+        (
+            &RVLC_INTRA_VLC,
+            &RVLC_INTRA_RUN,
+            &RVLC_INTRA_LEVEL,
+            RVLC_INTRA_LAST_INDEX,
+        )
     } else {
-        // 后向解码：暂未实现，回退到前向路径
-        //
-        // TODO 完整实现步骤:
-        // 1. 实现 ReverseBitReader (从末尾倒序读取比特)
-        // 2. 加载 RVLC 码表 (ISO/IEC 14496-2 Table B-35/B-36)
-        // 3. 实现反向 VLC 解码循环
-        // 4. 在 decode_intra_block 中调用时传入 backward_reader
+        (
+            &RVLC_INTER_VLC,
+            &RVLC_INTER_RUN,
+            &RVLC_INTER_LEVEL,
+            RVLC_INTER_LAST_INDEX,
+        )
+    };
 
-        static RVLC_REVERSE_WARN: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(true);
-        if RVLC_REVERSE_WARN.swap(false, std::sync::atomic::Ordering::Relaxed) {
-            warn!(
-                "RVLC 后向解码未实现，使用前向路径代替。\
-                 功能可用但无法利用 RVLC 的错误恢复能力。\
-                 要实现完整 RVLC，需要 ReverseBitReader 和 RVLC 码表。"
-            );
+    for (idx, (code, len)) in vlc.iter().enumerate() {
+        let Some(bits) = reader.peek_bits(*len) else {
+            continue;
+        };
+        if bits as u16 == *code {
+            reader.read_bits(*len).ok_or(())?;
+            if idx == RVLC_EOB_INDEX {
+                return Ok(None);
+            }
+            let last = idx >= last_index;
+            let run = run_table.get(idx).copied().ok_or(())?;
+            let level = level_table.get(idx).copied().ok_or(())?;
+            let sign = reader.read_bit().ok_or(())?;
+            let actual_level = if sign { -(level as i16) } else { level as i16 };
+            return Ok(Some((last, run as u8, actual_level)));
         }
-        decode_ac_vlc(reader, table, is_intra)
     }
+
+    if is_intra {
+        warn!("RVLC 前向解码失败: Intra 路径未命中码字");
+    } else {
+        warn!("RVLC 前向解码失败: Inter 路径未命中码字");
+    }
+    Err(())
+}
+
+fn reverse_bits(code: u16, len: u8) -> u16 {
+    let mut value = 0u16;
+    for i in 0..len {
+        value <<= 1;
+        value |= (code >> i) & 1;
+    }
+    value
+}
+
+/// RVLC 反向解码 (基础实现)
+///
+/// 注意: 需要配套 RVLC 码表与 ReverseBitReader.
+#[allow(dead_code)]
+pub(super) fn decode_ac_rvlc_backward(
+    reader: &mut ReverseBitReader,
+    is_intra: bool,
+) -> Result<Option<(bool, u8, i16)>, ()> {
+    let (vlc, run_table, level_table, last_index) = if is_intra {
+        (
+            &RVLC_INTRA_VLC,
+            &RVLC_INTRA_RUN,
+            &RVLC_INTRA_LEVEL,
+            RVLC_INTRA_LAST_INDEX,
+        )
+    } else {
+        (
+            &RVLC_INTER_VLC,
+            &RVLC_INTER_RUN,
+            &RVLC_INTER_LEVEL,
+            RVLC_INTER_LAST_INDEX,
+        )
+    };
+
+    for (idx, (code, len)) in vlc.iter().enumerate() {
+        let Some(bits) = reader.peek_bits(*len) else {
+            continue;
+        };
+        let rev = reverse_bits(*code, *len);
+        if bits as u16 == rev {
+            reader.read_bits(*len).ok_or(())?;
+            if idx == RVLC_EOB_INDEX {
+                return Ok(None);
+            }
+            let last = idx >= last_index;
+            let run = run_table.get(idx).copied().ok_or(())?;
+            let level = level_table.get(idx).copied().ok_or(())?;
+            let sign = reader.read_bit().ok_or(())? != 0;
+            let actual_level = if sign { -(level as i16) } else { level as i16 };
+            return Ok(Some((last, run as u8, actual_level)));
+        }
+    }
+
+    if is_intra {
+        warn!("RVLC 反向解码失败: Intra 路径未命中码字");
+    } else {
+        warn!("RVLC 反向解码失败: Inter 路径未命中码字");
+    }
+    Err(())
 }
 
 /// 获取 escape mode 的 max_level 值

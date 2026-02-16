@@ -2,6 +2,43 @@
 
 use crate::frame::PictureType;
 
+/// 编码器类型标识 (从 user_data 中解析)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::decoders) enum EncoderType {
+    /// 未知编码器
+    Unknown,
+    /// DivX 编码器
+    DivX,
+    /// Xvid 编码器
+    Xvid,
+    /// FFmpeg/Lavc 编码器
+    Lavc,
+}
+
+/// 编码器信息 (从 user_data 中解析)
+#[derive(Debug, Clone)]
+pub(in crate::decoders) struct EncoderInfo {
+    /// 编码器类型
+    pub encoder_type: EncoderType,
+    /// 编码器版本号 (如 DivX 5.01, Xvid 1.0 等)
+    pub version: u32,
+    /// 编码器子版本号
+    pub build: u32,
+    /// DivX packed bitstream 模式
+    pub packed_bitstream: bool,
+}
+
+impl Default for EncoderInfo {
+    fn default() -> Self {
+        Self {
+            encoder_type: EncoderType::Unknown,
+            version: 0,
+            build: 0,
+            packed_bitstream: false,
+        }
+    }
+}
+
 /// 宏块类型 (I/P-VOP)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum MbType {
@@ -114,6 +151,8 @@ pub(in crate::decoders) struct VolInfo {
     pub complexity_estimation_bits_b: u16,
     /// 是否禁用 resync marker
     pub resync_marker_disable: bool,
+    /// 编码器信息 (从 user_data 中提取)
+    pub encoder_info: EncoderInfo,
 }
 
 /// VOP (Video Object Plane) 信息

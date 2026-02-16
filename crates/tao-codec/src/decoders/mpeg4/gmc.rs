@@ -127,6 +127,7 @@ impl Mpeg4Decoder {
             // 转换为标准仿射形式: x' = a*x + b*y + c
 
             let wx = width - 1;
+            let wy = height - 1;
 
             // x 方向系数: a = 1 + (dx1 - dx0) / wx
             params.transform[0] = den + ((dx1 - dx0) * den / wx.max(1));
@@ -137,8 +138,8 @@ impl Mpeg4Decoder {
 
             // y 方向系数: d = 0
             params.transform[3] = 0;
-            // y 方向 y 系数: e = 1 + (dy1 - dy0) / wx
-            params.transform[4] = den + ((dy1 - dy0) * den / wx.max(1));
+            // y 方向 y 系数: e = 1 + (dy1 - dy0) / wy
+            params.transform[4] = den + ((dy1 - dy0) * den / wy.max(1));
             // y 方向偏移: f = dy0
             params.transform[5] = dy0 * den;
 
@@ -246,7 +247,7 @@ impl Mpeg4Decoder {
             2 | 3 => {
                 // 2/3-point GMC: 仿射/透视变换
                 let [a, b, c, d, e, f] = gmc_params.transform;
-                let den = gmc_params.transform_den;
+                let den = gmc_params.transform_den as i64;
 
                 if den == 0 {
                     // 退化情况,返回原始像素
@@ -254,35 +255,56 @@ impl Mpeg4Decoder {
                 }
 
                 // 应用仿射变换: x' = (a*x + b*y + c) / den
-                let x = px as i32;
-                let y = py as i32;
-                let src_x_fixed = (a * x + b * y + c) / den;
-                let src_y_fixed = (d * x + e * y + f) / den;
+                let x = px as i64;
+                let y = py as i64;
+                let num_x = (a as i64) * x + (b as i64) * y + (c as i64);
+                let num_y = (d as i64) * x + (e as i64) * y + (f as i64);
+                let src_x_fixed = (num_x << 16) / den;
+                let src_y_fixed = (num_y << 16) / den;
 
                 // 定点数转整数 (sub-pixel 插值)
-                let src_x_int = src_x_fixed >> 16;
-                let src_y_int = src_y_fixed >> 16;
-                let frac_x = (src_x_fixed & 0xFFFF) as u16;
-                let frac_y = (src_y_fixed & 0xFFFF) as u16;
+                let src_x_int = src_x_fixed.div_euclid(1 << 16);
+                let src_y_int = src_y_fixed.div_euclid(1 << 16);
+                let frac_x = src_x_fixed.rem_euclid(1 << 16) as u32;
+                let frac_y = src_y_fixed.rem_euclid(1 << 16) as u32;
 
-                // 双线性插值
                 if frac_x == 0 && frac_y == 0 {
                     // 整数位置,直接采样
                     Self::get_ref_pixel(ref_frame, plane, src_x_int as isize, src_y_int as isize)
                 } else {
-                    // Sub-pixel 插值 (简化为最近邻)
-                    // TODO: 实现完整的双线性插值以提高精度
-                    let interp_x = if frac_x >= 0x8000 {
-                        src_x_int + 1
-                    } else {
-                        src_x_int
-                    };
-                    let interp_y = if frac_y >= 0x8000 {
-                        src_y_int + 1
-                    } else {
-                        src_y_int
-                    };
-                    Self::get_ref_pixel(ref_frame, plane, interp_x as isize, interp_y as isize)
+                    // 子像素双线性插值
+                    let p00 = Self::get_ref_pixel(
+                        ref_frame,
+                        plane,
+                        src_x_int as isize,
+                        src_y_int as isize,
+                    ) as u64;
+                    let p01 = Self::get_ref_pixel(
+                        ref_frame,
+                        plane,
+                        (src_x_int + 1) as isize,
+                        src_y_int as isize,
+                    ) as u64;
+                    let p10 = Self::get_ref_pixel(
+                        ref_frame,
+                        plane,
+                        src_x_int as isize,
+                        (src_y_int + 1) as isize,
+                    ) as u64;
+                    let p11 = Self::get_ref_pixel(
+                        ref_frame,
+                        plane,
+                        (src_x_int + 1) as isize,
+                        (src_y_int + 1) as isize,
+                    ) as u64;
+
+                    let inv_x = 0x10000u64 - frac_x as u64;
+                    let inv_y = 0x10000u64 - frac_y as u64;
+
+                    let top = p00 * inv_x + p01 * frac_x as u64;
+                    let bottom = p10 * inv_x + p11 * frac_x as u64;
+                    let value = (top * inv_y + bottom * frac_y as u64 + 0x8000_0000) >> 32;
+                    value.clamp(0, 255) as u8
                 }
             }
             _ => {
@@ -320,5 +342,55 @@ fn decode_sprite_trajectory_component(reader: &mut BitReader) -> Option<i32> {
         Some(code)
     } else {
         Some(code - (1 << length) + 1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tao_core::PixelFormat;
+
+    fn create_test_frame() -> VideoFrame {
+        let mut frame = VideoFrame::new(4, 4, PixelFormat::Yuv420p);
+        frame.data[0] = vec![0u8; 16];
+        frame.data[1] = vec![128u8; 4];
+        frame.data[2] = vec![128u8; 4];
+        frame.linesize[0] = 4;
+        frame.linesize[1] = 2;
+        frame.linesize[2] = 2;
+        frame
+    }
+
+    #[test]
+    fn test_gmc_identity_sample() {
+        let mut frame = create_test_frame();
+        frame.data[0][5] = 200;
+
+        let params = GmcParameters {
+            num_points: 2,
+            transform: [1 << 16, 0, 0, 0, 1 << 16, 0],
+            transform_den: 1 << 16,
+            ..Default::default()
+        };
+
+        let val = Mpeg4Decoder::gmc_motion_compensation(&frame, 0, 1, 1, &params);
+        assert_eq!(val, 200, "GMC 单位变换应取原始像素");
+    }
+
+    #[test]
+    fn test_gmc_half_pixel_sample() {
+        let mut frame = create_test_frame();
+        frame.data[0][5] = 10;
+        frame.data[0][6] = 30;
+
+        let params = GmcParameters {
+            num_points: 2,
+            transform: [1 << 16, 0, 1 << 15, 0, 1 << 16, 0],
+            transform_den: 1 << 16,
+            ..Default::default()
+        };
+
+        let val = Mpeg4Decoder::gmc_motion_compensation(&frame, 0, 1, 1, &params);
+        assert_eq!(val, 20, "GMC 半像素水平插值应为平均值");
     }
 }

@@ -42,6 +42,7 @@ mod gmc;
 mod header;
 mod idct;
 mod motion;
+mod short_header;
 mod tables;
 mod types;
 mod vlc;
@@ -107,6 +108,12 @@ struct PartitionedMacroblockData {
     ac_coeffs: [[i16; 63]; 6],
     /// field_dct 标志
     field_dct: bool,
+    /// field_pred 标志
+    field_pred: bool,
+    /// 顶场参考选择
+    field_for_top: bool,
+    /// 底场参考选择
+    field_for_bot: bool,
 }
 
 // ============================================================================
@@ -156,6 +163,8 @@ pub struct Mpeg4Decoder {
     pub(super) last_non_b_time: i32,
     /// 当前 VOP 的 GMC 参数
     pub(super) gmc_params: GmcParameters,
+    /// DivX packed bitstream 队列 (一个 packet 中拆分出的多个 VOP)
+    packed_frames: std::collections::VecDeque<Vec<u8>>,
 }
 
 impl Mpeg4Decoder {
@@ -189,6 +198,7 @@ impl Mpeg4Decoder {
             time_base_acc: 0,
             last_non_b_time: 0,
             gmc_params: GmcParameters::default(),
+            packed_frames: std::collections::VecDeque::new(),
         }))
     }
 
@@ -225,6 +235,48 @@ impl Mpeg4Decoder {
             return None;
         }
         Some((y as usize * self.mb_stride + x as usize) * 6 + idx)
+    }
+
+    /// 选择场预测的参考场
+    pub(super) fn select_field_for_block(
+        block_idx: usize,
+        field_for_top: bool,
+        field_for_bot: bool,
+    ) -> bool {
+        if block_idx < 2 {
+            field_for_top
+        } else {
+            field_for_bot
+        }
+    }
+
+    /// 场预测时将垂直 MV 转换到帧坐标
+    pub(super) fn scale_field_mv_y(mv_y: i16) -> i16 {
+        let scaled = (mv_y as i32) * 2;
+        scaled.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+    }
+
+    /// 场预测下色度行使用的参考场
+    pub(super) fn select_field_for_chroma_line(
+        chroma_y: usize,
+        field_for_top: bool,
+        field_for_bot: bool,
+    ) -> bool {
+        if chroma_y & 1 == 0 {
+            field_for_top
+        } else {
+            field_for_bot
+        }
+    }
+
+    /// 计算两个 MV 的平均值
+    pub(super) fn average_mv(a: MotionVector, b: MotionVector) -> MotionVector {
+        let sum_x = a.x as i32 + b.x as i32;
+        let sum_y = a.y as i32 + b.y as i32;
+        MotionVector {
+            x: (sum_x >> 1).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+            y: (sum_y >> 1).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+        }
     }
 
     /// 获取 Intra DC 预测方向和预测值
@@ -300,13 +352,21 @@ impl Mpeg4Decoder {
     ///
     /// # 返回
     /// (DataPartitionInfo, partition_count) - 分区信息和分区数量
-    fn analyze_data_partitions(data: &[u8], fcode: u8) -> (DataPartitionInfo, u32) {
+    fn analyze_data_partitions(&self, data: &[u8], fcode: u8) -> (DataPartitionInfo, u32) {
         let mut info = DataPartitionInfo {
             partition_a: (0, data.len() * 8),
             partition_b: (data.len() * 8, data.len() * 8),
             partition_c: (data.len() * 8, data.len() * 8),
         };
         let mut partition_count = 0u32;
+
+        let total_mbs = self.mb_stride * (self.height as usize).div_ceil(16);
+        let mb_bits = if total_mbs > 1 {
+            (total_mbs as f32).log2().ceil() as usize
+        } else {
+            1
+        };
+        let packet_header_bits = mb_bits + 5 + 1;
 
         // resync marker 长度 = 16 + fcode 位
         let marker_len = 16 + fcode as usize;
@@ -378,8 +438,8 @@ impl Mpeg4Decoder {
                     }
                 }
 
-                // 跳过 marker 和 macroblock_number
-                bit_pos = partition_start + 16; // 跳过 marker 后的 MB number (简化处理)
+                // 跳过 marker、macroblock_number、quant_scale 与 HEC 标志位
+                bit_pos = partition_start + packet_header_bits;
             } else {
                 // 按字节步进
                 bit_pos += 8;
@@ -545,6 +605,9 @@ impl Mpeg4Decoder {
                     dc_coeffs: [0; 6],
                     ac_coeffs: [[0; 63]; 6],
                     field_dct: false,
+                    field_pred: false,
+                    field_for_top: false,
+                    field_for_bot: false,
                 });
             }
             decode_mcbpc_p(reader)?
@@ -584,18 +647,33 @@ impl Mpeg4Decoder {
         };
 
         // field_pred (仅 P-VOP)
+        let mut field_pred = false;
+        let mut field_for_top = false;
+        let mut field_for_bot = false;
         if interlacing && !is_intra {
-            let field_pred = reader.read_bit().unwrap_or(false);
+            field_pred = reader.read_bit().unwrap_or(false);
             if field_pred {
-                let _field_for_top = reader.read_bit().unwrap_or(false);
-                let _field_for_bot = reader.read_bit().unwrap_or(false);
+                field_for_top = reader.read_bit().unwrap_or(false);
+                field_for_bot = reader.read_bit().unwrap_or(false);
             }
         }
 
         // 5. 运动向量解码
         let mut mb_mvs = [MotionVector::default(); 4];
         if !is_intra {
-            if mb_type == MbType::Inter4V {
+            if field_pred && mb_type != MbType::Inter4V {
+                let mut mv_top = MotionVector::default();
+                let mut mv_bot = MotionVector::default();
+                if let Some(mut mv) = self.decode_motion_vector(reader, mb_x, mb_y, 0) {
+                    self.validate_vector(&mut mv, mb_x, mb_y);
+                    mv_top = mv;
+                }
+                if let Some(mut mv) = self.decode_motion_vector(reader, mb_x, mb_y, 2) {
+                    self.validate_vector(&mut mv, mb_x, mb_y);
+                    mv_bot = mv;
+                }
+                mb_mvs = [mv_top, mv_top, mv_bot, mv_bot];
+            } else if mb_type == MbType::Inter4V {
                 for (k, mv_slot) in mb_mvs.iter_mut().enumerate() {
                     if let Some(mut mv) = self.decode_motion_vector(reader, mb_x, mb_y, k) {
                         self.validate_vector(&mut mv, mb_x, mb_y);
@@ -617,6 +695,9 @@ impl Mpeg4Decoder {
             dc_coeffs: [0; 6],
             ac_coeffs: [[0; 63]; 6],
             field_dct,
+            field_pred,
+            field_for_top,
+            field_for_bot,
         })
     }
 
@@ -884,6 +965,8 @@ impl Mpeg4Decoder {
             .as_ref()
             .map(|v| v.quarterpel)
             .unwrap_or(false);
+        let field_pred = mb_data.field_pred;
+        let use_quarterpel = quarterpel;
 
         // 重建 Y 平面的 4 个 8x8 块
         for block_idx in 0..4 {
@@ -914,16 +997,36 @@ impl Mpeg4Decoder {
                         let val = if is_intra {
                             (residual + 128).clamp(0, 255) as u8
                         } else if let Some(ref_frame) = &self.reference_frame {
-                            let pred = Self::motion_compensate(
-                                ref_frame,
-                                0,
-                                px,
-                                py,
-                                mv.x,
-                                mv.y,
-                                self.rounding_control,
-                                quarterpel,
-                            );
+                            let pred = if field_pred {
+                                let field_select = Self::select_field_for_block(
+                                    block_idx,
+                                    mb_data.field_for_top,
+                                    mb_data.field_for_bot,
+                                );
+                                let mv_y = Self::scale_field_mv_y(mv.y);
+                                Self::motion_compensate_field(
+                                    ref_frame,
+                                    0,
+                                    px,
+                                    py,
+                                    mv.x,
+                                    mv_y,
+                                    self.rounding_control,
+                                    use_quarterpel,
+                                    field_select,
+                                )
+                            } else {
+                                Self::motion_compensate(
+                                    ref_frame,
+                                    0,
+                                    px,
+                                    py,
+                                    mv.x,
+                                    mv.y,
+                                    self.rounding_control,
+                                    use_quarterpel,
+                                )
+                            };
                             (pred as i32 + residual).clamp(0, 255) as u8
                         } else {
                             (residual + 128).clamp(0, 255) as u8
@@ -938,14 +1041,42 @@ impl Mpeg4Decoder {
         let uv_width = width / 2;
         let uv_height = height / 2;
 
-        let chroma_mv = if !is_intra {
-            if mb_data.mb_type == MbType::Inter4V {
-                Self::chroma_mv_4mv(&mb_data.mvs)
+        let (chroma_mv, chroma_mv_top, chroma_mv_bot) = if !is_intra {
+            if field_pred {
+                if mb_data.mb_type == MbType::Inter4V {
+                    let top_avg = Self::average_mv(mb_data.mvs[0], mb_data.mvs[1]);
+                    let bot_avg = Self::average_mv(mb_data.mvs[2], mb_data.mvs[3]);
+                    (
+                        MotionVector::default(),
+                        Self::chroma_mv_1mv(top_avg),
+                        Self::chroma_mv_1mv(bot_avg),
+                    )
+                } else {
+                    (
+                        MotionVector::default(),
+                        Self::chroma_mv_1mv(mb_data.mvs[0]),
+                        Self::chroma_mv_1mv(mb_data.mvs[2]),
+                    )
+                }
+            } else if mb_data.mb_type == MbType::Inter4V {
+                (
+                    Self::chroma_mv_4mv(&mb_data.mvs),
+                    MotionVector::default(),
+                    MotionVector::default(),
+                )
             } else {
-                Self::chroma_mv_1mv(mb_data.mvs[0])
+                (
+                    Self::chroma_mv_1mv(mb_data.mvs[0]),
+                    MotionVector::default(),
+                    MotionVector::default(),
+                )
             }
         } else {
-            MotionVector::default()
+            (
+                MotionVector::default(),
+                MotionVector::default(),
+                MotionVector::default(),
+            )
         };
 
         // 色度仍使用半像素 MC, qpel 仅作用于亮度.
@@ -974,16 +1105,41 @@ impl Mpeg4Decoder {
                     let val = if is_intra {
                         (residual + 128).clamp(0, 255) as u8
                     } else if let Some(ref_frame) = &self.reference_frame {
-                        let pred = Self::motion_compensate(
-                            ref_frame,
-                            plane_idx + 1,
-                            px as isize,
-                            py as isize,
-                            chroma_mv.x,
-                            chroma_mv.y,
-                            self.rounding_control,
-                            chroma_quarterpel,
-                        );
+                        let pred = if field_pred {
+                            let field_select = Self::select_field_for_chroma_line(
+                                py,
+                                mb_data.field_for_top,
+                                mb_data.field_for_bot,
+                            );
+                            let mv = if field_select {
+                                chroma_mv_top
+                            } else {
+                                chroma_mv_bot
+                            };
+                            let mv_y = Self::scale_field_mv_y(mv.y);
+                            Self::motion_compensate_field(
+                                ref_frame,
+                                plane_idx + 1,
+                                px as isize,
+                                py as isize,
+                                mv.x,
+                                mv_y,
+                                self.rounding_control,
+                                chroma_quarterpel,
+                                field_select,
+                            )
+                        } else {
+                            Self::motion_compensate(
+                                ref_frame,
+                                plane_idx + 1,
+                                px as isize,
+                                py as isize,
+                                chroma_mv.x,
+                                chroma_mv.y,
+                                self.rounding_control,
+                                chroma_quarterpel,
+                            )
+                        };
                         (pred as i32 + residual).clamp(0, 255) as u8
                     } else {
                         (residual + 128).clamp(0, 255) as u8
@@ -1239,15 +1395,16 @@ impl Mpeg4Decoder {
         } else {
             false
         };
-        let field_pred = if interlacing && !is_intra {
-            reader.read_bit().unwrap_or(false)
-        } else {
-            false
-        };
-        if field_pred {
-            // 场预测: 读取顶场和底场参考选择
-            let _field_for_top = reader.read_bit().unwrap_or(false);
-            let _field_for_bot = reader.read_bit().unwrap_or(false);
+        let mut field_pred = false;
+        let mut field_for_top = false;
+        let mut field_for_bot = false;
+        if interlacing && !is_intra {
+            field_pred = reader.read_bit().unwrap_or(false);
+            if field_pred {
+                // 场预测: 读取顶场和底场参考选择
+                field_for_top = reader.read_bit().unwrap_or(false);
+                field_for_bot = reader.read_bit().unwrap_or(false);
+            }
         }
 
         // quarterpel 标志
@@ -1256,12 +1413,25 @@ impl Mpeg4Decoder {
             .as_ref()
             .map(|v| v.quarterpel)
             .unwrap_or(false);
+        let use_quarterpel = quarterpel;
 
         // 5. 运动向量解码
         let mut mb_mvs = [MotionVector::default(); 4];
 
         if !is_intra {
-            if mb_type == MbType::Inter4V {
+            if field_pred && mb_type != MbType::Inter4V {
+                let mut mv_top = MotionVector::default();
+                let mut mv_bot = MotionVector::default();
+                if let Some(mut mv) = self.decode_motion_vector(reader, mb_x, mb_y, 0) {
+                    self.validate_vector(&mut mv, mb_x, mb_y);
+                    mv_top = mv;
+                }
+                if let Some(mut mv) = self.decode_motion_vector(reader, mb_x, mb_y, 2) {
+                    self.validate_vector(&mut mv, mb_x, mb_y);
+                    mv_bot = mv;
+                }
+                mb_mvs = [mv_top, mv_top, mv_bot, mv_bot];
+            } else if mb_type == MbType::Inter4V {
                 for (k, mv_slot) in mb_mvs.iter_mut().enumerate() {
                     if let Some(mut mv) = self.decode_motion_vector(reader, mb_x, mb_y, k) {
                         self.validate_vector(&mut mv, mb_x, mb_y);
@@ -1351,16 +1521,36 @@ impl Mpeg4Decoder {
                         let val = if is_intra {
                             (residual + 128).clamp(0, 255) as u8
                         } else if let Some(ref_frame) = &self.reference_frame {
-                            let pred = Self::motion_compensate(
-                                ref_frame,
-                                0,
-                                px,
-                                py,
-                                mv.x,
-                                mv.y,
-                                self.rounding_control,
-                                quarterpel,
-                            );
+                            let pred = if field_pred {
+                                let field_select = Self::select_field_for_block(
+                                    block_idx,
+                                    field_for_top,
+                                    field_for_bot,
+                                );
+                                let mv_y = Self::scale_field_mv_y(mv.y);
+                                Self::motion_compensate_field(
+                                    ref_frame,
+                                    0,
+                                    px,
+                                    py,
+                                    mv.x,
+                                    mv_y,
+                                    self.rounding_control,
+                                    use_quarterpel,
+                                    field_select,
+                                )
+                            } else {
+                                Self::motion_compensate(
+                                    ref_frame,
+                                    0,
+                                    px,
+                                    py,
+                                    mv.x,
+                                    mv.y,
+                                    self.rounding_control,
+                                    use_quarterpel,
+                                )
+                            };
                             (pred as i32 + residual).clamp(0, 255) as u8
                         } else {
                             (residual + 128).clamp(0, 255) as u8
@@ -1375,14 +1565,42 @@ impl Mpeg4Decoder {
         let uv_width = width / 2;
         let uv_height = height / 2;
 
-        let chroma_mv = if !is_intra {
-            if mb_type == MbType::Inter4V {
-                Self::chroma_mv_4mv(&mb_mvs)
+        let (chroma_mv, chroma_mv_top, chroma_mv_bot) = if !is_intra {
+            if field_pred {
+                if mb_type == MbType::Inter4V {
+                    let top_avg = Self::average_mv(mb_mvs[0], mb_mvs[1]);
+                    let bot_avg = Self::average_mv(mb_mvs[2], mb_mvs[3]);
+                    (
+                        MotionVector::default(),
+                        Self::chroma_mv_1mv(top_avg),
+                        Self::chroma_mv_1mv(bot_avg),
+                    )
+                } else {
+                    (
+                        MotionVector::default(),
+                        Self::chroma_mv_1mv(mb_mvs[0]),
+                        Self::chroma_mv_1mv(mb_mvs[2]),
+                    )
+                }
+            } else if mb_type == MbType::Inter4V {
+                (
+                    Self::chroma_mv_4mv(&mb_mvs),
+                    MotionVector::default(),
+                    MotionVector::default(),
+                )
             } else {
-                Self::chroma_mv_1mv(mb_mvs[0])
+                (
+                    Self::chroma_mv_1mv(mb_mvs[0]),
+                    MotionVector::default(),
+                    MotionVector::default(),
+                )
             }
         } else {
-            MotionVector::default()
+            (
+                MotionVector::default(),
+                MotionVector::default(),
+                MotionVector::default(),
+            )
         };
 
         // 色度仍使用半像素 MC, qpel 仅作用于亮度.
@@ -1422,16 +1640,41 @@ impl Mpeg4Decoder {
                         let val = if is_intra {
                             (residual + 128).clamp(0, 255) as u8
                         } else if let Some(ref_frame) = &self.reference_frame {
-                            let pred = Self::motion_compensate(
-                                ref_frame,
-                                plane_idx + 1,
-                                px,
-                                py,
-                                chroma_mv.x,
-                                chroma_mv.y,
-                                self.rounding_control,
-                                chroma_quarterpel,
-                            );
+                            let pred = if field_pred {
+                                let field_select = Self::select_field_for_chroma_line(
+                                    py as usize,
+                                    field_for_top,
+                                    field_for_bot,
+                                );
+                                let mv = if field_select {
+                                    chroma_mv_top
+                                } else {
+                                    chroma_mv_bot
+                                };
+                                let mv_y = Self::scale_field_mv_y(mv.y);
+                                Self::motion_compensate_field(
+                                    ref_frame,
+                                    plane_idx + 1,
+                                    px,
+                                    py,
+                                    mv.x,
+                                    mv_y,
+                                    self.rounding_control,
+                                    chroma_quarterpel,
+                                    field_select,
+                                )
+                            } else {
+                                Self::motion_compensate(
+                                    ref_frame,
+                                    plane_idx + 1,
+                                    px,
+                                    py,
+                                    chroma_mv.x,
+                                    chroma_mv.y,
+                                    self.rounding_control,
+                                    chroma_quarterpel,
+                                )
+                            };
                             (pred as i32 + residual).clamp(0, 255) as u8
                         } else {
                             (residual + 128).clamp(0, 255) as u8
@@ -1618,6 +1861,8 @@ impl Decoder for Mpeg4Decoder {
 
         if !params.extra_data.is_empty() {
             self.parse_vol_header(&params.extra_data)?;
+            // 从 extradata 中解析 user_data (识别编码器)
+            self.parse_user_data(&params.extra_data);
         }
 
         debug!(
@@ -1637,9 +1882,111 @@ impl Decoder for Mpeg4Decoder {
             return Ok(());
         }
 
+        // Short Video Header (H.263) 检测:
+        // 如果数据匹配 short header 起始码且没有 MPEG-4 VOP 起始码,
+        // 则使用 H.263 baseline 解码路径
+        let has_vop_start_code = find_start_code_offset(&packet.data, START_CODE_VOP).is_some();
+        if !has_vop_start_code && Self::is_short_video_header(&packet.data) {
+            let header = self.parse_short_video_header(&packet.data)?;
+            debug!(
+                "检测到 Short Video Header (H.263), TR={}, 使用 H.263 解码路径",
+                header.temporal_reference
+            );
+            let mut frame = self.decode_short_header_frame(&packet.data, &header)?;
+
+            // 设置帧元数据
+            frame.pts = packet.pts;
+            frame.time_base = packet.time_base;
+            frame.duration = packet.duration;
+
+            // 更新参考帧 (I/P 帧)
+            if header.picture_type == PictureType::I || header.picture_type == PictureType::P {
+                self.reference_frame = Some(frame.clone());
+            }
+
+            self.pending_frame = Some(frame);
+            self.frame_count += 1;
+            return Ok(());
+        }
+
         if self.vol_info.is_none() {
             if let Err(e) = self.parse_vol_header(&packet.data) {
                 debug!("VOL 解析失败: {:?}", e);
+            }
+        }
+
+        // 解析 user_data (识别编码器类型, 检测 packed bitstream 等)
+        if self
+            .vol_info
+            .as_ref()
+            .map(|v| v.encoder_info.encoder_type == types::EncoderType::Unknown)
+            .unwrap_or(false)
+        {
+            self.parse_user_data(&packet.data);
+        }
+
+        // DivX packed bitstream 处理:
+        // 先处理之前缓存的 packed frames
+        if let Some(queued_data) = self.packed_frames.pop_front() {
+            let queued_packet = Packet {
+                data: queued_data.into(),
+                pts: packet.pts,
+                dts: packet.dts,
+                duration: packet.duration,
+                time_base: packet.time_base,
+                stream_index: packet.stream_index,
+                is_keyframe: false,
+                pos: -1,
+            };
+            return self.send_packet_standard(&queued_packet);
+        }
+
+        // 检测并拆分 packed bitstream
+        let is_packed = self
+            .vol_info
+            .as_ref()
+            .map(|v| v.encoder_info.packed_bitstream)
+            .unwrap_or(false);
+
+        if is_packed {
+            let vop_offsets = Self::find_all_vop_offsets(&packet.data);
+            if vop_offsets.len() > 1 {
+                debug!(
+                    "DivX packed bitstream: 检测到 {} 个 VOP, 拆分处理",
+                    vop_offsets.len()
+                );
+                // 将后续 VOP 数据缓存到队列
+                for i in 1..vop_offsets.len() {
+                    let start = vop_offsets[i];
+                    // VOP 起始码从 00 00 01 B6 开始, 回退 4 字节以包含起始码
+                    let vop_start = start.saturating_sub(4);
+                    let end = if i + 1 < vop_offsets.len() {
+                        vop_offsets[i + 1].saturating_sub(4)
+                    } else {
+                        packet.data.len()
+                    };
+                    if vop_start < end {
+                        self.packed_frames
+                            .push_back(packet.data[vop_start..end].to_vec());
+                    }
+                }
+                // 只处理第一个 VOP (截断 packet 数据到第二个 VOP 之前)
+                let first_end = if vop_offsets.len() > 1 {
+                    vop_offsets[1].saturating_sub(4)
+                } else {
+                    packet.data.len()
+                };
+                let first_packet = Packet {
+                    data: packet.data.slice(..first_end),
+                    pts: packet.pts,
+                    dts: packet.dts,
+                    duration: packet.duration,
+                    time_base: packet.time_base,
+                    stream_index: packet.stream_index,
+                    is_keyframe: packet.is_keyframe,
+                    pos: packet.pos,
+                };
+                return self.send_packet_standard(&first_packet);
             }
         }
 
@@ -1657,7 +2004,7 @@ impl Decoder for Mpeg4Decoder {
 
         if data_partitioned {
             let fcode = self.f_code_forward.saturating_sub(1);
-            let (part_info, partition_count) = Self::analyze_data_partitions(&packet.data, fcode);
+            let (part_info, partition_count) = self.analyze_data_partitions(&packet.data, fcode);
             debug!("数据分区模式已启用:");
             debug!("  分区数量: {}", partition_count + 1);
             debug!(
@@ -1782,6 +2129,27 @@ impl Decoder for Mpeg4Decoder {
 // ============================================================================
 
 impl Mpeg4Decoder {
+    /// 查找数据中所有 VOP 起始码的偏移 (起始码之后的位置)
+    ///
+    /// 用于 DivX packed bitstream 拆分: 一个 packet 中可能包含多个 VOP.
+    /// 返回每个 VOP 起始码 (00 00 01 B6) 之后的字节偏移列表.
+    fn find_all_vop_offsets(data: &[u8]) -> Vec<usize> {
+        let mut offsets = Vec::new();
+        if data.len() < 4 {
+            return offsets;
+        }
+        for idx in 0..(data.len() - 3) {
+            if data[idx] == 0x00
+                && data[idx + 1] == 0x00
+                && data[idx + 2] == 0x01
+                && data[idx + 3] == START_CODE_VOP
+            {
+                offsets.push(idx + 4);
+            }
+        }
+        offsets
+    }
+
     /// 标准解码路径 (非 Data Partitioning)
     fn send_packet_standard(&mut self, packet: &Packet) -> TaoResult<()> {
         let vop_offset = find_start_code_offset(&packet.data, START_CODE_VOP)
@@ -1955,6 +2323,7 @@ mod tests {
             time_base_acc: 0,
             last_non_b_time: 0,
             gmc_params: GmcParameters::default(),
+            packed_frames: std::collections::VecDeque::new(),
         }
     }
 
@@ -2117,11 +2486,11 @@ mod tests {
         ref_frame.data[0][5 * 16 + 5] = 200;
 
         // MV = (0, 0) in qpel units
-        let val = Mpeg4Decoder::qpel_motion_compensation(&ref_frame, 0, 5, 5, 0, 0);
+        let val = Mpeg4Decoder::qpel_motion_compensation(&ref_frame, 0, 5, 5, 0, 0, 0);
         assert_eq!(val, 200);
 
         // MV = (4, 0) in qpel units = 1 full pixel right
-        let val = Mpeg4Decoder::qpel_motion_compensation(&ref_frame, 0, 4, 5, 4, 0);
+        let val = Mpeg4Decoder::qpel_motion_compensation(&ref_frame, 0, 4, 5, 4, 0, 0);
         assert_eq!(val, 200);
     }
 

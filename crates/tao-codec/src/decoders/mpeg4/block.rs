@@ -183,6 +183,7 @@ mod tests {
             time_base_acc: 0,
             last_non_b_time: 0,
             gmc_params: GmcParameters::default(),
+            packed_frames: std::collections::VecDeque::new(),
         }
     }
 

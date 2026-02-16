@@ -6,7 +6,7 @@ use tao_core::TaoError;
 use super::Mpeg4Decoder;
 use super::bitreader::{BitReader, find_start_code_range};
 use super::tables::ZIGZAG_SCAN;
-use super::types::{VolInfo, VopInfo};
+use super::types::{EncoderInfo, EncoderType, VolInfo, VopInfo};
 use crate::frame::PictureType;
 
 /// MPEG-4 起始码
@@ -15,6 +15,7 @@ const START_CODE_VISUAL_OBJECT_SEQUENCE: u8 = 0xB0;
 #[allow(dead_code)]
 const START_CODE_VISUAL_OBJECT: u8 = 0xB5;
 pub(super) const START_CODE_VOP: u8 = 0xB6;
+pub(super) const START_CODE_USER_DATA: u8 = 0xB2;
 const START_CODE_VIDEO_OBJECT_LAYER: u8 = 0x20; // 0x20-0x2F
 
 /// VOP 编码类型
@@ -22,6 +23,15 @@ const VOP_TYPE_I: u8 = 0;
 const VOP_TYPE_P: u8 = 1;
 const VOP_TYPE_B: u8 = 2;
 const VOP_TYPE_S: u8 = 3;
+
+/// 从指定偏移查找下一个起始码 (00 00 01), 返回起始码的位置
+fn find_next_start_code(data: &[u8], start: usize) -> Option<usize> {
+    if data.len() < start + 3 {
+        return None;
+    }
+    (start..(data.len() - 2))
+        .find(|&idx| data[idx] == 0x00 && data[idx + 1] == 0x00 && data[idx + 2] == 0x01)
+}
 
 /// 读取自定义量化矩阵
 fn read_quant_matrix(reader: &mut BitReader) -> Option<[u8; 64]> {
@@ -306,6 +316,7 @@ impl Mpeg4Decoder {
             complexity_estimation_bits_p: complexity_bits_p,
             complexity_estimation_bits_b: complexity_bits_b,
             resync_marker_disable,
+            encoder_info: EncoderInfo::default(),
         });
 
         debug!(
@@ -474,6 +485,182 @@ impl Mpeg4Decoder {
             alternate_vertical_scan_flag,
         })
     }
+
+    /// 解析 user_data, 识别编码器类型和版本
+    ///
+    /// user_data 位于起始码 0x000001B2 之后, 直到下一个起始码为止.
+    /// 常见编码器在 user_data 中写入标识字符串:
+    /// - DivX: "DivX503b1393p" 或类似格式, 末尾 'p' 表示 packed bitstream
+    /// - Xvid: "XviD" + 4字节 build 号
+    /// - FFmpeg/Lavc: "Lavc" 或 "FFmpeg" 前缀
+    pub(super) fn parse_user_data(&mut self, data: &[u8]) {
+        // 查找所有 user_data 起始码
+        let mut offset = 0;
+        while offset + 4 < data.len() {
+            // 查找 00 00 01 B2
+            if data[offset] == 0x00
+                && data[offset + 1] == 0x00
+                && data[offset + 2] == 0x01
+                && data[offset + 3] == START_CODE_USER_DATA
+            {
+                let ud_start = offset + 4;
+                // user_data 持续到下一个起始码 (00 00 01 xx)
+                let ud_end = find_next_start_code(data, ud_start).unwrap_or(data.len());
+                let ud_bytes = &data[ud_start..ud_end];
+
+                if let Some(info) = Self::identify_encoder(ud_bytes) {
+                    debug!(
+                        "识别编码器: {:?}, 版本={}, build={}, packed={}",
+                        info.encoder_type, info.version, info.build, info.packed_bitstream
+                    );
+                    if let Some(vol) = self.vol_info.as_mut() {
+                        vol.encoder_info = info;
+                    }
+                    return;
+                }
+            }
+            offset += 1;
+        }
+    }
+
+    /// 从 user_data 字节中识别编码器类型
+    fn identify_encoder(ud_bytes: &[u8]) -> Option<EncoderInfo> {
+        // 转换为 ASCII 字符串 (忽略非 ASCII 字节)
+        let text: String = ud_bytes
+            .iter()
+            .take_while(|&&b| b != 0x00)
+            .map(|&b| b as char)
+            .collect();
+
+        if text.is_empty() {
+            return None;
+        }
+
+        // DivX 检测: "DivX" 后跟版本号, 末尾可能有 'p' (packed bitstream)
+        if let Some(divx_pos) = text.find("DivX") {
+            let after_divx = &text[divx_pos + 4..];
+            let (version, build, packed) = Self::parse_divx_version(after_divx);
+            return Some(EncoderInfo {
+                encoder_type: EncoderType::DivX,
+                version,
+                build,
+                packed_bitstream: packed,
+            });
+        }
+
+        // Xvid 检测: "XviD" 后跟 4 字节 build 号
+        if text.contains("XviD") || text.contains("xvid") || text.contains("Xvid") {
+            let build = if ud_bytes.len() >= 8 {
+                // Xvid 在 "XviD" 之后放 4 字节小端 build 号
+                let xvid_pos = text
+                    .find("XviD")
+                    .or_else(|| text.find("xvid"))
+                    .or_else(|| text.find("Xvid"))
+                    .unwrap_or(0);
+                let build_offset = xvid_pos + 4;
+                if build_offset + 4 <= ud_bytes.len() {
+                    u32::from_le_bytes([
+                        ud_bytes[build_offset],
+                        ud_bytes[build_offset + 1],
+                        ud_bytes[build_offset + 2],
+                        ud_bytes[build_offset + 3],
+                    ])
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+            return Some(EncoderInfo {
+                encoder_type: EncoderType::Xvid,
+                version: 0,
+                build,
+                packed_bitstream: false,
+            });
+        }
+
+        // FFmpeg/Lavc 检测
+        if text.starts_with("Lavc") || text.starts_with("FFmpeg") {
+            let version = Self::parse_lavc_version(&text);
+            return Some(EncoderInfo {
+                encoder_type: EncoderType::Lavc,
+                version,
+                build: 0,
+                packed_bitstream: false,
+            });
+        }
+
+        None
+    }
+
+    /// 解析 DivX 版本字符串, 如 "503b1393p"
+    ///
+    /// 格式: 主版本(1-3位数) + 子版本(可选) + 'b' + build号 + 可选'p'(packed)
+    /// 例如: "503b1393p" -> version=503, build=1393, packed=true
+    fn parse_divx_version(s: &str) -> (u32, u32, bool) {
+        let packed = s.ends_with('p');
+
+        // 提取版本号 (前面的数字)
+        let mut version = 0u32;
+        let mut chars = s.chars().peekable();
+        while let Some(&ch) = chars.peek() {
+            if ch.is_ascii_digit() {
+                version = version * 10 + (ch as u32 - '0' as u32);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+
+        // 跳过 'b' 或 'Build'
+        let mut build = 0u32;
+        if chars.peek() == Some(&'b') || chars.peek() == Some(&'B') {
+            chars.next();
+            // 读取 build 号
+            while let Some(&ch) = chars.peek() {
+                if ch.is_ascii_digit() {
+                    build = build * 10 + (ch as u32 - '0' as u32);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+        }
+
+        (version, build, packed)
+    }
+
+    /// 解析 Lavc 版本字符串, 如 "Lavc57.48.101"
+    fn parse_lavc_version(s: &str) -> u32 {
+        let version_str = if let Some(stripped) = s.strip_prefix("Lavc") {
+            stripped
+        } else if let Some(stripped) = s.strip_prefix("FFmpeg") {
+            // 跳过 "FFmpeg" 前缀和可能的空格/点
+            stripped.trim_start_matches(|c: char| !c.is_ascii_digit())
+        } else {
+            s
+        };
+
+        // 解析 "主版本.次版本.修订版本" -> 主版本 * 10000 + 次版本 * 100 + 修订版本
+        let parts: Vec<u32> = version_str
+            .split('.')
+            .take(3)
+            .filter_map(|p| {
+                p.chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse()
+                    .ok()
+            })
+            .collect();
+
+        match parts.len() {
+            3 => parts[0] * 10000 + parts[1] * 100 + parts[2],
+            2 => parts[0] * 10000 + parts[1] * 100,
+            1 => parts[0] * 10000,
+            _ => 0,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -561,6 +748,7 @@ mod tests {
             time_base_acc: 0,
             last_non_b_time: 0,
             gmc_params: GmcParameters::default(),
+            packed_frames: std::collections::VecDeque::new(),
         }
     }
 
@@ -783,5 +971,135 @@ mod tests {
             !vop.alternate_vertical_scan_flag,
             "非隔行时不应启用交错扫描"
         );
+    }
+
+    #[test]
+    fn test_user_data_divx_packed() {
+        // 构造: VOL 起始码 + VOL 数据 + user_data 起始码 + "DivX503b1393p"
+        let mut writer = TestBitWriter::new();
+        write_basic_vol_header(&mut writer, false, 1, 0);
+        writer.push_bit(true); // complexity_disable
+        writer.push_bit(true); // resync_marker_disable
+        writer.push_bit(false); // data_partitioned = false
+
+        let vol_data = wrap_vol_start_code(writer.finish());
+
+        let mut data = vol_data;
+        // user_data 起始码: 00 00 01 B2
+        data.extend_from_slice(&[0x00, 0x00, 0x01, 0xB2]);
+        // "DivX503b1393p"
+        data.extend_from_slice(b"DivX503b1393p");
+        data.push(0x00); // null terminator
+
+        let mut decoder = create_decoder_for_test();
+        decoder.parse_vol_header(&data).expect("解析 VOL 头失败");
+        decoder.parse_user_data(&data);
+
+        let vol = decoder.vol_info.as_ref().expect("应生成 VOL 信息");
+        assert_eq!(
+            vol.encoder_info.encoder_type,
+            EncoderType::DivX,
+            "应识别为 DivX 编码器"
+        );
+        assert_eq!(vol.encoder_info.version, 503, "DivX 版本应为 503");
+        assert_eq!(vol.encoder_info.build, 1393, "DivX build 应为 1393");
+        assert!(
+            vol.encoder_info.packed_bitstream,
+            "应检测到 packed bitstream"
+        );
+    }
+
+    #[test]
+    fn test_user_data_divx_non_packed() {
+        let mut writer = TestBitWriter::new();
+        write_basic_vol_header(&mut writer, false, 1, 0);
+        writer.push_bit(true);
+        writer.push_bit(true);
+        writer.push_bit(false);
+
+        let vol_data = wrap_vol_start_code(writer.finish());
+        let mut data = vol_data;
+        data.extend_from_slice(&[0x00, 0x00, 0x01, 0xB2]);
+        data.extend_from_slice(b"DivX501b1018");
+        data.push(0x00);
+
+        let mut decoder = create_decoder_for_test();
+        decoder.parse_vol_header(&data).expect("解析 VOL 头失败");
+        decoder.parse_user_data(&data);
+
+        let vol = decoder.vol_info.as_ref().expect("应生成 VOL 信息");
+        assert_eq!(vol.encoder_info.encoder_type, EncoderType::DivX);
+        assert_eq!(vol.encoder_info.version, 501);
+        assert!(!vol.encoder_info.packed_bitstream, "不应检测到 packed");
+    }
+
+    #[test]
+    fn test_user_data_xvid() {
+        let mut writer = TestBitWriter::new();
+        write_basic_vol_header(&mut writer, false, 1, 0);
+        writer.push_bit(true);
+        writer.push_bit(true);
+        writer.push_bit(false);
+
+        let vol_data = wrap_vol_start_code(writer.finish());
+        let mut data = vol_data;
+        data.extend_from_slice(&[0x00, 0x00, 0x01, 0xB2]);
+        data.extend_from_slice(b"XviD");
+        // 4 字节小端 build 号 = 1234
+        data.extend_from_slice(&1234u32.to_le_bytes());
+
+        let mut decoder = create_decoder_for_test();
+        decoder.parse_vol_header(&data).expect("解析 VOL 头失败");
+        decoder.parse_user_data(&data);
+
+        let vol = decoder.vol_info.as_ref().expect("应生成 VOL 信息");
+        assert_eq!(vol.encoder_info.encoder_type, EncoderType::Xvid);
+        assert_eq!(vol.encoder_info.build, 1234);
+    }
+
+    #[test]
+    fn test_user_data_lavc() {
+        let mut writer = TestBitWriter::new();
+        write_basic_vol_header(&mut writer, false, 1, 0);
+        writer.push_bit(true);
+        writer.push_bit(true);
+        writer.push_bit(false);
+
+        let vol_data = wrap_vol_start_code(writer.finish());
+        let mut data = vol_data;
+        data.extend_from_slice(&[0x00, 0x00, 0x01, 0xB2]);
+        data.extend_from_slice(b"Lavc57.48.101");
+        data.push(0x00);
+
+        let mut decoder = create_decoder_for_test();
+        decoder.parse_vol_header(&data).expect("解析 VOL 头失败");
+        decoder.parse_user_data(&data);
+
+        let vol = decoder.vol_info.as_ref().expect("应生成 VOL 信息");
+        assert_eq!(vol.encoder_info.encoder_type, EncoderType::Lavc);
+        assert_eq!(
+            vol.encoder_info.version,
+            57 * 10000 + 48 * 100 + 101,
+            "Lavc 版本应为 574901"
+        );
+    }
+
+    #[test]
+    fn test_divx_version_parsing() {
+        // 测试 parse_divx_version 的各种格式
+        let (v, b, p) = Mpeg4Decoder::parse_divx_version("503b1393p");
+        assert_eq!(v, 503);
+        assert_eq!(b, 1393);
+        assert!(p);
+
+        let (v, b, p) = Mpeg4Decoder::parse_divx_version("501b1018");
+        assert_eq!(v, 501);
+        assert_eq!(b, 1018);
+        assert!(!p);
+
+        let (v, b, p) = Mpeg4Decoder::parse_divx_version("400");
+        assert_eq!(v, 400);
+        assert_eq!(b, 0);
+        assert!(!p);
     }
 }
