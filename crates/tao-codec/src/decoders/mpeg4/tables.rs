@@ -86,10 +86,4 @@ pub(super) const DQUANT_TABLE: [i32; 4] = [-1, -2, 1, 2];
 /// intra_dc_vlc_thr 阈值: 索引 0-7, 值为 quant 阈值
 pub(super) const INTRA_DC_THRESHOLD: [u32; 8] = [32, 13, 15, 17, 19, 21, 23, 0];
 
-// 整数 IDCT 常量 (Chen-Wang 算法)
-pub(super) const W1: i32 = 2841;
-pub(super) const W2: i32 = 2676;
-pub(super) const W3: i32 = 2408;
-pub(super) const W5: i32 = 1609;
-pub(super) const W6: i32 = 1108;
-pub(super) const W7: i32 = 565;
+// IDCT 常量已移至 idct.rs (使用 FFmpeg simple_idct 的 2^14 缩放)
