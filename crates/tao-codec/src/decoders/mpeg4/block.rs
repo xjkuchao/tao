@@ -52,7 +52,8 @@ pub(super) fn decode_intra_block_vlc(
     };
     let (dc_pred, direction) = decoder.get_intra_predictor(mb_x as usize, mb_y as usize, block_idx);
     let actual_dc = dc_pred.wrapping_add(dc_diff);
-    block[0] = actual_dc as i32 * dc_scaler as i32;
+    // DC 系数直接使用 actual_dc，不乘以 dc_scaler；dc_scaler 仅用于预测器初始化
+    block[0] = actual_dc as i32;
 
     // 2. AC 系数
     let ac_scan = select_ac_pred_scan(ac_pred_flag, direction, scan);

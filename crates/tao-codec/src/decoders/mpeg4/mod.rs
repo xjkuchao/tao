@@ -293,7 +293,7 @@ impl Mpeg4Decoder {
             self.get_neighbor_block_idx(x, y, idx)
                 .and_then(|pos| self.predictor_cache.get(pos))
                 .map(|b| b[0])
-                .unwrap_or(1024)
+                .unwrap_or(128)  // 边界处使用 128（中性灰度），而不是 1024
         };
 
         let (dc_a, dc_b, dc_c) = match block_idx {
@@ -322,7 +322,7 @@ impl Mpeg4Decoder {
                 get_dc(mb_x as isize - 1, mb_y as isize - 1, block_idx),
                 get_dc(mb_x as isize, mb_y as isize - 1, block_idx),
             ),
-            _ => (1024, 1024, 1024),
+            _ => (128, 128, 128),
         };
 
         let grad_hor = (dc_a - dc_b).abs();
@@ -1664,8 +1664,30 @@ impl Mpeg4Decoder {
                 [0i32; 64]
             };
 
+            if mb_x == 0 && mb_y == 0 && block_idx == 0 {
+                eprintln!(
+                    "    DEBUG: MB(0,0) block 0 - VLC解码后: [{}, {}, {}, ...]",
+                    block[0], block[1], block[2]
+                );
+            }
+
             self.dequantize(&mut block, self.quant as u32, is_intra);
+
+            if mb_x == 0 && mb_y == 0 && block_idx == 0 {
+                eprintln!(
+                    "    DEBUG: MB(0,0) block 0 - 反量化后: [{}, {}, {}, ...]",
+                    block[0], block[1], block[2]
+                );
+            }
+
             idct_8x8(&mut block);
+
+            if mb_x == 0 && mb_y == 0 && block_idx == 0 {
+                eprintln!(
+                    "    DEBUG: MB(0,0) block 0 - IDCT后 (前8值): {:?}",
+                    &block[0..8]
+                );
+            }
 
             let mv = if !is_intra {
                 mb_mvs[block_idx]
@@ -1681,7 +1703,14 @@ impl Mpeg4Decoder {
                         let idx = py as usize * width + px as usize;
                         let residual = block[y * 8 + x];
                         let val = if is_intra {
-                            (residual + 128).clamp(0, 255) as u8
+                            let calc_val = (residual + 128).clamp(0, 255) as u8;
+                            if mb_x == 0 && mb_y == 0 && block_idx == 0 && y == 0 && x == 0 {
+                                eprintln!(
+                                    "    DEBUG: 进入 is_intra 分支, residual={}, calc_val={}",
+                                    residual, calc_val
+                                );
+                            }
+                            calc_val
                         } else if let Some(ref_frame) = &self.reference_frame {
                             let pred = if field_pred {
                                 let field_select = Self::select_field_for_block(
@@ -1713,10 +1742,29 @@ impl Mpeg4Decoder {
                                     use_quarterpel,
                                 )
                             };
-                            (pred as i32 + residual).clamp(0, 255) as u8
+                            let calc_val = (pred as i32 + residual).clamp(0, 255) as u8;
+                            if mb_x == 0 && mb_y == 0 && block_idx == 0 && y == 0 && x == 0 {
+                                eprintln!(
+                                    "    DEBUG: 进入 inter 分支, pred={}, residual={}, calc_val={}",
+                                    pred, residual, calc_val
+                                );
+                            }
+                            calc_val
                         } else {
-                            (residual + 128).clamp(0, 255) as u8
+                            let calc_val = (residual + 128).clamp(0, 255) as u8;
+                            if mb_x == 0 && mb_y == 0 && block_idx == 0 && y == 0 && x == 0 {
+                                eprintln!(
+                                    "    DEBUG: 进入 else 分支, residual={}, calc_val={}",
+                                    residual, calc_val
+                                );
+                            }
+                            calc_val
                         };
+
+                        if mb_x == 0 && mb_y == 0 && block_idx == 0 && y == 0 && x == 0 {
+                            eprintln!("    DEBUG: 第一像素 - residual={}, val={}", residual, val);
+                        }
+
                         frame.data[0][idx] = val;
                     }
                 }

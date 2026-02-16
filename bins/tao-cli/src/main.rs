@@ -141,11 +141,17 @@ fn main() {
     tao_codec::register_all(&mut codec_registry);
 
     // 打开输入文件
-    let mut input_io = match IoContext::open_read(input_path) {
+    let mut input_io = match IoContext::open_url(input_path) {
         Ok(io) => io,
-        Err(e) => {
-            eprintln!("错误: 无法打开输入文件 '{input_path}': {e}");
-            process::exit(1);
+        Err(_) => {
+            // 如果作为 URL 打开失败，尝试作为本地文件打开
+            match IoContext::open_read(input_path) {
+                Ok(io) => io,
+                Err(e) => {
+                    eprintln!("错误: 无法打开输入文件 '{input_path}': {e}");
+                    process::exit(1);
+                }
+            }
         }
     };
 
@@ -461,11 +467,7 @@ fn main() {
 // ============================================================
 
 /// 转码视频到原始 YUV420p 格式
-fn transcode_to_raw_yuv(
-    input_path: &str,
-    output_path: &str,
-    cli: &Cli,
-) -> Result<(), TaoError> {
+fn transcode_to_raw_yuv(input_path: &str, output_path: &str, cli: &Cli) -> Result<(), TaoError> {
     use std::fs::File;
 
     eprintln!(
@@ -491,9 +493,9 @@ fn transcode_to_raw_yuv(
     tao_codec::register_all(&mut codec_registry);
 
     // 打开输入文件
-    let mut input_io = IoContext::open_read(input_path).map_err(|_| {
-        TaoError::InvalidData(format!("无法打开输入文件 '{input_path}'"))
-    })?;
+    let mut input_io = IoContext::open_url(input_path)
+        .or_else(|_| IoContext::open_read(input_path))
+        .map_err(|_| TaoError::InvalidData(format!("无法打开输入文件 '{input_path}'")))?;
 
     // 探测并打开输入
     let mut demuxer = format_registry
@@ -503,14 +505,12 @@ fn transcode_to_raw_yuv(
     let input_streams: Vec<Stream> = demuxer.streams().to_vec();
 
     if input_streams.is_empty() {
-        return Err(TaoError::InvalidData("输入文件中没有找到任何流".to_string()));
+        return Err(TaoError::InvalidData(
+            "输入文件中没有找到任何流".to_string(),
+        ));
     }
 
-    eprintln!(
-        "输入格式: {}, {} 条流",
-        demuxer.name(),
-        input_streams.len()
-    );
+    eprintln!("输入格式: {}, {} 条流", demuxer.name(), input_streams.len());
 
     // 查找第一个视频流
     let video_stream = input_streams
@@ -518,7 +518,10 @@ fn transcode_to_raw_yuv(
         .find(|s| s.media_type == MediaType::Video)
         .ok_or_else(|| TaoError::Unsupported("没有找到视频流".to_string()))?;
 
-    eprintln!("  视频流 #{}: {}", video_stream.index, video_stream.codec_id);
+    eprintln!(
+        "  视频流 #{}: {}",
+        video_stream.index, video_stream.codec_id
+    );
 
     let video_params = match &video_stream.params {
         StreamParams::Video(v) => v,
@@ -547,8 +550,7 @@ fn transcode_to_raw_yuv(
     decoder.open(&dec_params)?;
 
     // 打开输出文件
-    let mut output_file = File::create(output_path)
-        .map_err(|e| TaoError::Io(e))?;
+    let mut output_file = File::create(output_path).map_err(|e| TaoError::Io(e))?;
 
     // 解析 -ss/-t 参数
     let start_time_sec = cli.ss.unwrap_or(0.0);
@@ -557,8 +559,14 @@ fn transcode_to_raw_yuv(
     // 处理循环
     let mut frame_count = 0u64;
     let mut byte_count = 0u64;
+    const MAX_FRAMES_FOR_VERIFICATION: u64 = 10;
 
     loop {
+        // 检查是否已达到帧数限制
+        if frame_count >= MAX_FRAMES_FOR_VERIFICATION {
+            break;
+        }
+
         match demuxer.read_packet(&mut input_io) {
             Ok(input_pkt) => {
                 let stream_idx = input_pkt.stream_index;
@@ -600,7 +608,8 @@ fn transcode_to_raw_yuv(
                         Ok(frame) => {
                             // 确保是视频帧并转换为 YUV420p
                             if let Frame::Video(vf) = &frame {
-                                let yuv_frame = ensure_yuv420p(&vf, video_params.width, video_params.height)?;
+                                let yuv_frame =
+                                    ensure_yuv420p(&vf, video_params.width, video_params.height)?;
 
                                 // 写入 YUV 数据
                                 write_yuv420p_frame(&mut output_file, &yuv_frame)?;
@@ -608,7 +617,17 @@ fn transcode_to_raw_yuv(
                                 byte_count += yuv_frame_size(yuv_frame.width, yuv_frame.height);
 
                                 if frame_count % 10 == 0 {
-                                    eprint!("\r已处理 {} 帧, {:.2} MB", frame_count, byte_count as f64 / (1024.0 * 1024.0));
+                                    eprint!(
+                                        "\r已处理 {} 帧, {:.2} MB",
+                                        frame_count,
+                                        byte_count as f64 / (1024.0 * 1024.0)
+                                    );
+                                }
+
+                                // 为 PSNR 验证限制帧数
+                                if frame_count >= 10 {
+                                    eprintln!("\r已达到测试帧数限制 (10 帧)");
+                                    break;
                                 }
                             }
                         }
@@ -652,22 +671,57 @@ fn transcode_to_raw_yuv(
 }
 
 /// 确保视频帧是 YUV420p 格式
-fn ensure_yuv420p(
-    frame: &VideoFrame,
-    _width: u32,
-    _height: u32,
-) -> Result<VideoFrame, TaoError> {
+fn ensure_yuv420p(frame: &VideoFrame, width: u32, height: u32) -> Result<VideoFrame, TaoError> {
     if frame.pixel_format == PixelFormat::Yuv420p {
         return Ok(frame.clone());
     }
 
-    // 需要转换, 这里简化为返回错误
-    // 实际上应该使用 tao_scale 来转换, 但为了演示使用当前格式
-    eprintln!(
-        "警告: 非 YUV420p 格式 ({:?}), 使用当前格式",
-        frame.pixel_format
+    // 需要使用 tao_scale 进行格式转换
+    // 需要使用 tao_scale 进行格式转换
+    let ctx = tao_scale::ScaleContext::new(
+        width,
+        height,
+        frame.pixel_format,
+        width,
+        height,
+        PixelFormat::Yuv420p,
+        tao_scale::ScaleAlgorithm::Bilinear,
     );
-    Ok(frame.clone())
+
+    // 准备源数据
+    let src_planes: Vec<&[u8]> = frame.data.iter().map(|d| d.as_slice()).collect();
+    let src_linesize: Vec<usize> = frame.linesize.clone();
+
+    // 分配目标帧
+    let dst_w = width;
+    let dst_h = height;
+    let dst_fmt = PixelFormat::Yuv420p;
+    let plane_count = dst_fmt.plane_count() as usize;
+
+    let mut dst_bufs: Vec<Vec<u8>> = Vec::with_capacity(plane_count);
+    let mut dst_linesizes: Vec<usize> = Vec::with_capacity(plane_count);
+
+    for p in 0..plane_count {
+        let ls = dst_fmt.plane_linesize(p, dst_w).unwrap_or(dst_w as usize);
+        let h = dst_fmt.plane_height(p, dst_h).unwrap_or(dst_h as usize);
+        dst_bufs.push(vec![0u8; ls * h]);
+        dst_linesizes.push(ls);
+    }
+
+    {
+        let mut dst_slices: Vec<&mut [u8]> =
+            dst_bufs.iter_mut().map(|b| b.as_mut_slice()).collect();
+        ctx.scale(&src_planes, &src_linesize, &mut dst_slices, &dst_linesizes)
+            .ok();
+    }
+
+    let mut out_frame = VideoFrame::new(dst_w, dst_h, dst_fmt);
+    out_frame.data = dst_bufs;
+    out_frame.linesize = dst_linesizes;
+    out_frame.pts = frame.pts;
+    out_frame.time_base = frame.time_base;
+
+    Ok(out_frame)
 }
 
 /// 计算 YUV420p 帧大小
@@ -683,8 +737,7 @@ fn write_yuv420p_frame(file: &mut std::fs::File, frame: &VideoFrame) -> Result<(
 
     // 写入所有平面 (Y, U, V)
     for plane_data in &frame.data {
-        file.write_all(plane_data)
-            .map_err(|e| TaoError::Io(e))?;
+        file.write_all(plane_data).map_err(|e| TaoError::Io(e))?;
     }
 
     Ok(())
