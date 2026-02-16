@@ -291,7 +291,12 @@ impl Mpeg4Decoder {
             0u8
         };
 
-        let quarterpel = reader.read_bit().unwrap_or(false);
+        // quarterpel 仅在 vo_ver_id != 1 时从比特流读取 (MPEG-4 标准)
+        let quarterpel = if video_object_layer_verid != 1 {
+            reader.read_bit().unwrap_or(false)
+        } else {
+            false
+        };
 
         let complexity_disable = reader.read_bit().unwrap_or(true);
         let (complexity_bits_i, complexity_bits_p, complexity_bits_b) = if !complexity_disable {
@@ -821,9 +826,13 @@ mod tests {
             }
         }
 
-        writer.push_bit(false);
-        writer.push_bit(false);
-        writer.push_bit(false);
+        writer.push_bit(false); // not_8_bit
+        writer.push_bit(false); // quant_type = false
+
+        // quarterpel 仅在 verid != 1 时写入
+        if verid != 1 {
+            writer.push_bit(false); // quarterpel = false
+        }
     }
 
     #[test]

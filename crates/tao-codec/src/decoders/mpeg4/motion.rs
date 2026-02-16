@@ -73,37 +73,59 @@ impl Mpeg4Decoder {
             }
         };
 
+        let first_line = mb_y == 0;
+
         let (mv_a, mv_b, mv_c) = if block_k == 0 || block_k > 3 {
-            let a = get_mv(mb_x as i32 - 1, mb_y as i32, 0);
-            let b = get_mv(mb_x as i32, mb_y as i32 - 1, 0);
-            let c = get_mv(mb_x as i32 + 1, mb_y as i32 - 1, 0);
+            // 16x16 模式或 4MV block 0: 使用 MB 边界处的 block
+            // A: 左 MB 的 block 1 (与当前 MB 相邻的右侧)
+            // B: 上 MB 的 block 2 (与当前 MB 相邻的下侧)
+            // C: 右上 MB 的 block 2
+            let a = get_mv(mb_x as i32 - 1, mb_y as i32, 1);
+
+            // 第一行特殊处理 (H.263/MPEG-4 标准: 无上方邻居时不取 median)
+            if first_line {
+                if mb_x == 0 {
+                    return MotionVector { x: 0, y: 0 };
+                }
+                return a;
+            }
+
+            let b = get_mv(mb_x as i32, mb_y as i32 - 1, 2);
+            let c = get_mv(mb_x as i32 + 1, mb_y as i32 - 1, 2);
             (a, b, c)
         } else {
             match block_k {
-                0 => {
-                    // ✅ 修复 C3: Block 0 (左上) 的邻居正确取值
-                    // Block 0邻居: [prev_block, top_block, diag_block]
-                    let a = get_mv(mb_x as i32 - 1, mb_y as i32, 1); // 左MB的block 1
-                    let b = get_mv(mb_x as i32, mb_y as i32 - 1, 2); // 上MB的block 2
-                    let c = get_mv(mb_x as i32 - 1, mb_y as i32 - 1, 3); // ✅ 修复: 左上MB的block 3 (不是右上!)
-                    (a, b, c)
-                }
                 1 => {
+                    // Block 1 (右上): A=同 MB block 0, B=上 MB block 3, C=右上 MB block 2
                     let a = get_mv(mb_x as i32, mb_y as i32, 0);
+
+                    // 第一行特殊处理
+                    if first_line {
+                        return a;
+                    }
+
                     let b = get_mv(mb_x as i32, mb_y as i32 - 1, 3);
                     let c = get_mv(mb_x as i32 + 1, mb_y as i32 - 1, 2);
                     (a, b, c)
                 }
                 2 => {
-                    let a = get_mv(mb_x as i32 - 1, mb_y as i32, 3);
+                    // Block 2 (左下): A=左 MB block 3, B=同 MB block 0, C=同 MB block 1
+                    // B 和 C 在同一 MB 内, 第一行也有效
+                    let mut a = get_mv(mb_x as i32 - 1, mb_y as i32, 3);
                     let b = get_mv(mb_x as i32, mb_y as i32, 0);
                     let c = get_mv(mb_x as i32, mb_y as i32, 1);
+                    // 第一行且为行首 MB 时, A 设为 0
+                    if first_line && mb_x == 0 {
+                        a = MotionVector { x: 0, y: 0 };
+                    }
                     (a, b, c)
                 }
                 3 => {
+                    // Block 3 (右下): A=同 MB block 2, B=同 MB block 1, C=同 MB block 0
+                    // 全部在同一 MB 内, 无需特殊处理
                     let a = get_mv(mb_x as i32, mb_y as i32, 2);
-                    let b = get_mv(mb_x as i32, mb_y as i32, 0);
-                    let c = get_mv(mb_x as i32, mb_y as i32, 1);
+                    let b = get_mv(mb_x as i32, mb_y as i32, 1);
+                    let c = get_mv(mb_x as i32, mb_y as i32, 0);
                     (a, b, c)
                 }
                 _ => (
