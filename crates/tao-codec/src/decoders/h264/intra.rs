@@ -186,7 +186,57 @@ fn compute_dc_8x8(
     if count > 0 { (sum / count) as u8 } else { 128 }
 }
 
-/// 4x4 子块 DC 预测 (用于 I_4x4 简化实现)
+/// 4x4 块预测分发函数 (9 种模式)
+pub fn predict_4x4(plane: &mut [u8], stride: usize, x0: usize, y0: usize, mode: u8) {
+    match mode {
+        0 => predict_4x4_vertical(plane, stride, x0, y0),
+        1 => predict_4x4_horizontal(plane, stride, x0, y0),
+        2 => predict_4x4_dc(plane, stride, x0, y0),
+        3 => predict_4x4_diagonal_down_left(plane, stride, x0, y0),
+        4 => predict_4x4_diagonal_down_right(plane, stride, x0, y0),
+        5 => predict_4x4_vertical_right(plane, stride, x0, y0),
+        6 => predict_4x4_horizontal_down(plane, stride, x0, y0),
+        7 => predict_4x4_vertical_left(plane, stride, x0, y0),
+        8 => predict_4x4_horizontal_up(plane, stride, x0, y0),
+        _ => predict_4x4_dc(plane, stride, x0, y0),
+    }
+}
+
+/// 模式 0: 竖直 (Vertical) - 复制上方行
+fn predict_4x4_vertical(plane: &mut [u8], stride: usize, x0: usize, y0: usize) {
+    if y0 == 0 {
+        fill_block(plane, stride, x0, y0, 4, 4, 128);
+        return;
+    }
+    for dy in 0..4 {
+        for dx in 0..4 {
+            let src_idx = (y0 - 1) * stride + x0 + dx;
+            let dst_idx = (y0 + dy) * stride + x0 + dx;
+            if src_idx < plane.len() && dst_idx < plane.len() {
+                plane[dst_idx] = plane[src_idx];
+            }
+        }
+    }
+}
+
+/// 模式 1: 水平 (Horizontal) - 复制左侧列
+fn predict_4x4_horizontal(plane: &mut [u8], stride: usize, x0: usize, y0: usize) {
+    if x0 == 0 {
+        fill_block(plane, stride, x0, y0, 4, 4, 128);
+        return;
+    }
+    for dy in 0..4 {
+        let left_val = plane[(y0 + dy) * stride + x0 - 1];
+        for dx in 0..4 {
+            let idx = (y0 + dy) * stride + x0 + dx;
+            if idx < plane.len() {
+                plane[idx] = left_val;
+            }
+        }
+    }
+}
+
+/// 模式 2: DC - 邻居平均值
 pub fn predict_4x4_dc(plane: &mut [u8], stride: usize, x0: usize, y0: usize) {
     let mut sum = 0u32;
     let mut count = 0u32;
@@ -211,6 +261,302 @@ pub fn predict_4x4_dc(plane: &mut [u8], stride: usize, x0: usize, y0: usize) {
     }
     let dc = if count > 0 { (sum / count) as u8 } else { 128 };
     fill_block(plane, stride, x0, y0, 4, 4, dc);
+}
+
+/// 模式 3: 对角线向下左 (Diagonal Down-Left)
+fn predict_4x4_diagonal_down_left(plane: &mut [u8], stride: usize, x0: usize, y0: usize) {
+    let mut ref_vals = [128u8; 8];
+
+    if y0 > 0 {
+        for (i, ref_val) in ref_vals.iter_mut().enumerate().take(4) {
+            let idx = (y0 - 1) * stride + x0 + i;
+            if idx < plane.len() {
+                *ref_val = plane[idx];
+            }
+        }
+        if x0 + 4 < stride && (y0 - 1) * stride + x0 + 4 < plane.len() {
+            ref_vals[4] = plane[(y0 - 1) * stride + x0 + 4];
+        }
+    }
+    if x0 > 0 {
+        for i in 0..4 {
+            let idx = (y0 + i) * stride + x0 - 1;
+            if idx < plane.len() {
+                ref_vals[i + 1] = plane[idx];
+            }
+        }
+    }
+
+    for dy in 0..4 {
+        for dx in 0..4 {
+            let val = if dy + dx + 1 < 8 {
+                let a = ref_vals[dy + dx];
+                let b = ref_vals[dy + dx + 1];
+                let c = ref_vals.get(dy + dx + 2).copied().unwrap_or(128);
+                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
+            } else {
+                ref_vals[7]
+            };
+            let idx = (y0 + dy) * stride + x0 + dx;
+            if idx < plane.len() {
+                plane[idx] = val;
+            }
+        }
+    }
+}
+
+/// 模式 4: 对角线向下右 (Diagonal Down-Right)
+fn predict_4x4_diagonal_down_right(plane: &mut [u8], stride: usize, x0: usize, y0: usize) {
+    let mut ref_top = [128u8; 5];
+    let mut ref_left = [128u8; 5];
+
+    if y0 > 0 {
+        ref_top[0] = if x0 > 0 {
+            plane[(y0 - 1) * stride + x0 - 1]
+        } else {
+            128
+        };
+        for i in 0..4 {
+            let idx = (y0 - 1) * stride + x0 + i;
+            if idx < plane.len() {
+                ref_top[i + 1] = plane[idx];
+            }
+        }
+    }
+    if x0 > 0 {
+        ref_left[0] = ref_top[0];
+        for i in 0..4 {
+            let idx = (y0 + i) * stride + x0 - 1;
+            if idx < plane.len() {
+                ref_left[i + 1] = plane[idx];
+            }
+        }
+    }
+
+    for dy in 0..4 {
+        for dx in 0..4 {
+            let val = if dy > dx {
+                let a = ref_left[dy - dx];
+                let b = ref_left[dy - dx + 1];
+                let c = ref_left.get(dy - dx + 2).copied().unwrap_or(128);
+                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
+            } else if dy == dx {
+                let a = ref_left[0];
+                let b = ref_top[0];
+                let c = ref_top[1];
+                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
+            } else {
+                let a = ref_top[dx - dy];
+                let b = ref_top[dx - dy + 1];
+                let c = ref_top.get(dx - dy + 2).copied().unwrap_or(128);
+                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
+            };
+            let idx = (y0 + dy) * stride + x0 + dx;
+            if idx < plane.len() {
+                plane[idx] = val;
+            }
+        }
+    }
+}
+
+/// 模式 5: 竖直-右 (Vertical-Right)
+fn predict_4x4_vertical_right(plane: &mut [u8], stride: usize, x0: usize, y0: usize) {
+    let mut ref_top = [128u8; 5];
+    let mut ref_left = [128u8; 5];
+
+    if y0 > 0 {
+        ref_top[0] = if x0 > 0 {
+            plane[(y0 - 1) * stride + x0 - 1]
+        } else {
+            128
+        };
+        for i in 0..4 {
+            let idx = (y0 - 1) * stride + x0 + i;
+            if idx < plane.len() {
+                ref_top[i + 1] = plane[idx];
+            }
+        }
+    }
+    if x0 > 0 {
+        ref_left[0] = ref_top[0];
+        for i in 0..4 {
+            let idx = (y0 + i) * stride + x0 - 1;
+            if idx < plane.len() {
+                ref_left[i + 1] = plane[idx];
+            }
+        }
+    }
+
+    for dy in 0..4 {
+        for dx in 0..4 {
+            let val = if 2 * dx < dy {
+                let a = ref_left[dy - dx - 1];
+                let b = ref_left[dy - dx];
+                let c = ref_left.get(dy - dx + 1).copied().unwrap_or(128);
+                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
+            } else if dy == 2 * dx {
+                let a = ref_left[0];
+                let b = ref_top[0];
+                let c = ref_top[1];
+                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
+            } else {
+                let a = ref_top[2 * dx - dy];
+                let b = ref_top[2 * dx - dy + 1];
+                let c = ref_top.get(2 * dx - dy + 2).copied().unwrap_or(128);
+                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
+            };
+            let idx = (y0 + dy) * stride + x0 + dx;
+            if idx < plane.len() {
+                plane[idx] = val;
+            }
+        }
+    }
+}
+
+/// 模式 6: 水平-下 (Horizontal-Down)
+fn predict_4x4_horizontal_down(plane: &mut [u8], stride: usize, x0: usize, y0: usize) {
+    let mut ref_top = [128u8; 5];
+    let mut ref_left = [128u8; 5];
+
+    if y0 > 0 {
+        ref_top[0] = if x0 > 0 {
+            plane[(y0 - 1) * stride + x0 - 1]
+        } else {
+            128
+        };
+        for i in 0..4 {
+            let idx = (y0 - 1) * stride + x0 + i;
+            if idx < plane.len() {
+                ref_top[i + 1] = plane[idx];
+            }
+        }
+    }
+    if x0 > 0 {
+        ref_left[0] = ref_top[0];
+        for i in 0..4 {
+            let idx = (y0 + i) * stride + x0 - 1;
+            if idx < plane.len() {
+                ref_left[i + 1] = plane[idx];
+            }
+        }
+    }
+
+    for dy in 0..4 {
+        for dx in 0..4 {
+            let val = if 2 * dy < dx {
+                let a = ref_top[dy + dx];
+                let b = ref_top[dy + dx + 1];
+                let c = ref_top.get(dy + dx + 2).copied().unwrap_or(128);
+                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
+            } else if dx == 2 * dy {
+                let a = ref_left[dy];
+                let b = ref_top[0];
+                let c = ref_top[1];
+                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
+            } else {
+                let a = ref_left[dy - dx];
+                let b = ref_left[dy - dx + 1];
+                let c = ref_left.get(dy - dx + 2).copied().unwrap_or(128);
+                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
+            };
+            let idx = (y0 + dy) * stride + x0 + dx;
+            if idx < plane.len() {
+                plane[idx] = val;
+            }
+        }
+    }
+}
+
+/// 模式 7: 竖直-左 (Vertical-Left)
+fn predict_4x4_vertical_left(plane: &mut [u8], stride: usize, x0: usize, y0: usize) {
+    let mut ref_vals = [128u8; 8];
+
+    if y0 > 0 {
+        for (i, ref_val) in ref_vals.iter_mut().enumerate().take(4) {
+            let idx = (y0 - 1) * stride + x0 + i;
+            if idx < plane.len() {
+                *ref_val = plane[idx];
+            }
+        }
+        if x0 + 4 < stride && (y0 - 1) * stride + x0 + 4 < plane.len() {
+            ref_vals[4] = plane[(y0 - 1) * stride + x0 + 4];
+        }
+    }
+    if x0 > 0 {
+        for i in 0..4 {
+            let idx = (y0 + i) * stride + x0 - 1;
+            if idx < plane.len() {
+                ref_vals[i + 1] = plane[idx];
+            }
+        }
+    }
+
+    for dy in 0..4 {
+        for dx in 0..4 {
+            let val = if dy % 2 == 0 {
+                let a = ref_vals[dx + dy / 2];
+                let b = ref_vals[dx + dy / 2 + 1];
+                let c = ref_vals.get(dx + dy / 2 + 2).copied().unwrap_or(128);
+                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
+            } else {
+                let a = ref_vals[dx + dy.div_ceil(2)];
+                let b = ref_vals[dx + dy.div_ceil(2) + 1];
+                (a as u32 + b as u32).div_ceil(2) as u8
+            };
+            let idx = (y0 + dy) * stride + x0 + dx;
+            if idx < plane.len() {
+                plane[idx] = val;
+            }
+        }
+    }
+}
+
+/// 模式 8: 水平-上 (Horizontal-Up)
+fn predict_4x4_horizontal_up(plane: &mut [u8], stride: usize, x0: usize, y0: usize) {
+    let mut ref_vals = [128u8; 8];
+
+    if x0 > 0 {
+        for (i, item) in ref_vals.iter_mut().enumerate().take(4) {
+            let idx = (y0 + i) * stride + x0 - 1;
+            if idx < plane.len() {
+                *item = plane[idx];
+            }
+        }
+        if y0 + 4 < plane.len() / stride {
+            let idx = (y0 + 4) * stride + x0 - 1;
+            if idx < plane.len() {
+                ref_vals[4] = plane[idx];
+            }
+        }
+    }
+
+    for dy in 0..4 {
+        for dx in 0..4 {
+            let val = if dx < dy {
+                if dx + 1 == dy {
+                    let a = ref_vals[dy];
+                    let b = ref_vals[dy + 1];
+                    (a as u32 + b as u32).div_ceil(2) as u8
+                } else {
+                    ref_vals[dy + 1]
+                }
+            } else if dx == dy {
+                let a = ref_vals[dy];
+                let b = ref_vals[dy + 1];
+                let c = ref_vals.get(dy + 2).copied().unwrap_or(128);
+                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
+            } else {
+                let a = ref_vals[dx - dy];
+                let b = ref_vals[dx - dy + 1];
+                let c = ref_vals.get(dx - dy + 2).copied().unwrap_or(128);
+                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
+            };
+            let idx = (y0 + dy) * stride + x0 + dx;
+            if idx < plane.len() {
+                plane[idx] = val;
+            }
+        }
+    }
 }
 
 /// 用单一值填充 16x16 块

@@ -425,3 +425,26 @@ const LEVEL_SCALE: [[i32; 3]; 6] = [
     [16, 20, 25],
     [18, 23, 29],
 ];
+// ============================================================
+// 量化反演和应用
+// ============================================================
+
+/// 将 4x4 AC 残差块应用到平面上 (逐像素加法)
+pub fn apply_4x4_ac_residual(
+    plane: &mut [u8],
+    stride: usize,
+    x0: usize,
+    y0: usize,
+    coeffs: &[i32; 16],
+) {
+    for dy in 0..4 {
+        for dx in 0..4 {
+            let idx = (y0 + dy) * stride + x0 + dx;
+            if idx < plane.len() {
+                let coeff = coeffs[dy * 4 + dx];
+                let val = plane[idx] as i32 + coeff;
+                plane[idx] = val.clamp(0, 255) as u8;
+            }
+        }
+    }
+}

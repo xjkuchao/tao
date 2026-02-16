@@ -491,7 +491,7 @@ impl H264Decoder {
         }
     }
 
-    /// 解码 I_4x4 宏块 (消耗所有 CABAC 语法元素, 使用 DC 预测)
+    /// 解码 I_4x4 宏块 (消耗所有 CABAC 语法元素, 使用真正的预测模式)
     fn decode_i_4x4_mb(
         &mut self,
         cabac: &mut CabacDecoder,
@@ -500,8 +500,8 @@ impl H264Decoder {
         mb_y: usize,
         cur_qp: &mut i32,
     ) {
-        // 1. 解码 16 个 4x4 预测模式 (消耗 CABAC 比特)
-        decode_i4x4_pred_modes(cabac, ctxs);
+        // 1. 解码 16 个 4x4 预测模式
+        let pred_modes = decode_i4x4_pred_modes(cabac, ctxs);
 
         // 2. 解码 intra_chroma_pred_mode
         let _chroma_mode = decode_chroma_pred_mode(cabac, ctxs);
@@ -519,14 +519,17 @@ impl H264Decoder {
             self.prev_qp_delta_nz = false;
         }
 
-        // 5. 应用简化预测 (DC)
+        // 5. 应用真正的预测 (根据预测模式)
         for sub_y in 0..4 {
             for sub_x in 0..4 {
-                intra::predict_4x4_dc(
+                let mode_idx = sub_y * 4 + sub_x;
+                let mode = pred_modes[mode_idx];
+                intra::predict_4x4(
                     &mut self.ref_y,
                     self.stride_y,
                     mb_x * 16 + sub_x * 4,
                     mb_y * 16 + sub_y * 4,
+                    mode,
                 );
             }
         }
@@ -547,35 +550,59 @@ impl H264Decoder {
             mb_y > 0,
         );
 
-        // 6. 解码残差 (消耗 CABAC 比特)
-        self.consume_i4x4_residual(cabac, ctxs, luma_cbp, chroma_cbp);
+        // 6. 解码残差并应用
+        self.decode_i4x4_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp);
     }
 
-    /// 消耗 I_4x4 宏块的所有残差 CABAC 比特
-    fn consume_i4x4_residual(
+    /// 解码 I_4x4 宏块的残差并应用到预测上
+    fn decode_i4x4_residual(
         &mut self,
         cabac: &mut CabacDecoder,
         ctxs: &mut [CabacCtx],
         luma_cbp: u8,
-        chroma_cbp: u8,
+        mb_x: usize,
+        mb_y: usize,
+        qp: i32,
     ) {
         // 亮度: 按 8x8 块顺序, 每个 8x8 块包含 4 个 4x4 子块
         for i8x8 in 0..4u8 {
             if luma_cbp & (1 << i8x8) != 0 {
-                for _ in 0..4 {
-                    let _ = decode_residual_block(cabac, ctxs, &residual::CAT_LUMA_4X4, 0);
+                // 计算当前 8x8 块的位置
+                let x8x8 = (i8x8 & 1) as usize;
+                let y8x8 = (i8x8 >> 1) as usize;
+
+                // 解码 4 个 4x4 子块
+                for i_sub in 0..4 {
+                    let sub_x = i_sub & 1;
+                    let sub_y = i_sub >> 1;
+
+                    let px = mb_x * 16 + x8x8 * 8 + sub_x * 4;
+                    let py = mb_y * 16 + y8x8 * 8 + sub_y * 4;
+
+                    let mut raw_coeffs =
+                        decode_residual_block(cabac, ctxs, &residual::CAT_LUMA_4X4, 0);
+
+                    // 确保有充足的系数 (补充零)
+                    while raw_coeffs.len() < 16 {
+                        raw_coeffs.push(0);
+                    }
+
+                    // 转换为固定大小数组
+                    let mut coeffs_arr = [0i32; 16];
+                    coeffs_arr.copy_from_slice(&raw_coeffs[..16]);
+
+                    // 量化反演
+                    residual::dequant_4x4_ac(&mut coeffs_arr, qp);
+
+                    // 应用到预测平面
+                    residual::apply_4x4_ac_residual(
+                        &mut self.ref_y,
+                        self.stride_y,
+                        px,
+                        py,
+                        &coeffs_arr,
+                    );
                 }
-            }
-        }
-        // 色度 DC
-        if chroma_cbp >= 1 {
-            let _ = decode_residual_block(cabac, ctxs, &CAT_CHROMA_DC, 0);
-            let _ = decode_residual_block(cabac, ctxs, &CAT_CHROMA_DC, 0);
-        }
-        // 色度 AC
-        if chroma_cbp >= 2 {
-            for _ in 0..8 {
-                let _ = decode_residual_block(cabac, ctxs, &residual::CAT_CHROMA_AC, 0);
             }
         }
     }
@@ -772,17 +799,30 @@ impl H264Decoder {
 // CABAC 语法元素解码
 // ============================================================
 
-/// 解码 I_4x4 的 16 个子块预测模式 (消耗 CABAC 比特)
-fn decode_i4x4_pred_modes(cabac: &mut CabacDecoder, ctxs: &mut [CabacCtx]) {
-    for _ in 0..16 {
+/// 解码 I_4x4 的 16 个子块预测模式 (消耗 CABAC 比特) 并返回预测模式数组
+fn decode_i4x4_pred_modes(cabac: &mut CabacDecoder, ctxs: &mut [CabacCtx]) -> [u8; 16] {
+    let mut modes = [0u8; 16];
+
+    for mode_ref in &mut modes {
         let prev_flag = cabac.decode_decision(&mut ctxs[68]);
-        if prev_flag == 0 {
-            // rem_intra4x4_pred_mode: 3 bypass bins
-            let _ = cabac.decode_bypass();
-            let _ = cabac.decode_bypass();
-            let _ = cabac.decode_bypass();
-        }
+        let mode = if prev_flag == 1 {
+            // 使用预测模式 - 简化: 总是使用 DC (模式 2)
+            2u8
+        } else {
+            // 读取 rem_intra4x4_pred_mode (3 bypass bits, 值 0-7)
+            let b0 = cabac.decode_bypass();
+            let b1 = cabac.decode_bypass();
+            let b2 = cabac.decode_bypass();
+            let rem = (b0 << 2) | (b1 << 1) | b2;
+
+            // 根据预测模式列表调整 (简化: 跳过最可能模式)
+            // 标准 MPM 列表是 [0, 1, 2, 3], 其中 2 (DC) 在位置 2
+            if rem >= 2 { (rem + 1) as u8 } else { rem as u8 }
+        };
+        *mode_ref = mode;
     }
+
+    modes
 }
 
 /// 解码 intra_chroma_pred_mode (TU, cMax=3)
