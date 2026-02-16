@@ -283,12 +283,12 @@ tao-ffi crate 编译为 cdylib + staticlib:
 - Windows 下终止 tao-play 进程时, **必须使用 `TASKKILL /F /IM tao-play.exe /T`**.
 - **禁止使用 `TASKKILL /F /PID <pid>`**, 因为在 Cursor/shell 环境中通常无法获取到正确的 PID.
 - 示例:
-  ```powershell
-  # 正确
-  TASKKILL /F /IM tao-play.exe /T
-  # 错误 (PID 不可靠)
-  TASKKILL /F /PID 12345
-  ```
+    ```powershell
+    # 正确
+    TASKKILL /F /IM tao-play.exe /T
+    # 错误 (PID 不可靠)
+    TASKKILL /F /PID 12345
+    ```
 
 ### 16.3 流式播放测试
 
@@ -296,13 +296,13 @@ tao-ffi crate 编译为 cdylib + staticlib:
 - 测试在线音视频文件时, **必须使用 URL 直接流式播放**, 不要先下载到本地再播放.
 - 仅当需要反复使用同一文件 (如单元测试/集成测试数据) 时, 才下载到 `data/samples/` 目录.
 - 示例:
-  ```powershell
-  # 正确: 直接流式播放
-  cargo run --package tao-play -- "https://samples.ffmpeg.org/flac/Yesterday.flac"
-  # 错误: 先下载再播放
-  curl -o data/samples/audio/test.flac "https://samples.ffmpeg.org/flac/Yesterday.flac"
-  cargo run --package tao-play -- "data/samples/audio/test.flac"
-  ```
+    ```powershell
+    # 正确: 直接流式播放
+    cargo run --package tao-play -- "https://samples.ffmpeg.org/flac/Yesterday.flac"
+    # 错误: 先下载再播放
+    curl -o data/samples/audio/test.flac "https://samples.ffmpeg.org/flac/Yesterday.flac"
+    cargo run --package tao-play -- "data/samples/audio/test.flac"
+    ```
 
 ## 17. 测试文件和临时文件管理
 
@@ -327,27 +327,42 @@ tao-ffi crate 编译为 cdylib + staticlib:
     - 下载的测试文件
     - 编解码过程中的中间文件
 
-### 17.3 临时文件管理
+### 17.3 官方样本库规范
+
+- **样本源**: 优先使用 https://samples.ffmpeg.org/ 提供的公开测试样本
+- **样本类别**: 该库包含多种格式的样本:
+    - 视频: H.264, H.265, VP8, VP9, AV1, MPEG4 Part 2, Theora, ProRes 等
+    - 音频: AAC, MP3, FLAC, Opus, Vorbis, WAV, ALAC 等
+    - 容器: MP4, MKV, WebM, OGG, AVI, TS 等
+- **使用方式**:
+    - **单次测试**: 直接使用 HTTPS URL 进行流式测试, 无需下载 (参考 16.3 流式播放测试)
+    - **反复使用**: 对于需要多次使用的样本, 可下载到 `data/samples/` 对应目录, 便于离线测试和 CI/CD
+    - **完整 URL 格式**: `https://samples.ffmpeg.org/<category>/<filename>`, 如 `https://samples.ffmpeg.org/video/h264/bookmarks_8mb.h264`
+- **版本管理**:
+    - 不建议频繁下载整个样本库, 应按需选择特定样本
+    - 下载后的文件应提交到 Git(< 1MB) 或 Git LFS(> 1MB), 以便 CI/CD 一致性
+
+### 17.4 临时文件管理
 
 - **创建**: 所有临时文件必须在 `data/tmp/` 目录下创建
 - **清理**: 测试结束后必须清理临时文件
 - **命名**: 临时文件使用前缀 `tmp_` 或进程 ID 命名
 - **权限**: 确保临时文件有适当的读写权限
 
-### 17.4 Git 管理
+### 17.5 Git 管理
 
 - **`data/samples/`**: 小文件 (< 1MB) 可提交到 Git, 大文件使用 Git LFS
 - **`data/test/`**: 测试数据文件可提交到 Git
 - **`data/tmp/`**: 永不提交到 Git, 必须在 `.gitignore` 中排除
 
-### 17.5 代码规范
+### 17.6 代码规范
 
 - **路径使用**: 在代码中使用相对于项目根目录的路径
 - **环境变量**: 可使用环境变量 `TAO_DATA_DIR` 指定数据目录
 - **错误处理**: 文件不存在时提供清晰的错误信息
 - **跨平台**: 确保路径处理在 Windows/Linux/macOS 上兼容
 
-### 17.6 示例
+### 17.7 示例
 
 ```rust
 // 正确的测试文件路径
