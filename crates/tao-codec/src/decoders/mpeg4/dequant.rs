@@ -19,6 +19,10 @@ impl Mpeg4Decoder {
     }
 
     /// H.263 反量化
+    ///
+    /// 对标 FFmpeg dct_unquantize_h263_intra_c / dct_unquantize_h263_inter_c.
+    /// Intra/Inter AC 系数均使用: level * 2*QP +/- qadd
+    /// 其中 qadd = (QP - 1) | 1
     fn dequant_h263(&self, coefficients: &mut [i32; 64], quant: u32, is_intra: bool) {
         let quant_m2 = (quant * 2) as i32;
         let quant_add = if quant % 2 != 0 {
@@ -34,9 +38,7 @@ impl Mpeg4Decoder {
             if level == 0 {
                 continue;
             }
-            let value = if is_intra {
-                level * quant_m2
-            } else if level < 0 {
+            let value = if level < 0 {
                 level * quant_m2 - quant_add
             } else {
                 level * quant_m2 + quant_add
