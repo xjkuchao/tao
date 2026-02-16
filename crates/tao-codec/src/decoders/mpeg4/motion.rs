@@ -27,30 +27,33 @@ impl Mpeg4Decoder {
         }
     }
 
-    /// 解码 MVD (含 f_code 残差和范围包装)
+    /// 解码 MVD (含符号位, f_code 残差和范围包装)
+    ///
+    /// 解码流程 (对标 FFmpeg ff_h263_decode_motion):
+    /// 1. 从 VLC 表读取无符号 MV 差值 (0-32)
+    /// 2. 值为 0 时直接返回 0 (无符号位)
+    /// 3. 读取 1 位符号位 (0=正, 1=负)
+    /// 4. 若 f_code > 1, 读取 (f_code-1) 位残差
+    /// 5. 根据符号位取反
     pub(super) fn decode_mv_component(reader: &mut BitReader, f_code: u8) -> Option<i16> {
-        for &(len, code, index) in MVD_VLC {
+        for &(len, code, value) in MVD_VLC {
             let Some(bits) = reader.peek_bits(len) else {
                 continue;
             };
             if bits as u16 == code {
                 reader.read_bits(len)?;
-                if index == 0 {
+                if value == 0 {
                     return Some(0);
                 }
-                let val_base = if index % 2 != 0 {
-                    (index as i16 + 1) / 2
-                } else {
-                    -(index as i16 / 2)
-                };
+                let sign = reader.read_bit()?;
                 let r_size = f_code.saturating_sub(1);
-                if r_size > 0 {
+                let final_val = if r_size > 0 {
                     let residual = reader.read_bits(r_size)? as i16;
-                    let abs_base = val_base.abs();
-                    let new_abs = ((abs_base - 1) << r_size) + residual + 1;
-                    return Some(if val_base < 0 { -new_abs } else { new_abs });
-                }
-                return Some(val_base);
+                    ((value as i16 - 1) << r_size) + residual + 1
+                } else {
+                    value as i16
+                };
+                return Some(if sign { -final_val } else { final_val });
             }
         }
         None

@@ -353,10 +353,6 @@ impl Mpeg4Decoder {
             }
         };
 
-        eprintln!(
-            "DEBUG: parse_vop_header - raw vop_type={}, picture_type={:?}",
-            vop_type, picture_type
-        );
         debug!("VOP 类型: {:?}", picture_type);
 
         // modulo_time_base (计数 '1' 位)
