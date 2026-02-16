@@ -6,7 +6,7 @@ use tao_codec::{CodecParameters, CodecParamsType, CodecRegistry, VideoCodecParam
 #[cfg(feature = "http")]
 use tao_core::MediaType;
 #[cfg(feature = "http")]
-use tao_format::{stream::StreamParams, FormatRegistry, IoContext};
+use tao_format::{FormatRegistry, IoContext, stream::StreamParams};
 
 /// 辅助函数: 打开网络样本并解码指定帧数
 #[cfg(feature = "http")]
