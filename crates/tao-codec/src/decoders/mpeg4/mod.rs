@@ -948,6 +948,8 @@ impl Mpeg4Decoder {
             MotionVector::default()
         };
 
+        // 色度仍使用半像素 MC, qpel 仅作用于亮度.
+        let chroma_quarterpel = false;
         for plane_idx in 0..2 {
             let block_idx = 4 + plane_idx;
 
@@ -980,7 +982,7 @@ impl Mpeg4Decoder {
                             chroma_mv.x,
                             chroma_mv.y,
                             self.rounding_control,
-                            quarterpel,
+                            chroma_quarterpel,
                         );
                         (pred as i32 + residual).clamp(0, 255) as u8
                     } else {
@@ -1383,6 +1385,8 @@ impl Mpeg4Decoder {
             MotionVector::default()
         };
 
+        // 色度仍使用半像素 MC, qpel 仅作用于亮度.
+        let chroma_quarterpel = false;
         for plane_idx in 0..2usize {
             let ac_coded = (cbp >> (1 - plane_idx)) & 1 != 0;
 
@@ -1418,11 +1422,6 @@ impl Mpeg4Decoder {
                         let val = if is_intra {
                             (residual + 128).clamp(0, 255) as u8
                         } else if let Some(ref_frame) = &self.reference_frame {
-                            let quarterpel = self
-                                .vol_info
-                                .as_ref()
-                                .map(|v| v.quarterpel)
-                                .unwrap_or(false);
                             let pred = Self::motion_compensate(
                                 ref_frame,
                                 plane_idx + 1,
@@ -1431,7 +1430,7 @@ impl Mpeg4Decoder {
                                 chroma_mv.x,
                                 chroma_mv.y,
                                 self.rounding_control,
-                                quarterpel,
+                                chroma_quarterpel,
                             );
                             (pred as i32 + residual).clamp(0, 255) as u8
                         } else {

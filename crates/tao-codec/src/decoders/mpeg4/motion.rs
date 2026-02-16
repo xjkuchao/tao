@@ -78,9 +78,11 @@ impl Mpeg4Decoder {
         } else {
             match block_k {
                 0 => {
-                    let a = get_mv(mb_x as i32 - 1, mb_y as i32, 1);
-                    let b = get_mv(mb_x as i32, mb_y as i32 - 1, 2);
-                    let c = get_mv(mb_x as i32 + 1, mb_y as i32 - 1, 2);
+                    // ✅ 修复 C3: Block 0 (左上) 的邻居正确取值
+                    // Block 0邻居: [prev_block, top_block, diag_block]
+                    let a = get_mv(mb_x as i32 - 1, mb_y as i32, 1); // 左MB的block 1
+                    let b = get_mv(mb_x as i32, mb_y as i32 - 1, 2); // 上MB的block 2
+                    let c = get_mv(mb_x as i32 - 1, mb_y as i32 - 1, 3); // ✅ 修复: 左上MB的block 3 (不是右上!)
                     (a, b, c)
                 }
                 1 => {
