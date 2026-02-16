@@ -119,7 +119,6 @@ mod tests {
         println!("✓ 无效数据处理成功（无崩溃）");
     }
 
-
     // ============================================================================
     // 第 1 阶段：基础解码能力验证 (P0)
     // ============================================================================
@@ -337,7 +336,8 @@ mod tests {
         use tao_core::MediaType;
         use tao_format::{FormatRegistry, IoContext, stream::StreamParams};
 
-        let sample = "https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++qprd_cmp_b-frames_naq1.avi";
+        let sample =
+            "https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++qprd_cmp_b-frames_naq1.avi";
         println!("\n╔════════════════════════════════════════════════════════════╗");
         println!("║ 测试 2.1: B 帧解码 (P1)                                  ║");
         println!("╚════════════════════════════════════════════════════════════╝");
@@ -378,7 +378,8 @@ mod tests {
         };
 
         let stream = &demuxer.streams()[video_stream_index];
-        println!("📋 视频流: {}x{}", 
+        println!(
+            "📋 视频流: {}x{}",
             match &stream.params {
                 StreamParams::Video(v) => v.width,
                 _ => 0,
@@ -621,7 +622,8 @@ mod tests {
         use tao_core::MediaType;
         use tao_format::{FormatRegistry, IoContext, stream::StreamParams};
 
-        let sample = "https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++xvid_gmcqpel_artifact.avi";
+        let sample =
+            "https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++xvid_gmcqpel_artifact.avi";
         println!("\n╔════════════════════════════════════════════════════════════╗");
         println!("║ 测试 2.3: GMC 全局运动补偿 + Quarterpel (P2)             ║");
         println!("╚════════════════════════════════════════════════════════════╝");
@@ -876,13 +878,13 @@ mod tests {
         println!("✅ 测试 2.4 通过");
         println!("  - 解码帧数: {}", frame_count);
         println!("  - 特性: Data Partitioning");
-        
+
         // 注: 某些特殊样本可能无法完全解码，但解码器不应崩溃
         if frame_count < 10 {
             println!("⚠️  警告: 仅解码 {} 帧 (预期 >= 10)", frame_count);
             println!("     此样本 (ErrDec) 可能包含特殊的编码故意导致解码困难");
         }
-        
+
         assert!(frame_count >= 0, "应至少尝试解码，不应直接失败");
     }
 
@@ -987,23 +989,21 @@ mod tests {
                     }
 
                     match decoder.send_packet(&packet) {
-                        Ok(_) => {
-                            loop {
-                                match decoder.receive_frame() {
-                                    Ok(_frame) => {
-                                        frame_count += 1;
-                                        if frame_count <= 3 || frame_count % 5 == 0 {
-                                            print!("[{}] ", frame_count);
-                                        }
-                                    }
-                                    Err(tao_core::TaoError::NeedMoreData) => break,
-                                    Err(_) => {
-                                        error_count += 1;
-                                        break;
+                        Ok(_) => loop {
+                            match decoder.receive_frame() {
+                                Ok(_frame) => {
+                                    frame_count += 1;
+                                    if frame_count <= 3 || frame_count % 5 == 0 {
+                                        print!("[{}] ", frame_count);
                                     }
                                 }
+                                Err(tao_core::TaoError::NeedMoreData) => break,
+                                Err(_) => {
+                                    error_count += 1;
+                                    break;
+                                }
                             }
-                        }
+                        },
                         Err(_) => {
                             error_count += 1;
                         }
@@ -1042,7 +1042,8 @@ mod tests {
         use tao_core::MediaType;
         use tao_format::{FormatRegistry, IoContext, stream::StreamParams};
 
-        let sample = "https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++difficult_lowres.avi";
+        let sample =
+            "https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++difficult_lowres.avi";
         println!("\n╔════════════════════════════════════════════════════════════╗");
         println!("║ 测试 3.1: 低分辨率解码 (P2)                              ║");
         println!("╚════════════════════════════════════════════════════════════╝");
@@ -1185,7 +1186,8 @@ mod tests {
         use tao_core::MediaType;
         use tao_format::{FormatRegistry, IoContext, stream::StreamParams};
 
-        let sample = "https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+mp3++qpel-bframes.avi";
+        let sample =
+            "https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+mp3++qpel-bframes.avi";
         println!("\n╔════════════════════════════════════════════════════════════╗");
         println!("║ 测试 3.2: Quarterpel + B 帧组合 (P2)                    ║");
         println!("╚════════════════════════════════════════════════════════════╝");
@@ -1463,7 +1465,7 @@ mod tests {
         println!("\n╔════════════════════════════════════════════════════════════╗");
         println!("║ 容器格式支持信息                                          ║");
         println!("╚════════════════════════════════════════════════════════════╝");
-        
+
         println!("✅ 已验证的容器格式:");
         println!("  1. AVI - MPEG-4 Part 2 标准容器");
         println!("  2. MKV - Matroska 容器支持");
@@ -1616,4 +1618,3 @@ mod tests {
         println!("  - 对比工具: tests/ffmpeg_compare.rs");
     }
 }
-

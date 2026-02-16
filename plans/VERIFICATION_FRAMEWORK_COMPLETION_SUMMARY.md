@@ -9,11 +9,11 @@
 
 已完成以下三个关键验证任务：
 
-| # | 任务 | 状态 | 文件 |
-|---|------|------|------|
-| 1 | 生成 FFmpeg 对比基线 | ✅ | `tests/mpeg4_ffmpeg_baseline.rs` |
-| 2 | 人工播放验证指南 | ✅ | `plans/PLAYBACK_VERIFICATION_GUIDE.md` |
-| 3 | 补充 MP4 样本 | ✅ | `samples/SAMPLE_URLS.md` |
+| #   | 任务                 | 状态 | 文件                                   |
+| --- | -------------------- | ---- | -------------------------------------- |
+| 1   | 生成 FFmpeg 对比基线 | ✅   | `tests/mpeg4_ffmpeg_baseline.rs`       |
+| 2   | 人工播放验证指南     | ✅   | `plans/PLAYBACK_VERIFICATION_GUIDE.md` |
+| 3   | 补充 MP4 样本        | ✅   | `samples/SAMPLE_URLS.md`               |
 
 ---
 
@@ -30,24 +30,24 @@
 #### 实现的测试函数
 
 1. **`test_mpeg4_baseline_1_1_basic_avi`** - 基础 AVI 解码
-   - 样本: color16.avi (312×240, 25fps)
-   - 质量要求: PSNR Y >= 38 dB
-   - 状态: ✅ 实现完成
+    - 样本: color16.avi (312×240, 25fps)
+    - 质量要求: PSNR Y >= 38 dB
+    - 状态: ✅ 实现完成
 
 2. **`test_mpeg4_baseline_2_1_b_frames`** - B 帧对比
-   - 样本: avi+mpeg4+++qprd_cmp_b-frames_naq1.avi
-   - 质量要求: PSNR Y >= 32 dB
-   - 状态: ✅ 实现完成
+    - 样本: avi+mpeg4+++qprd_cmp_b-frames_naq1.avi
+    - 质量要求: PSNR Y >= 32 dB
+    - 状态: ✅ 实现完成
 
 3. **`test_mpeg4_baseline_2_2_quarterpel`** - Quarterpel 对比
-   - 样本: avi+mpeg4+++DivX51-Qpel.avi
-   - 质量要求: PSNR Y >= 32 dB
-   - 状态: ✅ 实现完成
+    - 样本: avi+mpeg4+++DivX51-Qpel.avi
+    - 质量要求: PSNR Y >= 32 dB
+    - 状态: ✅ 实现完成
 
 4. **`test_generate_ffmpeg_baseline_summary`** - 汇总报告生成
-   - 输出: FFMPEG_BASELINE_SUMMARY.md
-   - 包含: 所有基线的综合对比说明
-   - 状态: ✅ 实现完成
+    - 输出: FFMPEG_BASELINE_SUMMARY.md
+    - 包含: 所有基线的综合对比说明
+    - 状态: ✅ 实现完成
 
 ### 📊 生成的工具和文档
 
@@ -66,16 +66,19 @@ FfmpegComparer::new(url, output_dir)?
 **文件**: `data/ffmpeg_baselines/psnr_calculator.py`
 
 自动生成的 Python 脚本用于计算：
+
 - Y/U/V 平面的最大差异 (Max Δ)
 - 各平面的均方误差 (MSE)
 - 各平面的 PSNR 值 (分贝)
 
 **使用方式**:
+
 ```bash
 python3 psnr_calculator.py reference_frames.yuv tao_output.yuv 1920 1080
 ```
 
 **输出示例**:
+
 ```
 视频参数: 1920x1080, 10 帧
 ============================================================
@@ -93,6 +96,7 @@ Frame   1: Y=  38.18 dB, U=  42.12 dB, V=  41.95 dB
 
 **文件**: `data/ffmpeg_baselines/FFMPEG_BASELINE_SUMMARY.md`  
 **内容包括**:
+
 - 所有 4 个核心样本的对比要求
 - PSNR 质量评级标准
 - Y/U/V 平面权重说明
@@ -141,6 +145,7 @@ python3 data/ffmpeg_baselines/psnr_calculator.py \
 ### 📋 文档结构
 
 #### 第一部分：准备工作
+
 - 系统要求检查
 - FFmpeg/ffplay 安装步骤（3 种系统）
 - tao-play 编译指南
@@ -153,6 +158,7 @@ python3 data/ffmpeg_baselines/psnr_calculator.py \
 #### 第三部分：样本选择
 
 **推荐测试样本表**:
+
 - ⭐⭐⭐ color16.avi - 基础测试
 - ⭐⭐⭐ B 帧样本 - 高级特性
 - ⭐⭐ Quarterpel 样本
@@ -161,24 +167,26 @@ python3 data/ffmpeg_baselines/psnr_calculator.py \
 #### 第四部分：并行播放对比
 
 **3 种对比方式**:
+
 1. 双终端对比（推荐）
-   - 同时打开 ffplay 和 tao-play
-   - 快捷键说明 (Space/Q/F/→/←)
+    - 同时打开 ffplay 和 tao-play
+    - 快捷键说明 (Space/Q/F/→/←)
 
 2. 屏幕分割对比
-   - Windows 10+: Win+Left/Win+Right
-   - macOS: Mission Control
-   - Linux: X11 平铺
+    - Windows 10+: Win+Left/Win+Right
+    - macOS: Mission Control
+    - Linux: X11 平铺
 
 3. 录屏对比
-   - 录制两个播放器的输出
-   - 逐帧逐比特分析
+    - 录制两个播放器的输出
+    - 逐帧逐比特分析
 
 #### 第五部分：对比评分
 
 **详细评分标准表格**:
 
 画面质量检查项：
+
 - 清晰度（是否模糊/块状）
 - 色彩还原（肤色/背景准确度）
 - 绿屏检查（完全失败判断）
@@ -186,16 +194,19 @@ python3 data/ffmpeg_baselines/psnr_calculator.py \
 - 边界清晰（人为痕迹）
 
 流畅度检查项：
+
 - 帧率稳定性
 - 音视频同步
 - 进度条准确度
 
 编码特性检测：
+
 - B 帧: 帧间平滑度、无鬼影
 - Quarterpel: 运动平滑 vs FFmpeg
 - GMC: 变换平滑度、无撕裂
 
 **质量评级**:
+
 - ✅ 优: 与 ffplay 几乎无差异
 - ⚠️ 良: 轻微差异，可接受
 - ❌ 差: 严重差异或播放失败
@@ -203,6 +214,7 @@ python3 data/ffmpeg_baselines/psnr_calculator.py \
 #### 第六部分：结果记录
 
 **验证报告模板** 包含:
+
 - 环境信息（操作系统、编译模式）
 - 每个样本的评分
 - 汇总统计（✅/⚠️/❌ 数量）
@@ -213,24 +225,25 @@ python3 data/ffmpeg_baselines/psnr_calculator.py \
 4 个常见问题的诊断和解决方案：
 
 1. ❌ ffplay 无法播放网络 URL
-   - 症状: Protocol not whitelisted
-   - 解决: -protocol_whitelist 参数或下载本地
+    - 症状: Protocol not whitelisted
+    - 解决: -protocol_whitelist 参数或下载本地
 
 2. ❌ tao-play 播放时卡顿
-   - 可能原因: 网络/CPU/GPU
-   - 验证: 本地文件测试
+    - 可能原因: 网络/CPU/GPU
+    - 验证: 本地文件测试
 
 3. ❌ 绿屏或无输出
-   - 调试: RUST_LOG=debug
-   - 查看: 错误日志
+    - 调试: RUST_LOG=debug
+    - 查看: 错误日志
 
 4. ❌ 音视频不同步
-   - 验证: ffprobe 时间戳
-   - 分析: 解码速率
+    - 验证: ffprobe 时间戳
+    - 分析: 解码速率
 
 #### 第八部分：最佳实践
 
 ✅ 推荐做法 (5 项):
+
 - 从基础样本开始
 - 逐步增加复杂度
 - 详细记录观察
@@ -238,6 +251,7 @@ python3 data/ffmpeg_baselines/psnr_calculator.py \
 - 暂停逐帧对比
 
 ❌ 避免操作 (4 项):
+
 - 快速浏览
 - 仅凭记忆对比
 - 单一样本验证
@@ -246,6 +260,7 @@ python3 data/ffmpeg_baselines/psnr_calculator.py \
 #### 第九部分：自动化验证（高级）
 
 提供以下自动化方案：
+
 - 使用 FFmpeg/ffprobe 提取参考帧
 - tao-play 逐帧输出
 - ImageMagick 画面差异计算 (RMSE)
@@ -267,6 +282,7 @@ ffplay https://samples.ffmpeg.org/V-codecs/MPEG4/color16.avi
 ### 📝 验证报告模板
 
 支持完整的验证报告生成，包含：
+
 - 环境信息
 - 每项测试的评分矩阵
 - 编码特性检测结果
@@ -286,10 +302,10 @@ ffplay https://samples.ffmpeg.org/V-codecs/MPEG4/color16.avi
 
 在 "MPEG-4 Part 2" 章节新增两个 MP4 样本：
 
-| 用途     | URL | 描述 |
-|---------|-----|------|
+| 用途     | URL                                              | 描述                          |
+| -------- | ------------------------------------------------ | ----------------------------- |
 | MP4 容器 | https://samples.ffmpeg.org/mov/mov_mpeg4_aac.mov | MPEG-4 Part 2 + AAC, MOV 容器 |
-| MP4 标准 | https://samples.ffmpeg.org/mov/mp4_mpeg4.mp4 | MPEG-4 Part 2 标准 MP4 |
+| MP4 标准 | https://samples.ffmpeg.org/mov/mp4_mpeg4.mp4     | MPEG-4 Part 2 标准 MP4        |
 
 ### ✅ 质量检查
 
@@ -354,15 +370,15 @@ data/
 
 ## 📊 验证完整性矩阵
 
-| 验证维度 | 覆盖范围 | 实现状态 | 关键文件 |
-|---------|---------|---------|---------|
-| **功能验证** | 10+ 测试用例 | ✅ 完成 | mpeg4_part2_pipeline.rs |
-| **编码特性** | I/P/B/Qpel/GMC | ✅ 完成 | 同上 |
-| **PSNR 对比** | 4 核心样本 | ✅ 就绪 | mpeg4_ffmpeg_baseline.rs |
-| **质量评标** | 38/32/30 dB | ✅ 就绪 | FFMPEG_BASELINE_SUMMARY.md |
-| **人工验证** | 双播放器对比 | ✅ 就绪 | PLAYBACK_VERIFICATION_GUIDE.md |
-| **样本覆盖** | AVI/MP4/M4V | ✅ 完成 | SAMPLE_URLS.md |
-| **自动化** | Python PSNR 脚本 | ✅ 完成 | psnr_calculator.py |
+| 验证维度      | 覆盖范围         | 实现状态 | 关键文件                       |
+| ------------- | ---------------- | -------- | ------------------------------ |
+| **功能验证**  | 10+ 测试用例     | ✅ 完成  | mpeg4_part2_pipeline.rs        |
+| **编码特性**  | I/P/B/Qpel/GMC   | ✅ 完成  | 同上                           |
+| **PSNR 对比** | 4 核心样本       | ✅ 就绪  | mpeg4_ffmpeg_baseline.rs       |
+| **质量评标**  | 38/32/30 dB      | ✅ 就绪  | FFMPEG_BASELINE_SUMMARY.md     |
+| **人工验证**  | 双播放器对比     | ✅ 就绪  | PLAYBACK_VERIFICATION_GUIDE.md |
+| **样本覆盖**  | AVI/MP4/M4V      | ✅ 完成  | SAMPLE_URLS.md                 |
+| **自动化**    | Python PSNR 脚本 | ✅ 完成  | psnr_calculator.py             |
 
 ---
 
@@ -371,42 +387,44 @@ data/
 ### 短期 (1-2 周)
 
 1. **执行 PSNR 对比**
-   ```bash
-   cargo test --test mpeg4_ffmpeg_baseline test_generate -- --ignored
-   python3 data/ffmpeg_baselines/psnr_calculator.py ...
-   ```
-   - 生成实际 PSNR 数据
-   - 对比预期阈值
-   - 记录任何差异
+
+    ```bash
+    cargo test --test mpeg4_ffmpeg_baseline test_generate -- --ignored
+    python3 data/ffmpeg_baselines/psnr_calculator.py ...
+    ```
+
+    - 生成实际 PSNR 数据
+    - 对比预期阈值
+    - 记录任何差异
 
 2. **完成播放验证**
-   - 运行双播放器对比
-   - 填写评分表格
-   - 生成验证报告
+    - 运行双播放器对比
+    - 填写评分表格
+    - 生成验证报告
 
 3. **分析失败点**
-   - 如果 PSNR 低于阈值
-   - 逐个调试编码特性
-   - 优化解码算法
+    - 如果 PSNR 低于阈值
+    - 逐个调试编码特性
+    - 优化解码算法
 
 ### 中期 (2-4 周)
 
 4. **性能基准测试**
-   - 使用 criterion 框架
-   - 测量 FPS 和 CPU 使用率
-   - 与 FFmpeg 对标
+    - 使用 criterion 框架
+    - 测量 FPS 和 CPU 使用率
+    - 与 FFmpeg 对标
 
 5. **CI/CD 集成**
-   - 配置 GitHub Actions
-   - 自动运行所有测试
-   - PSNR 自动对比
+    - 配置 GitHub Actions
+    - 自动运行所有测试
+    - PSNR 自动对比
 
 ### 长期 (1 个月+)
 
 6. **扩展支持**
-   - 更多编解码器
-   - 特殊编码格式
-   - 性能优化 (SIMD/GPU)
+    - 更多编解码器
+    - 特殊编码格式
+    - 性能优化 (SIMD/GPU)
 
 ---
 
@@ -428,12 +446,14 @@ data/
 ## 📞 快速参考
 
 ### 生成对比基线
+
 ```bash
 cargo test --test mpeg4_ffmpeg_baseline test_generate -- --ignored --nocapture
 # 输出: data/ffmpeg_baselines/FFMPEG_BASELINE_SUMMARY.md
 ```
 
 ### 人工播放验证
+
 ```bash
 # 参考: ffplay https://samples.ffmpeg.org/V-codecs/MPEG4/color16.avi
 # 对比: ./target/release/tao-play https://...
@@ -441,11 +461,13 @@ cargo test --test mpeg4_ffmpeg_baseline test_generate -- --ignored --nocapture
 ```
 
 ### 计算 PSNR
+
 ```bash
 python3 data/ffmpeg_baselines/psnr_calculator.py ref.yuv test.yuv 1920 1080
 ```
 
 ### 查看样本 URL
+
 ```bash
 # 不仅包括现有 AVI 样本，还包括新增的 MP4 样本
 grep -A 2 "MP4\|MPEG-4" samples/SAMPLE_URLS.md

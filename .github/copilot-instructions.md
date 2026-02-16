@@ -92,17 +92,20 @@ cargo test
 **如果检测到 rust-mcp-server 可用，必须优先使用:**
 
 在执行以下命令时，优先通过 MCP 服务器而非终端:
+
 - `cargo build` / `cargo check` / `cargo fmt` / `cargo clippy` / `cargo test` / `cargo run`
 - `cargo add` / `cargo remove` / `cargo update`
 - `cargo doc` / `cargo tree` / `cargo expand`
 
 **优点:**
+
 - 更快的命令响应
 - 更完整的错误诊断
 - 集成的代码分析反馈
 - 自动的构建缓存管理
 
 **使用前检测:**
+
 ```
 # 检查是否有可用的 rust-mcp-server MCP
 如果命令执行时有"cargo: build"等相关 MCP 工具可用，优先调用该工具
@@ -113,6 +116,7 @@ cargo test
 **如果检测到 rust-analyzer-mcp 可用，必须优先使用:**
 
 对于以下代码分析需求，优先通过 MCP 服务器而非终端:
+
 - 查找符号定义 (Go to Definition)
 - 查找所有引用 (Find References)
 - 获取符号信息和文档
@@ -123,12 +127,14 @@ cargo test
 - 代码格式化 (Format Code)
 
 **优点:**
+
 - 精确的代码导航
 - 类型检查和错误诊断
 - 智能重构建议
 - 无需编译的快速分析
 
 **使用前检测:**
+
 ```
 # 检查是否有可用的 rust-analyzer-mcp MCP
 如果命令执行时有"rust-analyzer"相关 MCP 工具可用，优先调用该工具
@@ -392,16 +398,16 @@ fn test_h264_decode_basic() {
 
 ### MCP 工具映射表
 
-| 任务类型 | Rust-MCP-Server | Rust-Analyzer-MCP | 备注 |
-|---------|---------------|-------------------|------|
-| 构建/检查 | `cargo-build` / `cargo-check` | - | 优先 MCP |
-| 代码审查 | `cargo-clippy` | - | 优先 MCP |
-| 格式化 | `cargo-fmt` | `mcp_rust-analyzer_rust_analyzer_format` | MCP only |
-| 符号定义 | - | `rust-analyzer-goto-definition` | MCP only |
-| 查找引用 | - | `rust-analyzer-references` | MCP only |
-| 代码诊断 | - | `rust-analyzer-diagnostics` | MCP only |
-| 代码完成 | - | `rust-analyzer-completion` | MCP only |
-| 快速修复 | - | `rust-analyzer-code-actions` | MCP only |
+| 任务类型  | Rust-MCP-Server               | Rust-Analyzer-MCP                        | 备注     |
+| --------- | ----------------------------- | ---------------------------------------- | -------- |
+| 构建/检查 | `cargo-build` / `cargo-check` | -                                        | 优先 MCP |
+| 代码审查  | `cargo-clippy`                | -                                        | 优先 MCP |
+| 格式化    | `cargo-fmt`                   | `mcp_rust-analyzer_rust_analyzer_format` | MCP only |
+| 符号定义  | -                             | `rust-analyzer-goto-definition`          | MCP only |
+| 查找引用  | -                             | `rust-analyzer-references`               | MCP only |
+| 代码诊断  | -                             | `rust-analyzer-diagnostics`              | MCP only |
+| 代码完成  | -                             | `rust-analyzer-completion`               | MCP only |
+| 快速修复  | -                             | `rust-analyzer-code-actions`             | MCP only |
 
 ---
 

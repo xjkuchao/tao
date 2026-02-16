@@ -22,8 +22,7 @@ const MAX_COMPARE_FRAMES: u32 = 10; // 对比的最大帧数
 /// 创建输出目录并检查 FFmpeg 可用性
 fn init_test_environment() -> Result<PathBuf, String> {
     let output_dir = PathBuf::from(TEST_OUTPUT_DIR);
-    fs::create_dir_all(&output_dir)
-        .map_err(|e| format!("无法创建输出目录: {}", e))?;
+    fs::create_dir_all(&output_dir).map_err(|e| format!("无法创建输出目录: {}", e))?;
 
     if !FfmpegComparer::check_ffmpeg_available() {
         return Err("FFmpeg 未安装或不可用，无法生成对比基线".to_string());
@@ -117,7 +116,11 @@ fn test_mpeg4_baseline_1_1_basic_avi() {
                                     println!("  V 平面 PSNR: {:.2} dB", diff.psnr_v);
                                     println!(
                                         "  是否可接受: {}",
-                                        if diff.is_acceptable() { "✓ 是" } else { "✗ 否" }
+                                        if diff.is_acceptable() {
+                                            "✓ 是"
+                                        } else {
+                                            "✗ 否"
+                                        }
                                     );
                                 }
                                 Err(e) => eprintln!("PSNR 计算失败: {}", e),
@@ -150,35 +153,34 @@ fn test_mpeg4_baseline_2_1_b_frames() {
         }
     };
 
-    let sample_url = "https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++qprd_cmp_b-frames_naq1.avi";
+    let sample_url =
+        "https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++qprd_cmp_b-frames_naq1.avi";
     println!("\n=== MPEG4 Part 2 B 帧对比基线 (Test 2.1) ===");
     println!("样本: {}", sample_url);
 
     match FfmpegComparer::new(sample_url, &output_dir) {
-        Ok(comparer) => {
-            match comparer.generate_reference_frames(MAX_COMPARE_FRAMES) {
-                Ok(_) => {
-                    println!("✓ FFmpeg 参考帧已生成");
+        Ok(comparer) => match comparer.generate_reference_frames(MAX_COMPARE_FRAMES) {
+            Ok(_) => {
+                println!("✓ FFmpeg 参考帧已生成");
 
-                    let baseline_info = format!(
-                        "# MPEG4 Part 2 FFmpeg 对比基线 - Test 2.1 (B 帧)\n\n\
+                let baseline_info = format!(
+                    "# MPEG4 Part 2 FFmpeg 对比基线 - Test 2.1 (B 帧)\n\n\
                          ## 编码特性\n\
                          - B 帧 (双向预测)\n\
                          - 参考帧管理\n\n\
                          ## 质量要求\n\
                          - 预期 PSNR: >= {:.1} dB\n\
                          - 说明: 高级特性允许更大容差\n",
-                        PSNR_THRESHOLD_ADVANCED,
-                    );
+                    PSNR_THRESHOLD_ADVANCED,
+                );
 
-                    let info_file = output_dir.join("test_2_1_baseline_info.md");
-                    let _ = fs::write(&info_file, baseline_info);
+                let info_file = output_dir.join("test_2_1_baseline_info.md");
+                let _ = fs::write(&info_file, baseline_info);
 
-                    println!("✓ 基线信息已保存");
-                }
-                Err(e) => eprintln!("参考帧生成失败: {}", e),
+                println!("✓ 基线信息已保存");
             }
-        }
+            Err(e) => eprintln!("参考帧生成失败: {}", e),
+        },
         Err(e) => eprintln!("FFmpeg 对比器初始化失败: {}", e),
     }
 
@@ -205,29 +207,27 @@ fn test_mpeg4_baseline_2_2_quarterpel() {
     println!("样本: {}", sample_url);
 
     match FfmpegComparer::new(sample_url, &output_dir) {
-        Ok(comparer) => {
-            match comparer.generate_reference_frames(MAX_COMPARE_FRAMES) {
-                Ok(_) => {
-                    println!("✓ FFmpeg 参考帧已生成");
+        Ok(comparer) => match comparer.generate_reference_frames(MAX_COMPARE_FRAMES) {
+            Ok(_) => {
+                println!("✓ FFmpeg 参考帧已生成");
 
-                    let baseline_info = format!(
-                        "# MPEG4 Part 2 FFmpeg 对比基线 - Test 2.2 (Quarterpel)\n\n\
+                let baseline_info = format!(
+                    "# MPEG4 Part 2 FFmpeg 对比基线 - Test 2.2 (Quarterpel)\n\n\
                          ## 编码特性\n\
                          - Quarterpel (1/4 像素精度运动补偿)\n\
                          - 子像素插值滤波\n\n\
                          ## 质量要求\n\
                          - 预期 PSNR: >= {:.1} dB\n",
-                        PSNR_THRESHOLD_ADVANCED,
-                    );
+                    PSNR_THRESHOLD_ADVANCED,
+                );
 
-                    let info_file = output_dir.join("test_2_2_baseline_info.md");
-                    let _ = fs::write(&info_file, baseline_info);
+                let info_file = output_dir.join("test_2_2_baseline_info.md");
+                let _ = fs::write(&info_file, baseline_info);
 
-                    println!("✓ 基线信息已保存");
-                }
-                Err(e) => eprintln!("参考帧生成失败: {}", e),
+                println!("✓ 基线信息已保存");
             }
-        }
+            Err(e) => eprintln!("参考帧生成失败: {}", e),
+        },
         Err(e) => eprintln!("FFmpeg 对比器初始化失败: {}", e),
     }
 

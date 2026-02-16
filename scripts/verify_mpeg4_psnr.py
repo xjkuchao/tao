@@ -291,21 +291,60 @@ def generate_tao_decode(test_case: Dict) -> Tuple[bool, str]:
         log(f"  [已存在] 输出已存在 ({size_mb:.1f} MB)", "WARN")
         return True, output_file
 
-    # 这里应该调用 tao 的解码命令
-    # 当前为占位符实现
-    log("  (占位符) 需要实现具体的 tao-codec 解码调用", "WARN")
-    log("  建议: 在 tao-cli 中添加 --output-raw 选项", "WARN")
-
-    # 临时创建虚拟输出文件用于演示
+    # 先下载样本文件到临时位置
+    temp_input = os.path.join(DECODE_OUTPUT_DIR, f"temp_{filename}.avi")
     os.makedirs(DECODE_OUTPUT_DIR, exist_ok=True)
-    frame_size = test_case["width"] * test_case["height"] + 2 * (
-        test_case["width"] // 2
-    ) * (test_case["height"] // 2)
-    fake_data = b"\x80" * (frame_size * test_case["frames"])  # 中灰色测试帧
-    with open(output_file, "wb") as f:
-        f.write(fake_data)
 
-    log(f"[OK] 已生成虚拟输出 (用于演示)")
+    log(f"  下载输入: {url}")
+    try:
+        import urllib.request
+
+        urllib.request.urlretrieve(url, temp_input)
+        if not os.path.exists(temp_input):
+            log(f"  下载失败", "ERROR")
+            return False, None
+        size_mb = os.path.getsize(temp_input) / (1024 * 1024)
+        log(f"  [OK] 下载完成 ({size_mb:.1f} MB)")
+    except Exception as e:
+        log(f"  下载异常: {e}", "ERROR")
+        return False, None
+
+    # 调用 tao-cli 进行解码
+    tao_cli_cmd = [
+        "cargo",
+        "run",
+        "--release",
+        "-p",
+        "tao-cli",
+        "--bin",
+        "tao",
+        "--",
+        "-i",
+        temp_input,
+        "--output-raw",
+        output_file,
+        "-y",
+    ]
+
+    log(f"  运行命令: {' '.join(tao_cli_cmd)}")
+    success, output = run_command(tao_cli_cmd, "执行 tao-cli 解码")
+
+    # 清理临时文件
+    try:
+        os.remove(temp_input)
+    except:
+        pass
+
+    if not success:
+        log(f"  tao-cli 执行失败", "ERROR")
+        return False, None
+
+    if not os.path.exists(output_file):
+        log(f"  输出文件不存在", "ERROR")
+        return False, None
+
+    size_mb = os.path.getsize(output_file) / (1024 * 1024)
+    log(f"  [OK] 解码完成 ({size_mb:.1f} MB)")
     return True, output_file
 
 

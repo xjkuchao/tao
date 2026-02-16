@@ -20,15 +20,16 @@
 
 - **Windows/macOS/Linux** 系统
 - **FFmpeg/ffplay**: 官方参考播放器
-  ```bash
-  # 检查 ffplay 是否安装
-  ffplay -version
-  ```
+    ```bash
+    # 检查 ffplay 是否安装
+    ffplay -version
+    ```
 - **tao-play**: Tao 多媒体播放器（本项目）
 
 ### 安装 FFmpeg
 
 **Windows:**
+
 ```bash
 # 使用 Chocolatey
 choco install ffmpeg
@@ -38,11 +39,13 @@ choco install ffmpeg
 ```
 
 **macOS:**
+
 ```bash
 brew install ffmpeg
 ```
 
 **Linux (Ubuntu/Debian):**
+
 ```bash
 sudo apt-get install ffmpeg
 ```
@@ -72,6 +75,7 @@ cargo build -p tao-play --release
 ```
 
 输出位置：
+
 - 调试: `target/debug/tao-play` (Windows: `.exe`)
 - 发布: `target/release/tao-play` (Windows: `.exe`)
 
@@ -81,18 +85,19 @@ cargo build -p tao-play --release
 
 ### 推荐测试样本列表
 
-| 优先级 | 样本 | URL | 大小 | 特性 |
-|------|------|-----|-----|------|
-| ⭐⭐⭐ | color16.avi | https://samples.ffmpeg.org/V-codecs/MPEG4... | 中等 | 基础 |
-| ⭐⭐⭐ | B-frame | https://samples.ffmpeg.org/archive/video/mpeg4/... | 中等 | B帧 |
-| ⭐⭐ | Quarterpel | https://samples.ffmpeg.org/archive/video/mpeg4/DivX51-Qpel.avi | 中等 | QPel |
-| ⭐ | GMC+QPel | https://samples.ffmpeg.org/archive/video/mpeg4/xvid_gmcqpel... | 大 | 高级 |
+| 优先级 | 样本        | URL                                                            | 大小 | 特性 |
+| ------ | ----------- | -------------------------------------------------------------- | ---- | ---- |
+| ⭐⭐⭐ | color16.avi | https://samples.ffmpeg.org/V-codecs/MPEG4...                   | 中等 | 基础 |
+| ⭐⭐⭐ | B-frame     | https://samples.ffmpeg.org/archive/video/mpeg4/...             | 中等 | B帧  |
+| ⭐⭐   | Quarterpel  | https://samples.ffmpeg.org/archive/video/mpeg4/DivX51-Qpel.avi | 中等 | QPel |
+| ⭐     | GMC+QPel    | https://samples.ffmpeg.org/archive/video/mpeg4/xvid_gmcqpel... | 大   | 高级 |
 
 ### 下载样本 (可选)
 
 > 推荐：直接使用 URL，不下载本地
 
 如需下载：
+
 ```bash
 # 创建样本目录
 mkdir -p data/samples
@@ -113,6 +118,7 @@ ffprobe data/samples/color16.avi
 同时打开两个终端窗口，分别运行 tao-play 和 ffplay。
 
 **终端 1 - 运行 ffplay（参考）:**
+
 ```bash
 ffplay https://samples.ffmpeg.org/V-codecs/MPEG4/color16.avi
 
@@ -121,6 +127,7 @@ ffplay data/samples/color16.avi
 ```
 
 **终端 2 - 运行 tao-play:**
+
 ```bash
 # 调试模式
 ./target/debug/tao-play https://samples.ffmpeg.org/V-codecs/MPEG4/color16.avi
@@ -133,6 +140,7 @@ ffplay data/samples/color16.avi
 ```
 
 **快捷键（两个播放器通用）:**
+
 - `Space`: 暂停/继续
 - `Q / Esc`: 退出
 - `F`: 全屏
@@ -144,13 +152,16 @@ ffplay data/samples/color16.avi
 在支持窗口分割的系统上，将两个窗口并排放置：
 
 **Windows 10+:**
+
 - ffplay 窗口: 按 Win+Left 靠左
 - tao-play 窗口: 按 Win+Right 靠右
 
 **macOS:**
+
 - Mission Control 快速调整窗口位置
 
 **Linux (X11):**
+
 ```bash
 # 使用窗口管理器的平铺功能
 # 或手动调整窗口大小和位置
@@ -180,40 +191,44 @@ ffmpeg -video_size 1920x1080 -framerate 30 -f x11grab -i :0.0 ffplay_out.mp4
 
 #### 画面质量
 
-| 项目 | ffplay | tao-play | 备注 |
-|------|--------|----------|------|
-| 清晰度 | | | 是否模糊或有块状物 |
-| 色彩还原 | | | 肤色/背景色是否准确 |
-| 无绿屏 | | | 完全绿屏 = ❌ |
-| 无花纹 | | | 马赛克花纹 = ❌ |
-| 边界清晰 | | | 边缘是否有人为痕迹 |
+| 项目     | ffplay | tao-play | 备注                |
+| -------- | ------ | -------- | ------------------- |
+| 清晰度   |        |          | 是否模糊或有块状物  |
+| 色彩还原 |        |          | 肤色/背景色是否准确 |
+| 无绿屏   |        |          | 完全绿屏 = ❌       |
+| 无花纹   |        |          | 马赛克花纹 = ❌     |
+| 边界清晰 |        |          | 边缘是否有人为痕迹  |
 
 **质量评级:**
+
 - ✅ 优: 与 ffplay 几乎无差异
 - ⚠️ 良: 有轻微差异，但可接受
 - ❌ 差: 严重差异或播放失败
 
 #### 播放流畅度
 
-| 项目 | ffplay | tao-play | 备注 |
-|------|--------|----------|------|
-| 帧率稳定 | | | 是否卡顿、掉帧 |
-| 同步准确 | | | 音视频是否同步 |
-| 进度条准确 | | | 进度显示是否正确 |
+| 项目       | ffplay | tao-play | 备注             |
+| ---------- | ------ | -------- | ---------------- |
+| 帧率稳定   |        |          | 是否卡顿、掉帧   |
+| 同步准确   |        |          | 音视频是否同步   |
+| 进度条准确 |        |          | 进度显示是否正确 |
 
 #### 编码特性检测
 
 对于包含特殊编码特性的样本，观察是否正确处理：
 
 **B 帧样本:**
+
 - 画面是否有往返跳动
 - 是否有「鬼影」（参考帧错误）
 
 **Quarterpel 样本:**
+
 - 运动平滑度 vs FFmpeg
 - 是否有块状或锯齿
 
 **GMC 样本:**
+
 - 缩放/旋转变换是否平滑
 - 是否有扭曲或撕裂
 
@@ -223,6 +238,7 @@ ffmpeg -video_size 1920x1080 -framerate 30 -f x11grab -i :0.0 ffplay_out.mp4
 ## 样本: color16.avi
 
 **基本信息:**
+
 - 分辨率: 312×240
 - 帧率: 25 fps
 - 编码特性: 基础 I/P 帧
@@ -261,7 +277,8 @@ ffmpeg -video_size 1920x1080 -framerate 30 -f x11grab -i :0.0 ffplay_out.mp4
 ```
 
 模板：
-```markdown
+
+````markdown
 # MPEG4 Part 2 解码器播放验证报告
 
 **日期**: YYYY-MM-DD  
@@ -306,7 +323,9 @@ ffmpeg -video_size 1920x1080 -framerate 30 -f x11grab -i :0.0 ffplay_out.mp4
 git add plans/MPEG4_PLAYBACK_VERIFICATION_REPORT.md
 git commit -m "docs: MPEG4 Part 2 播放验证报告 - 完成"
 ```
-```
+````
+
+````
 
 ---
 
@@ -324,16 +343,18 @@ ffplay -protocol_whitelist file,http,https,tcp,tls -i https://...
 # 或先下载到本地再播放
 wget https://samples.ffmpeg.org/V-codecs/MPEG4/color16.avi
 ffplay color16.avi
-```
+````
 
 ### 问题 2: tao-play 播放时卡顿
 
 **可能原因:**
+
 - 网络连接慢（从 URL 流下载）
 - 解码性能不足
 - GPU 不支持
 
 **解决:**
+
 ```bash
 # 使用本地文件测试
 ./target/release/tao-play data/samples/color16.avi
@@ -347,10 +368,12 @@ ffplay color16.avi
 ### 问题 3: 绿屏或无输出
 
 **可能原因:**
+
 - 解码失败
 - 输出格式不支持
 
 **调试:**
+
 ```bash
 # 启用详细日志
 RUST_LOG=debug ./target/debug/tao-play data/samples/color16.avi 2>&1 | tee playback.log
@@ -362,10 +385,12 @@ grep -i error playback.log
 ### 问题 4: 音视频不同步
 
 **可能原因:**
+
 - 音频/视频解码速率不同
 - 时间戳处理有误
 
 **验证:**
+
 ```bash
 # 使用 ffprobe 检查时间戳
 ffprobe -show_frames data/samples/color16.avi | grep pkt_pts | head -20
