@@ -817,7 +817,11 @@ pub(super) fn decode_cbpy(reader: &mut BitReader, is_intra: bool) -> Option<u8> 
             }
         }
     }
-    warn!("CBPY 解码失败: 字节位置 = {}", reader.byte_position());
+    warn!(
+        "CBPY 解码失败: 字节位置 = {}, is_intra = {}",
+        reader.byte_position(),
+        is_intra
+    );
     None
 }
 

@@ -626,7 +626,13 @@ impl Mpeg4Decoder {
         };
 
         // 2. CBPY
-        let cbpy = decode_cbpy(reader, is_intra).unwrap_or(0);
+        #[allow(clippy::unnecessary_lazy_evaluations)]
+        let cbpy = decode_cbpy(reader, is_intra).unwrap_or_else(|| {
+            // CBPY 解码失败时使用默认值:
+            // - Intra 块: 默认为 0 (无编码的块)
+            // - Inter 块: 默认为 15 (所有 4 个块都有编码)
+            if is_intra { 0 } else { 15 }
+        });
 
         // 3. DQUANT
         if mb_type == MbType::IntraQ || mb_type == MbType::InterQ {
@@ -1536,7 +1542,13 @@ impl Mpeg4Decoder {
         };
 
         // 2. CBPY
-        let cbpy = decode_cbpy(reader, is_intra).unwrap_or(0);
+        #[allow(clippy::unnecessary_lazy_evaluations)]
+        let cbpy = decode_cbpy(reader, is_intra).unwrap_or_else(|| {
+            // CBPY 解码失败时使用默认值:
+            // - Intra 块: 默认为 0 (无编码的块)
+            // - Inter 块: 默认为 15 (所有 4 个块都有编码)
+            if is_intra { 0 } else { 15 }
+        });
 
         // 3. DQUANT
         if mb_type == MbType::IntraQ || mb_type == MbType::InterQ {
