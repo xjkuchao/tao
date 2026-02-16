@@ -38,6 +38,8 @@
 | Quarterpel     | https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++dx502_b_qpel.avi                 | DivX 5.02 B 帧 + Quarterpel (4.5M)    |
 | QPel + Bframe  | https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+mp3++qpel-bframes.avi              | QPel + B 帧组合测试 (667K)            |
 | 低分辨率       | https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++difficult_lowres.avi             | 低分辨率特殊处理 (1.3M)               |
+| MP4 容器       | https://samples.ffmpeg.org/mov/mov_mpeg4_aac.mov                                            | MPEG-4 Part 2 + AAC, MOV 容器         |
+| MP4 容器深色   | https://samples.ffmpeg.org/mov/mp4_mpeg4.mp4                                                | MPEG-4 Part 2 标准 MP4                |
 
 ### Theora
 
