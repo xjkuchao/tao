@@ -1,0 +1,41 @@
+---
+description: 手动播放测试规范
+globs:
+  - "bins/tao-play/**/*.rs"
+---
+
+# 手动播放测试规范
+
+## 播放时长限制
+
+- 手动测试音视频播放时, **禁止完整播放**整个文件
+- 默认播放 **前 10 秒** 即可验证功能
+- 如有必要 (验证 seek/后段内容) 可增加到 **最多 30 秒**
+- 播放结束后必须主动终止播放进程
+
+## 终止播放进程 (Windows)
+
+- Windows 下终止 tao-play 进程时, **必须使用 `TASKKILL /F /IM tao-play.exe /T`**
+- **禁止使用 `TASKKILL /F /PID <pid>`** (PID 不可靠)
+
+```powershell
+# 正确
+TASKKILL /F /IM tao-play.exe /T
+
+# 错误 (PID 不可靠)
+TASKKILL /F /PID 12345
+```
+
+## 流式播放测试
+
+- `tao-play` 支持 http/https/rtmp 等流式 URL 播放
+- **所有测试文件均使用 URL 直接流式播放**, 不下载到本地
+- 所有样本 URL 维护在 `samples/SAMPLE_URLS.md` 中
+
+```powershell
+# 正确: 直接使用 URL 进行流式播放
+cargo run --package tao-play -- "https://samples.ffmpeg.org/flac/Yesterday.flac"
+
+# 查看更多样本 URL
+# 请参考 samples/SAMPLE_URLS.md
+```

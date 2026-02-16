@@ -1,0 +1,83 @@
+---
+description: 测试规范和用例开发流程
+globs:
+  - "tests/**/*.rs"
+  - "benches/**/*.rs"
+---
+
+# 测试规范
+
+## 基本要求
+
+- 代码修改后必须执行 `cargo check` 与 `cargo test`
+- 如出现错误或警告, 必须先修复再继续后续修改
+- **重要**: 新增编解码器或容器格式时必须编写测试
+- 集成测试放在 `tests/` 目录下, 单元测试放在源文件内 `#[cfg(test)]` 模块中
+- 测试用例命名需要准确描述测试内容与预期结果, 使用蛇形命名法
+- 测试应覆盖正常流程, 边界情况和错误情况
+
+## 测试用例开发流程
+
+### 1. 确定测试需求
+
+明确需要测试的场景:
+- 正常流程: 标准输入输出, 基本功能验证
+- 边界情况: 空输入, 极限参数, 特殊格式
+- 错误处理: 损坏数据, 不支持的参数, 资源不足
+
+### 2. 查找测试样本
+
+在 `samples/SAMPLE_URLS.md` 中查找適用的样本 URL。如果没有合适样本:
+1. 访问 https://samples.ffmpeg.org/ 查找
+2. 使用 `ffprobe <URL>` 验证样本
+3. 添加到 `samples/SAMPLE_URLS.md`
+4. 提交清单更新
+
+### 3. 编写测试用例
+
+```rust
+#[test]
+fn test_codec_decode_basic() {
+    // 从 samples/SAMPLE_URLS.md 获取样本 URL
+    let sample_url = "https://samples.ffmpeg.org/...";
+    
+    // 直接使用 URL 测试, 无需下载
+    let mut demuxer = DemuxerRegistry::open(sample_url).unwrap();
+    
+    // 测试逻辑...
+    assert!(!frames.is_empty(), "应该解码出至少一帧");
+}
+```
+
+## 测试用例编写标准
+
+- **文件位置**: `tests/{feature}_pipeline.rs`
+- **测试命名**: `test_{component}_{scenario}` 格式
+- **断言清晰**: 每个 `assert!` 包含失败消息
+- **注释完整**: 复杂逻辑添加注释
+- **样本地址**: 使用 `samples/SAMPLE_URLS.md` 中的 HTTPS URL
+- **资源清理**: 临时文件放在 `data/tmp/` 目录
+
+## 测试覆盖范围
+
+### 编解码器测试
+- ✓ 基本解码 (正常流程)
+- ✓ 编码 (如果实现了编码器)
+- ✓ 空输入处理
+- ✓ 损坏数据处理
+- ✓ Flush 流程
+- ✓ 参数解析 (SPS/PPS/VPS 等)
+
+### 容器格式测试
+- ✓ 格式探测 (Probe)
+- ✓ 头部解析
+- ✓ 数据包读取
+- ✓ Seek 操作
+- ✓ 多流处理 (音视频同时存在)
+- ✓ 损坏文件处理
+
+### 滤镜测试
+- ✓ 基本滤镜操作
+- ✓ 参数验证
+- ✓ 链式滤镜
+- ✓ 边界条件 (分辨率, 像素格式)
