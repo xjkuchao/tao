@@ -8,7 +8,7 @@
 
 ## 🎯 搜索目标
 
-根据 [mpeg4_part2_decoder_perfection.md](../plans/mpeg4_part2_decoder_perfection.md) 计划，我们需要找到以下特性的测试样本：
+根据当前测试清单与实现目标，我们需要找到以下特性的测试样本：
 
 1. ✅ **GMC (Global Motion Compensation)** - 2/3 点精灵轨迹变换
 2. ✅ **Data Partitioning** - 视频分区模式
@@ -105,7 +105,7 @@
 
 **当前状态**:
 
-- ✅ RVLC 前向解码已实现
+- ✅ data_partitioned 模式已接入 RVLC AC 解码路径
 - ⚠️ RVLC 后向解码（错误恢复）框架存在但未测试
 
 ### 2. Interlaced (交错扫描场预测)
@@ -155,7 +155,7 @@
 
 - [x] 更新 `samples/SAMPLE_URLS.md` 添加高级特性样本链接
 - [x] 创建 `tests/mpeg4_advanced_features.rs` 测试文件
-- [x] 更新 `plans/mpeg4_part2_decoder_perfection.md` 添加搜索结果
+- [x] 更新 `samples/ADVANCED_FEATURES_SEARCH.md` 添加搜索结果与进展
 
 #### ⏳ 待执行
 
@@ -192,7 +192,7 @@
 - [ ] 搜索 MPEG-4 官方测试向量（ISO/IEC conformance streams）
 - [ ] 联系 FFmpeg 社区询问 RVLC 样本来源
 - [ ] 考虑使用参考软件生成测试样本
-- [ ] 完成后实现后向解码路径
+- [ ] 完成后实现后向解码路径与错误恢复同步
 
 #### 交错扫描
 
