@@ -267,11 +267,11 @@ tao-ffi crate 编译为 cdylib + staticlib:
 
 #### 步骤 2: 查找测试样本
 
-在 `data/SAMPLE_URLS.md` 中查找适用的样本 URL:
+在 `examples/SAMPLE_URLS.md` 中查找適用的样本 URL:
 
 ```rust
 // 示例: 查找 H.264 测试样本
-// 1. 打开 data/SAMPLE_URLS.md
+// 1. 打开 examples/SAMPLE_URLS.md
 // 2. 搜索对应编解码器或容器格式
 // 3. 复制合适的样本 URL
 ```
@@ -287,7 +287,7 @@ tao-ffi crate 编译为 cdylib + staticlib:
     - 浏览样本库: https://samples.ffmpeg.org/
     - 查看完整列表: https://samples.ffmpeg.org/allsamples.txt
 2. **验证样本**: 使用 `ffprobe <URL>` 验证样本信息和编解码器
-3. **添加到清单**: 在 `data/SAMPLE_URLS.md` 对应章节添加表格行
+3. **添加到清单**: 在 `examples/SAMPLE_URLS.md` 对应章节添加表格行
 4. **提交更新**: 提交清单更新到 Git
 
 # 2. 更新计划

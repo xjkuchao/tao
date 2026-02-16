@@ -201,8 +201,8 @@ mod tests {
 
         println!("\n相关资源:");
         println!("  - 官方样本库: https://samples.ffmpeg.org/");
-        println!("  - 样本清单: data/SAMPLES_MPEG4.md");
-        println!("  - 下载脚本: data/download_samples.ps1");
+        println!("  - 样本清单: examples/SAMPLE_URLS.md");
+        println!("  - 使用规范: examples/SAMPLES.md");
         println!("  - 对比工具: tests/ffmpeg_compare.rs");
     }
 
