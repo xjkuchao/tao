@@ -51,7 +51,7 @@ fn test_mpeg4_baseline_1_1_basic_avi() {
     println!("样本: {}", sample_url);
 
     // 创建 FFmpeg 对比器
-    match FfmpegComparer::new(sample_url, &output_dir) {
+    match FfmpegComparer::new(sample_url, &output_dir.to_string_lossy() as &str) {
         Ok(comparer) => {
             // 生成 FFmpeg 参考输出
             match comparer.generate_reference_frames(MAX_COMPARE_FRAMES) {
@@ -158,7 +158,7 @@ fn test_mpeg4_baseline_2_1_b_frames() {
     println!("\n=== MPEG4 Part 2 B 帧对比基线 (Test 2.1) ===");
     println!("样本: {}", sample_url);
 
-    match FfmpegComparer::new(sample_url, &output_dir) {
+    match FfmpegComparer::new(sample_url, &output_dir.to_string_lossy() as &str) {
         Ok(comparer) => match comparer.generate_reference_frames(MAX_COMPARE_FRAMES) {
             Ok(_) => {
                 println!("✓ FFmpeg 参考帧已生成");
@@ -206,7 +206,7 @@ fn test_mpeg4_baseline_2_2_quarterpel() {
     println!("\n=== MPEG4 Part 2 Quarterpel 对比基线 (Test 2.2) ===");
     println!("样本: {}", sample_url);
 
-    match FfmpegComparer::new(sample_url, &output_dir) {
+    match FfmpegComparer::new(sample_url, &output_dir.to_string_lossy() as &str) {
         Ok(comparer) => match comparer.generate_reference_frames(MAX_COMPARE_FRAMES) {
             Ok(_) => {
                 println!("✓ FFmpeg 参考帧已生成");

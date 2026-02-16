@@ -809,6 +809,11 @@ pub(super) fn decode_mcbpc_p(reader: &mut BitReader) -> Option<(MbType, u8)> {
 /// 解码 CBPY
 /// `is_intra`: Intra 块直接返回, Inter 块取反 (15 - cbpy)
 pub(super) fn decode_cbpy(reader: &mut BitReader, is_intra: bool) -> Option<u8> {
+    // 为了诊断，记录所有匹配尝试
+    let pos_before = reader.byte_position();
+    let bits_remaining = reader.bits_left();
+
+    // 尝试从表中查找匹配
     for &(len, code, cbpy_val) in CBPY {
         if let Some(bits) = reader.peek_bits(len) {
             if bits as u16 == code {
@@ -817,14 +822,16 @@ pub(super) fn decode_cbpy(reader: &mut BitReader, is_intra: bool) -> Option<u8> 
             }
         }
     }
-    
+
+    // 诊断: 解码失败
+    let bits_10 = reader.peek_bits(10).unwrap_or(0);
+    let bits_16 = reader.peek_bits(16).unwrap_or(0);
+
     warn!(
-        "CBPY 解码失败: 字节位置 = {}, is_intra = {}, 前10位 = {:010b}",
-        reader.byte_position(),
-        is_intra,
-        reader.peek_bits(10).unwrap_or(0)
+        "CBPY 解码失败: 字节位置={}, is_intra={}, bits_left={}, 前10位={:010b}, 前16位={:016b}",
+        pos_before, is_intra, bits_remaining, bits_10, bits_16
     );
-    
+
     None
 }
 

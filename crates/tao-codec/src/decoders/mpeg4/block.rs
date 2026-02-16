@@ -50,13 +50,14 @@ pub(super) fn decode_intra_block_vlc(
     } else {
         0
     };
-    let (dc_pred_quant, direction) = decoder.get_intra_predictor(mb_x as usize, mb_y as usize, block_idx);
-    
+    let (dc_pred_quant, direction) =
+        decoder.get_intra_predictor(mb_x as usize, mb_y as usize, block_idx);
+
     // DC 预测在量化域进行，预测器直接存储量化后的值
     let actual_dc_quant = dc_pred_quant.wrapping_add(dc_diff);
     // 反量化：乘以 dc_scaler
     let actual_dc = actual_dc_quant as i32 * dc_scaler as i32;
-    
+
     block[0] = actual_dc;
 
     // 2. AC 系数
