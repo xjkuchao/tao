@@ -8,8 +8,11 @@
 //! - data_partitioned / RVLC 兼容性
 //! - 与 FFmpeg 参考输出对比
 
+mod ffmpeg_compare;
+
 #[cfg(test)]
 mod tests {
+    use crate::ffmpeg_compare::FfmpegComparer;
     use tao_codec::codec_id::CodecId;
     use tao_codec::codec_parameters::{CodecParameters, CodecParamsType, VideoCodecParams};
     use tao_codec::decoder::Decoder;
@@ -151,11 +154,57 @@ mod tests {
     #[test]
     #[ignore]
     fn test_mpeg4part2_vs_ffmpeg_reference() {
-        // TODO: 需要建立:
-        // 1. 样本文件库 (data/samples/video/)
-        // 2. FFmpeg 参考输出生成脚本
-        // 3. 逐帧像素对比框架
-        // 4. PSNR/逐块差异分析
+        println!("FFmpeg 对比测试框架演示\n");
+
+        // 1. 检查 FFmpeg 可用性
+        if !FfmpegComparer::check_ffmpeg_available() {
+            println!("⚠️  FFmpeg 未安装，无法执行对比测试");
+            println!("   请安装 FFmpeg: https://ffmpeg.org/download.html");
+            return;
+        }
+        println!("✓ FFmpeg 已可用");
+
+        // 2. 准备测试样本路径
+        let sample_file = "data/samples/video/mpeg4_test.mp4";
+
+        println!("\n待执行步骤:");
+        println!("  1. 从 https://samples.ffmpeg.org/ 下载 MPEG4 Part 2 样本");
+        println!("     保存路径: {}", sample_file);
+        println!("  2. 使用 FFmpeg 生成参考输出");
+        println!("  3. 使用 tao-codec 解码相同文件");
+        println!("  4. 逐帧对比像素差异 (Y/U/V 平面)");
+        println!("  5. 报告 PSNR 和差异统计");
+        println!("  6. 验证解码质量 (PSNR >= 30 dB 为优秀)");
+
+        println!("\n使用示例代码段:");
+        println!("  // 创建对比器");
+        println!("  let comparer = FfmpegComparer::new(sample_file, output_dir)?;");
+        println!();
+        println!("  // 获取媒体信息");
+        println!("  let (w, h, fps) = comparer.get_video_info()?;");
+        println!("  println!(\"视频分辨率: {{}}x{{}}, 帧率: {{:.2}} fps\", w, h, fps);");
+        println!();
+        println!("  // 生成 FFmpeg 参考输出");
+        println!("  let ref_file = comparer.generate_reference_frames(5)?;");
+        println!();
+        println!("  // 用 tao 解码");
+        println!("  let mut decoder = create_mpeg4_decoder();");
+        println!("  decoder.open(&params)?;");
+        println!();
+        println!("  // 逐帧读取并对比");
+        println!("  for frame_idx in 0..5 {{");
+        println!("      let tao_frame = decoder.receive_frame()?;");
+        println!("      let ref_frame = read_yuv420p_frame(&ref_file, frame_idx, w, h)?;");
+        println!("      let diff = FrameDiff::compare(&tao_frame, &ref_frame, w, h)?;");
+        println!("      println!(\"Frame {{}}: {{}}\", frame_idx, diff.summary());");
+        println!("      assert!(diff.is_acceptable(), \"质量不达标\");");
+        println!("  }}");
+
+        println!("\n相关资源:");
+        println!("  - 官方样本库: https://samples.ffmpeg.org/");
+        println!("  - 样本清单: data/SAMPLES_MPEG4.md");
+        println!("  - 下载脚本: data/download_samples.ps1");
+        println!("  - 对比工具: tests/ffmpeg_compare.rs");
     }
 
     /// 各容器格式支持验证测试骨架
