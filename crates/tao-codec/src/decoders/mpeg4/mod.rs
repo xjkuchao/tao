@@ -626,7 +626,22 @@ impl Mpeg4Decoder {
         };
 
         // 2. CBPY
-        let cbpy = decode_cbpy(reader, is_intra).unwrap_or(0);
+        // 如果CBPY解码失败，记录详细诊断信息
+        let cbpy = match decode_cbpy(reader, is_intra) {
+            Some(val) => val,
+            None => {
+                // CBPY 解码失败 - 这是一个严重问题，表明比特流可能不对齐
+                // 在这种情况下，使用0作为保守的fallback
+                debug!(
+                    "宏块CBPY解码失败: 字节位置={}, mb_type={:?}, cbpc={}, is_intra={}",
+                    reader.byte_position(),
+                    mb_type,
+                    cbpc,
+                    is_intra
+                );
+                0
+            }
+        };
 
         // 3. DQUANT
         if mb_type == MbType::IntraQ || mb_type == MbType::InterQ {
@@ -1536,7 +1551,20 @@ impl Mpeg4Decoder {
         };
 
         // 2. CBPY
-        let cbpy = decode_cbpy(reader, is_intra).unwrap_or(0);
+        let cbpy = match decode_cbpy(reader, is_intra) {
+            Some(val) => val,
+            None => {
+                // CBPY 解码失败 - 记录诊断信息
+                debug!(
+                    "分区宏块CBPY解码失败: 字节位置={}, mb_type={:?}, cbpc={}, is_intra={}",
+                    reader.byte_position(),
+                    mb_type,
+                    cbpc,
+                    is_intra
+                );
+                0
+            }
+        };
 
         // 3. DQUANT
         if mb_type == MbType::IntraQ || mb_type == MbType::InterQ {
