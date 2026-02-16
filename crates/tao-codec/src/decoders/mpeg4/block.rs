@@ -143,17 +143,14 @@ pub(super) fn decode_intra_block_vlc(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::bitreader::BitReader;
     use super::super::gmc::GmcParameters;
     use super::super::tables::{
-        ALTERNATE_HORIZONTAL_SCAN,
-        ALTERNATE_VERTICAL_SCAN,
-        STD_INTER_QUANT_MATRIX,
-        STD_INTRA_QUANT_MATRIX,
-        ZIGZAG_SCAN,
+        ALTERNATE_HORIZONTAL_SCAN, ALTERNATE_VERTICAL_SCAN, STD_INTER_QUANT_MATRIX,
+        STD_INTRA_QUANT_MATRIX, ZIGZAG_SCAN,
     };
     use super::super::types::{MacroblockInfo, MotionVector};
+    use super::*;
     use tao_core::PixelFormat;
 
     fn create_decoder_for_test() -> Mpeg4Decoder {
@@ -165,6 +162,7 @@ mod tests {
             reference_frame: None,
             backward_reference: None,
             pending_frame: None,
+            dpb: Vec::new(),
             frame_count: 0,
             quant: 1,
             vol_info: None,

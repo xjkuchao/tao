@@ -417,7 +417,12 @@ impl Mpeg4Decoder {
         };
         self.intra_dc_vlc_thr = intra_dc_vlc_thr;
 
-        let alternate_vertical_scan_flag = if self.vol_info.as_ref().map(|v| v.interlacing).unwrap_or(false) {
+        let alternate_vertical_scan_flag = if self
+            .vol_info
+            .as_ref()
+            .map(|v| v.interlacing)
+            .unwrap_or(false)
+        {
             let _top_field_first = reader.read_bit().unwrap_or(false);
             reader.read_bit().unwrap_or(false)
         } else {
@@ -473,9 +478,9 @@ impl Mpeg4Decoder {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::gmc::GmcParameters;
     use super::super::tables::{STD_INTER_QUANT_MATRIX, STD_INTRA_QUANT_MATRIX};
+    use super::*;
     use tao_core::PixelFormat;
 
     struct TestBitWriter {
@@ -535,6 +540,7 @@ mod tests {
             reference_frame: None,
             backward_reference: None,
             pending_frame: None,
+            dpb: Vec::new(),
             frame_count: 0,
             quant: 1,
             vol_info: None,
@@ -558,7 +564,12 @@ mod tests {
         }
     }
 
-    fn write_basic_vol_header(writer: &mut TestBitWriter, interlacing: bool, verid: u8, sprite_enable: u8) {
+    fn write_basic_vol_header(
+        writer: &mut TestBitWriter,
+        interlacing: bool,
+        verid: u8,
+        sprite_enable: u8,
+    ) {
         writer.push_bit(false);
         writer.push_bits(1, 8);
 
@@ -632,15 +643,27 @@ mod tests {
 
         let vol = decoder.vol_info.as_ref().expect("应生成 VOL 信息");
         assert_eq!(vol.video_object_layer_verid, 1, "verid 应为 1");
-        assert_eq!(vol.vop_time_increment_resolution, 1000, "time_res 应为 1000");
+        assert_eq!(
+            vol.vop_time_increment_resolution, 1000,
+            "time_res 应为 1000"
+        );
         assert_eq!(vol.quant_type, 0, "量化类型应为 H.263");
         assert!(!vol.interlacing, "应为非隔行");
         assert!(!vol.quarterpel, "应为非四分像素");
         assert_eq!(vol.sprite_enable, 0, "sprite_enable 应为 0");
         assert!(vol.resync_marker_disable, "应禁用 resync marker");
-        assert_eq!(vol.complexity_estimation_bits_i, 0, "复杂度估计 I 跳过位应为 0");
-        assert_eq!(vol.complexity_estimation_bits_p, 0, "复杂度估计 P 跳过位应为 0");
-        assert_eq!(vol.complexity_estimation_bits_b, 0, "复杂度估计 B 跳过位应为 0");
+        assert_eq!(
+            vol.complexity_estimation_bits_i, 0,
+            "复杂度估计 I 跳过位应为 0"
+        );
+        assert_eq!(
+            vol.complexity_estimation_bits_p, 0,
+            "复杂度估计 P 跳过位应为 0"
+        );
+        assert_eq!(
+            vol.complexity_estimation_bits_b, 0,
+            "复杂度估计 B 跳过位应为 0"
+        );
     }
 
     #[test]
@@ -691,9 +714,18 @@ mod tests {
         decoder.parse_vol_header(&data).expect("解析 VOL 头失败");
 
         let vol = decoder.vol_info.as_ref().expect("应生成 VOL 信息");
-        assert_eq!(vol.complexity_estimation_bits_i, 60, "复杂度估计 I 跳过位应为 60");
-        assert_eq!(vol.complexity_estimation_bits_p, 32, "复杂度估计 P 跳过位应为 32");
-        assert_eq!(vol.complexity_estimation_bits_b, 8, "复杂度估计 B 跳过位应为 8");
+        assert_eq!(
+            vol.complexity_estimation_bits_i, 60,
+            "复杂度估计 I 跳过位应为 60"
+        );
+        assert_eq!(
+            vol.complexity_estimation_bits_p, 32,
+            "复杂度估计 P 跳过位应为 32"
+        );
+        assert_eq!(
+            vol.complexity_estimation_bits_b, 8,
+            "复杂度估计 B 跳过位应为 8"
+        );
     }
 
     #[test]
@@ -724,7 +756,9 @@ mod tests {
 
         let vol_data = wrap_vol_start_code(writer.finish());
         let mut decoder = create_decoder_for_test();
-        decoder.parse_vol_header(&vol_data).expect("解析 VOL 头失败");
+        decoder
+            .parse_vol_header(&vol_data)
+            .expect("解析 VOL 头失败");
 
         let mut vop_writer = TestBitWriter::new();
         vop_writer.push_bits(3, 2);
@@ -738,11 +772,16 @@ mod tests {
 
         let vop_data = vop_writer.finish();
         let mut reader = BitReader::new(&vop_data);
-        let vop = decoder.parse_vop_header(&mut reader).expect("解析 VOP 头失败");
+        let vop = decoder
+            .parse_vop_header(&mut reader)
+            .expect("解析 VOP 头失败");
 
         assert_eq!(vop.picture_type, PictureType::S, "应识别为 S-VOP");
         assert!(vop.is_sprite, "S-VOP 应标记为 sprite");
         assert!(vop.vop_coded, "S-VOP 应为编码帧");
-        assert!(!vop.alternate_vertical_scan_flag, "非隔行时不应启用交错扫描");
+        assert!(
+            !vop.alternate_vertical_scan_flag,
+            "非隔行时不应启用交错扫描"
+        );
     }
 }

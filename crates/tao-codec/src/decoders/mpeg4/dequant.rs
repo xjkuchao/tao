@@ -83,10 +83,10 @@ impl Mpeg4Decoder {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::gmc::GmcParameters;
     use super::super::tables::{STD_INTER_QUANT_MATRIX, STD_INTRA_QUANT_MATRIX};
     use super::super::types::MacroblockInfo;
+    use super::*;
     use tao_core::PixelFormat;
 
     fn create_decoder_for_test() -> Mpeg4Decoder {
@@ -98,6 +98,7 @@ mod tests {
             reference_frame: None,
             backward_reference: None,
             pending_frame: None,
+            dpb: Vec::new(),
             frame_count: 0,
             quant: 1,
             vol_info: None,

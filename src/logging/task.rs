@@ -1,13 +1,13 @@
-use super::{build_current_log_path, LoggingConfig};
+use super::{LoggingConfig, build_current_log_path};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration as ChronoDuration, Local, NaiveDate, TimeZone, Utc};
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 use tracing::error;
 

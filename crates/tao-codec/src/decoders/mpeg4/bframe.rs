@@ -210,9 +210,17 @@ impl Mpeg4Decoder {
         let uv_width = width / 2;
         let uv_height = height / 2;
 
-        // Chroma MV: 使用 1MV 推导
-        let fwd_chroma = Self::chroma_mv_1mv(forward_mvs[0]);
-        let bwd_chroma = Self::chroma_mv_1mv(backward_mvs[0]);
+        // Chroma MV: Direct 模式使用 4MV 推导, 其他模式使用 1MV 推导
+        let fwd_chroma = if matches!(mode, BframeMbMode::Direct | BframeMbMode::DirectNoneMv) {
+            Self::chroma_mv_4mv(&forward_mvs)
+        } else {
+            Self::chroma_mv_1mv(forward_mvs[0])
+        };
+        let bwd_chroma = if matches!(mode, BframeMbMode::Direct | BframeMbMode::DirectNoneMv) {
+            Self::chroma_mv_4mv(&backward_mvs)
+        } else {
+            Self::chroma_mv_1mv(backward_mvs[0])
+        };
 
         for plane_idx in 0..2usize {
             let coded = cbp & (1 << (1 - plane_idx)) != 0;

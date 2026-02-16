@@ -104,6 +104,8 @@ pub struct Mpeg4Decoder {
     /// 较早的参考帧 (B 帧的前向参考)
     pub(super) backward_reference: Option<VideoFrame>,
     pending_frame: Option<VideoFrame>,
+    /// 解码图像缓冲区（用于 B 帧重排序）
+    dpb: Vec<VideoFrame>,
     frame_count: u64,
     pub(super) quant: u8,
     pub(super) vol_info: Option<VolInfo>,
@@ -146,6 +148,7 @@ impl Mpeg4Decoder {
             reference_frame: None,
             backward_reference: None,
             pending_frame: None,
+            dpb: Vec::new(),
             frame_count: 0,
             quant: 1,
             vol_info: None,
@@ -659,7 +662,12 @@ impl Mpeg4Decoder {
                         let val = if is_intra {
                             (residual + 128).clamp(0, 255) as u8
                         } else if let Some(ref_frame) = &self.reference_frame {
-                            let pred = Self::motion_compensation(
+                            let quarterpel = self
+                                .vol_info
+                                .as_ref()
+                                .map(|v| v.quarterpel)
+                                .unwrap_or(false);
+                            let pred = Self::motion_compensate(
                                 ref_frame,
                                 plane_idx + 1,
                                 px,
@@ -667,6 +675,7 @@ impl Mpeg4Decoder {
                                 chroma_mv.x,
                                 chroma_mv.y,
                                 self.rounding_control,
+                                quarterpel,
                             );
                             (pred as i32 + residual).clamp(0, 255) as u8
                         } else {
@@ -842,6 +851,7 @@ impl Decoder for Mpeg4Decoder {
         self.frame_count = 0;
         self.reference_frame = None;
         self.backward_reference = None;
+        self.dpb.clear();
 
         let mb_count = self.mb_stride * (video.height as usize).div_ceil(16);
         self.mv_cache = vec![[MotionVector::default(); 4]; mb_count];
@@ -1009,15 +1019,27 @@ impl Decoder for Mpeg4Decoder {
         frame.time_base = packet.time_base;
         frame.duration = packet.duration;
 
-        // I/P 帧: 更新参考帧和 MV 缓存
-        if frame.picture_type == PictureType::I || frame.picture_type == PictureType::P {
-            // 保存当前 MV 缓存和宏块信息到参考帧缓存 (B 帧 Direct 模式需要)
-            self.ref_mv_cache = self.mv_cache.clone();
-            self.backward_reference = self.reference_frame.take();
-            self.reference_frame = Some(frame.clone());
+        // B 帧重排序逻辑
+        if frame.picture_type == PictureType::B {
+            // B 帧存入 DPB，等待下一个 I/P/S 帧时输出
+            self.dpb.push(frame);
+        } else {
+            // I/P/S 帧：先输出 DPB 中的所有 B 帧，再输出当前帧
+            // 将当前 I/P/S 帧也加入 DPB
+            self.dpb.push(frame.clone());
+
+            // I/P/S 帧: 更新参考帧和 MV 缓存
+            if frame.picture_type == PictureType::I
+                || frame.picture_type == PictureType::P
+                || frame.picture_type == PictureType::S
+            {
+                // 保存当前 MV 缓存和宏块信息到参考帧缓存 (B 帧 Direct 模式需要)
+                self.ref_mv_cache = self.mv_cache.clone();
+                self.backward_reference = self.reference_frame.take();
+                self.reference_frame = Some(frame);
+            }
         }
 
-        self.pending_frame = Some(frame);
         self.frame_count += 1;
         Ok(())
     }
@@ -1026,6 +1048,14 @@ impl Decoder for Mpeg4Decoder {
         if !self.opened {
             return Err(TaoError::Codec("解码器未打开".into()));
         }
+
+        // 从 DPB 中取出帧（按 FIFO 顺序）
+        if !self.dpb.is_empty() {
+            let frame = self.dpb.remove(0);
+            return Ok(Frame::Video(frame));
+        }
+
+        // 如果还有 pending_frame，也返回（兼容旧逻辑）
         if let Some(frame) = self.pending_frame.take() {
             Ok(Frame::Video(frame))
         } else {
@@ -1034,7 +1064,9 @@ impl Decoder for Mpeg4Decoder {
     }
 
     fn flush(&mut self) {
-        debug!("MPEG4 解码器已刷新");
+        debug!("MPEG4 解码器已刷新，输出 DPB 中剩余 {} 帧", self.dpb.len());
+        // flush 时，DPB 中的帧会在 receive_frame 中逐个返回
+        // 不需要在这里清空
         self.pending_frame = None;
     }
 }
@@ -1069,6 +1101,7 @@ mod tests {
             reference_frame: None,
             backward_reference: None,
             pending_frame: None,
+            dpb: Vec::new(),
             frame_count: 0,
             quant: 1,
             vol_info: None,
