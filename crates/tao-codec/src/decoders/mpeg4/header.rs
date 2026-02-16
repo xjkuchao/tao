@@ -226,10 +226,17 @@ impl Mpeg4Decoder {
 
         if shape == 0 {
             reader.read_bit(); // marker
-            let _vol_w = reader.read_bits(13);
+            let vol_w = reader.read_bits(13).unwrap_or(0);
             reader.read_bit(); // marker
-            let _vol_h = reader.read_bits(13);
+            let vol_h = reader.read_bits(13).unwrap_or(0);
             reader.read_bit(); // marker
+
+            // 保存 VOL 宽度和高度到解码器
+            if vol_w > 0 && vol_h > 0 {
+                self.width = vol_w;
+                self.height = vol_h;
+                debug!("从 VOL 解析到尺寸: {}x{}", vol_w, vol_h);
+            }
         }
 
         let interlacing = reader.read_bit().unwrap_or(false);

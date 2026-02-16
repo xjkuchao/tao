@@ -6,7 +6,7 @@
 //!
 //! ## 支持的格式
 //!
-//! - **解封装 (Demuxer)**: WAV, FLAC, MP4, MKV, AVI, FLV, MPEG-TS, Ogg, AIFF, ADTS, MP3
+//! - **解封装 (Demuxer)**: WAV, FLAC, MP4, MKV, AVI, FLV, MPEG-TS, Ogg, AIFF, ADTS, MP3, M4V
 //! - **封装 (Muxer)**: WAV, FLAC, MP4, MKV, AVI, FLV, MPEG-TS, Ogg, AIFF, ADTS, MP3
 //!
 //! ## 使用示例

@@ -1,0 +1,21 @@
+{
+    "servers": {
+        "rust-analyzer-mcp": {
+            "type": "stdio",
+            "command": "rust-analyzer-mcp",
+            "args": []
+        },
+
+        "rust-mcp-server": {
+            "type": "stdio",
+            "command": "rust-mcp-server",
+            "args": []
+        },
+
+        "context7": {
+            "type": "stdio",
+            "command": "npx",
+            "args": ["-y", "@upstash/context7-mcp"]
+        }
+    }
+}

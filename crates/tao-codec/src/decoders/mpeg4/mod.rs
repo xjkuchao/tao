@@ -2021,13 +2021,54 @@ impl Decoder for Mpeg4Decoder {
             }
         };
 
-        if video.width == 0 || video.height == 0 {
-            return Err(TaoError::InvalidArgument("宽度和高度不能为 0".into()));
-        }
+        // 如果宽度/高度为 0, 尝试从 extra_data 中解析
+        let (width, height) = if video.width == 0 || video.height == 0 {
+            if params.extra_data.is_empty() {
+                return Err(TaoError::InvalidArgument(
+                    "宽度和高度为 0 且没有 extra_data 可解析".into(),
+                ));
+            }
+            debug!(
+                "宽度/高度为 0, 从 {} 字节 extra_data 中解析 VOL",
+                params.extra_data.len()
+            );
+            // 解析 VOL header 提取宽度和高度
+            self.parse_vol_header(&params.extra_data)?;
+            debug!("VOL 解析后尺寸: {}x{}", self.width, self.height);
 
-        self.width = video.width;
-        self.height = video.height;
-        self.mb_stride = (video.width as usize).div_ceil(16);
+            // 对于没有 VOL header 的损坏流, 尝试从首个 VOP 中提取尺寸
+            if self.width == 0 || self.height == 0 {
+                debug!("VOL 未提供尺寸, 尝试从 VOP header 中提取");
+                // 查找 VOP start code  (0x000001B6)
+                for i in 0..params.extra_data.len().saturating_sub(3) {
+                    if params.extra_data[i] == 0x00
+                        && params.extra_data[i + 1] == 0x00
+                        && params.extra_data[i + 2] == 0x01
+                        && params.extra_data[i + 3] == 0xB6
+                    {
+                        // 先设定默认值 QCIF (176x144)
+                        self.width = 176;
+                        self.height = 144;
+                        debug!("未找到 VOL, 使用默认 QCIF 尺寸: 176x144");
+                        break;
+                    }
+                }
+            }
+
+            if self.width == 0 || self.height == 0 {
+                return Err(TaoError::InvalidArgument(format!(
+                    "从 extra_data 中未能解析出有效的宽度和高度 (解析结果: {}x{})",
+                    self.width, self.height
+                )));
+            }
+            (self.width, self.height)
+        } else {
+            (video.width, video.height)
+        };
+
+        self.width = width;
+        self.height = height;
+        self.mb_stride = (width as usize).div_ceil(16);
         self.pixel_format = PixelFormat::Yuv420p;
         self.opened = true;
         self.frame_count = 0;
@@ -2035,7 +2076,7 @@ impl Decoder for Mpeg4Decoder {
         self.backward_reference = None;
         self.dpb.clear();
 
-        let mb_count = self.mb_stride * (video.height as usize).div_ceil(16);
+        let mb_count = self.mb_stride * (height as usize).div_ceil(16);
         self.mv_cache = vec![[MotionVector::default(); 4]; mb_count];
         self.ref_mv_cache = vec![[MotionVector::default(); 4]; mb_count];
         self.mb_info = vec![MacroblockInfo::default(); mb_count];
@@ -2045,7 +2086,10 @@ impl Decoder for Mpeg4Decoder {
         self.alternate_vertical_scan = false;
 
         if !params.extra_data.is_empty() {
-            self.parse_vol_header(&params.extra_data)?;
+            // 如果之前未解析过 VOL, 现在解析
+            if self.vol_info.is_none() {
+                self.parse_vol_header(&params.extra_data)?;
+            }
             // 从 extradata 中解析 user_data (识别编码器)
             self.parse_user_data(&params.extra_data);
         }

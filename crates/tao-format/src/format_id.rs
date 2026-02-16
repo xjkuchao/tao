@@ -63,6 +63,12 @@ pub enum FormatId {
     RawVideo,
     /// Raw 音频 (PCM)
     RawAudio,
+
+    // ========================
+    // Elementary Stream 格式
+    // ========================
+    /// MPEG-4 Part 2 Elementary Stream (M4V)
+    Mpeg4Es,
 }
 
 impl FormatId {
@@ -88,6 +94,7 @@ impl FormatId {
             Self::ImageSequence => "image2",
             Self::RawVideo => "rawvideo",
             Self::RawAudio => "rawaudio",
+            Self::Mpeg4Es => "m4v",
         }
     }
 
@@ -113,6 +120,7 @@ impl FormatId {
             Self::ImageSequence => &["png", "jpg", "jpeg", "bmp"],
             Self::RawVideo => &["yuv", "rgb"],
             Self::RawAudio => &["pcm", "raw"],
+            Self::Mpeg4Es => &["m4v"],
         }
     }
 }
@@ -139,6 +147,7 @@ impl FormatId {
         Self::ImageSequence,
         Self::RawVideo,
         Self::RawAudio,
+        Self::Mpeg4Es,
     ];
 
     /// 根据文件扩展名猜测格式
