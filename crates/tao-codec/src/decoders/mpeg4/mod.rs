@@ -293,7 +293,7 @@ impl Mpeg4Decoder {
             self.get_neighbor_block_idx(x, y, idx)
                 .and_then(|pos| self.predictor_cache.get(pos))
                 .map(|b| b[0])
-                .unwrap_or(128)  // 边界处使用 128（中性灰度），而不是 1024
+                .unwrap_or(128) // 边界处使用 128 (量化域的默认值)
         };
 
         let (dc_a, dc_b, dc_c) = match block_idx {
@@ -1900,7 +1900,9 @@ impl Mpeg4Decoder {
     fn init_frame_decode(&mut self) {
         let mb_count = self.mb_stride * (self.height as usize).div_ceil(16);
         let total_blocks = mb_count * 6;
-        self.predictor_cache = vec![[1024, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; total_blocks];
+        // 初始 DC 预测值: 2^(n-1) = 2^7 = 128 (对于 8 位精度的量化域 DC)
+        // 根据 ITU-T H.263 和 ISO/IEC 14496-2，边界 DC 预测器 = 128
+        self.predictor_cache = vec![[128, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; total_blocks];
 
         // 确保 MV 缓存和宏块信息大小正确
         if self.mv_cache.len() != mb_count {

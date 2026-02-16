@@ -50,10 +50,14 @@ pub(super) fn decode_intra_block_vlc(
     } else {
         0
     };
-    let (dc_pred, direction) = decoder.get_intra_predictor(mb_x as usize, mb_y as usize, block_idx);
-    let actual_dc = dc_pred.wrapping_add(dc_diff);
-    // DC 系数直接使用 actual_dc，不乘以 dc_scaler；dc_scaler 仅用于预测器初始化
-    block[0] = actual_dc as i32;
+    let (dc_pred_quant, direction) = decoder.get_intra_predictor(mb_x as usize, mb_y as usize, block_idx);
+    
+    // DC 预测在量化域进行，预测器直接存储量化后的值
+    let actual_dc_quant = dc_pred_quant.wrapping_add(dc_diff);
+    // 反量化：乘以 dc_scaler
+    let actual_dc = actual_dc_quant as i32 * dc_scaler as i32;
+    
+    block[0] = actual_dc;
 
     // 2. AC 系数
     let ac_scan = select_ac_pred_scan(ac_pred_flag, direction, scan);
@@ -128,9 +132,10 @@ pub(super) fn decode_intra_block_vlc(
     }
 
     // 4. 更新预测器缓存
+    // 注意: 缓存存储量化域的 DC 值 (actual_dc_quant)
     let cache_pos = (mb_y as usize * decoder.mb_stride + mb_x as usize) * 6 + block_idx;
     if let Some(cache) = decoder.predictor_cache.get_mut(cache_pos) {
-        cache[0] = actual_dc;
+        cache[0] = actual_dc_quant;
         for i in 1..8 {
             cache[i] = block[ac_scan[i]] as i16;
         }
