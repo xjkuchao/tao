@@ -1172,7 +1172,7 @@ impl Mpeg4Decoder {
                         let idx = py as usize * width + px as usize;
                         let residual = block[y * 8 + x];
                         let val = if is_intra {
-                            (residual + 128).clamp(0, 255) as u8
+                            residual.clamp(0, 255) as u8
                         } else if let Some(ref_frame) = &self.reference_frame {
                             let pred = if field_pred {
                                 let field_select = Self::select_field_for_block(
@@ -1280,7 +1280,7 @@ impl Mpeg4Decoder {
                     let idx = py * uv_width + px;
                     let residual = block[y * 8 + x];
                     let val = if is_intra {
-                        (residual + 128).clamp(0, 255) as u8
+                        residual.clamp(0, 255) as u8
                     } else if let Some(ref_frame) = &self.reference_frame {
                         let pred = if field_pred {
                             let field_select = Self::select_field_for_chroma_line(
@@ -1709,7 +1709,7 @@ impl Mpeg4Decoder {
                         let idx = py as usize * width + px as usize;
                         let residual = block[y * 8 + x];
                         let val = if is_intra {
-                            (residual + 128).clamp(0, 255) as u8
+                            residual.clamp(0, 255) as u8
                         } else if let Some(ref_frame) = &self.reference_frame {
                             let pred = if field_pred {
                                 let field_select = Self::select_field_for_block(
@@ -1829,7 +1829,7 @@ impl Mpeg4Decoder {
                         let idx = py as usize * uv_width + px as usize;
                         let residual = block[v * 8 + u];
                         let val = if is_intra {
-                            (residual + 128).clamp(0, 255) as u8
+                            residual.clamp(0, 255) as u8
                         } else if let Some(ref_frame) = &self.reference_frame {
                             let pred = if field_pred {
                                 let field_select = Self::select_field_for_chroma_line(
