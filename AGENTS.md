@@ -306,6 +306,8 @@ tao-ffi crate 编译为 cdylib + staticlib:
 
 ## 17. 测试文件和临时文件管理
 
+> **完整规范**: 参见 [data/README.md](data/README.md) 了解详细的文件管理规则和使用示例
+
 ### 17.1 目录结构
 
 - **`data/`**: 所有测试用文件和数据的根目录
@@ -340,7 +342,8 @@ tao-ffi crate 编译为 cdylib + staticlib:
     - **完整 URL 格式**: `https://samples.ffmpeg.org/<category>/<filename>`, 如 `https://samples.ffmpeg.org/video/h264/bookmarks_8mb.h264`
 - **版本管理**:
     - 不建议频繁下载整个样本库, 应按需选择特定样本
-    - 下载后的文件应提交到 Git(< 1MB) 或 Git LFS(> 1MB), 以便 CI/CD 一致性
+    - 所有下载的样本文件都提交到 Git, 以确保测试可复现性和 CI/CD 一致性
+    - 样本下载和管理参见 `data/SAMPLES.md` 和 `data/download_samples.ps1`
 
 ### 17.4 临时文件管理
 
@@ -351,8 +354,8 @@ tao-ffi crate 编译为 cdylib + staticlib:
 
 ### 17.5 Git 管理
 
-- **`data/samples/`**: 小文件 (< 1MB) 可提交到 Git, 大文件使用 Git LFS
-- **`data/test/`**: 测试数据文件可提交到 Git
+- **`data/samples/`**: 所有样本文件都提交到 Git (包括大文件)
+- **`data/test/`**: 所有测试数据文件提交到 Git
 - **`data/tmp/`**: 永不提交到 Git, 必须在 `.gitignore` 中排除
 
 ### 17.6 代码规范
