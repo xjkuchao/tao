@@ -459,11 +459,11 @@ git commit -m "test: 添加 VP9 解码器测试用例"
 
 ### 13.3 测试用例编写标准
 
-- **文件位置**: 集成测试放在 `tests/` 目录, 命名为 `{feature}_pipeline.rs`
+- **文件位置**: 所有测试放在 `tests/` 目录, 命名为 `{feature}_pipeline.rs`
 - **测试命名**: 使用 `test_{component}_{scenario}` 格式, 如 `test_h264_decode_basic`, `test_mp4_demux_seek`
 - **断言清晰**: 每个 `assert!` 都应包含失败消息, 说明预期行为
 - **注释完整**: 复杂测试逻辑添加注释说明测试目的和步骤
-- **样本路径**: 使用相对路径 `data/samples/...` 或 `data/test/...`
+- **样本地址**: 使用 `SAMPLE_URLS.md` 中的 HTTPS URL, 或 `data/tmp/` 中的临时文件
 - **资源清理**: 临时文件必须在 `data/tmp/` 目录, 测试结束后清理
 
 ### 13.4 测试覆盖范围
@@ -537,15 +537,15 @@ git commit -m "test: 添加 VP9 解码器测试用例"
 ### 16.3 流式播放测试
 
 - `tao-play` 支持 http/https/rtmp 等流式 URL 播放.
-- 测试在线音视频文件时, **必须使用 URL 直接流式播放**, 不要先下载到本地再播放.
-- 仅当需要反复使用同一文件 (如单元测试/集成测试数据) 时, 才下载到 `data/samples/` 目录.
+- **所有测试文件均使用 URL 直接流式播放**, 不下载到本地.
+- 所有样本 URL 维护在 `data/SAMPLE_URLS.md` 中.
 - 示例:
     ```powershell
-    # 正确: 直接流式播放
+    # 正确: 直接使用 URL 进行流式播放
     cargo run --package tao-play -- "https://samples.ffmpeg.org/flac/Yesterday.flac"
-    # 错误: 先下载再播放
-    curl -o data/samples/audio/test.flac "https://samples.ffmpeg.org/flac/Yesterday.flac"
-    cargo run --package tao-play -- "data/samples/audio/test.flac"
+    
+    # 查看更多样本 URL
+    # 请参考 data/SAMPLE_URLS.md
     ```
 
 ## 17. 测试文件和临时文件管理
@@ -554,26 +554,29 @@ git commit -m "test: 添加 VP9 解码器测试用例"
 
 ### 17.1 目录结构
 
-- **`data/`**: 所有测试用文件和数据的根目录
-    - **`data/samples/`**: 测试样本文件 (如测试视频、音频文件)
-    - **`data/test/`**: 单元测试和集成测试所需的数据文件
-    - **`data/tmp/`**: 临时文件目录
+- **`tests/`**: 项目根目录下, 包含所有测试相关代码
+    - **单元测试**: 在源文件中使用 `#[cfg(test)]` 模块
+    - **集成测试**: `tests/` 下的 `{feature}_pipeline.rs` 文件
+    - **基准测试**: `benches/` 下的 `*.rs` 文件
+- **`data/`**: 测试数据和样本 URL 清单
+    - **`data/SAMPLE_URLS.md`**: 测试样本 URL 清单 (所有样本使用 URL 访问)
+    - **`data/tmp/`**: 临时文件目录 (不提交到 Git)
 
 ### 17.2 文件放置规则
 
-- **测试样本文件**: 必须放在 `data/samples/` 目录下
-    - 按格式分类: `data/samples/video/`, `data/samples/audio/`, `data/samples/container/`
-    - 文件命名使用描述性名称, 如 `h264_test.mp4`, `theora_sample.ogg`
-- **测试数据文件**: 必须放在 `data/test/` 目录下
-    - 单元测试数据: `data/test/unit/`
-    - 集成测试数据: `data/test/integration/`
-    - 基准测试数据: `data/test/bench/`
+- **测试代码文件**: 全部放在 `tests/` 目录下
+    - 集成测试: `tests/{feature}_pipeline.rs`
+    - 单元测试: 在 `crates/` 各 crate 的源文件中使用 `#[cfg(test)]` 模块
+    - 测试命名: `test_{component}_{scenario}` 格式
+- **测试样本**: 使用 `data/SAMPLE_URLS.md` 中的 HTTPS URL
+    - 所有样本来源: https://samples.ffmpeg.org/
+    - 所有样本使用 URL 标识, 无需本地下载
 - **临时文件**: 必须放在 `data/tmp/` 目录下
     - 运行时生成的临时文件
-    - 下载的测试文件
     - 编解码过程中的中间文件
+    - 永不提交到 Git
 
-### 17.3 官方样本库规范
+### 17.3 测试样本 URL 规范
 
 - **样本源**: 优先使用 https://samples.ffmpeg.org/ 提供的公开测试样本
 - **样本类别**: 该库包含多种格式的样本:
@@ -596,54 +599,49 @@ git commit -m "test: 添加 VP9 解码器测试用例"
 - **清理**: 测试结束后必须清理临时文件
 - **命名**: 临时文件使用前缀 `tmp_` 或进程 ID 命名
 - **权限**: 确保临时文件有适当的读写权限
+- **Git**: 永不提交到版本控制
 
 ### 17.5 Git 管理
 
-- **`data/SAMPLE_URLS.md`**: 样本 URL 清单, 提交到 Git
+- **`data/SAMPLE_URLS.md`**: 测试样本 URL 清单, 提交到 Git
+- **`data/tmp/`**: 临时文件目录, 添加到 `.gitignore`, 永不提交
+- **`tests/`**: 所有测试代码, 提交到 Git
 
 ### 17.6 代码规范
 
-- **路径使用**: 在代码中使用相对于项目根目录的路径
-- **环境变量**: 可使用环境变量 `TAO_DATA_DIR` 指定数据目录
-- **错误处理**: 文件不存在时提供清晰的错误信息
+- **测试文件位置**: 所有测试代码放在根目录 `tests/` 中
+- **样本 URL**: 从 `data/SAMPLE_URLS.md` 复制合适的 HTTPS URL
+- **临时文件路径**: 使用相对于项目根目录的路径 `data/tmp/...`
+- **错误处理**: 文件或 URL 不可访问时提供清晰的错误信息
 - **跨平台**: 确保路径处理在 Windows/Linux/macOS 上兼容
 
-### 17.7 示例
+### 17.7 新增测试样本
 
-```rust
-// 正确的测试文件路径
-const SAMPLES_DIR: &str = "data/samples/";
-const TEST_FILE: &str = "data/samples/video/theora_test.ogg";
+当需要新的测试样本时:
 
-// 临时文件创建
-use std::path::PathBuf;
-let temp_dir = PathBuf::from("data/tmp");
-std::fs::create_dir_all(&temp_dir)?;
-let temp_file = temp_dir.join(format!("tmp_test_{}.bin", std::process::id()));
-```
+1. **查找样本**: 访问 https://samples.ffmpeg.org/ 浏览或搜索合适样本
+2. **验证样本**: 使用 `ffprobe <URL>` 验证样本信息
+3. **添加 URL**: 在 `data/SAMPLE_URLS.md` 对应章节添加 URL 和说明
+4. **更新规范**: 参考 [data/README.md](data/README.md) 中的流程
+5. **提交更改**: git add data/SAMPLE_URLS.md && git commit -m "docs: 添加 XXX 样本 URL"
 
-### 17.8 持续维护和扩展
+### 17.8 持续维护
 
-随着项目推进, 需要持续更新测试样本以支持新功能:
+随着项目推进, 需要持续维护测试样本和规范:
 
 - **新增编解码器**:
-    - 在 `data/SAMPLES.md` 中添加样本计划
-    - 更新 `data/download_samples.ps1` 添加下载 URL
-    - 执行脚本下载样本, 更新 `data/samples/INVENTORY.md`
-    - 提交所有更改到 Git
+    - 在 `data/SAMPLE_URLS.md` 中添加样本 URL
+    - 在 `tests/{codec}_pipeline.rs` 中编写测试
+    - 参考 §13.2 测试用例开发流程
 - **新增滤镜**:
-    - 在 `data/samples/filter/` 下按类型分类存放
-    - 复用已有样本或下载特定测试样本
-- **边界测试**:
-    - 放在 `data/test/unit/`, 包含损坏文件、空文件、极限参数等
+    - 在 `data/SAMPLE_URLS.md` 中添加样本 URL
+    - 在 `tests/filter_*.rs` 中编写测试
 - **性能测试**:
-    - 放在 `data/test/bench/`, 使用不同大小和复杂度的样本
-- **回归测试**:
-    - 放在 `data/test/integration/`, 记录已知问题的样本
+    - 在 `benches/` 中编写基准测试
+    - 在 `data/SAMPLE_URLS.md` 中记录大文件样本 URL
 - **维护检查**:
-    - 新增编解码器时同步更新样本文档
     - 定期检查 FFmpeg 官方样本库更新 (每季度)
-    - 清理不再使用的样本文件
-    - 保持文档、脚本、清单同步
+    - 验证 `data/SAMPLE_URLS.md` 中的 URL 是否有效
+    - 更新过期或失效的 URL
 
-详见 `data/README.md` 和 `data/SAMPLES.md` 了解完整的扩展和维护流程。
+详见 [data/README.md](data/README.md) 了解更多资源管理规范。

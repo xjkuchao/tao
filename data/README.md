@@ -1,20 +1,25 @@
 # Tao 数据目录
 
-本目录包含 Tao 项目的测试数据文件和临时文件。
+本目录包含 Tao 项目的测试样本 URL 清单和临时文件。
+
+> **重要**: 所有测试代码放在项目根目录的 `tests/` 目录下；所有样本使用 URL 方式维护。
 
 ## 目录结构
 
 ```
 data/
-├── SAMPLE_URLS.md    # 测试样本 URL 清单
-├── test/             # 测试数据文件
-│   ├── unit/         # 单元测试数据
-│   ├── integration/  # 集成测试数据
-│   └── bench/        # 基准测试数据
-└── tmp/              # 临时文件目录 (不提交到 Git)
+├── README.md              # 本文件
+├── SAMPLE_URLS.md         # 测试样本 URL 清单 (提交到 Git)
+└── tmp/                   # 临时文件目录 (不提交到 Git)
 ```
 
 ## 文件管理规则
+
+### 测试代码位置
+
+- **单元测试**: 在 `crates/` 各 crate 的源文件中使用 `#[cfg(test)]` 模块
+- **集成测试**: `tests/` 目录下的 `{feature}_pipeline.rs` 文件
+- **基准测试**: `benches/` 目录下的 `*.rs` 文件
 
 ### 样本文件 (SAMPLE_URLS.md)
 
@@ -22,12 +27,6 @@ data/
 - 样本来源: https://samples.ffmpeg.org/ (FFmpeg 官方测试样本库)
 - 样本清单: `SAMPLE_URLS.md` 记录所有测试样本的 URL 和用途
 - 测试用例直接使用 URL 创建 Demuxer/Decoder，无需下载文件
-
-### 测试数据 (test/)
-
-- 单元测试和集成测试所需的数据文件
-- 所有测试数据提交到 Git 版本控制
-- 按测试类型分类存放
 
 ### 临时文件 (tmp/)
 
