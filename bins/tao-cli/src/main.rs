@@ -550,7 +550,7 @@ fn transcode_to_raw_yuv(input_path: &str, output_path: &str, cli: &Cli) -> Resul
     decoder.open(&dec_params)?;
 
     // 打开输出文件
-    let mut output_file = File::create(output_path).map_err(|e| TaoError::Io(e))?;
+    let mut output_file = File::create(output_path).map_err(TaoError::Io)?;
 
     // 解析 -ss/-t 参数
     let start_time_sec = cli.ss.unwrap_or(0.0);
@@ -609,7 +609,7 @@ fn transcode_to_raw_yuv(input_path: &str, output_path: &str, cli: &Cli) -> Resul
                             // 确保是视频帧并转换为 YUV420p
                             if let Frame::Video(vf) = &frame {
                                 let yuv_frame =
-                                    ensure_yuv420p(&vf, video_params.width, video_params.height)?;
+                                    ensure_yuv420p(vf, video_params.width, video_params.height)?;
 
                                 // 写入 YUV 数据
                                 write_yuv420p_frame(&mut output_file, &yuv_frame)?;
@@ -648,7 +648,7 @@ fn transcode_to_raw_yuv(input_path: &str, output_path: &str, cli: &Cli) -> Resul
         match decoder.receive_frame() {
             Ok(frame) => {
                 if let Frame::Video(vf) = &frame {
-                    let yuv_frame = ensure_yuv420p(&vf, video_params.width, video_params.height)?;
+                    let yuv_frame = ensure_yuv420p(vf, video_params.width, video_params.height)?;
                     write_yuv420p_frame(&mut output_file, &yuv_frame)?;
                     frame_count += 1;
                     byte_count += yuv_frame_size(yuv_frame.width, yuv_frame.height);
@@ -737,7 +737,7 @@ fn write_yuv420p_frame(file: &mut std::fs::File, frame: &VideoFrame) -> Result<(
 
     // 写入所有平面 (Y, U, V)
     for plane_data in &frame.data {
-        file.write_all(plane_data).map_err(|e| TaoError::Io(e))?;
+        file.write_all(plane_data).map_err(TaoError::Io)?;
     }
 
     Ok(())

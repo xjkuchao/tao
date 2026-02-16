@@ -19,6 +19,13 @@ use tao_format::stream::{Stream, StreamParams};
 use crate::audio::{AudioChunk, AudioOutput};
 use crate::clock::MediaClock;
 
+/// 播放准备结果: (视频尺寸, IO 上下文, 解封装器)
+type PrepareResult = (
+    Option<(u32, u32)>,
+    IoContext,
+    Box<dyn tao_format::demuxer::Demuxer>,
+);
+
 /// 视频帧数据
 #[derive(Clone)]
 pub struct VideoFrame {
@@ -81,16 +88,7 @@ impl Player {
 
     /// 准备播放并获取视频尺寸（一次性打开文件）
     /// 返回 (video_size, io, demuxer) 供后续使用
-    pub fn prepare_and_get_size(
-        &self,
-    ) -> Result<
-        (
-            Option<(u32, u32)>,
-            IoContext,
-            Box<dyn tao_format::demuxer::Demuxer>,
-        ),
-        String,
-    > {
+    pub fn prepare_and_get_size(&self) -> Result<PrepareResult, String> {
         info!("正在打开: {}", self.config.input_path);
 
         // 打开 I/O

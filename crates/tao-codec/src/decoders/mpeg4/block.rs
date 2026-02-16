@@ -148,6 +148,33 @@ pub(super) fn decode_intra_block_vlc(
     Some(block)
 }
 
+/// 解码 Inter 块的 DCT 系数
+pub(super) fn decode_inter_block_vlc(
+    reader: &mut BitReader,
+    scan: &[usize; 64],
+) -> Option<[i32; 64]> {
+    let mut block = [0i32; 64];
+    let mut pos = 0;
+    while pos < 64 {
+        match decode_ac_vlc(reader, INTER_AC_VLC, false) {
+            Ok(None) => break,
+            Ok(Some((last, run, level))) => {
+                pos += run as usize;
+                if pos >= 64 {
+                    break;
+                }
+                block[scan[pos]] = level as i32;
+                pos += 1;
+                if last {
+                    break;
+                }
+            }
+            Err(_) => return None,
+        }
+    }
+    Some(block)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::bitreader::BitReader;
@@ -240,9 +267,8 @@ mod tests {
         )
         .expect("应能解码 Intra 块");
 
-        for i in 1..8 {
-            let idx = ALTERNATE_HORIZONTAL_SCAN[i];
-            assert_eq!(block[idx], COEFF_MAX, "垂直预测应使用交替水平扫描");
+        for &scan_idx in &ALTERNATE_HORIZONTAL_SCAN[1..8] {
+            assert_eq!(block[scan_idx], COEFF_MAX, "垂直预测应使用交替水平扫描");
         }
     }
 
@@ -300,36 +326,8 @@ mod tests {
         )
         .expect("应能解码 Intra 块");
 
-        for i in 1..8 {
-            let idx = ALTERNATE_HORIZONTAL_SCAN[i];
-            assert_eq!(block[idx], COEFF_MIN, "AC 预测结果应裁剪到范围内");
+        for &scan_idx in &ALTERNATE_HORIZONTAL_SCAN[1..8] {
+            assert_eq!(block[scan_idx], COEFF_MIN, "AC 预测结果应裁剪到范围内");
         }
     }
-}
-
-/// 解码 Inter 块的 DCT 系数
-pub(super) fn decode_inter_block_vlc(
-    reader: &mut BitReader,
-    scan: &[usize; 64],
-) -> Option<[i32; 64]> {
-    let mut block = [0i32; 64];
-    let mut pos = 0;
-    while pos < 64 {
-        match decode_ac_vlc(reader, INTER_AC_VLC, false) {
-            Ok(None) => break,
-            Ok(Some((last, run, level))) => {
-                pos += run as usize;
-                if pos >= 64 {
-                    break;
-                }
-                block[scan[pos]] = level as i32;
-                pos += 1;
-                if last {
-                    break;
-                }
-            }
-            Err(_) => return None,
-        }
-    }
-    Some(block)
 }

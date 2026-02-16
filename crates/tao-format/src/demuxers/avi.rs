@@ -804,59 +804,74 @@ mod tests {
     fn make_minimal_avi() -> Vec<u8> {
         let mut buf = Vec::new();
 
+        // strh 标准结构 = 56 字节, strf 数据 = 40 字节
+        // strh chunk = 8 + 56 = 64, strf chunk = 8 + 40 = 48
+        // strl_size = 4("strl") + 64 + 48 = 116
+        // strl_list_total = 8 + 116 = 124
+        // avih chunk = 8 + 56 = 64
+        // hdrl_size = 4("hdrl") + 64 + 124 = 192
+        // hdrl_list_total = 8 + 192 = 200
+        // movi_list_total = 8 + (4 + 108) = 120
+        // file_size = 4("AVI ") + 200 + 120 = 324
+
         buf.extend_from_slice(b"RIFF");
-        let file_size = 4 + 192 + 120;
-        buf.extend_from_slice(&(file_size as u32).to_le_bytes());
+        let file_size: u32 = 4 + 200 + 120;
+        buf.extend_from_slice(&file_size.to_le_bytes());
         buf.extend_from_slice(b"AVI ");
 
-        let hdrl_size = 4 + 64 + 116;
+        let hdrl_size: u32 = 4 + 64 + 124;
         buf.extend_from_slice(b"LIST");
-        buf.extend_from_slice(&(hdrl_size as u32).to_le_bytes());
+        buf.extend_from_slice(&hdrl_size.to_le_bytes());
         buf.extend_from_slice(b"hdrl");
 
+        // avih 块 (56 字节数据)
         buf.extend_from_slice(b"avih");
         buf.extend_from_slice(&56u32.to_le_bytes());
-        buf.extend_from_slice(&33367u32.to_le_bytes());
-        buf.extend_from_slice(&0u32.to_le_bytes());
-        buf.extend_from_slice(&0u32.to_le_bytes());
-        buf.extend_from_slice(&0u32.to_le_bytes());
-        buf.extend_from_slice(&0u32.to_le_bytes());
-        buf.extend_from_slice(&0u32.to_le_bytes());
-        buf.extend_from_slice(&1u32.to_le_bytes());
-        buf.extend_from_slice(&[0u8; 32]);
+        buf.extend_from_slice(&33367u32.to_le_bytes()); // dwMicroSecPerFrame
+        buf.extend_from_slice(&0u32.to_le_bytes()); // dwMaxBytesPerSec
+        buf.extend_from_slice(&0u32.to_le_bytes()); // dwPaddingGranularity
+        buf.extend_from_slice(&0u32.to_le_bytes()); // dwFlags
+        buf.extend_from_slice(&0u32.to_le_bytes()); // dwTotalFrames
+        buf.extend_from_slice(&0u32.to_le_bytes()); // dwInitialFrames
+        buf.extend_from_slice(&1u32.to_le_bytes()); // dwStreams
+        buf.extend_from_slice(&[0u8; 28]); // dwSuggestedBufferSize + dwWidth + dwHeight + reserved[4]
 
-        let strl_size = 4 + 56 + 48;
+        // strl LIST
+        let strl_size: u32 = 4 + 64 + 48;
         buf.extend_from_slice(b"LIST");
-        buf.extend_from_slice(&(strl_size as u32).to_le_bytes());
+        buf.extend_from_slice(&strl_size.to_le_bytes());
         buf.extend_from_slice(b"strl");
 
+        // strh 块 (56 字节数据 = 标准大小)
         buf.extend_from_slice(b"strh");
-        buf.extend_from_slice(&48u32.to_le_bytes());
-        buf.extend_from_slice(b"vids");
-        buf.extend_from_slice(b"H264");
-        buf.extend_from_slice(&0u32.to_le_bytes());
-        buf.extend_from_slice(&0u16.to_le_bytes());
-        buf.extend_from_slice(&0u16.to_le_bytes());
-        buf.extend_from_slice(&0u32.to_le_bytes());
-        buf.extend_from_slice(&1u32.to_le_bytes());
-        buf.extend_from_slice(&25u32.to_le_bytes());
-        buf.extend_from_slice(&0u32.to_le_bytes());
-        buf.extend_from_slice(&100u32.to_le_bytes());
-        buf.extend_from_slice(&[0u8; 16]);
+        buf.extend_from_slice(&56u32.to_le_bytes());
+        buf.extend_from_slice(b"vids"); // fccType
+        buf.extend_from_slice(b"H264"); // fccHandler
+        buf.extend_from_slice(&0u32.to_le_bytes()); // dwFlags
+        buf.extend_from_slice(&0u16.to_le_bytes()); // wPriority
+        buf.extend_from_slice(&0u16.to_le_bytes()); // wLanguage
+        buf.extend_from_slice(&0u32.to_le_bytes()); // dwInitialFrames
+        buf.extend_from_slice(&1u32.to_le_bytes()); // dwScale
+        buf.extend_from_slice(&25u32.to_le_bytes()); // dwRate
+        buf.extend_from_slice(&0u32.to_le_bytes()); // dwStart
+        buf.extend_from_slice(&100u32.to_le_bytes()); // dwLength
+        buf.extend_from_slice(&[0u8; 20]); // dwSuggestedBufferSize + dwQuality + dwSampleSize + rcFrame
 
+        // strf 块 (40 字节数据 = BITMAPINFOHEADER)
         buf.extend_from_slice(b"strf");
         buf.extend_from_slice(&40u32.to_le_bytes());
-        buf.extend_from_slice(&40u32.to_le_bytes());
-        buf.extend_from_slice(&320u32.to_le_bytes());
-        buf.extend_from_slice(&240u32.to_le_bytes());
-        buf.extend_from_slice(&1u16.to_le_bytes());
-        buf.extend_from_slice(&24u16.to_le_bytes());
-        buf.extend_from_slice(&0x34363248u32.to_le_bytes());
-        buf.extend_from_slice(&[0u8; 20]);
+        buf.extend_from_slice(&40u32.to_le_bytes()); // biSize
+        buf.extend_from_slice(&320u32.to_le_bytes()); // biWidth
+        buf.extend_from_slice(&240u32.to_le_bytes()); // biHeight
+        buf.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
+        buf.extend_from_slice(&24u16.to_le_bytes()); // biBitCount
+        buf.extend_from_slice(&0x34363248u32.to_le_bytes()); // biCompression = "H264"
+        buf.extend_from_slice(&[0u8; 20]); // biSizeImage + rest
 
-        let movi_size = 4 + 108;
+        // movi LIST
+        let movi_size: u32 = 4 + 108;
         buf.extend_from_slice(b"LIST");
-        buf.extend_from_slice(&(movi_size as u32).to_le_bytes());
+        buf.extend_from_slice(&movi_size.to_le_bytes());
         buf.extend_from_slice(b"movi");
 
         buf.extend_from_slice(b"00dc");

@@ -739,7 +739,7 @@ mod tests {
         data
     }
 
-    /// 构建一个 Ogg 页面
+    /// 构建一个 Ogg 页面 (含正确的 CRC)
     fn build_ogg_page(
         header_type: u8,
         granule: i64,
@@ -761,7 +761,8 @@ mod tests {
         page.extend_from_slice(&serial.to_le_bytes());
         // 页面序号
         page.extend_from_slice(&page_seq.to_le_bytes());
-        // CRC (暂时填 0)
+        // CRC 占位 (先填 0, 稍后计算)
+        let crc_offset = page.len();
         page.extend_from_slice(&0u32.to_le_bytes());
 
         // 段表
@@ -778,6 +779,10 @@ mod tests {
 
         // 数据
         page.extend_from_slice(packet_data);
+
+        // 计算 CRC (CRC 字段按 0 参与计算, 当前已为 0)
+        let crc = OggDemuxer::ogg_crc32(&page);
+        page[crc_offset..crc_offset + 4].copy_from_slice(&crc.to_le_bytes());
 
         page
     }

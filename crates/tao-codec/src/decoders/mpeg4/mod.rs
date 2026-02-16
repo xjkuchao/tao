@@ -2668,7 +2668,8 @@ mod tests {
 
     #[test]
     fn test_cbpy_inter_inversion() {
-        let data = [0xB0]; // 1011 0000
+        // VLC 码 `11` (2 bits) 映射到 CBPY=15, 对应数据 0xC0 (1100_0000)
+        let data = [0xC0]; // 1100 0000
         let mut reader = BitReader::new(&data);
         let cbpy_intra = decode_cbpy(&mut reader, true);
         assert_eq!(cbpy_intra, Some(15));

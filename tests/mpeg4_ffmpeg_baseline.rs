@@ -12,7 +12,6 @@ use std::path::PathBuf;
 
 // 配置选项
 const TEST_OUTPUT_DIR: &str = "data/ffmpeg_baselines";
-const ENABLE_PSNR_CALCULATION: bool = true;
 const PSNR_THRESHOLD_BASIC: f64 = 38.0; // 基础测试: PSNR >= 38 dB
 const PSNR_THRESHOLD_ADVANCED: f64 = 32.0; // 高级功能: PSNR >= 32 dB
 const MAX_COMPARE_FRAMES: u32 = 10; // 对比的最大帧数

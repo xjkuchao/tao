@@ -184,7 +184,7 @@ mod tests {
             assert_eq!(vf.data[0][center_pixel], 255);
             assert_eq!(vf.data[0][center_pixel + 1], 0);
             assert_eq!(vf.data[0][center_pixel + 2], 0);
-            let corner = 0 * stride + 0 * 3;
+            let corner = 0;
             assert_eq!(vf.data[0][corner], 0);
         } else {
             panic!("期望视频帧");

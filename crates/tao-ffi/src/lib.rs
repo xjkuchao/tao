@@ -1107,7 +1107,7 @@ mod tests {
         assert!(version.to_str().unwrap().starts_with("0.1"));
 
         let version_int = unsafe { tao_version_int() };
-        assert_eq!(version_int, (0 << 16) | (1 << 8) | 0);
+        assert_eq!(version_int, (1 << 8));
 
         let build_info = unsafe { tao_build_info() };
         assert!(!build_info.is_null());

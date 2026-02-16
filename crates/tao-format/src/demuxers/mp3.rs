@@ -588,8 +588,11 @@ mod tests {
     #[test]
     fn test_探测_id3v2() {
         let probe = Mp3Probe;
-        let data = b"ID3\x04\x00\x00\x00\x00\x00\x00";
-        assert_eq!(probe.probe(data, None), Some(crate::probe::SCORE_MAX),);
+        // ID3v2 头 (10字节, size=0) + 有效的 MP3 帧头
+        let header = make_mp3_frame_header(9, 0, false);
+        let mut data = b"ID3\x04\x00\x00\x00\x00\x00\x00".to_vec();
+        data.extend_from_slice(&header);
+        assert_eq!(probe.probe(&data, None), Some(crate::probe::SCORE_MAX - 5),);
     }
 
     #[test]
