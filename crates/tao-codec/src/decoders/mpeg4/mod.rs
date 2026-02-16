@@ -760,6 +760,11 @@ impl Mpeg4Decoder {
         mb_y: u32,
     ) -> bool {
         let is_intra = matches!(mb_data.mb_type, MbType::Intra | MbType::IntraQ);
+        let use_rvlc = self
+            .vol_info
+            .as_ref()
+            .map(|v| v.reversible_vlc)
+            .unwrap_or(false);
 
         // 选择扫描表
         let scan_table = if mb_data.field_dct {
@@ -780,18 +785,34 @@ impl Mpeg4Decoder {
             // 解码 AC 系数
             let coeffs = if is_intra {
                 // Intra 块: 跳过 DC (已在 Partition B 中解码), 只解码 AC
-                self.decode_intra_ac_only(
-                    reader,
-                    plane,
-                    mb_x,
-                    mb_y,
-                    block_idx,
-                    mb_data.ac_pred_flag,
-                    scan_table,
-                )
+                if use_rvlc {
+                    self.decode_intra_ac_only_rvlc(
+                        reader,
+                        plane,
+                        mb_x,
+                        mb_y,
+                        block_idx,
+                        mb_data.ac_pred_flag,
+                        scan_table,
+                    )
+                } else {
+                    self.decode_intra_ac_only(
+                        reader,
+                        plane,
+                        mb_x,
+                        mb_y,
+                        block_idx,
+                        mb_data.ac_pred_flag,
+                        scan_table,
+                    )
+                }
             } else {
                 // Inter 块
-                decode_inter_block_vlc(reader, scan_table)
+                if use_rvlc {
+                    self.decode_inter_block_rvlc(reader, scan_table)
+                } else {
+                    decode_inter_block_vlc(reader, scan_table)
+                }
             };
 
             if let Some(block_coeffs) = coeffs {
@@ -923,6 +944,144 @@ impl Mpeg4Decoder {
             }
         }
 
+        Some(block)
+    }
+
+    /// 辅助函数: 仅解码 Intra 块的 AC 系数 (RVLC)
+    #[allow(clippy::too_many_arguments)]
+    fn decode_intra_ac_only_rvlc(
+        &mut self,
+        reader: &mut BitReader,
+        _plane: usize,
+        mb_x: u32,
+        mb_y: u32,
+        block_idx: usize,
+        ac_pred_flag: bool,
+        scan_table: &[usize; 64],
+    ) -> Option<[i32; 64]> {
+        use self::tables::{ALTERNATE_HORIZONTAL_SCAN, ALTERNATE_VERTICAL_SCAN};
+        use self::types::PredictorDirection;
+        use self::vlc::decode_ac_rvlc_forward;
+
+        const COEFF_MIN: i32 = -2048;
+        const COEFF_MAX: i32 = 2047;
+
+        let mut block = [0i32; 64];
+
+        // 获取 AC 预测方向
+        let (_dc_pred, direction) =
+            self.get_intra_predictor(mb_x as usize, mb_y as usize, block_idx);
+
+        // 选择扫描顺序
+        let ac_scan = if ac_pred_flag {
+            match direction {
+                PredictorDirection::Vertical => &ALTERNATE_HORIZONTAL_SCAN,
+                PredictorDirection::Horizontal => &ALTERNATE_VERTICAL_SCAN,
+                PredictorDirection::None => scan_table,
+            }
+        } else {
+            scan_table
+        };
+
+        // 使用 RVLC 解码 AC 系数
+        let mut pos = 1;
+        while pos < 64 {
+            match decode_ac_rvlc_forward(reader, true) {
+                Ok(None) => break,
+                Ok(Some((last, run, level))) => {
+                    pos += run as usize;
+                    if pos >= 64 {
+                        break;
+                    }
+                    block[ac_scan[pos]] = level as i32;
+                    pos += 1;
+                    if last {
+                        break;
+                    }
+                }
+                Err(_) => return None,
+            }
+        }
+
+        // AC 预测
+        if ac_pred_flag {
+            match direction {
+                PredictorDirection::Vertical => {
+                    let c_idx = match block_idx {
+                        0 => self.get_neighbor_block_idx(mb_x as isize, mb_y as isize - 1, 2),
+                        1 => self.get_neighbor_block_idx(mb_x as isize, mb_y as isize - 1, 3),
+                        2 => self.get_neighbor_block_idx(mb_x as isize, mb_y as isize, 0),
+                        3 => self.get_neighbor_block_idx(mb_x as isize, mb_y as isize, 1),
+                        4 | 5 => {
+                            self.get_neighbor_block_idx(mb_x as isize, mb_y as isize - 1, block_idx)
+                        }
+                        _ => None,
+                    };
+                    if let Some(idx) = c_idx {
+                        let pred_ac = self.predictor_cache[idx];
+                        for i in 1..8 {
+                            let idx = ac_scan[i];
+                            block[idx] = block[idx]
+                                .wrapping_add(pred_ac[i] as i32)
+                                .clamp(COEFF_MIN, COEFF_MAX);
+                        }
+                    }
+                }
+                PredictorDirection::Horizontal => {
+                    let a_idx = match block_idx {
+                        0 => self.get_neighbor_block_idx(mb_x as isize - 1, mb_y as isize, 1),
+                        1 => self.get_neighbor_block_idx(mb_x as isize, mb_y as isize, 0),
+                        2 => self.get_neighbor_block_idx(mb_x as isize - 1, mb_y as isize, 3),
+                        3 => self.get_neighbor_block_idx(mb_x as isize, mb_y as isize, 2),
+                        4 | 5 => {
+                            self.get_neighbor_block_idx(mb_x as isize - 1, mb_y as isize, block_idx)
+                        }
+                        _ => None,
+                    };
+                    if let Some(idx) = a_idx {
+                        let pred_ac = self.predictor_cache[idx];
+                        for i in 1..8 {
+                            let idx = ac_scan[i * 8];
+                            block[idx] = block[idx]
+                                .wrapping_add(pred_ac[7 + i] as i32)
+                                .clamp(COEFF_MIN, COEFF_MAX);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Some(block)
+    }
+
+    /// 辅助函数: 解码 Inter 块的 AC 系数 (RVLC)
+    fn decode_inter_block_rvlc(
+        &mut self,
+        reader: &mut BitReader,
+        scan: &[usize; 64],
+    ) -> Option<[i32; 64]> {
+        use self::vlc::decode_ac_rvlc_forward;
+
+        let mut block = [0i32; 64];
+        let mut pos = 0;
+        while pos < 64 {
+            match decode_ac_rvlc_forward(reader, false) {
+                Ok(None) => break,
+                Ok(Some((last, run, level))) => {
+                    pos += run as usize;
+                    if pos >= 64 {
+                        break;
+                    }
+                    block[scan[pos]] = level as i32;
+                    pos += 1;
+                    if last {
+                        break;
+                    }
+                }
+                Err(_) => return None,
+            }
+        }
         Some(block)
     }
 
@@ -1723,8 +1882,8 @@ impl Mpeg4Decoder {
         self.init_frame_decode();
         let mut frame = self.create_blank_frame(PictureType::I);
 
-        let mb_w = self.width.div_ceil(16);
-        let mb_h = self.height.div_ceil(16);
+        let mb_w = self.width.div_ceil(16) as usize;
+        let mb_h = self.height.div_ceil(16) as usize;
         debug!(
             "解码 I 帧: {}x{} ({}x{} MB)",
             self.width, self.height, mb_w, mb_h
@@ -1736,17 +1895,28 @@ impl Mpeg4Decoder {
             .map(|v| v.resync_marker_disable)
             .unwrap_or(true);
 
-        for mb_y in 0..mb_h {
-            for mb_x in 0..mb_w {
-                // 检查 resync marker (错误恢复)
-                if !resync_disabled && Self::check_resync_marker(reader, 0) {
-                    if let Some((mb_num, new_quant)) = self.parse_video_packet_header(reader) {
-                        debug!("I 帧 resync marker: MB={}, quant={}", mb_num, new_quant);
-                        self.quant = new_quant;
+        let total_mbs = mb_w * mb_h;
+        let mut mb_idx = 0usize;
+        while mb_idx < total_mbs {
+            let mb_x = (mb_idx % mb_w) as u32;
+            let mb_y = (mb_idx / mb_w) as u32;
+
+            // 检查 resync marker (错误恢复)
+            if !resync_disabled && Self::check_resync_marker(reader, 0) {
+                if let Some((mb_num, new_quant)) = self.parse_video_packet_header(reader) {
+                    debug!("I 帧 resync marker: MB={}, quant={}", mb_num, new_quant);
+                    self.quant = new_quant;
+                    let target = mb_num as usize;
+                    if target < total_mbs && target >= mb_idx {
+                        mb_idx = target;
+                    } else {
+                        warn!("I 帧 resync marker 宏块号异常: {}", mb_num);
                     }
                 }
-                self.decode_macroblock(&mut frame, mb_x, mb_y, reader, true);
             }
+
+            self.decode_macroblock(&mut frame, mb_x, mb_y, reader, true);
+            mb_idx += 1;
         }
         Ok(frame)
     }
@@ -1770,17 +1940,28 @@ impl Mpeg4Decoder {
             .unwrap_or(true);
         let fcode = self.f_code_forward;
 
-        for mb_y in 0..mb_h as u32 {
-            for mb_x in 0..mb_w as u32 {
-                // 检查 resync marker (错误恢复)
-                if !resync_disabled && Self::check_resync_marker(reader, fcode.saturating_sub(1)) {
-                    if let Some((mb_num, new_quant)) = self.parse_video_packet_header(reader) {
-                        debug!("P 帧 resync marker: MB={}, quant={}", mb_num, new_quant);
-                        self.quant = new_quant;
+        let total_mbs = mb_w * mb_h;
+        let mut mb_idx = 0usize;
+        while mb_idx < total_mbs {
+            let mb_x = (mb_idx % mb_w) as u32;
+            let mb_y = (mb_idx / mb_w) as u32;
+
+            // 检查 resync marker (错误恢复)
+            if !resync_disabled && Self::check_resync_marker(reader, fcode.saturating_sub(1)) {
+                if let Some((mb_num, new_quant)) = self.parse_video_packet_header(reader) {
+                    debug!("P 帧 resync marker: MB={}, quant={}", mb_num, new_quant);
+                    self.quant = new_quant;
+                    let target = mb_num as usize;
+                    if target < total_mbs && target >= mb_idx {
+                        mb_idx = target;
+                    } else {
+                        warn!("P 帧 resync marker 宏块号异常: {}", mb_num);
                     }
                 }
-                self.decode_macroblock(&mut frame, mb_x, mb_y, reader, false);
             }
+
+            self.decode_macroblock(&mut frame, mb_x, mb_y, reader, false);
+            mb_idx += 1;
         }
         Ok(frame)
     }
