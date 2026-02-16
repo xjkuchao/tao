@@ -27,13 +27,17 @@
 
 ### MPEG-4 Part 2
 
-| 用途     | URL                                                             | 描述                       |
-| -------- | --------------------------------------------------------------- | -------------------------- |
-| 基础解码 | https://samples.ffmpeg.org/V-codecs/MPEG4/mpeg4_avi.avi         | 标准 MPEG-4, AVI 容器      |
-| 数据分区 | https://samples.ffmpeg.org/V-codecs/MPEG4/data_partitioning.avi | Data Partitioning 特性测试 |
-| B 帧     | https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++qprd_cmp_b-frames_naq1.avi | 含 B 帧的 MPEG-4           |
-| QPel     | https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++DivX51-Qpel.avi | 四分像素运动补偿           |
-| GMC      | https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++xvid_gmcqpel_artifact.avi | GMC/S-VOP 相关             |
+| 用途            | URL                                                                                      | 描述                                |
+| --------------- | ---------------------------------------------------------------------------------------- | ----------------------------------- |
+| 基础解码        | https://samples.ffmpeg.org/V-codecs/MPEG4/color16.avi                                    | 标准 MPEG-4, AVI 容器               |
+| B 帧            | https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++qprd_cmp_b-frames_naq1.avi   | 含 B 帧的 MPEG-4                    |
+| QPel            | https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++DivX51-Qpel.avi              | 四分像素运动补偿                    |
+| GMC + QPel      | https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++xvid_gmcqpel_artifact.avi    | GMC 全局运动补偿 + Quarterpel (2.8M) |
+| Data Partition  | https://samples.ffmpeg.org/archive/video/mpeg4/m4v+mpeg4+++ErrDec_mpeg4datapart-64_qcif.m4v | Data Partitioning 模式 (287K)       |
+| Data Part Bug   | https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++vdpart-bug.avi               | Data Partitioning 边界情况测试 (180K) |
+| Quarterpel      | https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++dx502_b_qpel.avi             | DivX 5.02 B 帧 + Quarterpel (4.5M)  |
+| QPel + Bframe   | https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+mp3++qpel-bframes.avi          | QPel + B 帧组合测试 (667K)          |
+| 低分辨率        | https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++difficult_lowres.avi         | 低分辨率特殊处理 (1.3M)             |
 
 ### Theora
 
