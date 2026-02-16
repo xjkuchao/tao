@@ -1,15 +1,12 @@
 # Tao 数据目录
 
-本目录包含 Tao 项目的测试文件、样本文件和临时文件。
+本目录包含 Tao 项目的测试数据文件和临时文件。
 
 ## 目录结构
 
 ```
 data/
-├── samples/          # 测试样本文件
-│   ├── video/        # 视频样本文件
-│   ├── audio/        # 音频样本文件
-│   └── container/    # 容器格式样本文件
+├── SAMPLE_URLS.md    # 测试样本 URL 清单
 ├── test/             # 测试数据文件
 │   ├── unit/         # 单元测试数据
 │   ├── integration/  # 集成测试数据
@@ -19,52 +16,89 @@ data/
 
 ## 文件管理规则
 
-### 样本文件 (samples/)
-- 用于测试各种编解码器和容器格式
-- **文件大小规则**:
-  - **< 50MB**: 下载并提交到 Git
-  - **≥ 50MB**: 仅记录 URL, 不下载, 测试时使用 URL 流式访问
+### 样本文件 (SAMPLE_URLS.md)
+
+- **所有样本使用 URL 方式访问，不下载到本地**
 - 样本来源: https://samples.ffmpeg.org/ (FFmpeg 官方测试样本库)
-- 文件命名使用描述性名称，如 `h264_test.mp4`, `theora_sample.ogg`
-- 样本清单和下载计划参见 `SAMPLES.md`
+- 样本清单: `SAMPLE_URLS.md` 记录所有测试样本的 URL 和用途
+- 测试用例直接使用 URL 创建 Demuxer/Decoder，无需下载文件
 
 ### 测试数据 (test/)
+
 - 单元测试和集成测试所需的数据文件
 - 所有测试数据提交到 Git 版本控制
 - 按测试类型分类存放
 
 ### 临时文件 (tmp/)
+
 - 运行时生成的临时文件
-- 下载的测试文件
 - 编解码过程中的中间文件
 - **永不提交到 Git**
 
 ## 使用示例
 
-```rust
-// 在测试中使用样本文件
-#[test]
-fn test_theora_decoder() {
-    let sample_path = "data/samples/video/theora_test.ogg";
-    // 测试代码...
-}
+### 从 URL 清单查找样本
 
-// 创建临时文件
+```rust
+// 1. 打开 data/SAMPLE_URLS.md
+// 2. 搜索对应编解码器 (如 "H.264")
+// 3. 找到合适的 URL
+
+#[test]
+fn test_h264_decode() {
+    // 直接使用 URL (从 SAMPLE_URLS.md 复制)
+    let sample_url = "https://samples.ffmpeg.org/HDTV/Channel9_HD.ts";
+
+    let mut demuxer = DemuxerRegistry::open(sample_url).unwrap();
+    // ... 测试代码
+}
+```
+
+### 创建临时文件
+
+```rust
 use std::path::PathBuf;
+
 let temp_dir = PathBuf::from("data/tmp");
 std::fs::create_dir_all(&temp_dir).unwrap();
 let temp_file = temp_dir.join(format!("tmp_test_{}.bin", std::process::id()));
 ```
 
-## 样本文件管理
+## 添加新样本
 
-- **下载脚本**: 使用 `download_samples.ps1` 自动下载测试样本
-- **样本清单**: 参见 `SAMPLES.md` 了解样本列表和下载计划
-- **样本来源**: https://samples.ffmpeg.org/ (FFmpeg 官方测试样本库)
+### 查找样本
+
+1. 访问 https://samples.ffmpeg.org/ 浏览样本库
+2. 或查看样本列表:
+    - https://samples.ffmpeg.org/allsamples.txt
+    - https://samples.ffmpeg.org/allsamples-old.txt
+
+### 验证样本
+
+使用 `ffprobe` 验证样本信息:
+
+```bash
+ffprobe https://samples.ffmpeg.org/path/to/sample.mp4
+```
+
+### 添加到清单
+
+在 `SAMPLE_URLS.md` 对应章节添加:
+
+```markdown
+| 用途描述 | https://samples.ffmpeg.org/path/to/sample.ext | 详细说明 |
+```
+
+### 提交更新
+
+```bash
+git add data/SAMPLE_URLS.md
+git commit -m "docs: 添加 XXX 编解码器测试样本 URL"
+```
 
 ## 环境变量
 
-可以通过 `TAO_DATA_DIR` 环境变量指定数据目录的绝对路径：
+可以通过 `TAO_DATA_DIR` 环境变量指定数据目录的绝对路径:
 
 ```bash
 export TAO_DATA_DIR="/path/to/tao/data"
@@ -72,44 +106,16 @@ export TAO_DATA_DIR="/path/to/tao/data"
 
 ## 清理临时文件
 
-临时文件会在测试结束后自动清理，如需手动清理：
+临时文件会在测试结束后自动清理，如需手动清理:
 
 ```bash
 rm -rf data/tmp/*
 ```
 
-## 扩展和维护
-
-随着项目推进，需要持续更新测试样本以支持新功能:
-
-### 添加新编解码器样本
-1. 在 `SAMPLES.md` 中添加新编解码器的样本计划
-2. 更新 `download_samples.ps1` 脚本添加下载 URL
-3. 执行脚本下载样本
-4. 更新 `samples/INVENTORY.md` 记录新样本
-5. 提交所有更改到 Git
-
-### 添加滤镜测试样本
-- 在 `samples/filter/` 目录下按滤镜类型分类
-- 使用已有样本或从 FFmpeg 官方库下载特定样本
-- 记录样本用途和预期输出
-
-### 边界测试和性能测试
-- **边界测试**: 放在 `test/unit/` 目录，包含损坏文件、空文件、极限参数等
-- **性能测试**: 放在 `test/bench/` 目录，使用不同大小和复杂度的样本
-- **回归测试**: 放在 `test/integration/` 目录，记录已知问题的样本
-
-### 维护检查清单
-- [ ] 新增编解码器时，同步更新 `SAMPLES.md`
-- [ ] 新增容器格式时，同步更新下载脚本
-- [ ] 定期检查 FFmpeg 官方样本库更新 (每季度)
-- [ ] 清理不再使用的样本文件
-- [ ] 更新 `INVENTORY.md` 保持清单同步
-
 ## 注意事项
 
-- 确保所有测试代码中使用相对路径
+- 确保所有测试代码中使用 URL 而非本地路径
 - 临时文件使用进程 ID 或时间戳命名避免冲突
-- 所有样本文件提交到 Git 以确保测试可复现性
-- 定期清理临时文件目录
-- **重要**: 每次添加新样本后必须提交到 Git
+- 所有样本通过 URL 访问, 确保测试环境有网络连接
+- 测试只解码前几帧 (5-10 帧) 验证功能即可
+- URL 失效时从 https://samples.ffmpeg.org/ 查找替代样本

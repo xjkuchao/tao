@@ -260,19 +260,20 @@ tao-ffi crate 编译为 cdylib + staticlib:
 #### 步骤 1: 确定测试需求
 
 实现新功能 (编解码器/容器格式/滤镜) 时, 明确需要测试的场景:
+
 - 正常流程: 标准输入输出, 基本功能验证
 - 边界情况: 空输入, 极限参数, 特殊格式
 - 错误处理: 损坏数据, 不支持的参数, 资源不足
 
 #### 步骤 2: 查找测试样本
 
-在 `data/samples/INVENTORY.md` 中查找适用的样本文件:
+在 `data/SAMPLE_URLS.md` 中查找适用的样本 URL:
 
 ```rust
 // 示例: 查找 H.264 测试样本
-// 1. 打开 data/samples/INVENTORY.md
+// 1. 打开 data/SAMPLE_URLS.md
 // 2. 搜索对应编解码器或容器格式
-// 3. 选择符合测试需求的样本 (分辨率, 特性, 文件大小等)
+// 3. 复制合适的样本 URL
 ```
 
 **如果找到合适样本**: 直接跳到步骤 4
@@ -283,50 +284,53 @@ tao-ffi crate 编译为 cdylib + staticlib:
 当现有样本不满足测试需求时:
 
 1. **查找新样本**: 访问 https://samples.ffmpeg.org/ 查找合适样本
-2. **检查文件大小**: 确定是下载还是仅记录 URL
-   - **< 50MB**: 下载到本地, 提交到 Git
-   - **≥ 50MB**: 仅记录 URL, 测试时使用 URL 流式访问
-3. **更新计划**: 在 `data/SAMPLES.md` 中添加新样本的下载计划或 URL
-4. **更新脚本**: (仅小文件) 编辑 `data/download_samples.ps1`, 添加样本 URL 到对应优先级哈希表
-5. **下载样本**: (仅小文件) 执行 `./data/download_samples.ps1 -Priority P0` (或 P1/P2)
-6. **更新清单**: 在 `data/samples/INVENTORY.md` 中记录样本信息 (本地路径或 URL)
-7. **提交更改**: 将样本文件 (如有) 和文档更新提交到 Git
-
-```powershell
-# 完整示例 1: 添加小文件 VP9 测试样本 (< 50MB)
-# 1. 检查文件大小
-curl -I https://samples.ffmpeg.org/video/vp9/vp9_test.webm | Select-String "Content-Length"
+    - 浏览样本库: https://samples.ffmpeg.org/
+    - 查看完整列表: https://samples.ffmpeg.org/allsamples.txt
+2. **验证样本**: 使用 `ffprobe <URL>` 验证样本信息和编解码器
+3. **添加到清单**: 在 `data/SAMPLE_URLS.md` 对应章节添加表格行
+4. **提交更新**: 提交清单更新到 Git
 
 # 2. 更新计划
-vim data/SAMPLES.md  # 添加 VP9 样本 URL
+
+vim data/SAMPLES.md # 添加 VP9 样本 URL
 
 # 3. 更新下载脚本
-vim data/download_samples.ps1  # 添加到 $P0Samples 或 $P1Samples
+
+vim data/download_samples.ps1 # 添加到 $P0Samples 或 $P1Samples
 
 # 4. 下载
+
 ./data/download_samples.ps1 -Priority P0
 
 # 5. 更新清单
-vim data/samples/INVENTORY.md  # 记录本地路径
+
+vim data/samples/INVENTORY.md # 记录本地路径
 
 # 6. 提交
+
 git add data/
 git commit -m "chore: 添加 VP9 测试样本"
 
 # 完整示例 2: 添加大文件 4K HEVC 样本 (≥ 50MB)
+
 # 1. 检查文件大小 (假设 120MB)
+
 curl -I https://samples.ffmpeg.org/video/hevc/4k_hevc.mp4 | Select-String "Content-Length"
 
 # 2. 更新计划 (仅记录 URL)
-vim data/SAMPLES.md  # 添加 URL 和说明 "仅 URL, 不下载"
+
+vim data/SAMPLES.md # 添加 URL 和说明 "仅 URL, 不下载"
 
 # 3. 更新清单 (记录 URL)
-vim data/samples/INVENTORY.md  # 记录 URL 而非本地路径
+
+vim data/samples/INVENTORY.md # 记录 URL 而非本地路径
 
 # 4. 提交
+
 git add data/SAMPLES.md data/samples/INVENTORY.md
 git commit -m "docs: 添加 4K HEVC 样本 URL (120MB, 仅 URL)"
-```
+
+````
 
 #### 步骤 4: 编写测试用例
 
@@ -343,22 +347,22 @@ use tao_codec::decoder::DecoderRegistry;
 fn test_vp9_decode_basic() {
     // 1. 使用 data/samples/ 中的样本文件
     let sample_path = "data/samples/video/vp9/vp9_test.webm";
-    
+
     // 2. 打开解封装器
     let mut demuxer = DemuxerRegistry::open(sample_path).unwrap();
-    
+
     // 3. 查找视频流
     let video_stream = demuxer.streams()
         .iter()
         .find(|s| s.media_type() == MediaType::Video)
         .unwrap();
-    
+
     // 4. 创建解码器
     let mut decoder = DecoderRegistry::create_decoder(
         video_stream.codec_id(),
         video_stream.codec_params(),
     ).unwrap();
-    
+
     // 5. 解码第一帧
     let mut packet_count = 0;
     while let Some(packet) = demuxer.read_packet().unwrap() {
@@ -369,10 +373,10 @@ fn test_vp9_decode_basic() {
             if packet_count > 10 { break; }  // 只测试前几帧
         }
     }
-    
+
     assert!(packet_count > 0, "应该读取到数据包");
 }
-```
+````
 
 **方式 2: 使用 URL 流式测试 (≥ 50MB)**
 
@@ -386,22 +390,22 @@ use tao_codec::decoder::DecoderRegistry;
 fn test_hevc_4k_decode_url() {
     // 1. 使用 URL 直接打开 (适用于大文件 ≥ 50MB)
     let sample_url = "https://samples.ffmpeg.org/video/hevc/4k_hevc.mp4";
-    
+
     // 2. 打开解封装器 (支持 HTTP/HTTPS URL)
     let mut demuxer = DemuxerRegistry::open(sample_url).unwrap();
-    
+
     // 3. 查找视频流
     let video_stream = demuxer.streams()
         .iter()
         .find(|s| s.media_type() == MediaType::Video)
         .unwrap();
-    
+
     // 4. 创建解码器
     let mut decoder = DecoderRegistry::create_decoder(
         video_stream.codec_id(),
         video_stream.codec_params(),
     ).unwrap();
-    
+
     // 5. 解码前几帧 (不要完整解码大文件)
     let mut packet_count = 0;
     while let Some(packet) = demuxer.read_packet().unwrap() {
@@ -412,7 +416,7 @@ fn test_hevc_4k_decode_url() {
             if packet_count > 5 { break; }  // 大文件只测试前几帧
         }
     }
-    
+
     assert!(packet_count > 0, "应该读取到数据包");
 }
 
@@ -426,6 +430,7 @@ fn test_vp9_decode_corrupted() {
 ```
 
 **注意事项**:
+
 - URL 测试使用 `#[ignore]` 标记, 避免 CI 中频繁下载大文件
 - 大文件测试只解码前几帧 (5-10 帧), 不完整解码
 - 手动测试时运行: `cargo test -- --ignored test_hevc_4k_decode_url`
@@ -466,6 +471,7 @@ git commit -m "test: 添加 VP9 解码器测试用例"
 每个编解码器/容器格式至少包含以下测试:
 
 **编解码器测试**:
+
 - ✓ 基本解码 (正常流程)
 - ✓ 编码 (如果实现了编码器)
 - ✓ 空输入处理
@@ -474,6 +480,7 @@ git commit -m "test: 添加 VP9 解码器测试用例"
 - ✓ 参数解析 (SPS/PPS/VPS 等)
 
 **容器格式测试**:
+
 - ✓ 格式探测 (Probe)
 - ✓ 头部解析
 - ✓ 数据包读取
@@ -482,6 +489,7 @@ git commit -m "test: 添加 VP9 解码器测试用例"
 - ✓ 损坏文件处理
 
 **滤镜测试**:
+
 - ✓ 基本滤镜操作
 - ✓ 参数验证
 - ✓ 链式滤镜
@@ -572,21 +580,15 @@ git commit -m "test: 添加 VP9 解码器测试用例"
     - 视频: H.264, H.265, VP8, VP9, AV1, MPEG4 Part 2, Theora, ProRes 等
     - 音频: AAC, MP3, FLAC, Opus, Vorbis, WAV, ALAC 等
     - 容器: MP4, MKV, WebM, OGG, AVI, TS 等
-- **文件大小规则**:
-    - **< 50MB**: 下载到 `data/samples/` 目录并提交到 Git
-    - **≥ 50MB**: 仅记录 URL 到 `data/samples/INVENTORY.md`, 不下载文件
-        - 测试时使用 URL 直接流式访问
-        - 测试用例标记为 `#[ignore]` 避免 CI 中频繁下载
 - **使用方式**:
-    - **单次测试**: 直接使用 HTTPS URL 进行流式测试, 无需下载 (参考 16.3 流式播放测试)
-    - **反复使用 (< 50MB)**: 下载到 `data/samples/` 对应目录, 便于离线测试和 CI/CD
-    - **反复使用 (≥ 50MB)**: 使用 URL 流式访问, 测试标记为 `#[ignore]`
-    - **完整 URL 格式**: `https://samples.ffmpeg.org/<category>/<filename>`, 如 `https://samples.ffmpeg.org/video/h264/bookmarks_8mb.h264`
+    - **所有样本使用 URL 方式访问, 不下载到本地**
+    - 直接使用 HTTPS URL 创建 Demuxer/Decoder
+    - 完整 URL 格式: `https://samples.ffmpeg.org/<category>/<filename>`
+    - 示例: `https://samples.ffmpeg.org/HDTV/Channel9_HD.ts`
 - **版本管理**:
-    - 不建议频繁下载整个样本库, 应按需选择特定样本
-    - 小文件 (< 50MB) 提交到 Git, 确保 CI/CD 一致性
-    - 大文件 (≥ 50MB) 仅记录 URL, 避免 Git 仓库膨胀
-    - 样本下载和管理参见 `data/SAMPLES.md` 和 `data/download_samples.ps1`
+    - 所有样本 URL 记录在 `data/SAMPLE_URLS.md` 中
+    - 添加新样本时更新清单并提交到 Git
+    - URL 失效时从 https://samples.ffmpeg.org/ 查找替代样本
 
 ### 17.4 临时文件管理
 
@@ -597,11 +599,7 @@ git commit -m "test: 添加 VP9 解码器测试用例"
 
 ### 17.5 Git 管理
 
-- **`data/samples/`**: 根据文件大小管理
-  - 样本文件 < 50MB: 提交到 Git
-  - 样本文件 ≥ 50MB: 不提交, 仅在 `INVENTORY.md` 中记录 URL
-- **`data/test/`**: 所有测试数据文件提交到 Git
-- **`data/tmp/`**: 永不提交到 Git, 必须在 `.gitignore` 中排除
+- **`data/SAMPLE_URLS.md`**: 样本 URL 清单, 提交到 Git
 
 ### 17.6 代码规范
 
@@ -628,21 +626,21 @@ let temp_file = temp_dir.join(format!("tmp_test_{}.bin", std::process::id()));
 
 随着项目推进, 需要持续更新测试样本以支持新功能:
 
-- **新增编解码器**: 
+- **新增编解码器**:
     - 在 `data/SAMPLES.md` 中添加样本计划
     - 更新 `data/download_samples.ps1` 添加下载 URL
     - 执行脚本下载样本, 更新 `data/samples/INVENTORY.md`
     - 提交所有更改到 Git
-- **新增滤镜**: 
+- **新增滤镜**:
     - 在 `data/samples/filter/` 下按类型分类存放
     - 复用已有样本或下载特定测试样本
-- **边界测试**: 
+- **边界测试**:
     - 放在 `data/test/unit/`, 包含损坏文件、空文件、极限参数等
-- **性能测试**: 
+- **性能测试**:
     - 放在 `data/test/bench/`, 使用不同大小和复杂度的样本
-- **回归测试**: 
+- **回归测试**:
     - 放在 `data/test/integration/`, 记录已知问题的样本
-- **维护检查**: 
+- **维护检查**:
     - 新增编解码器时同步更新样本文档
     - 定期检查 FFmpeg 官方样本库更新 (每季度)
     - 清理不再使用的样本文件

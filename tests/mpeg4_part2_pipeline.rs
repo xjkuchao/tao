@@ -164,12 +164,11 @@ mod tests {
         }
         println!("✓ FFmpeg 已可用");
 
-        // 2. 准备测试样本路径
-        let sample_file = "data/samples/video/mpeg4_test.mp4";
+        // 2. 准备测试样本 URL (从 SAMPLE_URLS.md)
+        let sample_url = "https://samples.ffmpeg.org/V-codecs/MPEG4/mpeg4_avi.avi";
 
         println!("\n待执行步骤:");
-        println!("  1. 从 https://samples.ffmpeg.org/ 下载 MPEG4 Part 2 样本");
-        println!("     保存路径: {}", sample_file);
+        println!("  1. 使用样本 URL: {}", sample_url);
         println!("  2. 使用 FFmpeg 生成参考输出");
         println!("  3. 使用 tao-codec 解码相同文件");
         println!("  4. 逐帧对比像素差异 (Y/U/V 平面)");

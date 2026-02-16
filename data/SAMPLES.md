@@ -6,9 +6,9 @@
 
 - **< 50MB**: 下载到 `data/samples/` 目录, 提交到 Git
 - **≥ 50MB**: 仅记录 URL 到 `data/samples/INVENTORY.md`, 不下载文件
-  - 测试时使用 URL 直接流式访问
-  - 测试用例标记为 `#[ignore]` 避免 CI 中频繁下载
-  - 手动测试: `cargo test -- --ignored test_name`
+    - 测试时使用 URL 直接流式访问
+    - 测试用例标记为 `#[ignore]` 避免 CI 中频繁下载
+    - 手动测试: `cargo test -- --ignored test_name`
 
 ## 1. 核心优先级样本 (必须下载)
 
@@ -17,102 +17,123 @@
 ### 1.1 视频编解码器样本
 
 #### H.264
+
 - `./archive/video/h264/mov+h264+aac++bbc_1080p.mov` (1080p, AAC 音频)
 - `./HDTV/Channel9_HD.ts` (MPEG-TS 容器, 720p)
 - `./mov/h264_sample.mov` (QuickTime 容器)
 
 #### H.265 (HEVC)
+
 - `./A-codecs/hevc/*.mp4` (HEVC 测试样本)
 
 #### MPEG4 Part 2
+
 - `./V-codecs/MPEG4/mpeg4_sample.avi` (AVI 容器)
 - `./mov/mp4/mpeg4_test.mp4` (MP4 容器)
 
 #### Theora
+
 - `./ogg/Theora/theora.ogg` (Ogg 容器)
 - `./ogg/Theora/theora-a4_v6-k250-s0.ogg`
 
 ### 1.2 音频编解码器样本
 
 #### AAC
+
 - `./A-codecs/ATRAC3/sample.m4a` (ADTS 格式)
 - `./A-codecs/aac-he/he_sample.aac` (HE-AAC)
 
 #### MP3
+
 - `./A-codecs/MP3/mp3-2.5/8khz.mp3` (MPEG 2.5 Layer III)
 - `./A-codecs/MP3/VBR/lame.mp3` (VBR)
 
 #### FLAC
+
 - `./A-codecs/flac/*.flac` (无损压缩)
 
 #### Vorbis
+
 - `./flac/Yesterday.flac` (用于对比测试)
 - `./A-codecs/vorbis/oggvorbis_sample.ogg`
 
 #### PCM
+
 - `./A-codecs/wavpcm/8khz-16bit-mono.wav` (8kHz, 16bit, Mono)
 - `./A-codecs/wavpcm/test-96.wav` (96kHz 高码率)
 
 ### 1.3 容器格式样本
 
 #### MP4
+
 - `./mov/mp4/mp4_test.mp4` (标准 MP4)
 - `./mov/editlist/mov_edl_kf_fix_1.mp4` (editlist 测试)
 
 #### Matroska (MKV)
+
 - `./Matroska/haruhi.mkv` (H.264 + AAC)
 - `./Matroska/H264+EAC3.mkv` (H.264 + EAC3)
 
 #### WebM
+
 - (从 MKV 样本测试，因为 WebM 是 MKV 的子集)
 
 #### AVI
+
 - `./avi/02-audio-streams.avi` (双音轨)
 - `./V-codecs/MPEG4/mpeg4_avi.avi`
 
 #### FLV
+
 - `./FLV/flash8/artifacts-vp6.flv` (VP6 视频)
 - `./FLV/flash_screen/screen.flv` (屏幕录制)
 
 #### MPEG-TS
+
 - `./HDTV/channel9hdtv_ac3.ts` (AC3 音频)
 - `./MPEG2/mpegts-klv/Day Flight.mpg`
 
 #### Ogg
+
 - `./ogg/Theora/theora.ogg` (Theora + Vorbis)
 - `./ogg/Vorbis/test6.ogg` (纯音频)
 
 #### WAV
+
 - `./A-codecs/wavpcm/8khz-16bit-mono.wav`
 - `./A-codecs/wavpcm/test-96.wav`
 
 #### AIFF
+
 - `./AIFF/dragon.aif`
 - `./AIFF/M1F1-float32C-AFsp.aif`
 
 ## 2. 扩展测试样本 (可选)
 
 ### 2.1 边界情况测试
+
 - `./fuzz/` (模糊测试样本)
 - `./MPEG2/broken-ntsc.mpg` (损坏文件测试)
 
 ### 2.2 特殊格式
+
 - `./game-formats/bink/*.bik` (游戏格式)
 - `./real/` (Real Media 格式, 用于兼容性测试)
 
 ### 2.3 高级功能
+
 - `./Matroska/chapters/*.mkv` (章节支持)
 - `./sub/` (字幕支持)
 - `./stereo3d/` (3D 视频)
 
 ## 3. 样本文件大小建议
 
-| 类别 | 建议大小 | 说明 |
-|------|---------|------|
-| 单元测试 | < 1MB | 快速验证基本功能 |
-| 集成测试 | 1-10MB | 完整编解码流程测试 |
-| 性能测试 | 10-100MB | 性能基准测试 |
-| 压力测试 | > 100MB | 大文件处理测试 |
+| 类别     | 建议大小 | 说明               |
+| -------- | -------- | ------------------ |
+| 单元测试 | < 1MB    | 快速验证基本功能   |
+| 集成测试 | 1-10MB   | 完整编解码流程测试 |
+| 性能测试 | 10-100MB | 性能基准测试       |
+| 压力测试 | > 100MB  | 大文件处理测试     |
 
 ## 4. 下载优先级
 
@@ -156,8 +177,8 @@ data/samples/
 2. **检查大小**: 使用 `curl -I <URL> | Select-String "Content-Length"` 检查文件大小
 3. **更新计划**: 在本文件 (`SAMPLES.md`) 中添加新编解码器章节，列出样本 URL
 4. **处理样本**:
-   - **< 50MB**: 更新 `download_samples.ps1` 并执行下载
-   - **≥ 50MB**: 仅在 `INVENTORY.md` 中记录 URL, 标注"仅 URL"
+    - **< 50MB**: 更新 `download_samples.ps1` 并执行下载
+    - **≥ 50MB**: 仅在 `INVENTORY.md` 中记录 URL, 标注"仅 URL"
 5. **更新清单**: 在 `samples/INVENTORY.md` 中记录样本信息 (本地路径或 URL)
 6. **提交到 Git**: 将样本文件 (如有) 和文档更新提交到版本库
 
@@ -202,13 +223,13 @@ const LARGE_SAMPLE_URL: &str = "https://samples.ffmpeg.org/video/4k/large_4k.mp4
 ### 6.5 样本命名规范
 
 - **编解码器样本**: `{codec}_{特性}_{分辨率}.{ext}`
-  - 示例: `h264_cabac_1080p.mp4`, `theora_vp3_480p.ogg`
+    - 示例: `h264_cabac_1080p.mp4`, `theora_vp3_480p.ogg`
 - **容器样本**: `{container}_{codecs}.{ext}`
-  - 示例: `mkv_h264_aac.mkv`, `mp4_mpeg4_mp3.mp4`
+    - 示例: `mkv_h264_aac.mkv`, `mp4_mpeg4_mp3.mp4`
 - **边界测试**: `{类型}_{描述}.{ext}`
-  - 示例: `corrupted_missing_sps.h264`, `truncated_middle.mp4`
+    - 示例: `corrupted_missing_sps.h264`, `truncated_middle.mp4`
 - **性能测试**: `{size}_{resolution}_{codec}.{ext}`
-  - 示例: `small_480p_h264.mp4`, `large_4k_hevc.mkv`
+    - 示例: `small_480p_h264.mp4`, `large_4k_hevc.mkv`
 
 ## 7. 维护工作流
 
