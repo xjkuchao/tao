@@ -364,11 +364,11 @@ fn test_mpeg4_decode_invalid_data() {
     params.set_height(240);
 
     let mut decoder = Mpeg4Decoder::new(&params).unwrap();
-    
+
     // 尝试解码损坏的数据包
     let corrupted_data = vec![0xFF; 100];
     let packet = Packet::new(corrupted_data, /* timestamp_ms */ 0);
-    
+
     // 应该返回错误，不是 panic
     match decoder.send_packet(&packet) {
         Err(e) => {
@@ -494,6 +494,7 @@ git commit -m "test: 添加 VP9 解码器测试用例"
 - **所有测试文件均使用 URL 直接流式播放**, 不下载到本地.
 - 所有样本 URL 维护在 `examples/SAMPLE_URLS.md` 中.
 - 示例:
+
     ```powershell
     # 正确: 直接使用 URL 进行流式播放
     cargo run --package tao-play -- "https://samples.ffmpeg.org/flac/Yesterday.flac"
