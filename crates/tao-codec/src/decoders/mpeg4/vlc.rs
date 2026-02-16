@@ -568,28 +568,42 @@ const MCBPC_I: &[(u8, u16, u8, u8)] = &[
 ];
 
 /// MCBPC VLC 表 (P-VOP)
+/// 来源: FFmpeg ff_h263_inter_MCBPC_code/bits (libavcodec/h263data.c)
+/// 格式: (bit_length, code, mb_type, cbpc)
+/// MB类型: 0=Inter, 1=InterQ, 2=Inter4V, 3=Intra, 4=IntraQ, 255=Stuffing
 const MCBPC_P: &[(u8, u16, u8, u8)] = &[
-    (1, 1, 0, 0),
-    (3, 0b001, 0, 1),
-    (3, 0b010, 0, 2),
-    (3, 0b011, 0, 3),
-    (4, 0b0001, 1, 0),
-    (5, 0b00001, 1, 1),
-    (5, 0b00000, 1, 2),
-    (6, 0b000110, 1, 3),
-    (6, 0b000111, 3, 0),
-    (7, 0b0001000, 3, 1),
-    (7, 0b0001001, 3, 2),
-    (7, 0b0001010, 3, 3),
-    (8, 0b00010110, 4, 0),
-    (8, 0b00010111, 4, 1),
-    (9, 0b000110000, 4, 2),
-    (9, 0b000110001, 4, 3),
-    (7, 0b0001011, 2, 0),
-    (8, 0b00011000, 2, 1),
-    (8, 0b00011001, 2, 2),
-    (8, 0b00011010, 2, 3),
-    (9, 0b000000001, 255, 0),
+    // Inter - 无运动补偿量化 (mb_type=0)
+    (1, 0x0001, 0, 0), // CBPC=00
+    (4, 0x0003, 0, 1), // CBPC=01
+    (4, 0x0002, 0, 2), // CBPC=10
+    (6, 0x0005, 0, 3), // CBPC=11
+    // Intra - I-VOP 宏块在 P-VOP 中 (mb_type=3)
+    (5, 0x0003, 3, 0), // CBPC=00
+    (8, 0x0004, 3, 1), // CBPC=01
+    (8, 0x0003, 3, 2), // CBPC=10
+    (7, 0x0003, 3, 3), // CBPC=11
+    // InterQ - 运动补偿量化 (mb_type=1)
+    (3, 0x0003, 1, 0), // CBPC=00
+    (7, 0x0007, 1, 1), // CBPC=01
+    (7, 0x0006, 1, 2), // CBPC=10
+    (9, 0x0005, 1, 3), // CBPC=11
+    // IntraQ - I-VOP 宏块量化 (mb_type=4)
+    (6, 0x0004, 4, 0), // CBPC=00
+    (9, 0x0004, 4, 1), // CBPC=01
+    (9, 0x0003, 4, 2), // CBPC=10
+    (9, 0x0002, 4, 3), // CBPC=11
+    // Inter4V - 4 个运动向量 (mb_type=2)
+    (3, 0x0002, 2, 0), // CBPC=00
+    (7, 0x0005, 2, 1), // CBPC=01
+    (7, 0x0004, 2, 2), // CBPC=10
+    (8, 0x0005, 2, 3), // CBPC=11
+    // Stuffing - 填充码,需递归解码
+    (9, 0x0001, 255, 0),
+    // Inter4VQ - 4 个运动向量 + 量化 (mb_type=2)
+    (11, 0x0002, 2, 0), // CBPC=00
+    (13, 0x000C, 2, 1), // CBPC=01
+    (13, 0x000E, 2, 2), // CBPC=10
+    (13, 0x000F, 2, 3), // CBPC=11
 ];
 
 /// CBPY VLC 表
@@ -881,6 +895,8 @@ pub(super) fn decode_mcbpc_i(reader: &mut BitReader) -> Option<(MbType, u8)> {
 
 /// 解码 MCBPC (P-VOP), 跳过 stuffing code
 pub(super) fn decode_mcbpc_p(reader: &mut BitReader) -> Option<(MbType, u8)> {
+    let pos_before = reader.byte_position();
+
     while reader.peek_bits(10) == Some(1) {
         reader.skip_bits(10);
     }
@@ -904,6 +920,15 @@ pub(super) fn decode_mcbpc_p(reader: &mut BitReader) -> Option<(MbType, u8)> {
             return Some((mb_type, cbpc));
         }
     }
+
+    // 诊断: MCBPC_P 解码失败
+    let bits_10 = reader.peek_bits(10).unwrap_or(0);
+    let bits_16 = reader.peek_bits(16).unwrap_or(0);
+    warn!(
+        "MCBPC_P 解码失败: 字节位置={}, 前10位={:010b}, 前16位={:016b}",
+        pos_before, bits_10, bits_16
+    );
+
     None
 }
 
