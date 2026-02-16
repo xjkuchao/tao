@@ -86,6 +86,29 @@ struct DataPartitionInfo {
     partition_c: (usize, usize),
 }
 
+/// Data Partitioning 中间解码数据
+///
+/// 用于存储从各分区解码的中间数据，最后重建完整宏块。
+#[derive(Debug, Clone)]
+struct PartitionedMacroblockData {
+    /// 宏块类型
+    mb_type: MbType,
+    /// CBP (coded block pattern): Y 平面 4 块 + U/V 平面各 1 块
+    cbp: u8,
+    /// 量化参数
+    quant: u8,
+    /// AC prediction flag (仅 Intra)
+    ac_pred_flag: bool,
+    /// 运动向量 (最多 4 个, Inter4V 模式)
+    mvs: [MotionVector; 4],
+    /// DC 系数 (6 个块: Y0, Y1, Y2, Y3, U, V)
+    dc_coeffs: [i16; 6],
+    /// AC 系数 (6 个块, 每块 63 个 AC 系数)
+    ac_coeffs: [[i16; 63]; 6],
+    /// field_dct 标志
+    field_dct: bool,
+}
+
 // ============================================================================
 // Mpeg4Decoder 结构体
 // ============================================================================
@@ -486,6 +509,657 @@ impl Mpeg4Decoder {
         }
 
         Some((mb_number, quant))
+    }
+
+    // ========================================================================
+    // Data Partitioning 解码函数
+    // ========================================================================
+
+    /// 从 Partition A 解码宏块头部信息
+    ///
+    /// 解码内容:
+    /// - MCBPC/CBPY (宏块类型和 CBP)
+    /// - DQUANT (量化参数变化)
+    /// - 运动向量
+    /// - field_dct 标志
+    fn decode_partition_a_mb_header(
+        &mut self,
+        reader: &mut BitReader,
+        mb_x: u32,
+        mb_y: u32,
+        is_i_vop: bool,
+    ) -> Option<PartitionedMacroblockData> {
+        // 1. MCBPC
+        let (mb_type, cbpc) = if is_i_vop {
+            decode_mcbpc_i(reader)?
+        } else {
+            // P-VOP: not_coded 位
+            let not_coded = reader.read_bit().unwrap_or(false);
+            if not_coded {
+                return Some(PartitionedMacroblockData {
+                    mb_type: MbType::Inter,
+                    cbp: 0,
+                    quant: self.quant,
+                    ac_pred_flag: false,
+                    mvs: [MotionVector::default(); 4],
+                    dc_coeffs: [0; 6],
+                    ac_coeffs: [[0; 63]; 6],
+                    field_dct: false,
+                });
+            }
+            decode_mcbpc_p(reader)?
+        };
+
+        let is_intra = matches!(mb_type, MbType::Intra | MbType::IntraQ);
+
+        // AC prediction flag
+        let ac_pred_flag = if is_intra {
+            reader.read_bit().unwrap_or(false)
+        } else {
+            false
+        };
+
+        // 2. CBPY
+        let cbpy = decode_cbpy(reader, is_intra).unwrap_or(0);
+
+        // 3. DQUANT
+        if mb_type == MbType::IntraQ || mb_type == MbType::InterQ {
+            if let Some(dq) = reader.read_bits(2) {
+                let delta = DQUANT_TABLE[dq as usize];
+                self.quant = ((self.quant as i32 + delta).clamp(1, 31)) as u8;
+            }
+        }
+
+        // 4. 隔行模式: field_dct
+        let interlacing = self
+            .vol_info
+            .as_ref()
+            .map(|v| v.interlacing)
+            .unwrap_or(false);
+        let cbp = (cbpy << 2) | cbpc;
+        let field_dct = if interlacing && (cbpy != 0 || cbpc != 0 || is_intra) {
+            reader.read_bit().unwrap_or(false)
+        } else {
+            false
+        };
+
+        // field_pred (仅 P-VOP)
+        if interlacing && !is_intra {
+            let field_pred = reader.read_bit().unwrap_or(false);
+            if field_pred {
+                let _field_for_top = reader.read_bit().unwrap_or(false);
+                let _field_for_bot = reader.read_bit().unwrap_or(false);
+            }
+        }
+
+        // 5. 运动向量解码
+        let mut mb_mvs = [MotionVector::default(); 4];
+        if !is_intra {
+            if mb_type == MbType::Inter4V {
+                for (k, mv_slot) in mb_mvs.iter_mut().enumerate() {
+                    if let Some(mut mv) = self.decode_motion_vector(reader, mb_x, mb_y, k) {
+                        self.validate_vector(&mut mv, mb_x, mb_y);
+                        *mv_slot = mv;
+                    }
+                }
+            } else if let Some(mut mv) = self.decode_motion_vector(reader, mb_x, mb_y, 0) {
+                self.validate_vector(&mut mv, mb_x, mb_y);
+                mb_mvs = [mv; 4];
+            }
+        }
+
+        Some(PartitionedMacroblockData {
+            mb_type,
+            cbp,
+            quant: self.quant,
+            ac_pred_flag,
+            mvs: mb_mvs,
+            dc_coeffs: [0; 6],
+            ac_coeffs: [[0; 63]; 6],
+            field_dct,
+        })
+    }
+
+    /// 从 Partition B 解码 DC 系数
+    ///
+    /// 使用 RVLC 解码所有块的 DC 系数。
+    fn decode_partition_b_dc(
+        &mut self,
+        reader: &mut BitReader,
+        mb_data: &mut PartitionedMacroblockData,
+        mb_x: u32,
+        mb_y: u32,
+    ) -> bool {
+        let is_intra = matches!(mb_data.mb_type, MbType::Intra | MbType::IntraQ);
+        if !is_intra {
+            // Inter 块没有 DC 系数在 Partition B
+            return true;
+        }
+
+        use self::vlc::decode_intra_dc_vlc;
+
+        // 解码 6 个块的 DC 系数 (Y0-Y3, U, V)
+        for block_idx in 0..6 {
+            let is_luma = block_idx < 4;
+
+            // 使用 use_intra_dc_vlc 决定是否解码 DC
+            let dc_diff = if self.use_intra_dc_vlc() {
+                if let Some(dc) = decode_intra_dc_vlc(reader, is_luma) {
+                    dc
+                } else {
+                    warn!(
+                        "Partition B DC 解码失败, MB ({}, {}), block {}",
+                        mb_x, mb_y, block_idx
+                    );
+                    return false;
+                }
+            } else {
+                0
+            };
+
+            // 使用 DC 预测
+            let (dc_pred, _direction) =
+                self.get_intra_predictor(mb_x as usize, mb_y as usize, block_idx);
+            let actual_dc = dc_pred.wrapping_add(dc_diff);
+            let dc_scaler = self.get_dc_scaler(is_luma);
+            mb_data.dc_coeffs[block_idx] = (actual_dc as i32 * dc_scaler as i32) as i16;
+        }
+
+        true
+    }
+
+    /// 从 Partition C 解码 AC 系数
+    ///
+    /// 解码所有块的 AC 系数。
+    fn decode_partition_c_ac(
+        &mut self,
+        reader: &mut BitReader,
+        mb_data: &mut PartitionedMacroblockData,
+        mb_x: u32,
+        mb_y: u32,
+    ) -> bool {
+        let is_intra = matches!(mb_data.mb_type, MbType::Intra | MbType::IntraQ);
+
+        // 选择扫描表
+        let scan_table = if mb_data.field_dct {
+            &ALTERNATE_VERTICAL_SCAN
+        } else {
+            &ZIGZAG_SCAN
+        };
+
+        // 解码 6 个块的 AC 系数
+        for block_idx in 0..6 {
+            let ac_coded = (mb_data.cbp >> (5 - block_idx)) & 1 != 0;
+            if !ac_coded {
+                continue;
+            }
+
+            let plane = if block_idx < 4 { 0 } else { block_idx - 3 };
+
+            // 解码 AC 系数
+            let coeffs = if is_intra {
+                // Intra 块: 跳过 DC (已在 Partition B 中解码), 只解码 AC
+                self.decode_intra_ac_only(
+                    reader,
+                    plane,
+                    mb_x,
+                    mb_y,
+                    block_idx,
+                    mb_data.ac_pred_flag,
+                    scan_table,
+                )
+            } else {
+                // Inter 块
+                decode_inter_block_vlc(reader, scan_table)
+            };
+
+            if let Some(block_coeffs) = coeffs {
+                // 提取 AC 系数 (跳过 DC)
+                for (i, &coeff) in block_coeffs.iter().enumerate().skip(1) {
+                    mb_data.ac_coeffs[block_idx][i - 1] = coeff as i16;
+                }
+            } else {
+                warn!(
+                    "Partition C AC 解码失败, MB ({}, {}), block {}",
+                    mb_x, mb_y, block_idx
+                );
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// 辅助函数: 仅解码 Intra 块的 AC 系数 (跳过 DC)
+    #[allow(clippy::too_many_arguments)]
+    fn decode_intra_ac_only(
+        &mut self,
+        reader: &mut BitReader,
+        _plane: usize,
+        mb_x: u32,
+        mb_y: u32,
+        block_idx: usize,
+        ac_pred_flag: bool,
+        scan_table: &[usize; 64],
+    ) -> Option<[i32; 64]> {
+        use self::tables::{ALTERNATE_HORIZONTAL_SCAN, ALTERNATE_VERTICAL_SCAN};
+        use self::types::PredictorDirection;
+        use self::vlc::{INTRA_AC_VLC, decode_ac_vlc};
+
+        const COEFF_MIN: i32 = -2048;
+        const COEFF_MAX: i32 = 2047;
+
+        let mut block = [0i32; 64];
+        // DC 已在 Partition B 中解码, 这里只解码 AC
+
+        // 获取 AC 预测方向
+        let (_dc_pred, direction) =
+            self.get_intra_predictor(mb_x as usize, mb_y as usize, block_idx);
+
+        // 选择扫描顺序
+        let ac_scan = if ac_pred_flag {
+            match direction {
+                PredictorDirection::Vertical => &ALTERNATE_HORIZONTAL_SCAN,
+                PredictorDirection::Horizontal => &ALTERNATE_VERTICAL_SCAN,
+                PredictorDirection::None => scan_table,
+            }
+        } else {
+            scan_table
+        };
+
+        // 解码 AC 系数
+        let mut pos = 1; // 从 1 开始 (跳过 DC)
+        while pos < 64 {
+            match decode_ac_vlc(reader, INTRA_AC_VLC, true) {
+                Ok(None) => break,
+                Ok(Some((last, run, level))) => {
+                    pos += run as usize;
+                    if pos >= 64 {
+                        break;
+                    }
+                    block[ac_scan[pos]] = level as i32;
+                    pos += 1;
+                    if last {
+                        break;
+                    }
+                }
+                Err(_) => return None,
+            }
+        }
+
+        // AC 预测
+        if ac_pred_flag {
+            match direction {
+                PredictorDirection::Vertical => {
+                    let c_idx = match block_idx {
+                        0 => self.get_neighbor_block_idx(mb_x as isize, mb_y as isize - 1, 2),
+                        1 => self.get_neighbor_block_idx(mb_x as isize, mb_y as isize - 1, 3),
+                        2 => self.get_neighbor_block_idx(mb_x as isize, mb_y as isize, 0),
+                        3 => self.get_neighbor_block_idx(mb_x as isize, mb_y as isize, 1),
+                        4 | 5 => {
+                            self.get_neighbor_block_idx(mb_x as isize, mb_y as isize - 1, block_idx)
+                        }
+                        _ => None,
+                    };
+                    if let Some(idx) = c_idx {
+                        let pred_ac = self.predictor_cache[idx];
+                        for i in 1..8 {
+                            let idx = ac_scan[i];
+                            block[idx] = block[idx]
+                                .wrapping_add(pred_ac[i] as i32)
+                                .clamp(COEFF_MIN, COEFF_MAX);
+                        }
+                    }
+                }
+                PredictorDirection::Horizontal => {
+                    let c_idx = match block_idx {
+                        0 | 2 => self.get_neighbor_block_idx(
+                            mb_x as isize - 1,
+                            mb_y as isize,
+                            block_idx + 1,
+                        ),
+                        1 | 3 => {
+                            self.get_neighbor_block_idx(mb_x as isize, mb_y as isize, block_idx - 1)
+                        }
+                        4 | 5 => {
+                            self.get_neighbor_block_idx(mb_x as isize - 1, mb_y as isize, block_idx)
+                        }
+                        _ => None,
+                    };
+                    if let Some(idx) = c_idx {
+                        let pred_ac = self.predictor_cache[idx];
+                        for i in (1..8).step_by(8) {
+                            for j in 0..8 {
+                                let idx = ac_scan[i + j];
+                                block[idx] = block[idx]
+                                    .wrapping_add(pred_ac[j + 1] as i32)
+                                    .clamp(COEFF_MIN, COEFF_MAX);
+                            }
+                        }
+                    }
+                }
+                PredictorDirection::None => {}
+            }
+        }
+
+        Some(block)
+    }
+
+    /// 重建分区宏块到帧
+    ///
+    /// 将从三个分区解码的数据组合并重建到输出帧。
+    fn reconstruct_partitioned_macroblock(
+        &mut self,
+        frame: &mut VideoFrame,
+        mb_x: u32,
+        mb_y: u32,
+        mb_data: &PartitionedMacroblockData,
+    ) {
+        let width = self.width as usize;
+        let height = self.height as usize;
+        let mb_idx = mb_y as usize * self.mb_stride + mb_x as usize;
+        let is_intra = matches!(mb_data.mb_type, MbType::Intra | MbType::IntraQ);
+
+        // 存储 MV 到缓存
+        if mb_idx < self.mv_cache.len() {
+            self.mv_cache[mb_idx] = mb_data.mvs;
+        }
+
+        // 更新宏块信息
+        if mb_idx < self.mb_info.len() {
+            let mode_code = match mb_data.mb_type {
+                MbType::Inter | MbType::InterQ => MacroblockInfo::MODE_INTER,
+                MbType::Intra | MbType::IntraQ => MacroblockInfo::MODE_INTRA,
+                MbType::Inter4V => MacroblockInfo::MODE_INTER4V,
+            };
+            self.mb_info[mb_idx] = MacroblockInfo {
+                mode: mode_code,
+                quant: mb_data.quant,
+                mvs: mb_data.mvs,
+            };
+        }
+
+        let quarterpel = self
+            .vol_info
+            .as_ref()
+            .map(|v| v.quarterpel)
+            .unwrap_or(false);
+
+        // 重建 Y 平面的 4 个 8x8 块
+        for block_idx in 0..4 {
+            let by = (block_idx / 2) as u32;
+            let bx = (block_idx % 2) as u32;
+
+            // 组合 DC 和 AC 系数
+            let mut block = [0i32; 64];
+            block[0] = mb_data.dc_coeffs[block_idx] as i32;
+            for i in 0..63 {
+                block[i + 1] = mb_data.ac_coeffs[block_idx][i] as i32;
+            }
+
+            // 反量化和 IDCT
+            self.dequantize(&mut block, mb_data.quant as u32, is_intra);
+            idct_8x8(&mut block);
+
+            let mv = mb_data.mvs[block_idx];
+
+            // 写入帧
+            for y in 0..8 {
+                for x in 0..8 {
+                    let px = (mb_x as usize * 16 + bx as usize * 8 + x) as isize;
+                    let py = (mb_y as usize * 16 + by as usize * 8 + y) as isize;
+                    if px < width as isize && py < height as isize {
+                        let idx = py as usize * width + px as usize;
+                        let residual = block[y * 8 + x];
+                        let val = if is_intra {
+                            (residual + 128).clamp(0, 255) as u8
+                        } else if let Some(ref_frame) = &self.reference_frame {
+                            let pred = Self::motion_compensate(
+                                ref_frame,
+                                0,
+                                px,
+                                py,
+                                mv.x,
+                                mv.y,
+                                self.rounding_control,
+                                quarterpel,
+                            );
+                            (pred as i32 + residual).clamp(0, 255) as u8
+                        } else {
+                            (residual + 128).clamp(0, 255) as u8
+                        };
+                        frame.data[0][idx] = val;
+                    }
+                }
+            }
+        }
+
+        // 重建 U/V 平面
+        let uv_width = width / 2;
+        let uv_height = height / 2;
+
+        let chroma_mv = if !is_intra {
+            if mb_data.mb_type == MbType::Inter4V {
+                Self::chroma_mv_4mv(&mb_data.mvs)
+            } else {
+                Self::chroma_mv_1mv(mb_data.mvs[0])
+            }
+        } else {
+            MotionVector::default()
+        };
+
+        for plane_idx in 0..2 {
+            let block_idx = 4 + plane_idx;
+
+            // 组合 DC 和 AC 系数
+            let mut block = [0i32; 64];
+            block[0] = mb_data.dc_coeffs[block_idx] as i32;
+            for i in 0..63 {
+                block[i + 1] = mb_data.ac_coeffs[block_idx][i] as i32;
+            }
+
+            // 反量化和 IDCT
+            self.dequantize(&mut block, mb_data.quant as u32, is_intra);
+            idct_8x8(&mut block);
+
+            // 写入帧
+            for y in 0..8 {
+                for x in 0..8 {
+                    let px = (mb_x as usize * 8 + x).min(uv_width - 1);
+                    let py = (mb_y as usize * 8 + y).min(uv_height - 1);
+                    let idx = py * uv_width + px;
+                    let residual = block[y * 8 + x];
+                    let val = if is_intra {
+                        (residual + 128).clamp(0, 255) as u8
+                    } else if let Some(ref_frame) = &self.reference_frame {
+                        let pred = Self::motion_compensate(
+                            ref_frame,
+                            plane_idx + 1,
+                            px as isize,
+                            py as isize,
+                            chroma_mv.x,
+                            chroma_mv.y,
+                            self.rounding_control,
+                            quarterpel,
+                        );
+                        (pred as i32 + residual).clamp(0, 255) as u8
+                    } else {
+                        (residual + 128).clamp(0, 255) as u8
+                    };
+                    frame.data[plane_idx + 1][idx] = val;
+                }
+            }
+        }
+    }
+
+    /// 使用 Data Partitioning 模式解码 I/P 帧
+    ///
+    /// 三步解码流程:
+    /// 1. 从 Partition A 解码所有 MB 的头部信息
+    /// 2. 从 Partition B 解码所有 DC 系数
+    /// 3. 从 Partition C 解码所有 AC 系数
+    /// 4. 重建所有宏块到帧
+    fn decode_frame_partitioned(
+        &mut self,
+        packet_data: &[u8],
+        part_info: &DataPartitionInfo,
+        is_i_vop: bool,
+    ) -> TaoResult<VideoFrame> {
+        self.init_frame_decode();
+        let mut frame = self.create_blank_frame(if is_i_vop {
+            PictureType::I
+        } else {
+            PictureType::P
+        });
+
+        let mb_w = self.width.div_ceil(16) as usize;
+        let mb_h = self.height.div_ceil(16) as usize;
+        let total_mbs = mb_w * mb_h;
+
+        debug!(
+            "Data Partitioning 解码 {} 帧: {}x{} ({} MB)",
+            if is_i_vop { "I" } else { "P" },
+            self.width,
+            self.height,
+            total_mbs
+        );
+
+        // 存储所有宏块的中间数据
+        let mut mb_data_vec: Vec<Option<PartitionedMacroblockData>> = vec![None; total_mbs];
+
+        // === 步骤 1: 从 Partition A 解码所有 MB 头部 ===
+        debug!("  步骤 1: 解码 Partition A (MB 头部)");
+        let partition_a_bytes = part_info.partition_a.0 / 8;
+        let partition_a_len = (part_info.partition_a.1 - part_info.partition_a.0).div_ceil(8);
+
+        if partition_a_bytes + partition_a_len <= packet_data.len() {
+            let partition_a_data =
+                &packet_data[partition_a_bytes..partition_a_bytes + partition_a_len];
+            let mut reader_a = BitReader::new(partition_a_data);
+
+            for mb_y in 0..mb_h {
+                for mb_x in 0..mb_w {
+                    let mb_idx = mb_y * mb_w + mb_x;
+                    if let Some(mb_data) = self.decode_partition_a_mb_header(
+                        &mut reader_a,
+                        mb_x as u32,
+                        mb_y as u32,
+                        is_i_vop,
+                    ) {
+                        mb_data_vec[mb_idx] = Some(mb_data);
+                    } else {
+                        warn!("  Partition A 解码失败: MB ({}, {})", mb_x, mb_y);
+                        // 使用标准顺序解码作为降级
+                        return self.decode_frame_standard(packet_data, is_i_vop);
+                    }
+                }
+            }
+        } else {
+            warn!("  Partition A 数据不足，降级到标准解码");
+            return self.decode_frame_standard(packet_data, is_i_vop);
+        }
+
+        // === 步骤 2: 从 Partition B 解码所有 DC 系数 ===
+        debug!("  步骤 2: 解码 Partition B (DC 系数)");
+        if part_info.partition_b.0 < part_info.partition_b.1 {
+            let partition_b_bytes = part_info.partition_b.0 / 8;
+            let partition_b_len = (part_info.partition_b.1 - part_info.partition_b.0).div_ceil(8);
+
+            if partition_b_bytes + partition_b_len <= packet_data.len() {
+                let partition_b_data =
+                    &packet_data[partition_b_bytes..partition_b_bytes + partition_b_len];
+                let mut reader_b = BitReader::new(partition_b_data);
+
+                for mb_y in 0..mb_h {
+                    for mb_x in 0..mb_w {
+                        let mb_idx = mb_y * mb_w + mb_x;
+                        if let Some(ref mut mb_data) = mb_data_vec[mb_idx] {
+                            if !self.decode_partition_b_dc(
+                                &mut reader_b,
+                                mb_data,
+                                mb_x as u32,
+                                mb_y as u32,
+                            ) {
+                                warn!(
+                                    "  Partition B 解码失败: MB ({}, {}), 降级到标准解码",
+                                    mb_x, mb_y
+                                );
+                                return self.decode_frame_standard(packet_data, is_i_vop);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // === 步骤 3: 从 Partition C 解码所有 AC 系数 ===
+        debug!("  步骤 3: 解码 Partition C (AC 系数)");
+        if part_info.partition_c.0 < part_info.partition_c.1 {
+            let partition_c_bytes = part_info.partition_c.0 / 8;
+            let partition_c_len = (part_info.partition_c.1 - part_info.partition_c.0).div_ceil(8);
+
+            if partition_c_bytes + partition_c_len <= packet_data.len() {
+                let partition_c_data =
+                    &packet_data[partition_c_bytes..partition_c_bytes + partition_c_len];
+                let mut reader_c = BitReader::new(partition_c_data);
+
+                for mb_y in 0..mb_h {
+                    for mb_x in 0..mb_w {
+                        let mb_idx = mb_y * mb_w + mb_x;
+                        if let Some(ref mut mb_data) = mb_data_vec[mb_idx] {
+                            if !self.decode_partition_c_ac(
+                                &mut reader_c,
+                                mb_data,
+                                mb_x as u32,
+                                mb_y as u32,
+                            ) {
+                                warn!("  Partition C 解码失败: MB ({}, {}), 使用零 AC", mb_x, mb_y);
+                                // 继续处理，使用零 AC 系数
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // === 步骤 4: 重建所有宏块 ===
+        debug!("  步骤 4: 重建宏块到帧");
+        for mb_y in 0..mb_h {
+            for mb_x in 0..mb_w {
+                let mb_idx = mb_y * mb_w + mb_x;
+                if let Some(ref mb_data) = mb_data_vec[mb_idx] {
+                    self.reconstruct_partitioned_macroblock(
+                        &mut frame,
+                        mb_x as u32,
+                        mb_y as u32,
+                        mb_data,
+                    );
+                }
+            }
+        }
+
+        debug!("  Data Partitioning 解码完成");
+        Ok(frame)
+    }
+
+    /// 标准顺序解码 (降级路径)
+    fn decode_frame_standard(
+        &mut self,
+        packet_data: &[u8],
+        is_i_vop: bool,
+    ) -> TaoResult<VideoFrame> {
+        let vop_offset = find_start_code_offset(packet_data, START_CODE_VOP)
+            .ok_or_else(|| TaoError::InvalidData("未找到 VOP 起始码".into()))?;
+        let mut reader = BitReader::new(&packet_data[vop_offset..]);
+
+        // 重新解析 VOP header
+        let _ = self.parse_vop_header(&mut reader)?;
+
+        if is_i_vop {
+            self.decode_i_frame(&mut reader)
+        } else {
+            self.decode_p_frame(&mut reader)
+        }
     }
 
     // ========================================================================
@@ -1014,16 +1688,103 @@ impl Decoder for Mpeg4Decoder {
                 debug!("  RVLC 可逆编码已启用 (Partition B 使用 RVLC)");
             }
 
-            // TODO: 实现基于分区的解码
-            // 当前实现仍使用标准顺序解码，未利用分区信息
-            // 完整实现需要:
-            // 1. 从 Partition A 解码所有 MB 的类型/量化/运动向量
-            // 2. 从 Partition B 解码所有 DC 系数 (使用 RVLC)
-            // 3. 从 Partition C 解码所有 AC 系数
-            // 4. 重建宏块数据
-            warn!("数据分区模式已检测但未完全实现,当前使用标准解码路径");
+            // === 使用 Data Partitioning 解码 ===
+            // 先解析 VOP header 以确定帧类型
+            let vop_offset = find_start_code_offset(&packet.data, START_CODE_VOP)
+                .ok_or_else(|| TaoError::InvalidData("未找到 VOP 起始码".into()))?;
+            let mut reader = BitReader::new(&packet.data[vop_offset..]);
+            let vop_info = self.parse_vop_header(&mut reader)?;
+
+            if !vop_info.vop_coded {
+                if let Some(ref_frame) = &self.reference_frame {
+                    let mut frame = ref_frame.clone();
+                    frame.picture_type = vop_info.picture_type;
+                    frame.is_keyframe = vop_info.picture_type == PictureType::I;
+                    frame.pts = packet.pts;
+                    frame.time_base = packet.time_base;
+                    frame.duration = packet.duration;
+                    self.pending_frame = Some(frame);
+                    self.frame_count += 1;
+                }
+                return Ok(());
+            }
+
+            // Data Partitioning 仅支持 I/P 帧
+            let mut frame = match vop_info.picture_type {
+                PictureType::I => {
+                    debug!("  使用 Data Partitioning 解码 I 帧");
+                    self.decode_frame_partitioned(&packet.data, &part_info, true)?
+                }
+                PictureType::P => {
+                    debug!("  使用 Data Partitioning 解码 P 帧");
+                    self.decode_frame_partitioned(&packet.data, &part_info, false)?
+                }
+                PictureType::B => {
+                    warn!("  B 帧不支持 Data Partitioning, 使用标准解码");
+                    return self.send_packet_standard(packet);
+                }
+                _ => {
+                    warn!("  未知帧类型, 使用标准解码");
+                    return self.send_packet_standard(packet);
+                }
+            };
+
+            // 设置帧元数据
+            frame.picture_type = vop_info.picture_type;
+            frame.is_keyframe = vop_info.picture_type == PictureType::I;
+            frame.pts = packet.pts;
+            frame.time_base = packet.time_base;
+            frame.duration = packet.duration;
+
+            // 更新参考帧
+            if vop_info.picture_type == PictureType::I || vop_info.picture_type == PictureType::P {
+                self.reference_frame = Some(frame.clone());
+            }
+
+            self.pending_frame = Some(frame);
+            self.frame_count += 1;
+
+            return Ok(());
         }
 
+        // === 标准解码路径 ===
+        self.send_packet_standard(packet)
+    }
+
+    fn receive_frame(&mut self) -> TaoResult<Frame> {
+        if !self.opened {
+            return Err(TaoError::Codec("解码器未打开".into()));
+        }
+
+        // 从 DPB 中取出帧（按 FIFO 顺序）
+        if !self.dpb.is_empty() {
+            let frame = self.dpb.remove(0);
+            return Ok(Frame::Video(frame));
+        }
+
+        // 如果还有 pending_frame，也返回（兼容旧逻辑）
+        if let Some(frame) = self.pending_frame.take() {
+            Ok(Frame::Video(frame))
+        } else {
+            Err(TaoError::NeedMoreData)
+        }
+    }
+
+    fn flush(&mut self) {
+        debug!("MPEG4 解码器已刷新，输出 DPB 中剩余 {} 帧", self.dpb.len());
+        // flush 时，DPB 中的帧会在 receive_frame 中逐个返回
+        // 不需要在这里清空
+        self.pending_frame = None;
+    }
+}
+
+// ============================================================================
+// 私有辅助方法
+// ============================================================================
+
+impl Mpeg4Decoder {
+    /// 标准解码路径 (非 Data Partitioning)
+    fn send_packet_standard(&mut self, packet: &Packet) -> TaoResult<()> {
         let vop_offset = find_start_code_offset(&packet.data, START_CODE_VOP)
             .ok_or_else(|| TaoError::InvalidData("未找到 VOP 起始码".into()))?;
         let mut reader = BitReader::new(&packet.data[vop_offset..]);
@@ -1141,32 +1902,6 @@ impl Decoder for Mpeg4Decoder {
 
         self.frame_count += 1;
         Ok(())
-    }
-
-    fn receive_frame(&mut self) -> TaoResult<Frame> {
-        if !self.opened {
-            return Err(TaoError::Codec("解码器未打开".into()));
-        }
-
-        // 从 DPB 中取出帧（按 FIFO 顺序）
-        if !self.dpb.is_empty() {
-            let frame = self.dpb.remove(0);
-            return Ok(Frame::Video(frame));
-        }
-
-        // 如果还有 pending_frame，也返回（兼容旧逻辑）
-        if let Some(frame) = self.pending_frame.take() {
-            Ok(Frame::Video(frame))
-        } else {
-            Err(TaoError::NeedMoreData)
-        }
-    }
-
-    fn flush(&mut self) {
-        debug!("MPEG4 解码器已刷新，输出 DPB 中剩余 {} 帧", self.dpb.len());
-        // flush 时，DPB 中的帧会在 receive_frame 中逐个返回
-        // 不需要在这里清空
-        self.pending_frame = None;
     }
 }
 

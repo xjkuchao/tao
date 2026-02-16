@@ -194,12 +194,13 @@ mod tests {
     #[test]
     #[cfg(feature = "http")]
     fn test_mpeg4part2_data_partitioning_real_sample() {
-        use tao_codec::{CodecRegistry, CodecParamsType, VideoCodecParams};
+        use tao_codec::{CodecParamsType, CodecRegistry, VideoCodecParams};
         use tao_core::MediaType;
         use tao_format::{FormatRegistry, IoContext, stream::StreamParams};
 
         // 官方 Data Partitioning 样本
-        let sample_url = "https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++vdpart-bug.avi";
+        let sample_url =
+            "https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++vdpart-bug.avi";
 
         println!("\n✓ Data Partitioning 真实样本解码测试");
         println!("  样本: {}", sample_url);
@@ -244,7 +245,7 @@ mod tests {
                 println!("  视频流信息:");
                 println!("    分辨率: {}x{}", v.width, v.height);
                 println!("    帧率: {}", v.frame_rate);
-                
+
                 tao_codec::CodecParameters {
                     codec_id: stream.codec_id,
                     extra_data: stream.extra_data.clone(),
@@ -266,9 +267,7 @@ mod tests {
             .create_decoder(stream.codec_id)
             .expect("创建解码器失败");
 
-        decoder
-            .open(&codec_params)
-            .expect("打开解码器失败");
+        decoder.open(&codec_params).expect("打开解码器失败");
 
         // 解码前 15 帧，验证 Data Partitioning 日志输出
         let mut frame_count = 0;
