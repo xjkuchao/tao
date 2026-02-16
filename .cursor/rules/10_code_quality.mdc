@@ -1,7 +1,7 @@
 ---
 description: 代码质量要求
 globs:
-  - "**/*.rs"
+    - "**/*.rs"
 alwaysApply: true
 ---
 
@@ -23,6 +23,7 @@ alwaysApply: true
 ## 代码审查清单
 
 每次修改后都应该自我审查代码, 确保:
+
 - ✓ 没有未使用的 imports, variables, functions
 - ✓ 没有重复代码
 - ✓ 没有硬编码的魔法数字或字符串

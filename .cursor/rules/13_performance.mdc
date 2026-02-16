@@ -1,9 +1,9 @@
 ---
 description: 性能优化指南
 globs:
-  - "crates/tao-codec/**/*.rs"
-  - "crates/tao-format/**/*.rs"
-  - "crates/tao-scale/**/*.rs"
+    - "crates/tao-codec/**/*.rs"
+    - "crates/tao-format/**/*.rs"
+    - "crates/tao-scale/**/*.rs"
 ---
 
 # 性能优化

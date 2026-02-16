@@ -1,9 +1,9 @@
 ---
 description: 测试文件和临时文件管理
 globs:
-  - "tests/**/*.rs"
-  - "data/**"
-  - "samples/**"
+    - "tests/**/*.rs"
+    - "data/**"
+    - "samples/**"
 ---
 
 # 测试文件和临时文件管理
@@ -13,28 +13,31 @@ globs:
 ## 目录结构
 
 - **`tests/`**: 集成测试代码
-  - `{feature}_pipeline.rs` - 集成测试文件
+    - `{feature}_pipeline.rs` - 集成测试文件
 - **`samples/`**: 样本清单和规范
-  - `SAMPLES.md` - 样本使用规范
-  - `SAMPLE_URLS.md` - 测试样本 URL 清单
+    - `SAMPLES.md` - 样本使用规范
+    - `SAMPLE_URLS.md` - 测试样本 URL 清单
 - **`data/`**: 临时文件目录 (不提交到 Git)
-  - `.gitkeep` - 确保目录存在
-  - 所有其他文件都被忽略
+    - `.gitkeep` - 确保目录存在
+    - 所有其他文件都被忽略
 
 ## 文件放置规则
 
 ### 测试代码
+
 - 集成测试: `tests/{feature}_pipeline.rs`
 - 单元测试: 在源文件中使用 `#[cfg(test)]` 模块
 - 基准测试: `benches/` 目录
 
 ### 测试样本
+
 - **所有样本使用 URL 方式访问, 不下载到本地**
 - 样本来源: https://samples.ffmpeg.org/
 - 样本清单: `samples/SAMPLE_URLS.md`
 - 直接使用 URL 创建 Demuxer/Decoder
 
 ### 临时文件
+
 - 必须放在 `data/` 目录下
 - 运行时生成的临时文件
 - 编解码过程中的中间文件

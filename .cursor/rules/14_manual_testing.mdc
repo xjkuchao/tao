@@ -1,7 +1,7 @@
 ---
 description: 手动播放测试规范
 globs:
-  - "bins/tao-play/**/*.rs"
+    - "bins/tao-play/**/*.rs"
 ---
 
 # 手动播放测试规范

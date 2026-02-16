@@ -8,6 +8,7 @@ alwaysApply: true
 ## 提交信息格式
 
 使用规范的提交信息格式:
+
 - `feat: 功能描述` - 新增功能
 - `fix: 问题描述` - 修复 Bug
 - `refactor: 重构描述` - 代码重构

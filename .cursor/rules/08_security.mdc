@@ -1,9 +1,9 @@
 ---
 description: 安全规范
 globs:
-  - "**/*.rs"
-  - "**/*.toml"
-  - ".gitignore"
+    - "**/*.rs"
+    - "**/*.toml"
+    - ".gitignore"
 ---
 
 # 安全规范
@@ -17,10 +17,10 @@ globs:
 ## 构建产物管理
 
 - `.gitignore` 中必须包含:
-  - `target/` - Rust 构建产物
-  - `*.dll`, `*.so`, `*.dylib` - 动态库
-  - `*.a`, `*.lib` - 静态库
-  - 其他临时文件和调试符号
+    - `target/` - Rust 构建产物
+    - `*.dll`, `*.so`, `*.dylib` - 动态库
+    - `*.a`, `*.lib` - 静态库
+    - 其他临时文件和调试符号
 
 ## FFI 安全
 

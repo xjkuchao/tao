@@ -24,6 +24,9 @@
 //! tao::format::register_all(&mut format_reg);
 //! ```
 
+/// 日志模块 (基于 tracing)
+pub mod logging;
+
 /// 核心类型与工具 (对标 libavutil)
 pub use tao_core as core;
 

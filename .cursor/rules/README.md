@@ -5,28 +5,33 @@
 ## 规则文件列表
 
 ### 核心规范
+
 - **00_index.mdc** - 规则索引和说明
 - **01_project_overview.mdc** - 项目概述、结构和核心架构
 - **02_language.mdc** - 语言规范（必须使用中文）
 - **03_code_organization.mdc** - 代码组织、执行计划和文件管理
 
 ### Rust 开发规范
+
 - **04_rust_coding.mdc** - Rust 编码规范、类型安全、并发和格式化
 - **05_error_handling.mdc** - 错误处理规范
 - **06_development_rules.mdc** - 开发规则（编解码器、容器格式、FFI）
 
 ### 质量与规范
+
 - **07_logging.mdc** - 日志规范
 - **08_security.mdc** - 安全规范
 - **09_commits.mdc** - 代码提交规范
 - **10_code_quality.mdc** - 代码质量要求
 
 ### 测试规范
+
 - **11_testing.mdc** - 测试规范和用例开发流程
 - **14_manual_testing.mdc** - 手动播放测试规范
 - **15_data_management.mdc** - 测试文件和临时文件管理
 
 ### 其他规范
+
 - **12_comments.mdc** - 注释规范
 - **13_performance.mdc** - 性能优化
 
@@ -47,6 +52,7 @@
 ## 维护说明
 
 更新规范时需要：
+
 1. 同时更新对应的 `.cursor/rules/*.mdc` 文件和 `AGENTS.md`
 2. 确保两者保持一致
 3. 提交时说明规范变更内容
