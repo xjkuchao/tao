@@ -242,6 +242,8 @@ tao-ffi crate 编译为 cdylib + staticlib:
 
 ## 13. 测试规范
 
+### 13.1 基本要求
+
 - 代码修改后必须执行 `cargo check` 与 `cargo test`.
 - 如出现错误或警告, 必须先修复再继续后续修改.
 - **重要**: 新增编解码器或容器格式时必须编写测试.
@@ -250,6 +252,169 @@ tao-ffi crate 编译为 cdylib + staticlib:
 - 测试应覆盖正常流程, 边界情况和错误情况.
 - 编解码器测试应包含: 基本编解码, 空输入, 损坏数据, flush 流程.
 - 容器格式测试应包含: 格式探测, 头部解析, 数据包读取, seek.
+
+### 13.2 测试用例开发流程
+
+**基本原则**: 随项目推进随时增加测试用例, 确保新功能有充分测试覆盖.
+
+#### 步骤 1: 确定测试需求
+
+实现新功能 (编解码器/容器格式/滤镜) 时, 明确需要测试的场景:
+- 正常流程: 标准输入输出, 基本功能验证
+- 边界情况: 空输入, 极限参数, 特殊格式
+- 错误处理: 损坏数据, 不支持的参数, 资源不足
+
+#### 步骤 2: 查找测试样本
+
+在 `data/samples/INVENTORY.md` 中查找适用的样本文件:
+
+```rust
+// 示例: 查找 H.264 测试样本
+// 1. 打开 data/samples/INVENTORY.md
+// 2. 搜索对应编解码器或容器格式
+// 3. 选择符合测试需求的样本 (分辨率, 特性, 文件大小等)
+```
+
+**如果找到合适样本**: 直接跳到步骤 4
+**如果没有合适样本**: 继续步骤 3
+
+#### 步骤 3: 维护样本库 (如需要)
+
+当现有样本不满足测试需求时:
+
+1. **查找新样本**: 访问 https://samples.ffmpeg.org/ 查找合适样本
+2. **更新计划**: 在 `data/SAMPLES.md` 中添加新样本的下载计划
+3. **更新脚本**: 编辑 `data/download_samples.ps1`, 添加样本 URL 到对应优先级哈希表
+4. **下载样本**: 执行 `./data/download_samples.ps1 -Priority P0` (或 P1/P2)
+5. **更新清单**: 在 `data/samples/INVENTORY.md` 中记录新下载的样本信息
+6. **提交样本**: 将样本文件和文档更新提交到 Git
+
+```powershell
+# 完整示例: 添加 VP9 测试样本
+# 1. 更新计划
+vim data/SAMPLES.md  # 添加 VP9 样本 URL
+
+# 2. 更新下载脚本
+vim data/download_samples.ps1  # 添加到 $P0Samples 或 $P1Samples
+
+# 3. 下载
+./data/download_samples.ps1 -Priority P0
+
+# 4. 更新清单
+vim data/samples/INVENTORY.md
+
+# 5. 提交
+git add data/
+git commit -m "chore: 添加 VP9 测试样本"
+```
+
+#### 步骤 4: 编写测试用例
+
+根据样本文件编写集成测试或单元测试:
+
+```rust
+// tests/vp9_pipeline.rs
+use tao_format::demuxer::DemuxerRegistry;
+use tao_codec::decoder::DecoderRegistry;
+
+#[test]
+fn test_vp9_decode_basic() {
+    // 1. 使用 data/samples/ 中的样本文件
+    let sample_path = "data/samples/video/vp9/vp9_test.webm";
+    
+    // 2. 打开解封装器
+    let mut demuxer = DemuxerRegistry::open(sample_path).unwrap();
+    
+    // 3. 查找视频流
+    let video_stream = demuxer.streams()
+        .iter()
+        .find(|s| s.media_type() == MediaType::Video)
+        .unwrap();
+    
+    // 4. 创建解码器
+    let mut decoder = DecoderRegistry::create_decoder(
+        video_stream.codec_id(),
+        video_stream.codec_params(),
+    ).unwrap();
+    
+    // 5. 解码第一帧
+    let mut packet_count = 0;
+    while let Some(packet) = demuxer.read_packet().unwrap() {
+        if packet.stream_index() == video_stream.index() {
+            let frames = decoder.decode(&packet).unwrap();
+            assert!(!frames.is_empty(), "应该解码出至少一帧");
+            packet_count += 1;
+            if packet_count > 10 { break; }  // 只测试前几帧
+        }
+    }
+    
+    assert!(packet_count > 0, "应该读取到数据包");
+}
+
+#[test]
+fn test_vp9_decode_corrupted() {
+    // 边界测试: 损坏的数据
+    let corrupted_path = "data/test/unit/corrupted_vp9.bin";
+    // ... 测试错误处理
+}
+```
+
+#### 步骤 5: 执行测试
+
+```bash
+# 运行特定测试
+cargo test --test vp9_pipeline
+
+# 运行所有测试
+cargo test
+
+# 安静模式 (只显示失败)
+cargo test --quiet
+```
+
+#### 步骤 6: 提交测试代码
+
+测试通过后提交代码:
+
+```bash
+git add tests/vp9_pipeline.rs
+git commit -m "test: 添加 VP9 解码器测试用例"
+```
+
+### 13.3 测试用例编写标准
+
+- **文件位置**: 集成测试放在 `tests/` 目录, 命名为 `{feature}_pipeline.rs`
+- **测试命名**: 使用 `test_{component}_{scenario}` 格式, 如 `test_h264_decode_basic`, `test_mp4_demux_seek`
+- **断言清晰**: 每个 `assert!` 都应包含失败消息, 说明预期行为
+- **注释完整**: 复杂测试逻辑添加注释说明测试目的和步骤
+- **样本路径**: 使用相对路径 `data/samples/...` 或 `data/test/...`
+- **资源清理**: 临时文件必须在 `data/tmp/` 目录, 测试结束后清理
+
+### 13.4 测试覆盖范围
+
+每个编解码器/容器格式至少包含以下测试:
+
+**编解码器测试**:
+- ✓ 基本解码 (正常流程)
+- ✓ 编码 (如果实现了编码器)
+- ✓ 空输入处理
+- ✓ 损坏数据处理
+- ✓ Flush 流程
+- ✓ 参数解析 (SPS/PPS/VPS 等)
+
+**容器格式测试**:
+- ✓ 格式探测 (Probe)
+- ✓ 头部解析
+- ✓ 数据包读取
+- ✓ Seek 操作
+- ✓ 多流处理 (音视频同时存在)
+- ✓ 损坏文件处理
+
+**滤镜测试**:
+- ✓ 基本滤镜操作
+- ✓ 参数验证
+- ✓ 链式滤镜
+- ✓ 边界条件 (分辨率, 像素格式)
 
 ## 14. 注释规范
 
