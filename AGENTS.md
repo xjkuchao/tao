@@ -19,9 +19,10 @@
 ```
 tao/
 ├── Cargo.toml              # Workspace 根配置 + 门面库 (re-export 所有子 crate)
-├── RULES.md                # 本规范文件
+├── AGENTS.md               # 本规范文件 (AI 开发规范)
 ├── .rustfmt.toml           # 代码格式化配置
 ├── .gitignore
+├── plans/                  # AI 执行计划文件存放目录
 ├── src/
 │   └── lib.rs              # 门面库入口, 重导出所有子 crate
 ├── crates/                 # 库 crate (对标 FFmpeg 各子库)
@@ -131,6 +132,33 @@ tao-ffi crate 编译为 cdylib + staticlib:
 - 公共类型集中定义在对应 crate 中, 避免散落.
 - 新增编解码器实现应放在 `tao-codec` 下对应子目录中.
 - 新增容器格式实现应放在 `tao-format` 下对应子目录中.
+
+### 5.1 执行计划管理
+
+- **必须**: AI 在制定执行计划时, 必须将计划文件写入 `plans/` 目录.
+- **命名规范**: 计划文件命名格式为 `{功能模块}_{任务描述}.md`, 如 `h264_decoder_improvement.md`.
+- **计划内容**: 计划文件应包含:
+    - 任务背景和目标
+    - 详细执行步骤 (带编号)
+    - 每步的预期产出
+    - 依赖项和前置条件
+    - 验收标准
+- **断点续执行**: 计划文件应支持断点续执行, AI 应在计划中标记已完成的步骤.
+- **跨 AI 协作**: 计划文件应足够详细, 使得不同 AI 工具可以基于同一计划继续执行.
+
+### 5.2 根目录文件管理
+
+- **严格禁止**: 不允许在项目根目录下随意创建新文件.
+- **允许的根目录文件**:
+    - 项目配置: `Cargo.toml`, `.rustfmt.toml`, `.gitignore`
+    - 核心文档: `README.md`, `AGENTS.md` (本规范文件)
+    - License 文件: `LICENSE`, `LICENSE-MIT`, `LICENSE-APACHE`
+- **其他文件的存放位置**:
+    - 执行计划: 必须放在 `plans/` 目录
+    - 技术文档: 放在 `docs/` 目录 (如有)
+    - 示例说明: 放在 `examples/` 目录
+    - 测试数据: 放在 `data/` 目录
+- **历史遗留文件**: 如果根目录已存在其他文件 (如 `H264_IMPROVEMENT_PLAN.md`), 应逐步迁移到对应目录.
 
 ## 6. Rust 编码规范
 
