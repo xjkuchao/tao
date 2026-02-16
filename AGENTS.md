@@ -378,3 +378,29 @@ let temp_dir = PathBuf::from("data/tmp");
 std::fs::create_dir_all(&temp_dir)?;
 let temp_file = temp_dir.join(format!("tmp_test_{}.bin", std::process::id()));
 ```
+
+### 17.8 持续维护和扩展
+
+随着项目推进, 需要持续更新测试样本以支持新功能:
+
+- **新增编解码器**: 
+    - 在 `data/SAMPLES.md` 中添加样本计划
+    - 更新 `data/download_samples.ps1` 添加下载 URL
+    - 执行脚本下载样本, 更新 `data/samples/INVENTORY.md`
+    - 提交所有更改到 Git
+- **新增滤镜**: 
+    - 在 `data/samples/filter/` 下按类型分类存放
+    - 复用已有样本或下载特定测试样本
+- **边界测试**: 
+    - 放在 `data/test/unit/`, 包含损坏文件、空文件、极限参数等
+- **性能测试**: 
+    - 放在 `data/test/bench/`, 使用不同大小和复杂度的样本
+- **回归测试**: 
+    - 放在 `data/test/integration/`, 记录已知问题的样本
+- **维护检查**: 
+    - 新增编解码器时同步更新样本文档
+    - 定期检查 FFmpeg 官方样本库更新 (每季度)
+    - 清理不再使用的样本文件
+    - 保持文档、脚本、清单同步
+
+详见 `data/README.md` 和 `data/SAMPLES.md` 了解完整的扩展和维护流程。

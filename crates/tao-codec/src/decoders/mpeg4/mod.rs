@@ -273,7 +273,7 @@ impl Mpeg4Decoder {
         // resync marker 模式: stuffing bits (0-7) + (16 + fcode) 个零 + 1 个一
         // 简化检测: 查找 ~0x00 0x00 0x00 ... 0x80 模式
         let marker_bytes = ((16 + fcode as usize) / 8) + 1;
-        
+
         let mut i = 1; // 跳过VOP起始码
         while i + marker_bytes < data.len() {
             // 检查是否接近字节边界的resync marker候选
@@ -879,9 +879,17 @@ impl Decoder for Mpeg4Decoder {
         }
 
         // 如果 VOL 指示 data_partitioned 或者可逆 VLC, 执行分区分析
-        let data_partitioned = self.vol_info.as_ref().map(|v| v.data_partitioned).unwrap_or(false);
-        let reversible_vlc = self.vol_info.as_ref().map(|v| v.reversible_vlc).unwrap_or(false);
-        
+        let data_partitioned = self
+            .vol_info
+            .as_ref()
+            .map(|v| v.data_partitioned)
+            .unwrap_or(false);
+        let reversible_vlc = self
+            .vol_info
+            .as_ref()
+            .map(|v| v.reversible_vlc)
+            .unwrap_or(false);
+
         if data_partitioned {
             let fcode = self.f_code_forward.saturating_sub(1);
             let (part_info, partition_count) = Self::analyze_data_partitions(&packet.data, fcode);
@@ -899,7 +907,7 @@ impl Decoder for Mpeg4Decoder {
             if partition_count > 2 {
                 debug!("  Partition C: starts at byte {}", part_info.partition_c);
             }
-            
+
             if reversible_vlc {
                 warn!(
                     "数据分区中使用 reversible_vlc (RVLC): 分区B中的AC系数使用可逆VLC解码。当前实现为前向路径，后续可增强"
