@@ -25,10 +25,10 @@
 - **大小**: 2.8 MB
 - **描述**: Xvid 编码，包含 GMC 和 Quarterpel 运动补偿
 - **优先级**: ⭐⭐⭐ **最高**
-- **用途**: 
-  - 测试 GMC 1/2/3 点精灵轨迹变换
-  - 验证 Quarterpel 运动补偿精度
-  - 检测 GMC artifact 边界情况
+- **用途**:
+    - 测试 GMC 1/2/3 点精灵轨迹变换
+    - 验证 Quarterpel 运动补偿精度
+    - 检测 GMC artifact 边界情况
 - **测试文件**: `tests/mpeg4_advanced_features.rs::test_gmc_quarterpel_xvid()`
 
 ### 2. Data Partitioning 主样本
@@ -39,9 +39,9 @@
 - **描述**: 专用 Data Partitioning 测试样本，含错误恢复测试
 - **优先级**: ⭐⭐⭐ **最高**
 - **用途**:
-  - 验证 Data Partitioning 分区标记解析
-  - 测试分区模式下的错误处理
-  - 对比 FFmpeg 的分区解码逻辑
+    - 验证 Data Partitioning 分区标记解析
+    - 测试分区模式下的错误处理
+    - 对比 FFmpeg 的分区解码逻辑
 - **测试文件**: `tests/mpeg4_advanced_features.rs::test_data_partitioning()`
 
 ### 3. Data Partitioning Bug 样本
@@ -51,9 +51,9 @@
 - **描述**: Data Partitioning 边界情况 bug 样本
 - **优先级**: ⭐⭐ 高
 - **用途**:
-  - 测试异常分区数据的处理
-  - 验证解码器稳健性
-  - 确保不会 panic 或崩溃
+    - 测试异常分区数据的处理
+    - 验证解码器稳健性
+    - 确保不会 panic 或崩溃
 - **测试文件**: `tests/mpeg4_advanced_features.rs::test_data_partitioning_bug()`
 
 ### 4. Quarterpel 系列样本
@@ -72,9 +72,9 @@
 - **描述**: DivX 5.02 B 帧 + Quarterpel 组合
 - **优先级**: ⭐⭐⭐ 最高（测试组合特性）
 - **用途**:
-  - 验证 B 帧 + Quarterpel 路径
-  - 测试 DPB (Decoded Picture Buffer) + QPel
-  - 确保帧重排序正确
+    - 验证 B 帧 + Quarterpel 路径
+    - 测试 DPB (Decoded Picture Buffer) + QPel
+    - 确保帧重排序正确
 - **测试文件**: `tests/mpeg4_advanced_features.rs::test_quarterpel_bframes()`
 
 #### 通用 Quarterpel + B 帧
@@ -92,16 +92,19 @@
 **搜索结果**: 整个 FFmpeg 样本库未发现包含 RVLC 的 MPEG-4 样本
 
 **原因分析**:
+
 - RVLC 是 MPEG-4 ASP 的可选特性，主要用于错误恢复
 - 实际编码器（Xvid/DivX/FFmpeg）很少启用此特性
 - 标准测试向量可能存在于 MPEG 官方参考软件中
 
 **解决方案**:
+
 1. 查找 MPEG-4 官方测试向量 (ISO conformance streams)
 2. 使用 MPEG-4 参考软件自行生成 RVLC 样本
 3. **临时搁置**: 保留 RVLC 解析框架，待找到样本后完善
 
-**当前状态**: 
+**当前状态**:
+
 - ✅ RVLC 前向解码已实现
 - ⚠️ RVLC 后向解码（错误恢复）框架存在但未测试
 
@@ -110,16 +113,19 @@
 **搜索结果**: MPEG-4 目录下未发现明确的 Interlaced 样本
 
 **可能原因**:
+
 - MPEG-4 ASP 交错支持不如 MPEG-2 广泛
 - 大部分 MPEG-4 视频为逐行扫描
 - 交错特性更常见于广播格式（MPEG-2/H.264）
 
 **替代方案**:
+
 1. MPEG-2 样本库有大量 interlaced 样本，可参考字段解析逻辑
 2. 检查某些 DivX/Xvid 编码是否包含 `interlaced` 标志
 3. 使用 FFmpeg 编码生成测试样本
 
 **当前状态**:
+
 - ✅ 交错标志解析已实现
 - ⚠️ 场预测 (top_field_first/alternate_vertical_scan) 待完善
 - ⚠️ 场 DCT (field_dct) 待测试
@@ -128,16 +134,16 @@
 
 ## 📊 样本优先级汇总
 
-| 优先级 | 样本                              | 特性                  | URL 后缀                           | 状态 |
-| ------ | --------------------------------- | --------------------- | ---------------------------------- | ---- |
-| ⭐⭐⭐ | xvid_gmcqpel_artifact.avi         | GMC + Quarterpel      | `xvid_gmcqpel_artifact.avi`        | ✅   |
-| ⭐⭐⭐ | ErrDec_mpeg4datapart-64_qcif.m4v  | Data Partitioning     | `ErrDec_mpeg4datapart-64_qcif.m4v` | ✅   |
-| ⭐⭐⭐ | dx502_b_qpel.avi                  | B 帧 + Quarterpel     | `dx502_b_qpel.avi`                 | ✅   |
-| ⭐⭐⭐ | DivX51-Qpel.avi                   | Quarterpel (标准)     | `DivX51-Qpel.avi`                  | ✅   |
-| ⭐⭐   | vdpart-bug.avi                    | Data Partition Bug    | `vdpart-bug.avi`                   | ✅   |
-| ⭐⭐   | qpel-bframes.avi                  | QPel + B 帧（轻量级） | `qpel-bframes.avi`                 | ✅   |
-| ❌     | RVLC 样本                         | 可逆 VLC              | N/A                                | ❌   |
-| ❌     | Interlaced 样本                   | 交错场预测            | N/A                                | ❌   |
+| 优先级 | 样本                             | 特性                  | URL 后缀                           | 状态 |
+| ------ | -------------------------------- | --------------------- | ---------------------------------- | ---- |
+| ⭐⭐⭐ | xvid_gmcqpel_artifact.avi        | GMC + Quarterpel      | `xvid_gmcqpel_artifact.avi`        | ✅   |
+| ⭐⭐⭐ | ErrDec_mpeg4datapart-64_qcif.m4v | Data Partitioning     | `ErrDec_mpeg4datapart-64_qcif.m4v` | ✅   |
+| ⭐⭐⭐ | dx502_b_qpel.avi                 | B 帧 + Quarterpel     | `dx502_b_qpel.avi`                 | ✅   |
+| ⭐⭐⭐ | DivX51-Qpel.avi                  | Quarterpel (标准)     | `DivX51-Qpel.avi`                  | ✅   |
+| ⭐⭐   | vdpart-bug.avi                   | Data Partition Bug    | `vdpart-bug.avi`                   | ✅   |
+| ⭐⭐   | qpel-bframes.avi                 | QPel + B 帧（轻量级） | `qpel-bframes.avi`                 | ✅   |
+| ❌     | RVLC 样本                        | 可逆 VLC              | N/A                                | ❌   |
+| ❌     | Interlaced 样本                  | 交错场预测            | N/A                                | ❌   |
 
 ---
 
@@ -146,11 +152,13 @@
 ### 1. 立即执行（高优先级）
 
 #### ✅ 已完成
+
 - [x] 更新 `samples/SAMPLE_URLS.md` 添加高级特性样本链接
 - [x] 创建 `tests/mpeg4_advanced_features.rs` 测试文件
 - [x] 更新 `plans/mpeg4_part2_decoder_perfection.md` 添加搜索结果
 
 #### ⏳ 待执行
+
 - [ ] 运行测试验证样本可用性: `cargo test --test mpeg4_advanced_features -- --include-ignored`
 - [ ] 修复测试中发现的解码问题
 - [ ] 对比 FFmpeg 输出，计算 PSNR/SSIM
@@ -180,12 +188,14 @@
 ### 5. RVLC 和交错扫描（低优先级）
 
 #### RVLC
+
 - [ ] 搜索 MPEG-4 官方测试向量（ISO/IEC conformance streams）
 - [ ] 联系 FFmpeg 社区询问 RVLC 样本来源
 - [ ] 考虑使用参考软件生成测试样本
 - [ ] 完成后实现后向解码路径
 
 #### 交错扫描
+
 - [ ] 尝试用 FFmpeg 生成交错 MPEG-4 样本: `ffmpeg -i input.mp4 -flags +ildct -c:v mpeg4 output.m4v`
 - [ ] 实现 `top_field_first` / `alternate_vertical_scan` 处理
 - [ ] 实现 `field_dct` 场 DCT 变换
@@ -202,44 +212,44 @@
 #[ignore] // 需要网络访问
 fn test_feature_name() {
     let url = "https://samples.ffmpeg.org/archive/video/mpeg4/<sample>.avi";
-    
+
     let mut demuxer = DemuxerRegistry::open(url)
         .expect("无法打开样本");
-    
+
     let video_stream_index = demuxer.streams()
         .iter()
         .position(|s| s.media_type.is_video())
         .expect("未找到视频流");
-    
+
     let stream = &demuxer.streams()[video_stream_index];
     let mut decoder = DecoderRegistry::create_video_decoder(&stream.codec_params)
         .expect("无法创建解码器");
-    
+
     let mut frame_count = 0;
     const MAX_FRAMES: usize = 20; // 只测试前 20 帧
-    
+
     while let Some(packet) = demuxer.read_packet().expect("读取失败") {
         if packet.stream_index != video_stream_index {
             continue;
         }
-        
+
         decoder.send_packet(&packet).expect("发送失败");
-        
+
         while let Some(frame) = decoder.receive_frame().expect("接收失败") {
             frame_count += 1;
-            println!("解码帧 #{}, 分辨率: {}x{}", 
+            println!("解码帧 #{}, 分辨率: {}x{}",
                      frame_count, frame.width, frame.height);
-            
+
             if frame_count >= MAX_FRAMES {
                 break;
             }
         }
-        
+
         if frame_count >= MAX_FRAMES {
             break;
         }
     }
-    
+
     assert!(frame_count >= 10, "至少应解码 10 帧");
     println!("✅ 测试通过，解码 {} 帧", frame_count);
 }

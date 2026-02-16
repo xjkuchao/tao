@@ -105,8 +105,7 @@ impl CurrentFileWriter {
     fn reopen_current_file(&mut self) -> std::io::Result<()> {
         let today = Local::now().date_naive();
         let file_path = build_current_log_path(&self.directory, &self.prefix, today);
-        let file = open_append_file(&file_path)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        let file = open_append_file(&file_path).map_err(std::io::Error::other)?;
         self.file = file;
         Ok(())
     }
