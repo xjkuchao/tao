@@ -21,7 +21,9 @@ data/
 
 ### 样本文件 (samples/)
 - 用于测试各种编解码器和容器格式
-- 所有样本文件提交到 Git (包括大文件)
+- **文件大小规则**:
+  - **< 50MB**: 下载并提交到 Git
+  - **≥ 50MB**: 仅记录 URL, 不下载, 测试时使用 URL 流式访问
 - 样本来源: https://samples.ffmpeg.org/ (FFmpeg 官方测试样本库)
 - 文件命名使用描述性名称，如 `h264_test.mp4`, `theora_sample.ogg`
 - 样本清单和下载计划参见 `SAMPLES.md`

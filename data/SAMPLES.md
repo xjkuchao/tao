@@ -2,6 +2,14 @@
 
 > 基于 https://samples.ffmpeg.org/ 官方样本库
 
+## 文件大小规则
+
+- **< 50MB**: 下载到 `data/samples/` 目录, 提交到 Git
+- **≥ 50MB**: 仅记录 URL 到 `data/samples/INVENTORY.md`, 不下载文件
+  - 测试时使用 URL 直接流式访问
+  - 测试用例标记为 `#[ignore]` 避免 CI 中频繁下载
+  - 手动测试: `cargo test -- --ignored test_name`
+
 ## 1. 核心优先级样本 (必须下载)
 
 根据项目当前支持的编解码器和容器格式，优先下载以下样本:
@@ -145,11 +153,13 @@ data/samples/
 当项目实现新的编解码器时:
 
 1. **查找样本**: 访问 https://samples.ffmpeg.org/ 查找对应编解码器的测试样本
-2. **更新计划**: 在本文件 (`SAMPLES.md`) 中添加新编解码器章节，列出样本 URL
-3. **更新脚本**: 编辑 `download_samples.ps1`，在对应优先级哈希表中添加下载项
-4. **执行下载**: 运行 `./download_samples.ps1 -Priority P0` (或 P1/P2)
-5. **更新清单**: 在 `samples/INVENTORY.md` 中记录新下载的样本
-6. **提交到 Git**: 将所有样本文件和文档更新提交到版本库
+2. **检查大小**: 使用 `curl -I <URL> | Select-String "Content-Length"` 检查文件大小
+3. **更新计划**: 在本文件 (`SAMPLES.md`) 中添加新编解码器章节，列出样本 URL
+4. **处理样本**:
+   - **< 50MB**: 更新 `download_samples.ps1` 并执行下载
+   - **≥ 50MB**: 仅在 `INVENTORY.md` 中记录 URL, 标注"仅 URL"
+5. **更新清单**: 在 `samples/INVENTORY.md` 中记录样本信息 (本地路径或 URL)
+6. **提交到 Git**: 将样本文件 (如有) 和文档更新提交到版本库
 
 ### 6.2 添加滤镜测试样本
 
@@ -182,9 +192,11 @@ const EXTREME_PARAMS: &str = "data/test/unit/extreme_resolution.h264";
 
 ```rust
 // 不同大小的样本用于性能对比
-const SMALL_SAMPLE: &str = "data/test/bench/small_480p.mp4";  // < 10MB
-const MEDIUM_SAMPLE: &str = "data/test/bench/medium_1080p.mp4"; // 10-50MB
-const LARGE_SAMPLE: &str = "data/test/bench/large_4k.mp4";      // > 100MB
+const SMALL_SAMPLE: &str = "data/test/bench/small_480p.mp4";   // < 10MB (本地文件)
+const MEDIUM_SAMPLE: &str = "data/test/bench/medium_1080p.mp4"; // 10-50MB (本地文件)
+
+// 大文件使用 URL (≥ 50MB)
+const LARGE_SAMPLE_URL: &str = "https://samples.ffmpeg.org/video/4k/large_4k.mp4"; // > 100MB (URL)
 ```
 
 ### 6.5 样本命名规范
