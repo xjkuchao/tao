@@ -46,12 +46,12 @@ alwaysApply: true
 - Cursor 会自动加载 `.cursor/rules/` 下的规则文件
 - 带有 `alwaysApply: true` 的规则始终生效
 - 其他规则根据文件类型和上下文自动应用
-- 项目根目录的 `AGENTS.md` 文件保留作为完整规范参考
+- 规则内容在 `.cursor/rules/` 与 `.github/` 中维护
 
 ## 规范更新
 
 当需要更新规范时:
 
-1. 同时更新对应的 `.cursor/rules/*.mdc` 文件和 `AGENTS.md`
+1. 同时更新对应的 `.cursor/rules/*.mdc` 文件和 `.github/` 规则文件
 2. 确保两者保持一致
 3. 提交时说明规范变更内容

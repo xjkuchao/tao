@@ -64,9 +64,9 @@ cargo run --package tao-play -- input.mp4
 
 ## 开发规范
 
-**重要**: 本项目使用 [AGENTS.md](AGENTS.md) 作为唯一的项目开发规范文件。
+**重要**: 本项目开发规范维护在 `.github/` 与 `.cursor/` 目录内的规则文件中。
 
-所有开发人员和 AI 工具 (Cursor, Copilot, GitHub Copilot, Claude Code 等) 在参与本项目开发时，**必须严格遵守** AGENTS.md 中规定的所有规则和约定，包括但不限于：
+所有开发人员和 AI 工具 (Cursor, Copilot, GitHub Copilot, Claude Code 等) 在参与本项目开发时，**必须严格遵守** 规则文件中规定的所有规则和约定，包括但不限于：
 
 - 代码组织与模块化
 - Rust 编码规范
@@ -76,7 +76,7 @@ cargo run --package tao-play -- input.mp4
 - 注释规范 (全部使用中文)
 - 代码质量要求 (0 警告容忍)
 
-在开始任何开发工作前，请务必仔细阅读 [AGENTS.md](AGENTS.md)。
+在开始任何开发工作前，请务必仔细阅读 [.github/copilot-instructions.md](.github/copilot-instructions.md) 和 [.cursor/rules/README.md](.cursor/rules/README.md)。
 
 ## 代码质量检查
 
@@ -106,7 +106,7 @@ cargo test
 
 欢迎贡献！在提交 PR 前请确保：
 
-1. 已阅读并遵守 [AGENTS.md](AGENTS.md) 中的所有规范
+1. 已阅读并遵守规则文件中的所有规范
 2. 所有代码质量检查通过 (见上文)
 3. 添加了必要的测试
 4. 更新了相关文档

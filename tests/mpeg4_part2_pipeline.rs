@@ -244,9 +244,7 @@ mod tests {
     /// - 逐帧输出对比 (Y/U/V 平面像素级)
     /// - PSNR/差异统计
     /// - 支持多容器格式 (MP4/MKV/AVI/TS)
-    #[test]
-    #[ignore]
-    fn test_mpeg4part2_vs_ffmpeg_reference() {
+    fn run_basic_pixel_check() {
         println!("FFmpeg 对比测试框架演示\n");
 
         // 1. 检查 FFmpeg 可用性
@@ -297,6 +295,18 @@ mod tests {
         println!("  - 样本清单: samples/SAMPLE_URLS.md");
         println!("  - 使用规范: samples/SAMPLES.md");
         println!("  - 对比工具: tests/ffmpeg_compare.rs");
+    }
+
+    #[test]
+    #[ignore]
+    fn test_mpeg4part2_vs_ffmpeg_reference() {
+        run_basic_pixel_check();
+    }
+
+    #[test]
+    #[ignore]
+    fn test_mpeg4_decode_basic_pixel_check() {
+        run_basic_pixel_check();
     }
 
     /// 各容器格式支持验证测试

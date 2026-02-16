@@ -1,14 +1,16 @@
 use chrono::Datelike;
 use std::fs;
 use std::path::PathBuf;
-use tao::logging::{init, LoggingConfig};
+use tao::logging::{LoggingConfig, init};
 
 // 注意: 由于 tracing 的全局订阅器只能初始化一次,
 // 涉及 init() 的测试必须单独运行或使用 #[ignore] 标记
 
 /// 获取测试专用的日志目录
 fn test_log_dir(test_name: &str) -> PathBuf {
-    PathBuf::from("data").join("tmp").join(format!("test_logs_{}", test_name))
+    PathBuf::from("data")
+        .join("tmp")
+        .join(format!("test_logs_{}", test_name))
 }
 
 /// 清理测试日志目录
@@ -123,10 +125,7 @@ async fn test_logging_file_content() {
     );
 
     // 验证日志包含级别标记
-    assert!(
-        content.contains("INFO"),
-        "日志应该包含 INFO 级别标记"
-    );
+    assert!(content.contains("INFO"), "日志应该包含 INFO 级别标记");
 
     cleanup_test_logs(test_name);
 }
@@ -196,7 +195,7 @@ fn test_logging_file_naming_format() {
         // 这里我们只测试文件名格式, 不实际初始化
         let today = chrono::Local::now().date_naive();
         let expected_filename = format!("{}.{}.log", prefix, today.format("%Y-%m-%d"));
-        
+
         // 验证文件名格式正确
         assert!(
             expected_filename.contains(prefix),
@@ -223,7 +222,7 @@ async fn test_logging_directory_creation() {
     cleanup_test_logs(test_name);
 
     let log_dir = test_log_dir(test_name).join("nested").join("logs");
-    
+
     // 确保目录不存在
     assert!(!log_dir.exists(), "测试前日志目录不应该存在");
 
@@ -297,5 +296,8 @@ fn test_logging_config_defaults() {
 
     assert_eq!(config.retention_days, 30, "默认保留天数应该是 30");
     assert!(config.compress_history, "默认应该开启压缩");
-    assert_eq!(config.cleanup_interval_seconds, 3600, "默认清理间隔应该是 3600 秒");
+    assert_eq!(
+        config.cleanup_interval_seconds, 3600,
+        "默认清理间隔应该是 3600 秒"
+    );
 }

@@ -33,6 +33,131 @@ fn read_quant_matrix(reader: &mut BitReader) -> Option<[u8; 64]> {
     Some(matrix)
 }
 
+fn read_marker_bit(reader: &mut BitReader, context: &str) -> bool {
+    match reader.read_bit() {
+        Some(true) => true,
+        _ => {
+            warn!("复杂度估计 marker 缺失: {}", context);
+            false
+        }
+    }
+}
+
+fn parse_complexity_estimation(reader: &mut BitReader) -> (u16, u16, u16) {
+    let mut bits_i = 0u16;
+    let mut bits_p = 0u16;
+    let mut bits_b = 0u16;
+
+    let snapshot = reader.snapshot_position();
+    let estimation_method = match reader.read_bits(2) {
+        Some(value) => value as u8,
+        None => return (0, 0, 0),
+    };
+
+    if estimation_method >= 2 {
+        warn!("复杂度估计方法非法: {}", estimation_method);
+        reader.restore_position(snapshot);
+        return (0, 0, 0);
+    }
+
+    let shape_disable = reader.read_bit().unwrap_or(true);
+    if !shape_disable {
+        if reader.read_bit().unwrap_or(false) {
+            bits_i += 8;
+        }
+        if reader.read_bit().unwrap_or(false) {
+            bits_i += 8;
+        }
+        if reader.read_bit().unwrap_or(false) {
+            bits_i += 8;
+        }
+        if reader.read_bit().unwrap_or(false) {
+            bits_i += 8;
+        }
+        if reader.read_bit().unwrap_or(false) {
+            bits_i += 8;
+        }
+        if reader.read_bit().unwrap_or(false) {
+            bits_i += 8;
+        }
+    }
+
+    let texture_disable = reader.read_bit().unwrap_or(true);
+    if !texture_disable {
+        if reader.read_bit().unwrap_or(false) {
+            bits_i += 8;
+        }
+        if reader.read_bit().unwrap_or(false) {
+            bits_p += 8;
+        }
+        if reader.read_bit().unwrap_or(false) {
+            bits_p += 8;
+        }
+        if reader.read_bit().unwrap_or(false) {
+            bits_i += 8;
+        }
+    }
+
+    if !read_marker_bit(reader, "分段1") {
+        reader.restore_position(snapshot);
+        return (0, 0, 0);
+    }
+
+    let dct_disable = reader.read_bit().unwrap_or(true);
+    if !dct_disable {
+        if reader.read_bit().unwrap_or(false) {
+            bits_i += 8;
+        }
+        if reader.read_bit().unwrap_or(false) {
+            bits_i += 8;
+        }
+        if reader.read_bit().unwrap_or(false) {
+            bits_i += 8;
+        }
+        if reader.read_bit().unwrap_or(false) {
+            bits_i += 4;
+        }
+    }
+
+    let motion_disable = reader.read_bit().unwrap_or(true);
+    if !motion_disable {
+        if reader.read_bit().unwrap_or(false) {
+            bits_p += 8;
+        }
+        if reader.read_bit().unwrap_or(false) {
+            bits_p += 8;
+        }
+        if reader.read_bit().unwrap_or(false) {
+            bits_b += 8;
+        }
+        if reader.read_bit().unwrap_or(false) {
+            bits_p += 8;
+        }
+        if reader.read_bit().unwrap_or(false) {
+            bits_p += 8;
+        }
+        if reader.read_bit().unwrap_or(false) {
+            bits_p += 8;
+        }
+    }
+
+    if !read_marker_bit(reader, "分段2") {
+        reader.restore_position(snapshot);
+        return (0, 0, 0);
+    }
+
+    if estimation_method == 1 {
+        if reader.read_bit().unwrap_or(false) {
+            bits_i += 8;
+        }
+        if reader.read_bit().unwrap_or(false) {
+            bits_p += 8;
+        }
+    }
+
+    (bits_i, bits_p, bits_b)
+}
+
 impl Mpeg4Decoder {
     /// 解析 VOL 头部
     pub(super) fn parse_vol_header(&mut self, data: &[u8]) -> Result<(), tao_core::TaoError> {
@@ -51,8 +176,9 @@ impl Mpeg4Decoder {
         let _random_accessible_vol = reader.read_bit();
         let _video_object_type_indication = reader.read_bits(8);
         let is_object_layer_identifier = reader.read_bit().unwrap_or(false);
+        let mut video_object_layer_verid = 1u8;
         if is_object_layer_identifier {
-            let _verid = reader.read_bits(4);
+            video_object_layer_verid = reader.read_bits(4).unwrap_or(1) as u8;
             let _priority = reader.read_bits(3);
         }
 
@@ -99,7 +225,11 @@ impl Mpeg4Decoder {
         let interlacing = reader.read_bit().unwrap_or(false);
         let _obmc_disable = reader.read_bit();
 
-        let sprite_enable = reader.read_bits(1).unwrap_or(0) as u8;
+        let sprite_enable = if video_object_layer_verid >= 2 {
+            reader.read_bits(2).unwrap_or(0) as u8
+        } else {
+            reader.read_bits(1).unwrap_or(0) as u8
+        };
         let mut sprite_warping_points = 0u8;
         if sprite_enable == 1 || sprite_enable == 2 {
             if sprite_enable != 2 {
@@ -147,9 +277,11 @@ impl Mpeg4Decoder {
         let quarterpel = reader.read_bit().unwrap_or(false);
 
         let complexity_disable = reader.read_bit().unwrap_or(true);
-        if !complexity_disable {
-            warn!("VOL: complexity_estimation 未完全解析, 可能导致后续字段偏移");
-        }
+        let (complexity_bits_i, complexity_bits_p, complexity_bits_b) = if !complexity_disable {
+            parse_complexity_estimation(&mut reader)
+        } else {
+            (0, 0, 0)
+        };
 
         let resync_marker_disable = reader.read_bit().unwrap_or(true);
 
@@ -160,6 +292,7 @@ impl Mpeg4Decoder {
         }
 
         self.vol_info = Some(VolInfo {
+            video_object_layer_verid,
             vop_time_increment_resolution: time_res,
             fixed_vop_rate: fixed_rate,
             data_partitioned,
@@ -169,6 +302,9 @@ impl Mpeg4Decoder {
             quarterpel,
             sprite_enable,
             sprite_warping_points,
+            complexity_estimation_bits_i: complexity_bits_i,
+            complexity_estimation_bits_p: complexity_bits_p,
+            complexity_estimation_bits_b: complexity_bits_b,
             resync_marker_disable,
         });
 
@@ -190,7 +326,7 @@ impl Mpeg4Decoder {
             VOP_TYPE_I => PictureType::I,
             VOP_TYPE_P => PictureType::P,
             VOP_TYPE_B => PictureType::B,
-            VOP_TYPE_S => PictureType::I,
+            VOP_TYPE_S => PictureType::S,
             _ => {
                 return Err(TaoError::InvalidData(format!(
                     "未知 VOP 类型: {}",
@@ -241,19 +377,36 @@ impl Mpeg4Decoder {
         reader.read_bit(); // marker
         let vop_coded = reader.read_bit().unwrap_or(true);
 
+        let is_sprite = picture_type == PictureType::S;
+
         if !vop_coded {
             debug!("VOP 未编码");
             return Ok(VopInfo {
                 picture_type,
                 vop_coded: false,
+                is_sprite,
                 vop_rounding_type: 0,
                 intra_dc_vlc_thr: 0,
+                alternate_vertical_scan_flag: false,
             });
         }
 
         // P-VOP: rounding_type 在 intra_dc_vlc_thr 之前
         if picture_type == PictureType::P {
             self.rounding_control = reader.read_bit().unwrap_or(false) as u8;
+        }
+
+        // 复杂度估计 (仅用于跳过比特)
+        if let Some(vol_info) = self.vol_info.as_ref() {
+            if vol_info.complexity_estimation_bits_i > 0 {
+                reader.skip_bits(vol_info.complexity_estimation_bits_i as u32);
+            }
+            if picture_type != PictureType::I && vol_info.complexity_estimation_bits_p > 0 {
+                reader.skip_bits(vol_info.complexity_estimation_bits_p as u32);
+            }
+            if picture_type == PictureType::B && vol_info.complexity_estimation_bits_b > 0 {
+                reader.skip_bits(vol_info.complexity_estimation_bits_b as u32);
+            }
         }
 
         // intra_dc_vlc_thr
@@ -263,6 +416,13 @@ impl Mpeg4Decoder {
             0
         };
         self.intra_dc_vlc_thr = intra_dc_vlc_thr;
+
+        let alternate_vertical_scan_flag = if self.vol_info.as_ref().map(|v| v.interlacing).unwrap_or(false) {
+            let _top_field_first = reader.read_bit().unwrap_or(false);
+            reader.read_bit().unwrap_or(false)
+        } else {
+            false
+        };
 
         // vop_quant
         if let Some(quant) = reader.read_bits(5) {
@@ -303,8 +463,286 @@ impl Mpeg4Decoder {
         Ok(VopInfo {
             picture_type,
             vop_coded: true,
+            is_sprite,
             vop_rounding_type: self.rounding_control,
             intra_dc_vlc_thr,
+            alternate_vertical_scan_flag,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::gmc::GmcParameters;
+    use super::super::tables::{STD_INTER_QUANT_MATRIX, STD_INTRA_QUANT_MATRIX};
+    use tao_core::PixelFormat;
+
+    struct TestBitWriter {
+        data: Vec<u8>,
+        cur: u8,
+        filled: u8,
+    }
+
+    impl TestBitWriter {
+        fn new() -> Self {
+            Self {
+                data: Vec::new(),
+                cur: 0,
+                filled: 0,
+            }
+        }
+
+        fn push_bit(&mut self, bit: bool) {
+            self.cur = (self.cur << 1) | (bit as u8);
+            self.filled += 1;
+            if self.filled == 8 {
+                self.data.push(self.cur);
+                self.cur = 0;
+                self.filled = 0;
+            }
+        }
+
+        fn push_bits(&mut self, value: u32, count: u8) {
+            for idx in (0..count).rev() {
+                let bit = ((value >> idx) & 1) != 0;
+                self.push_bit(bit);
+            }
+        }
+
+        fn finish(mut self) -> Vec<u8> {
+            if self.filled > 0 {
+                self.cur <<= 8 - self.filled;
+                self.data.push(self.cur);
+                self.filled = 0;
+            }
+            self.data
+        }
+    }
+
+    fn wrap_vol_start_code(mut payload: Vec<u8>) -> Vec<u8> {
+        let mut data = vec![0x00, 0x00, 0x01, 0x20];
+        data.append(&mut payload);
+        data
+    }
+
+    fn create_decoder_for_test() -> Mpeg4Decoder {
+        Mpeg4Decoder {
+            width: 0,
+            height: 0,
+            pixel_format: PixelFormat::Yuv420p,
+            opened: false,
+            reference_frame: None,
+            backward_reference: None,
+            pending_frame: None,
+            frame_count: 0,
+            quant: 1,
+            vol_info: None,
+            quant_matrix_intra: STD_INTRA_QUANT_MATRIX,
+            quant_matrix_inter: STD_INTER_QUANT_MATRIX,
+            predictor_cache: Vec::new(),
+            mv_cache: Vec::new(),
+            ref_mv_cache: Vec::new(),
+            mb_info: Vec::new(),
+            mb_stride: 0,
+            f_code_forward: 1,
+            f_code_backward: 1,
+            rounding_control: 0,
+            intra_dc_vlc_thr: 0,
+            time_pp: 0,
+            time_bp: 0,
+            last_time_base: 0,
+            time_base_acc: 0,
+            last_non_b_time: 0,
+            gmc_params: GmcParameters::default(),
+        }
+    }
+
+    fn write_basic_vol_header(writer: &mut TestBitWriter, interlacing: bool, verid: u8, sprite_enable: u8) {
+        writer.push_bit(false);
+        writer.push_bits(1, 8);
+
+        if verid > 1 {
+            writer.push_bit(true);
+            writer.push_bits(verid as u32, 4);
+            writer.push_bits(1, 3);
+        } else {
+            writer.push_bit(false);
+        }
+
+        writer.push_bits(1, 4);
+        writer.push_bit(false);
+
+        writer.push_bits(0, 2);
+        writer.push_bit(true);
+        writer.push_bits(1000, 16);
+        writer.push_bit(true);
+        writer.push_bit(false);
+
+        writer.push_bit(true);
+        writer.push_bits(320, 13);
+        writer.push_bit(true);
+        writer.push_bits(240, 13);
+        writer.push_bit(true);
+
+        writer.push_bit(interlacing);
+        writer.push_bit(true);
+
+        if verid >= 2 {
+            writer.push_bits(sprite_enable as u32, 2);
+        } else {
+            writer.push_bits(sprite_enable as u32, 1);
+        }
+
+        if sprite_enable == 1 || sprite_enable == 2 {
+            if sprite_enable != 2 {
+                writer.push_bits(1, 13);
+                writer.push_bit(true);
+                writer.push_bits(1, 13);
+                writer.push_bit(true);
+                writer.push_bits(0, 13);
+                writer.push_bit(true);
+                writer.push_bits(0, 13);
+                writer.push_bit(true);
+            }
+            writer.push_bits(1, 6);
+            writer.push_bits(0, 2);
+            writer.push_bit(false);
+            if sprite_enable != 2 {
+                writer.push_bit(false);
+            }
+        }
+
+        writer.push_bit(false);
+        writer.push_bit(false);
+        writer.push_bit(false);
+    }
+
+    #[test]
+    fn test_vol_header_parse_basic() {
+        let mut writer = TestBitWriter::new();
+        write_basic_vol_header(&mut writer, false, 1, 0);
+        writer.push_bit(true);
+        writer.push_bit(true);
+        writer.push_bit(false);
+
+        let data = wrap_vol_start_code(writer.finish());
+        let mut decoder = create_decoder_for_test();
+        decoder.parse_vol_header(&data).expect("解析 VOL 头失败");
+
+        let vol = decoder.vol_info.as_ref().expect("应生成 VOL 信息");
+        assert_eq!(vol.video_object_layer_verid, 1, "verid 应为 1");
+        assert_eq!(vol.vop_time_increment_resolution, 1000, "time_res 应为 1000");
+        assert_eq!(vol.quant_type, 0, "量化类型应为 H.263");
+        assert!(!vol.interlacing, "应为非隔行");
+        assert!(!vol.quarterpel, "应为非四分像素");
+        assert_eq!(vol.sprite_enable, 0, "sprite_enable 应为 0");
+        assert!(vol.resync_marker_disable, "应禁用 resync marker");
+        assert_eq!(vol.complexity_estimation_bits_i, 0, "复杂度估计 I 跳过位应为 0");
+        assert_eq!(vol.complexity_estimation_bits_p, 0, "复杂度估计 P 跳过位应为 0");
+        assert_eq!(vol.complexity_estimation_bits_b, 0, "复杂度估计 B 跳过位应为 0");
+    }
+
+    #[test]
+    fn test_vol_header_complexity_estimation() {
+        let mut writer = TestBitWriter::new();
+        write_basic_vol_header(&mut writer, false, 1, 0);
+
+        writer.push_bit(false);
+        writer.push_bits(0, 2);
+
+        writer.push_bit(false);
+        writer.push_bit(true);
+        writer.push_bit(false);
+        writer.push_bit(true);
+        writer.push_bit(false);
+        writer.push_bit(true);
+        writer.push_bit(false);
+
+        writer.push_bit(false);
+        writer.push_bit(true);
+        writer.push_bit(true);
+        writer.push_bit(false);
+        writer.push_bit(true);
+
+        writer.push_bit(true);
+
+        writer.push_bit(false);
+        writer.push_bit(true);
+        writer.push_bit(false);
+        writer.push_bit(true);
+        writer.push_bit(true);
+
+        writer.push_bit(false);
+        writer.push_bit(true);
+        writer.push_bit(false);
+        writer.push_bit(true);
+        writer.push_bit(true);
+        writer.push_bit(false);
+        writer.push_bit(true);
+
+        writer.push_bit(true);
+
+        writer.push_bit(true);
+        writer.push_bit(false);
+
+        let data = wrap_vol_start_code(writer.finish());
+        let mut decoder = create_decoder_for_test();
+        decoder.parse_vol_header(&data).expect("解析 VOL 头失败");
+
+        let vol = decoder.vol_info.as_ref().expect("应生成 VOL 信息");
+        assert_eq!(vol.complexity_estimation_bits_i, 60, "复杂度估计 I 跳过位应为 60");
+        assert_eq!(vol.complexity_estimation_bits_p, 32, "复杂度估计 P 跳过位应为 32");
+        assert_eq!(vol.complexity_estimation_bits_b, 8, "复杂度估计 B 跳过位应为 8");
+    }
+
+    #[test]
+    fn test_vol_header_sprite_enable_verid2() {
+        let mut writer = TestBitWriter::new();
+        write_basic_vol_header(&mut writer, false, 2, 2);
+        writer.push_bit(true);
+        writer.push_bit(true);
+        writer.push_bit(false);
+
+        let data = wrap_vol_start_code(writer.finish());
+        let mut decoder = create_decoder_for_test();
+        decoder.parse_vol_header(&data).expect("解析 VOL 头失败");
+
+        let vol = decoder.vol_info.as_ref().expect("应生成 VOL 信息");
+        assert_eq!(vol.video_object_layer_verid, 2, "verid 应为 2");
+        assert_eq!(vol.sprite_enable, 2, "sprite_enable 应为 2");
+        assert_eq!(vol.sprite_warping_points, 1, "sprite_warping_points 应为 1");
+    }
+
+    #[test]
+    fn test_vop_header_svop_detection() {
+        let mut writer = TestBitWriter::new();
+        write_basic_vol_header(&mut writer, false, 1, 0);
+        writer.push_bit(true);
+        writer.push_bit(true);
+        writer.push_bit(false);
+
+        let vol_data = wrap_vol_start_code(writer.finish());
+        let mut decoder = create_decoder_for_test();
+        decoder.parse_vol_header(&vol_data).expect("解析 VOL 头失败");
+
+        let mut vop_writer = TestBitWriter::new();
+        vop_writer.push_bits(3, 2);
+        vop_writer.push_bit(false);
+        vop_writer.push_bit(true);
+        vop_writer.push_bits(1, 10);
+        vop_writer.push_bit(true);
+        vop_writer.push_bit(true);
+        vop_writer.push_bits(0, 3);
+        vop_writer.push_bits(2, 5);
+
+        let vop_data = vop_writer.finish();
+        let mut reader = BitReader::new(&vop_data);
+        let vop = decoder.parse_vop_header(&mut reader).expect("解析 VOP 头失败");
+
+        assert_eq!(vop.picture_type, PictureType::S, "应识别为 S-VOP");
+        assert!(vop.is_sprite, "S-VOP 应标记为 sprite");
+        assert!(vop.vop_coded, "S-VOP 应为编码帧");
+        assert!(!vop.alternate_vertical_scan_flag, "非隔行时不应启用交错扫描");
     }
 }

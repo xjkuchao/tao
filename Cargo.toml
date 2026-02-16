@@ -74,6 +74,9 @@ criterion = { version = "0.5", features = ["html_reports"] }
 # HTTP 客户端
 ureq = "3"
 
+# 临时目录
+tempfile = "3"
+
 # MP3 解码
 puremp3 = "0.1"
 
@@ -113,6 +116,7 @@ serde.workspace = true
 [dev-dependencies]
 bytes.workspace = true
 criterion.workspace = true
+tempfile.workspace = true
 
 [[bench]]
 name = "codec_bench"

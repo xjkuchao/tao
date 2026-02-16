@@ -37,7 +37,7 @@ globs:
 ### 允许的根目录文件
 
 - 项目配置: `Cargo.toml`, `.rustfmt.toml`, `.gitignore`
-- 核心文档: `README.md`, `AGENTS.md`
+- 核心文档: `README.md`
 - License 文件: `LICENSE`, `LICENSE-MIT`, `LICENSE-APACHE`
 
 ### 文件存放位置

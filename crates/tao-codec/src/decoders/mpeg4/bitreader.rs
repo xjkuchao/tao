@@ -113,6 +113,17 @@ impl<'a> BitReader<'a> {
         }
     }
 
+    /// 保存当前读取位置
+    pub fn snapshot_position(&self) -> (usize, u8) {
+        (self.byte_pos, self.bit_pos)
+    }
+
+    /// 恢复到指定读取位置
+    pub fn restore_position(&mut self, pos: (usize, u8)) {
+        self.byte_pos = pos.0;
+        self.bit_pos = pos.1.min(7);
+    }
+
     /// 字节对齐
     #[allow(dead_code)]
     pub fn align_to_byte(&mut self) {

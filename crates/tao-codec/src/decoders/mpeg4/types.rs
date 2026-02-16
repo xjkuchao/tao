@@ -82,6 +82,9 @@ impl MacroblockInfo {
 /// VOL (Video Object Layer) 信息
 #[derive(Debug, Clone)]
 pub(in crate::decoders) struct VolInfo {
+    /// 视频对象层版本号 (默认 1)
+    #[allow(dead_code)]
+    pub video_object_layer_verid: u8,
     pub vop_time_increment_resolution: u16,
     #[allow(dead_code)]
     pub fixed_vop_rate: bool,
@@ -102,6 +105,13 @@ pub(in crate::decoders) struct VolInfo {
     /// sprite warping 点数
     #[allow(dead_code)]
     pub sprite_warping_points: u8,
+    /// 复杂度估计跳过位数 (I/P/B)
+    #[allow(dead_code)]
+    pub complexity_estimation_bits_i: u16,
+    #[allow(dead_code)]
+    pub complexity_estimation_bits_p: u16,
+    #[allow(dead_code)]
+    pub complexity_estimation_bits_b: u16,
     /// 是否禁用 resync marker
     pub resync_marker_disable: bool,
 }
@@ -111,8 +121,13 @@ pub(in crate::decoders) struct VolInfo {
 pub(super) struct VopInfo {
     pub picture_type: PictureType,
     pub vop_coded: bool,
+    /// 是否为 S-VOP
+    pub is_sprite: bool,
     #[allow(dead_code)]
     pub vop_rounding_type: u8,
     #[allow(dead_code)]
     pub intra_dc_vlc_thr: u32,
+    /// 交错扫描标志
+    #[allow(dead_code)]
+    pub alternate_vertical_scan_flag: bool,
 }

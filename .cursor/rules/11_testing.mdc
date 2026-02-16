@@ -35,18 +35,18 @@ globs:
 1. **查找样本**: 在 `samples/SAMPLE_URLS.md` 中查找適用的样本 URL
 2. **样本来源**: https://samples.ffmpeg.org/ (FFmpeg 官方测试样本库)
 3. **验证样本**: 使用 `ffprobe <URL>` 验证样本信息
-   ```bash
-   ffprobe https://samples.ffmpeg.org/HDTV/Channel9_HD.ts
-   ```
+    ```bash
+    ffprobe https://samples.ffmpeg.org/HDTV/Channel9_HD.ts
+    ```
 4. **如果没有合适样本**:
-   - 访问 https://samples.ffmpeg.org/ 浏览完整样本库
-   - 或查看 https://samples.ffmpeg.org/allsamples.txt
-   - 使用 `ffprobe <URL>` 验证
-   - 添加到 `samples/SAMPLE_URLS.md` 并提交
-   ```bash
-   git add samples/SAMPLE_URLS.md
-   git commit -m "docs: 添加 XXX 编解码器测试样本 URL"
-   ```
+    - 访问 https://samples.ffmpeg.org/ 浏览完整样本库
+    - 或查看 https://samples.ffmpeg.org/allsamples.txt
+    - 使用 `ffprobe <URL>` 验证
+    - 添加到 `samples/SAMPLE_URLS.md` 并提交
+    ```bash
+    git add samples/SAMPLE_URLS.md
+    git commit -m "docs: 添加 XXX 编解码器测试样本 URL"
+    ```
 
 ### 3. 编写测试用例
 

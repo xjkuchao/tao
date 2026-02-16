@@ -31,6 +31,9 @@
 | -------- | --------------------------------------------------------------- | -------------------------- |
 | 基础解码 | https://samples.ffmpeg.org/V-codecs/MPEG4/mpeg4_avi.avi         | 标准 MPEG-4, AVI 容器      |
 | 数据分区 | https://samples.ffmpeg.org/V-codecs/MPEG4/data_partitioning.avi | Data Partitioning 特性测试 |
+| B 帧     | https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++qprd_cmp_b-frames_naq1.avi | 含 B 帧的 MPEG-4           |
+| QPel     | https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++DivX51-Qpel.avi | 四分像素运动补偿           |
+| GMC      | https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++xvid_gmcqpel_artifact.avi | GMC/S-VOP 相关             |
 
 ### Theora
 

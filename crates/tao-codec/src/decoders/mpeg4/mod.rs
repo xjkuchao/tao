@@ -936,7 +936,7 @@ impl Decoder for Mpeg4Decoder {
         }
 
         // S-VOP: 解析 GMC sprite trajectory
-        if vop_info.picture_type == PictureType::I {
+        if vop_info.is_sprite {
             let sprite_enable = self.vol_info.as_ref().map(|v| v.sprite_enable).unwrap_or(0);
             if sprite_enable == 2 {
                 self.gmc_params = self.parse_sprite_trajectory(&mut reader);
@@ -981,6 +981,17 @@ impl Decoder for Mpeg4Decoder {
                     return Ok(());
                 }
             }
+            PictureType::S => self.decode_p_frame(&mut reader).unwrap_or_else(|_| {
+                warn!("S-VOP 解码失败, 使用参考帧降级");
+                if let Some(ref_frame) = &self.reference_frame {
+                    let mut f = ref_frame.clone();
+                    f.picture_type = PictureType::S;
+                    f.is_keyframe = false;
+                    f
+                } else {
+                    self.create_blank_frame(PictureType::S)
+                }
+            }),
             _ => {
                 return Err(TaoError::InvalidData(format!(
                     "不支持的 VOP 类型: {:?}",
@@ -988,6 +999,11 @@ impl Decoder for Mpeg4Decoder {
                 )));
             }
         };
+
+        if vop_info.picture_type == PictureType::S {
+            frame.picture_type = PictureType::S;
+            frame.is_keyframe = false;
+        }
 
         frame.pts = packet.pts;
         frame.time_base = packet.time_base;

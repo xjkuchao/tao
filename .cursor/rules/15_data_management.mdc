@@ -53,10 +53,10 @@ project/
 - **集成测试**: 在 `tests/{feature}_pipeline.rs` 文件中（例如 h264_decode_pipeline.rs）
 - **基准测试**: 在 `benches/*.rs` 文件中
 - **测试命名**: 使用 `test_{component}_{scenario}` 格式
-- 参考示例: 
-  - `test_h264_decode_basic` (基本功能)
-  - `test_h264_decode_corrupted_data` (错误处理)
-  - `test_mp4_demux_seek` (格式特性)
+- 参考示例:
+    - `test_h264_decode_basic` (基本功能)
+    - `test_h264_decode_corrupted_data` (错误处理)
+    - `test_mp4_demux_seek` (格式特性)
 
 ### 样本文件 (samples/SAMPLE_URLS.md)
 
@@ -67,18 +67,18 @@ project/
 - **测试用例**: 直接使用 URL 创建 Demuxer/Decoder，无需下载文件
 - **样本大小**: 从 KB 级别小文件到 MB 级别大文件，均可直接通过 URL 访问
 - **包含类别**:
-  - 视频编解码器: H.264, H.265, MPEG-4 Part 2, Theora, VP8, VP9, AV1 等
-  - 音频编解码器: AAC, MP3, FLAC, Vorbis, Opus, PCM, ALAC 等
-  - 容器格式: MP4, MKV, AVI, FLV, MPEG-TS, Ogg, WAV, AIFF 等
+    - 视频编解码器: H.264, H.265, MPEG-4 Part 2, Theora, VP8, VP9, AV1 等
+    - 音频编解码器: AAC, MP3, FLAC, Vorbis, Opus, PCM, ALAC 等
+    - 容器格式: MP4, MKV, AVI, FLV, MPEG-TS, Ogg, WAV, AIFF 等
 
 ### 临时文件 (data/)
 
 - 项目运行时生成的所有临时文件都应放在 `data/` 目录下
 - 用途包括:
-  - 编解码过程中的中间文件
-  - 测试输出的视频/音频文件
-  - 日志文件（可选）
-  - 调试数据和性能分析信息
+    - 编解码过程中的中间文件
+    - 测试输出的视频/音频文件
+    - 日志文件（可选）
+    - 调试数据和性能分析信息
 - **永不提交到 Git** (整体被 `.gitignore` 忽略)
 
 ## 样本 URL 使用规范
@@ -141,7 +141,7 @@ fn test_h264_decode_from_url() {
             let frames = decoder.decode(&packet)
                 .expect("解码失败");
             frame_count += frames.len();
-            if frame_count >= 10 { 
+            if frame_count >= 10 {
                 break;  // 解码足够的帧后停止
             }
         }
@@ -175,13 +175,13 @@ ffprobe -show_entries stream=codec_name https://samples.ffmpeg.org/HDTV/Channel9
 
 ### 查找样本
 
-1. **浏览官方库**: 访问 https://samples.ffmpeg.org/ 
+1. **浏览官方库**: 访问 https://samples.ffmpeg.org/
 2. **搜索样本**: 使用浏览器搜索或查看完整列表
 3. **过滤条件**:
-   - 编解码器: H.264, AAC, FLAC 等
-   - 容器格式: MP4, MKV, TS 等
-   - 分辨率: 480p, 720p, 1080p
-   - 采样率: 44.1kHz, 48kHz, 96kHz
+    - 编解码器: H.264, AAC, FLAC 等
+    - 容器格式: MP4, MKV, TS 等
+    - 分辨率: 480p, 720p, 1080p
+    - 采样率: 44.1kHz, 48kHz, 96kHz
 
 ### 验证样本
 
@@ -205,9 +205,9 @@ ffprobe -show_entries stream=duration \
 1. 在对应编解码器/容器格式章节添加表格行
 2. 格式: `| 用途描述 | URL | 详细说明 |`
 3. 示例:
-   ```markdown
-   | H.265 解码 | https://samples.ffmpeg.org/path/to/hevc.mp4 | 1080p HEVC + AAC, MP4 容器 |
-   ```
+    ```markdown
+    | H.265 解码 | https://samples.ffmpeg.org/path/to/hevc.mp4 | 1080p HEVC + AAC, MP4 容器 |
+    ```
 
 **提交更新**:
 
@@ -257,9 +257,9 @@ Ok(())
 
 - 格式: `tmp_` + 标识信息 + 扩展名
 - 示例:
-  - `tmp_h264_decode_output_12345.yuv`
-  - `tmp_transcode_12345.mp4`
-  - `tmp_filter_output_12345.bin`
+    - `tmp_h264_decode_output_12345.yuv`
+    - `tmp_transcode_12345.mp4`
+    - `tmp_filter_output_12345.bin`
 - **推荐使用进程 ID 避免并发冲突**: `std::process::id()`
 - **可选**: 使用时间戳: `std::time::SystemTime::now()`
 
@@ -300,26 +300,26 @@ impl Drop for TempFile {
 
 ### 文件前缀规范
 
-| 工具      | 前缀        | 示例日志文件         |
-|-----------|-------------|----------------------|
-| tao-cli   | tao         | tao.2026-02-16.log   |
-| tao-probe | tao-probe   | tao-probe.2026-02-16.log |
-| tao-play  | tao-play    | tao-play.2026-02-16.log  |
+| 工具      | 前缀      | 示例日志文件             |
+| --------- | --------- | ------------------------ |
+| tao-cli   | tao       | tao.2026-02-16.log       |
+| tao-probe | tao-probe | tao-probe.2026-02-16.log |
+| tao-play  | tao-play  | tao-play.2026-02-16.log  |
 
 ### AI 调试指南
 
 当调试代码时遵循本规范：
 
 1. **优先查看日志文件** 而非控制台输出
-   - 日志文件位于 `logs/{prefix}.{date}.log`
-   - 或 `data/logs/` 内的日志文件
+    - 日志文件位于 `logs/{prefix}.{date}.log`
+    - 或 `data/logs/` 内的日志文件
 2. **清理旧日志避免污染**
-   - 调试前可删除相关日志文件
-   - 重新运行程序生成新日志
+    - 调试前可删除相关日志文件
+    - 重新运行程序生成新日志
 3. **快速分析执行流程**
-   - 通过日志文件追踪程序执行
-   - 识别错误发生的位置
-   - 减少频繁读取控制台输出
+    - 通过日志文件追踪程序执行
+    - 识别错误发生的位置
+    - 减少频繁读取控制台输出
 
 ## 手动清理 data 目录
 

@@ -2,6 +2,9 @@
 
 use super::Mpeg4Decoder;
 
+const COEFF_MIN: i32 = -2048;
+const COEFF_MAX: i32 = 2047;
+
 impl Mpeg4Decoder {
     /// 反量化 (区分 H.263 和 MPEG 类型)
     pub(super) fn dequantize(&self, coefficients: &mut [i32; 64], quant: u32, is_intra: bool) {
@@ -31,13 +34,14 @@ impl Mpeg4Decoder {
             if level == 0 {
                 continue;
             }
-            if is_intra {
-                *coeff = level * quant_m2;
+            let value = if is_intra {
+                level * quant_m2
             } else if level < 0 {
-                *coeff = level * quant_m2 - quant_add;
+                level * quant_m2 - quant_add
             } else {
-                *coeff = level * quant_m2 + quant_add;
-            }
+                level * quant_m2 + quant_add
+            };
+            *coeff = value.clamp(COEFF_MIN, COEFF_MAX);
         }
     }
 
@@ -64,18 +68,80 @@ impl Mpeg4Decoder {
                 let sign = level < 0;
                 let abs_level = level.unsigned_abs() as i32;
                 let val = ((2 * abs_level + 1) * scale * quant as i32) >> 4;
-                coefficients[i] = if sign {
-                    -(val.min(2048))
-                } else {
-                    val.min(2047)
-                };
+                let value = if sign { -val } else { val };
+                coefficients[i] = value.clamp(COEFF_MIN, COEFF_MAX);
             }
             sum ^= coefficients[i] as u32;
         }
 
         // Mismatch control
-        if !is_intra && (sum & 1) == 0 {
+        if (sum & 1) == 0 {
             coefficients[63] ^= 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::gmc::GmcParameters;
+    use super::super::tables::{STD_INTER_QUANT_MATRIX, STD_INTRA_QUANT_MATRIX};
+    use super::super::types::MacroblockInfo;
+    use tao_core::PixelFormat;
+
+    fn create_decoder_for_test() -> Mpeg4Decoder {
+        Mpeg4Decoder {
+            width: 0,
+            height: 0,
+            pixel_format: PixelFormat::Yuv420p,
+            opened: false,
+            reference_frame: None,
+            backward_reference: None,
+            pending_frame: None,
+            frame_count: 0,
+            quant: 1,
+            vol_info: None,
+            quant_matrix_intra: STD_INTRA_QUANT_MATRIX,
+            quant_matrix_inter: STD_INTER_QUANT_MATRIX,
+            predictor_cache: Vec::new(),
+            mv_cache: Vec::new(),
+            ref_mv_cache: Vec::new(),
+            mb_info: vec![MacroblockInfo::default(); 1],
+            mb_stride: 0,
+            f_code_forward: 1,
+            f_code_backward: 1,
+            rounding_control: 0,
+            intra_dc_vlc_thr: 0,
+            time_pp: 0,
+            time_bp: 0,
+            last_time_base: 0,
+            time_base_acc: 0,
+            last_non_b_time: 0,
+            gmc_params: GmcParameters::default(),
+        }
+    }
+
+    #[test]
+    fn test_dequant_h263_clipping() {
+        let decoder = create_decoder_for_test();
+        let mut coefficients = [0i32; 64];
+        coefficients[1] = 2000;
+        coefficients[2] = -2000;
+
+        decoder.dequant_h263(&mut coefficients, 31, false);
+
+        assert_eq!(coefficients[1], COEFF_MAX, "H.263 反量化应裁剪上限");
+        assert_eq!(coefficients[2], COEFF_MIN, "H.263 反量化应裁剪下限");
+    }
+
+    #[test]
+    fn test_dequant_mpeg_mismatch_intra() {
+        let decoder = create_decoder_for_test();
+        let mut coefficients = [0i32; 64];
+        coefficients[1] = 2;
+
+        decoder.dequant_mpeg(&mut coefficients, 1, true);
+
+        assert_eq!(coefficients[63], 1, "Mismatch control 应应用到 Intra 块");
     }
 }

@@ -23,7 +23,6 @@ globs:
 ```
 tao/
 ├── Cargo.toml              # Workspace 根配置 + 门面库
-├── AGENTS.md               # 完整开发规范参考
 ├── .cursor/rules/          # 模块化规则文件
 ├── plans/                  # AI 执行计划文件
 ├── samples/                # 测试样本清单
