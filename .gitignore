@@ -41,7 +41,7 @@ config.toml
 Cargo.lock
 
 # 数据文件
-/data
+/data/tmp/
 
 # 如果有特定的大文件格式，可以单独排除
 # *.mp4

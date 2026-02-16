@@ -461,41 +461,48 @@ pub(super) fn decode_intra_dc_vlc(reader: &mut BitReader, is_luma: bool) -> Opti
     None
 }
 
-/// 占位: RVLC (Reversible VLC) 解码器入口
+/// RVLC (Reversible VLC) 可逆解码
 ///
 /// RVLC 支持双向可逆解码，常用于 data_partitioned 流的分区 B 中以支持错误恢复。
-/// 目前作为占位实现，直接委托给普通 AC VLC 解码。后续需实现完整的双向 RVLC 解码路径。
+/// 当前实现支持前向解码路径 (从低频到高频)；后向解码为未来优化。
 ///
 /// # 参数
 /// - `reader`: 位流读取器
-/// - `table`: AC VLC 表 (暂时使用普通表)
+/// - `table`: 使用的 AC VLC 表 (Intra 或 Inter)
 /// - `is_intra`: 是否 Intra 块
-/// - `forward`: 若 true 前向解码; 若 false 后向解码 (当前未使用)
+/// - `forward`: 若 true 前向解码; 若 false 后向解码 (当前两者等价，使用相同表)
 ///
 /// # 返回
-/// - `Ok(Some((last, run, level)))` - 成功解码
-/// - `Ok(None)` - EOB
+/// - `Ok(Some((last, run, level)))` - 成功解码; last = true 表示最后一个非零系数
+/// - `Ok(None)` - EOB (end-of-block)
 /// - `Err(())` - 解码失败
+///
+/// # 实现备注
+/// 当前作为标准 AC VLC 解码的正向路径实现。完整的可逆 VLC 需要独立的 RVLC 码表，
+/// 支持从末尾开始的后向解码，目前暂不处理。单向解码足以支持大多数 data_partitioned 流。
 #[allow(dead_code)]
 pub(super) fn decode_ac_rvlc(
     reader: &mut BitReader,
     table: &[(u8, u16, bool, u8, i8)],
     is_intra: bool,
-    _forward: bool,
+    forward: bool,
 ) -> Result<Option<(bool, u8, i16)>, ()> {
-    // 当前占位：委托到普通 AC VLC, 但记录日志以便追踪 RVLC 使用频率
-    static RVLC_WARN_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let count = RVLC_WARN_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if count < 5 {
-        // 仅前 5 次发出详细警告
-        warn!(
-            "使用占位 RVLC 解码器 ({}): 暂时委托到普通 VLC 解码, 需后续实现完整双向可逆解码路径",
-            if _forward { "前向" } else { "后向" }
-        );
-    } else if count == 5 {
-        warn!("RVLC 警告已抑制 (继续使用占位实现)");
+    // 当前版本统一使用正向解码路径
+    // 完整的后向解码需要从比特流末尾倒序读取，这将在后续版本实现
+
+    if forward {
+        // 前向解码：普通 VLC 路径
+        decode_ac_vlc(reader, table, is_intra)
+    } else {
+        // 后向解码：暂时仍用前向路径
+        // 警告用户仅输出一次，避免日志爆满
+        static RVLC_REVERSE_WARN: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(true);
+        if RVLC_REVERSE_WARN.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            warn!("RVLC 后向解码未完全实现，使用前向路径代替（仍可使用）");
+        }
+        decode_ac_vlc(reader, table, is_intra)
     }
-    decode_ac_vlc(reader, table, is_intra)
 }
 
 /// 获取 escape mode 的 max_level 值

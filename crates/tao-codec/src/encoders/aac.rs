@@ -597,7 +597,7 @@ mod tests {
         let mut buf = vec![1.0; MDCT_INPUT_SIZE];
         AacEncoder::apply_sine_window(&mut buf);
         for &v in &buf {
-            assert!(v >= 0.0 && v <= 1.0, "窗函数值应在 [0,1]");
+            assert!((0.0..=1.0).contains(&v), "窗函数值应在 [0,1]");
         }
     }
 }
