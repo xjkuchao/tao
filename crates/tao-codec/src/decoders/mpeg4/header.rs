@@ -439,6 +439,7 @@ impl Mpeg4Decoder {
         } else {
             false
         };
+        self.alternate_vertical_scan = alternate_vertical_scan_flag;
 
         // vop_quant
         if let Some(quant) = reader.read_bits(5) {
@@ -748,6 +749,7 @@ mod tests {
             time_base_acc: 0,
             last_non_b_time: 0,
             gmc_params: GmcParameters::default(),
+            alternate_vertical_scan: false,
             packed_frames: std::collections::VecDeque::new(),
         }
     }

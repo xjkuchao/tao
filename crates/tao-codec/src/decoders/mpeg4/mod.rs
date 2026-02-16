@@ -163,6 +163,8 @@ pub struct Mpeg4Decoder {
     pub(super) last_non_b_time: i32,
     /// 当前 VOP 的 GMC 参数
     pub(super) gmc_params: GmcParameters,
+    /// VOP 级 alternate_vertical_scan 标志
+    alternate_vertical_scan: bool,
     /// DivX packed bitstream 队列 (一个 packet 中拆分出的多个 VOP)
     packed_frames: std::collections::VecDeque<Vec<u8>>,
 }
@@ -198,6 +200,7 @@ impl Mpeg4Decoder {
             time_base_acc: 0,
             last_non_b_time: 0,
             gmc_params: GmcParameters::default(),
+            alternate_vertical_scan: false,
             packed_frames: std::collections::VecDeque::new(),
         }))
     }
@@ -767,7 +770,7 @@ impl Mpeg4Decoder {
             .unwrap_or(false);
 
         // 选择扫描表
-        let scan_table = if mb_data.field_dct {
+        let scan_table = if mb_data.field_dct || self.alternate_vertical_scan {
             &ALTERNATE_VERTICAL_SCAN
         } else {
             &ZIGZAG_SCAN
@@ -1629,7 +1632,7 @@ impl Mpeg4Decoder {
         let cbp = (cbpy << 2) | cbpc;
 
         // 选择扫描表 (field_dct 使用 alternate vertical scan)
-        let scan_table = if field_dct {
+        let scan_table = if field_dct || self.alternate_vertical_scan {
             &ALTERNATE_VERTICAL_SCAN
         } else {
             &ZIGZAG_SCAN
@@ -2039,6 +2042,7 @@ impl Decoder for Mpeg4Decoder {
         self.last_time_base = 0;
         self.time_base_acc = 0;
         self.last_non_b_time = 0;
+        self.alternate_vertical_scan = false;
 
         if !params.extra_data.is_empty() {
             self.parse_vol_header(&params.extra_data)?;
@@ -2504,6 +2508,7 @@ mod tests {
             time_base_acc: 0,
             last_non_b_time: 0,
             gmc_params: GmcParameters::default(),
+            alternate_vertical_scan: false,
             packed_frames: std::collections::VecDeque::new(),
         }
     }
