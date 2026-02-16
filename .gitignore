@@ -45,7 +45,7 @@ Cargo.lock
 # ==============================================================================
 
 # 整体忽略 data/ 目录中的所有临时文件和调试输出
-# 详见 examples/SAMPLES.md 和 examples/SAMPLE_URLS.md
+# 详见 samples/SAMPLES.md 和 samples/SAMPLE_URLS.md
 /data/
 # 但保留 .gitkeep 以确保 data 文件夹始终存在
 !/data/.gitkeep

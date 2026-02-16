@@ -64,7 +64,9 @@ tao/
 │   ├── tao-cli/            # tao 命令行工具 (对标 ffmpeg)
 │   └── tao-probe/          # tao-probe 探测工具 (对标 ffprobe)
 ├── tests/                  # 集成测试
-└── examples/               # 使用示例
+├── examples/               # 使用示例 (crate 调用示例)
+├── samples/                # 测试样本清单 (SAMPLE_URLS.md, SAMPLES.md)
+└── data/                   # 临时文件目录 (不提交到 Git)
 ```
 
 ### 2.1 crate 依赖关系
@@ -156,7 +158,8 @@ tao-ffi crate 编译为 cdylib + staticlib:
 - **其他文件的存放位置**:
     - 执行计划: 必须放在 `plans/` 目录
     - 技术文档: 放在 `docs/` 目录 (如有)
-    - 示例说明: 放在 `examples/` 目录
+    - 示例代码: 放在 `examples/` 目录
+    - 样本清单: 放在 `samples/` 目录 (SAMPLE_URLS.md, SAMPLES.md)
     - 测试数据: 放在 `data/` 目录
 - **历史遗留文件**: 如果根目录已存在其他文件 (如 `H264_IMPROVEMENT_PLAN.md`), 应逐步迁移到对应目录.
 
@@ -295,11 +298,11 @@ tao-ffi crate 编译为 cdylib + staticlib:
 
 #### 步骤 2: 查找测试样本
 
-在 `examples/SAMPLE_URLS.md` 中查找適用的样本 URL:
+在 `samples/SAMPLE_URLS.md` 中查找適用的样本 URL:
 
 ```rust
 // 示例: 查找 H.264 测试样本
-// 1. 打开 examples/SAMPLE_URLS.md
+// 1. 打开 samples/SAMPLE_URLS.md
 // 2. 搜索对应编解码器或容器格式
 // 3. 复制合适的样本 URL
 ```
@@ -315,7 +318,7 @@ tao-ffi crate 编译为 cdylib + staticlib:
     - 浏览样本库: https://samples.ffmpeg.org/
     - 查看完整列表: https://samples.ffmpeg.org/allsamples.txt
 2. **验证样本**: 使用 `ffprobe <URL>` 验证样本信息和编解码器
-3. **添加到清单**: 在 `examples/SAMPLE_URLS.md` 对应章节添加表格行
+3. **添加到清单**: 在 `samples/SAMPLE_URLS.md` 对应章节添加表格行
 4. **提交更新**: 提交清单更新到 Git
 
 **流程示例:**
@@ -328,15 +331,15 @@ tao-ffi crate 编译为 cdylib + staticlib:
 ffprobe https://samples.ffmpeg.org/path/to/sample.webm
 
 # 3. 编辑样本清单
-vim examples/SAMPLE_URLS.md
+vim samples/SAMPLE_URLS.md
 # 在对应章节添加表格行: | 用途 | URL | 描述 |
 
 # 4. 提交更改
-git add examples/SAMPLE_URLS.md
+git add samples/SAMPLE_URLS.md
 git commit -m "docs: 添加 XXX 编解码器样本 URL"
 ```
 
-> **注意**: 所有样本 **仅作为 URL 维护**, 不下载到本地. 详见 [examples/SAMPLES.md](examples/SAMPLES.md).
+> **注意**: 所有样本 **仅作为 URL 维护**, 不下载到本地. 详见 [samples/SAMPLES.md](samples/SAMPLES.md).
 
 #### 步骤 4: 编写测试用例
 
@@ -350,7 +353,7 @@ use tao_core::MediaType;
 
 #[test]
 fn test_mpeg4_part2_decode_basic() {
-    // 1. 从 examples/SAMPLE_URLS.md 复制样本 URL
+    // 1. 从 samples/SAMPLE_URLS.md 复制样本 URL
     let sample_url = "https://samples.ffmpeg.org/V-codecs/MPEG4/mpeg4_avi.avi";
 
     // 2. 打开解封装器
@@ -412,7 +415,7 @@ fn test_mpeg4_decode_invalid_data() {
 
 **关键要点**:
 
-- 所有样本 URL 来自 `examples/SAMPLE_URLS.md`
+- 所有样本 URL 来自 `samples/SAMPLE_URLS.md`
 - 直接使用 URL 创建 Demuxer/Decoder，无需下载
 - 测试结束自动释放网络连接，无需手动清理
 - 大文件测试只解码前几帧，避免耗时过长
@@ -520,7 +523,7 @@ git commit -m "test: 添加 VP9 解码器测试用例"
 
 - `tao-play` 支持 http/https/rtmp 等流式 URL 播放.
 - **所有测试文件均使用 URL 直接流式播放**, 不下载到本地.
-- 所有样本 URL 维护在 `examples/SAMPLE_URLS.md` 中.
+- 所有样本 URL 维护在 `samples/SAMPLE_URLS.md` 中.
 - 示例:
 
     ```powershell
@@ -528,12 +531,12 @@ git commit -m "test: 添加 VP9 解码器测试用例"
     cargo run --package tao-play -- "https://samples.ffmpeg.org/flac/Yesterday.flac"
 
     # 查看更多样本 URL
-    # 请参考 examples/SAMPLE_URLS.md
+    # 请参考 samples/SAMPLE_URLS.md
     ```
 
 ## 17. 测试文件和临时文件管理
 
-> **完整规范**: 参见 [examples/SAMPLES.md](examples/SAMPLES.md) 了解详细的文件管理规则和使用示例
+> **完整规范**: 参见 [samples/SAMPLES.md](samples/SAMPLES.md) 了解详细的文件管理规则和使用示例
 
 ### 17.1 目录结构
 
@@ -542,8 +545,8 @@ git commit -m "test: 添加 VP9 解码器测试用例"
     - **集成测试**: `tests/` 下的 `{feature}_pipeline.rs` 文件
     - **基准测试**: `benches/` 下的 `*.rs` 文件
 - **`examples/`**: 样本使用规范和 URL 清单
-    - **`examples/SAMPLES.md`**: 样本使用规范和文件管理规则
-    - **`examples/SAMPLE_URLS.md`**: 测试样本 URL 清单 (所有样本使用 URL 访问)
+    - **`samples/SAMPLES.md`**: 样本使用规范和文件管理规则
+    - **`samples/SAMPLE_URLS.md`**: 测试样本 URL 清单 (所有样本使用 URL 访问)
 - **`data/`**: 临时文件目录
     - **`data/.gitkeep`**: 确保 data 文件夹始终存在于 Git
     - **`data/tmp/` 和其他**: 所有临时文件 (不提交到 Git)
@@ -554,7 +557,7 @@ git commit -m "test: 添加 VP9 解码器测试用例"
     - 集成测试: `tests/{feature}_pipeline.rs`
     - 单元测试: 在 `crates/` 各 crate 的源文件中使用 `#[cfg(test)]` 模块
     - 测试命名: `test_{component}_{scenario}` 格式
-- **测试样本**: 使用 `examples/SAMPLE_URLS.md` 中的 HTTPS URL
+- **测试样本**: 使用 `samples/SAMPLE_URLS.md` 中的 HTTPS URL
     - 所有样本来源: https://samples.ffmpeg.org/
     - 所有样本使用 URL 标识, 无需本地下载
     - 直接使用 URL 创建 Demuxer/Decoder
@@ -576,7 +579,7 @@ git commit -m "test: 添加 VP9 解码器测试用例"
     - 完整 URL 格式: `https://samples.ffmpeg.org/<category>/<filename>`
     - 示例: `https://samples.ffmpeg.org/HDTV/Channel9_HD.ts`
 - **版本管理**:
-    - 所有样本 URL 记录在 `examples/SAMPLE_URLS.md` 中
+    - 所有样本 URL 记录在 `samples/SAMPLE_URLS.md` 中
     - 添加新样本时更新清单并提交到 Git
     - URL 失效时从 https://samples.ffmpeg.org/ 查找替代样本
 
@@ -590,15 +593,15 @@ git commit -m "test: 添加 VP9 解码器测试用例"
 
 ### 17.5 Git 管理
 
-- **`examples/SAMPLE_URLS.md`**: 测试样本 URL 清单, 提交到 Git
-- **`examples/SAMPLES.md`**: 样本使用规范文档, 提交到 Git
+- **`samples/SAMPLE_URLS.md`**: 测试样本 URL 清单, 提交到 Git
+- **`samples/SAMPLES.md`**: 样本使用规范文档, 提交到 Git
 - **`data/`**: 整体忽略，存放所有临时文件（仅保留 `.gitkeep`）
 - **`tests/`**: 所有测试代码, 提交到 Git
 
 ### 17.6 代码规范
 
 - **测试文件位置**: 所有测试代码放在根目录 `tests/` 中
-- **样本 URL**: 从 `examples/SAMPLE_URLS.md` 复制合适的 HTTPS URL
+- **样本 URL**: 从 `samples/SAMPLE_URLS.md` 复制合适的 HTTPS URL
 - **临时文件路径**: 使用相对于项目根目录的路径 `data/...`
 - **错误处理**: 文件或 URL 不可访问时提供清晰的错误信息
 - **跨平台**: 确保路径处理在 Windows/Linux/macOS 上兼容
@@ -609,27 +612,27 @@ git commit -m "test: 添加 VP9 解码器测试用例"
 
 1. **查找样本**: 访问 https://samples.ffmpeg.org/ 浏览或搜索合适样本
 2. **验证样本**: 使用 `ffprobe <URL>` 验证样本信息
-3. **添加 URL**: 在 `examples/SAMPLE_URLS.md` 对应章节添加 URL 和说明
-4. **更新规范**: 参考 [examples/SAMPLES.md](examples/SAMPLES.md) 中的流程
-5. **提交更改**: git add examples/SAMPLE_URLS.md && git commit -m "docs: 添加 XXX 样本 URL"
+3. **添加 URL**: 在 `samples/SAMPLE_URLS.md` 对应章节添加 URL 和说明
+4. **更新规范**: 参考 [samples/SAMPLES.md](samples/SAMPLES.md) 中的流程
+5. **提交更改**: git add samples/SAMPLE_URLS.md && git commit -m "docs: 添加 XXX 样本 URL"
 
 ### 17.8 持续维护
 
 随着项目推进, 需要持续维护测试样本和规范:
 
 - **新增编解码器**:
-    - 在 `examples/SAMPLE_URLS.md` 中添加样本 URL
+    - 在 `samples/SAMPLE_URLS.md` 中添加样本 URL
     - 在 `tests/{codec}_pipeline.rs` 中编写测试
     - 参考 §13.2 测试用例开发流程
 - **新增滤镜**:
-    - 在 `examples/SAMPLE_URLS.md` 中添加样本 URL
+    - 在 `samples/SAMPLE_URLS.md` 中添加样本 URL
     - 在 `tests/filter_*.rs` 中编写测试
 - **性能测试**:
     - 在 `benches/` 中编写基准测试
-    - 在 `examples/SAMPLE_URLS.md` 中记录大文件样本 URL
+    - 在 `samples/SAMPLE_URLS.md` 中记录大文件样本 URL
 - **维护检查**:
     - 定期检查 FFmpeg 官方样本库更新 (每季度)
-    - 验证 `examples/SAMPLE_URLS.md` 中的 URL 是否有效
+    - 验证 `samples/SAMPLE_URLS.md` 中的 URL 是否有效
     - 更新过期或失效的 URL
 
-详见 [examples/SAMPLES.md](examples/SAMPLES.md) 了解更多资源管理规范。
+详见 [samples/SAMPLES.md](samples/SAMPLES.md) 了解更多资源管理规范。

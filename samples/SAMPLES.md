@@ -7,7 +7,7 @@
 ## 目录结构
 
 ```
-examples/
+samples/
 ├── SAMPLES.md             # 本文件 - 样本使用规范
 └── SAMPLE_URLS.md         # 测试样本 URL 清单 (提交到 Git)
 
@@ -30,7 +30,7 @@ data/                       # 临时文件目录 (不提交到 Git, 整体忽略
 
 - **所有样本使用 URL 方式访问，不下载到本地**
 - 样本来源: https://samples.ffmpeg.org/ (FFmpeg 官方测试样本库)
-- 样本清单: `examples/SAMPLE_URLS.md` 记录所有测试样本的 URL 和用途
+- 样本清单: `samples/SAMPLE_URLS.md` 记录所有测试样本的 URL 和用途
 - 测试用例直接使用 URL 创建 Demuxer/Decoder，无需下载文件
 
 ### 临时文件 (data/)
@@ -44,13 +44,13 @@ data/                       # 临时文件目录 (不提交到 Git, 整体忽略
 ### 从 URL 清单查找样本
 
 ```rust
-// 1. 打开 examples/SAMPLE_URLS.md
+// 1. 打开 samples/SAMPLE_URLS.md
 // 2. 搜索对应编解码器 (如 "H.264")
 // 3. 找到合适的 URL
 
 #[test]
 fn test_h264_decode() {
-    // 直接使用 URL (从 examples/SAMPLE_URLS.md 复制)
+    // 直接使用 URL (从 samples/SAMPLE_URLS.md 复制)
     let sample_url = "https://samples.ffmpeg.org/HDTV/Channel9_HD.ts";
 
     let mut demuxer = DemuxerRegistry::open(sample_url).unwrap();
@@ -87,7 +87,7 @@ ffprobe https://samples.ffmpeg.org/path/to/sample.mp4
 
 ### 添加到清单
 
-在 `examples/SAMPLE_URLS.md` 对应章节添加:
+在 `samples/SAMPLE_URLS.md` 对应章节添加:
 
 ```markdown
 | 用途描述 | https://samples.ffmpeg.org/path/to/sample.ext | 详细说明 |
@@ -96,7 +96,7 @@ ffprobe https://samples.ffmpeg.org/path/to/sample.mp4
 ### 提交更新
 
 ```bash
-git add examples/SAMPLE_URLS.md
+git add samples/SAMPLE_URLS.md
 git commit -m "docs: 添加 XXX 编解码器测试样本 URL"
 ```
 

@@ -147,7 +147,7 @@
     ```
 4. **提交更新**: 提交清单更新到 Git
     ```bash
-    git add data/SAMPLE_URLS.md
+    git add samples/SAMPLE_URLS.md
     git commit -m "docs: 添加 XXX 编解码器测试样本 URL"
     ```
 

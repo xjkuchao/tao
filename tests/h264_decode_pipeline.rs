@@ -265,7 +265,7 @@ mod tests {
         }
         println!("✓ FFmpeg 已可用");
 
-        // 2. 准备测试样本 URL (从 examples/SAMPLE_URLS.md)
+        // 2. 准备测试样本 URL (从 samples/SAMPLE_URLS.md)
         let sample_url = "https://samples.ffmpeg.org/HDTV/Channel9_HD.ts";
 
         println!("\n待执行步骤:");
@@ -278,8 +278,8 @@ mod tests {
 
         println!("\n相关资源:");
         println!("  - 官方样本库: https://samples.ffmpeg.org/");
-        println!("  - 样本清单: examples/SAMPLE_URLS.md");
-        println!("  - 使用规范: examples/SAMPLES.md");
+        println!("  - 样本清单: samples/SAMPLE_URLS.md");
+        println!("  - 使用规范: samples/SAMPLES.md");
         println!("  - 对比工具: tests/ffmpeg_compare.rs");
     }
 }
