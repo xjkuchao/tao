@@ -71,22 +71,19 @@ use vlc::{decode_cbpy, decode_mcbpc_i, decode_mcbpc_p};
 /// 数据分区信息 (data_partitioned 时使用)
 ///
 /// ISO/IEC 14496-2 中, 数据分区将编码数据分为三个部分:
-/// - Partition A: MB 类型, 量化参数, 运动向量, DC 系数
-/// - Partition B: AC 系数和所有其他定长编码的信息  
-/// - Partition C: Stuffing bits 和可能的扩展数据
+/// - Partition A: MB 类型 (MCBPC/CBPY), DQUANT, 运动向量
+/// - Partition B: DC 系数 (使用 RVLC 可逆编码)
+/// - Partition C: AC 系数
 ///
-/// 使用 resync markers 分隔各分区边界。
-#[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
+/// 使用 resync markers 分隔各分区边界。每个分区起始处有 resync marker。
+#[derive(Debug, Clone)]
 struct DataPartitionInfo {
-    /// 是否启用数据分区
-    enabled: bool,
-    /// Partition A 起始和结束位置 (字节偏移)
+    /// Partition A 起始和结束位置 (比特偏移)
     partition_a: (usize, usize),
-    /// Partition B 起始和结束位置
+    /// Partition B 起始和结束位置 (比特偏移)
     partition_b: (usize, usize),
-    /// Partition C 起始位置
-    partition_c: usize,
+    /// Partition C 起始和结束位置 (比特偏移)
+    partition_c: (usize, usize),
 }
 
 // ============================================================================
@@ -264,34 +261,119 @@ impl Mpeg4Decoder {
     ///
     /// 精确检测 resync markers 以确定各分区边界。
     /// 返回分区信息和分包数量估计。
+    /// 分析数据分区边界
+    ///
+    /// 在 data_partitioned 模式下，一个 video packet 被分为三个分区：
+    /// 1. Partition A: 宏块类型、量化参数、运动向量
+    /// 2. Partition B: DC 系数 (使用 RVLC)
+    /// 3. Partition C: AC 系数
+    ///
+    /// 每个分区起始处有 resync marker (对齐到字节边界后的模式：
+    /// stuffing bits + (16 + fcode) 个零 + 1 个一)。
+    ///
+    /// # 参数
+    /// - `data`: VOP 数据 (包含 VOP header + video packets)
+    /// - `fcode`: VOP 的 fcode 值
+    ///
+    /// # 返回
+    /// (DataPartitionInfo, partition_count) - 分区信息和分区数量
     fn analyze_data_partitions(data: &[u8], fcode: u8) -> (DataPartitionInfo, u32) {
         let mut info = DataPartitionInfo {
-            enabled: true,
-            partition_a: (0, data.len()),
-            partition_b: (data.len(), data.len()),
-            partition_c: data.len(),
+            partition_a: (0, data.len() * 8),
+            partition_b: (data.len() * 8, data.len() * 8),
+            partition_c: (data.len() * 8, data.len() * 8),
         };
-        let mut partition_count = 1u32;
+        let mut partition_count = 0u32;
 
-        // resync marker 模式: stuffing bits (0-7) + (16 + fcode) 个零 + 1 个一
-        // 简化检测: 查找 ~0x00 0x00 0x00 ... 0x80 模式
-        let marker_bytes = ((16 + fcode as usize) / 8) + 1;
+        // resync marker 长度 = 16 + fcode 位
+        let marker_len = 16 + fcode as usize;
 
-        let mut i = 1; // 跳过VOP起始码
-        while i + marker_bytes < data.len() {
-            // 检查是否接近字节边界的resync marker候选
-            if i + 4 < data.len() && data[i] == 0x00 && data[i + 1] == 0x00 {
-                // 找到潜在的分区边界
-                if partition_count == 1 {
-                    info.partition_a.1 = i;
-                    info.partition_b.0 = i;
-                } else if partition_count == 2 {
-                    info.partition_b.1 = i;
-                    info.partition_c = i;
-                }
-                partition_count += 1;
+        // 扫描 resync markers (无需创建 BitReader，直接按位扫描)
+        let mut bit_pos = 0usize;
+        let max_bits = data.len() * 8;
+
+        while bit_pos + marker_len + 8 < max_bits {
+            // 对齐到字节边界
+            if bit_pos % 8 != 0 {
+                bit_pos = bit_pos.div_ceil(8) * 8;
             }
-            i += 1;
+
+            // 检查是否是 resync marker
+            let byte_pos = bit_pos / 8;
+            if byte_pos + marker_len.div_ceil(8) >= data.len() {
+                break;
+            }
+
+            // 检查 resync marker 模式: marker_len 位中前 marker_len-1 位为 0, 最后 1 位为 1
+            let mut is_marker = true;
+            for i in 0..marker_len {
+                let bit_offset = bit_pos + i;
+                let byte_idx = bit_offset / 8;
+                let bit_idx = 7 - (bit_offset % 8);
+
+                if byte_idx >= data.len() {
+                    is_marker = false;
+                    break;
+                }
+
+                let bit_val = (data[byte_idx] >> bit_idx) & 1;
+                if i < marker_len - 1 {
+                    // 前 marker_len-1 位应为 0
+                    if bit_val != 0 {
+                        is_marker = false;
+                        break;
+                    }
+                } else {
+                    // 最后 1 位应为 1
+                    if bit_val != 1 {
+                        is_marker = false;
+                        break;
+                    }
+                }
+            }
+
+            if is_marker {
+                // 找到 resync marker
+                partition_count += 1;
+                let partition_start = bit_pos + marker_len;
+
+                match partition_count {
+                    1 => {
+                        // 第一个 resync marker 标记 Partition A 的结束和 Partition B 的开始
+                        info.partition_a.1 = bit_pos;
+                        info.partition_b.0 = partition_start;
+                    }
+                    2 => {
+                        // 第二个 resync marker 标记 Partition B 的结束和 Partition C 的开始
+                        info.partition_b.1 = bit_pos;
+                        info.partition_c.0 = partition_start;
+                        info.partition_c.1 = max_bits;
+                    }
+                    _ => {
+                        // 后续 resync markers 可能是下一个 video packet,停止分析
+                        break;
+                    }
+                }
+
+                // 跳过 marker 和 macroblock_number
+                bit_pos = partition_start + 16; // 跳过 marker 后的 MB number (简化处理)
+            } else {
+                // 按字节步进
+                bit_pos += 8;
+            }
+        }
+
+        // 如果只找到部分分区边界，调整信息
+        if partition_count == 0 {
+            // 没有 resync marker，整个 video packet 都是 Partition A
+            info.partition_a.1 = max_bits;
+            info.partition_b.0 = max_bits;
+            info.partition_b.1 = max_bits;
+            info.partition_c.0 = max_bits;
+            info.partition_c.1 = max_bits;
+        } else if partition_count == 1 {
+            // 只有一个 resync marker，Partition C 为空
+            info.partition_c.1 = max_bits;
         }
 
         (info, partition_count)
@@ -903,26 +985,43 @@ impl Decoder for Mpeg4Decoder {
         if data_partitioned {
             let fcode = self.f_code_forward.saturating_sub(1);
             let (part_info, partition_count) = Self::analyze_data_partitions(&packet.data, fcode);
-            debug!("数据分区分析结果: 分包数={}", partition_count);
+            debug!("数据分区模式已启用:");
+            debug!("  分区数量: {}", partition_count + 1);
             debug!(
-                "  Partition A: bytes [{}, {}]",
-                part_info.partition_a.0, part_info.partition_a.1
+                "  Partition A (MB类型/量化/运动向量): 位 [{}, {}) = {} 字节",
+                part_info.partition_a.0,
+                part_info.partition_a.1,
+                (part_info.partition_a.1 - part_info.partition_a.0).div_ceil(8)
             );
-            if partition_count > 1 {
+            if partition_count >= 1 {
                 debug!(
-                    "  Partition B: bytes [{}, {}]",
-                    part_info.partition_b.0, part_info.partition_b.1
+                    "  Partition B (DC系数/RVLC): 位 [{}, {}) = {} 字节",
+                    part_info.partition_b.0,
+                    part_info.partition_b.1,
+                    (part_info.partition_b.1 - part_info.partition_b.0).div_ceil(8)
                 );
             }
-            if partition_count > 2 {
-                debug!("  Partition C: starts at byte {}", part_info.partition_c);
+            if partition_count >= 2 {
+                debug!(
+                    "  Partition C (AC系数): 位 [{}, {}) = {} 字节",
+                    part_info.partition_c.0,
+                    part_info.partition_c.1,
+                    (part_info.partition_c.1 - part_info.partition_c.0).div_ceil(8)
+                );
             }
 
             if reversible_vlc {
-                warn!(
-                    "数据分区中使用 reversible_vlc (RVLC): 分区B中的AC系数使用可逆VLC解码。当前实现为前向路径，后续可增强"
-                );
+                debug!("  RVLC 可逆编码已启用 (Partition B 使用 RVLC)");
             }
+
+            // TODO: 实现基于分区的解码
+            // 当前实现仍使用标准顺序解码，未利用分区信息
+            // 完整实现需要:
+            // 1. 从 Partition A 解码所有 MB 的类型/量化/运动向量
+            // 2. 从 Partition B 解码所有 DC 系数 (使用 RVLC)
+            // 3. 从 Partition C 解码所有 AC 系数
+            // 4. 重建宏块数据
+            warn!("数据分区模式已检测但未完全实现,当前使用标准解码路径");
         }
 
         let vop_offset = find_start_code_offset(&packet.data, START_CODE_VOP)

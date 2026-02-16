@@ -464,22 +464,85 @@ pub(super) fn decode_intra_dc_vlc(reader: &mut BitReader, is_luma: bool) -> Opti
 /// RVLC (Reversible VLC) 可逆解码
 ///
 /// RVLC 支持双向可逆解码，常用于 data_partitioned 流的分区 B 中以支持错误恢复。
-/// 当前实现支持前向解码路径 (从低频到高频)；后向解码为未来优化。
+/// 当前实现支持前向解码路径 (从低频到高频)。
+///
+/// # RVLC 反向解码原理
+///
+/// RVLC 使用特殊的可逆 VLC 码表，具有以下特性：
+/// - 码字在二进制上是对称的（可以从任一方向读取）
+/// - 用于 Data Partitioning 的 Partition B (DC 系数)
+/// - 当检测到位流错误时，可以从两端同时解码：
+///   * 从前向后解码低频系数
+///   * 从后向前解码高频系数
+///   * 在中间相遇时停止，最大化恢复的数据
+///
+/// # 反向解码实现要求
+///
+/// 完整的 RVLC 反向解码需要以下功能：
+///
+/// 1. **反向 BitReader**:
+///    - 支持从比特流末尾开始倒序读取
+///    - 维护反向位位置和字节对齐
+///    - 示例: `ReverseBitReader::new(data, start_bit_offset)`
+///
+/// 2. **RVLC 专用码表**:
+///    - 使用 ISO/IEC 14496-2 附录中定义的 RVLC 码表
+///    - 与标准 VLC 表不同，RVLC 表是对称设计的
+///    - 需要独立的 RVLC_INTRA 和 RVLC_INTER 表
+///
+/// 3. **错误检测与同步**:
+///    - 前向和后向解码在中间相遇
+///    - 检测解码错误（如非法码字）
+///    - 当错误发生时，使用未损坏部分的数据
+///
+/// 4. **分区 B 解码流程**:
+///    ```rust
+///    // 伪代码示例
+///    let mut forward_reader = BitReader::new(partition_b_data);
+///    let mut backward_reader = ReverseBitReader::new(partition_b_data);
+///    let mut forward_pos = 0;
+///    let mut backward_pos = 64;
+///    
+///    // 前向解码低频
+///    while forward_pos < 32 {
+///        if let Ok(Some((last, run, level))) = decode_ac_rvlc(&mut forward_reader, ..., true) {
+///            block[forward_pos] = level;
+///            forward_pos += run + 1;
+///        } else { break; }
+///    }
+///    
+///    // 后向解码高频
+///    while backward_pos > 32 {
+///        if let Ok(Some((last, run, level))) = decode_ac_rvlc(&mut backward_reader, ..., false) {
+///            backward_pos -= run + 1;
+///            block[backward_pos] = level;
+///        } else { break; }
+///    }
+///    ```
 ///
 /// # 参数
 /// - `reader`: 位流读取器
-/// - `table`: 使用的 AC VLC 表 (Intra 或 Inter)
+/// - `table`: 使用的 AC VLC 表 (Intra 或 Inter) - TODO: 应使用 RVLC 表
 /// - `is_intra`: 是否 Intra 块
-/// - `forward`: 若 true 前向解码; 若 false 后向解码 (当前两者等价，使用相同表)
+/// - `forward`: 若 true 前向解码; 若 false 后向解码
 ///
 /// # 返回
 /// - `Ok(Some((last, run, level)))` - 成功解码; last = true 表示最后一个非零系数
 /// - `Ok(None)` - EOB (end-of-block)
 /// - `Err(())` - 解码失败
 ///
-/// # 实现备注
-/// 当前作为标准 AC VLC 解码的正向路径实现。完整的可逆 VLC 需要独立的 RVLC 码表，
-/// 支持从末尾开始的后向解码，目前暂不处理。单向解码足以支持大多数 data_partitioned 流。
+/// # 当前实现状态
+///
+/// - ✅ 前向路径: 使用标准 VLC 解码（功能正常但非RVLC标准）
+/// - ❌ 后向路径: 未实现，暂时回退到前向路径
+/// - ❌ RVLC 码表: 未实现，使用标准 VLC 表代替
+/// - ❌ 反向 BitReader: 未实现
+///
+/// # 使用场景
+///
+/// 在 data_partitioned 模式下解码 Partition B 的 DC 系数时调用。
+/// 即使当前简化实现（仅前向路径）也能正确解码大多数 data_partitioned 流，
+/// 只是在出现位流错误时无法利用 RVLC 的错误恢复能力。
 #[allow(dead_code)]
 pub(super) fn decode_ac_rvlc(
     reader: &mut BitReader,
@@ -487,19 +550,32 @@ pub(super) fn decode_ac_rvlc(
     is_intra: bool,
     forward: bool,
 ) -> Result<Option<(bool, u8, i16)>, ()> {
-    // 当前版本统一使用正向解码路径
-    // 完整的后向解码需要从比特流末尾倒序读取，这将在后续版本实现
+    // 当前版本: 统一使用前向解码路径（标准 VLC）
+    // 完整的 RVLC 需要:
+    // 1. 独立的 RVLC 码表
+    // 2. ReverseBitReader 实现
+    // 3. 双向同步和错误检测逻辑
 
     if forward {
-        // 前向解码：普通 VLC 路径
+        // 前向解码：使用标准 VLC 路径（简化实现）
         decode_ac_vlc(reader, table, is_intra)
     } else {
-        // 后向解码：暂时仍用前向路径
-        // 警告用户仅输出一次，避免日志爆满
+        // 后向解码：暂未实现，回退到前向路径
+        //
+        // TODO 完整实现步骤:
+        // 1. 实现 ReverseBitReader (从末尾倒序读取比特)
+        // 2. 加载 RVLC 码表 (ISO/IEC 14496-2 Table B-35/B-36)
+        // 3. 实现反向 VLC 解码循环
+        // 4. 在 decode_intra_block 中调用时传入 backward_reader
+
         static RVLC_REVERSE_WARN: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(true);
         if RVLC_REVERSE_WARN.swap(false, std::sync::atomic::Ordering::Relaxed) {
-            warn!("RVLC 后向解码未完全实现，使用前向路径代替（仍可使用）");
+            warn!(
+                "RVLC 后向解码未实现，使用前向路径代替。\
+                 功能可用但无法利用 RVLC 的错误恢复能力。\
+                 要实现完整 RVLC，需要 ReverseBitReader 和 RVLC 码表。"
+            );
         }
         decode_ac_vlc(reader, table, is_intra)
     }

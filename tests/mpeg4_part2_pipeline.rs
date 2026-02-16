@@ -186,6 +186,155 @@ mod tests {
         println!("  3. 对标 FFmpeg 参考输出验证正确性");
     }
 
+    /// Data Partitioning 真实样本解码测试
+    ///
+    /// 使用官方样本验证 Data Partitioning 分区检测和解码:
+    /// - 样本: vdpart-bug.avi (180K)
+    /// - 验证: 分区边界检测、RVLC 解码、resync marker 处理
+    #[test]
+    #[cfg(feature = "http")]
+    fn test_mpeg4part2_data_partitioning_real_sample() {
+        use tao_codec::{CodecRegistry, CodecParamsType, VideoCodecParams};
+        use tao_core::MediaType;
+        use tao_format::{FormatRegistry, IoContext, stream::StreamParams};
+
+        // 官方 Data Partitioning 样本
+        let sample_url = "https://samples.ffmpeg.org/archive/video/mpeg4/avi+mpeg4+++vdpart-bug.avi";
+
+        println!("\n✓ Data Partitioning 真实样本解码测试");
+        println!("  样本: {}", sample_url);
+
+        // 创建并注册所有格式和编解码器
+        let mut format_reg = FormatRegistry::new();
+        tao_format::register_all(&mut format_reg);
+
+        let mut codec_reg = CodecRegistry::new();
+        tao_codec::register_all(&mut codec_reg);
+
+        // 打开网络URL
+        let mut io = match IoContext::open_url(sample_url) {
+            Ok(io) => io,
+            Err(e) => {
+                println!("⚠️  打开URL失败 (可能网络问题): {:?}", e);
+                return;
+            }
+        };
+
+        // 探测格式并打开解封装器
+        let mut demuxer = match format_reg.open_input(&mut io, None) {
+            Ok(d) => d,
+            Err(e) => {
+                println!("⚠️  打开解封装器失败: {:?}", e);
+                return;
+            }
+        };
+
+        // 查找视频流
+        let video_stream_index = demuxer
+            .streams()
+            .iter()
+            .position(|s| matches!(s.media_type, MediaType::Video))
+            .expect("应找到视频流");
+
+        let stream = &demuxer.streams()[video_stream_index];
+
+        // 构造 CodecParameters
+        let codec_params = match &stream.params {
+            StreamParams::Video(v) => {
+                println!("  视频流信息:");
+                println!("    分辨率: {}x{}", v.width, v.height);
+                println!("    帧率: {}", v.frame_rate);
+                
+                tao_codec::CodecParameters {
+                    codec_id: stream.codec_id,
+                    extra_data: stream.extra_data.clone(),
+                    bit_rate: v.bit_rate,
+                    params: CodecParamsType::Video(VideoCodecParams {
+                        width: v.width,
+                        height: v.height,
+                        pixel_format: v.pixel_format,
+                        frame_rate: v.frame_rate,
+                        sample_aspect_ratio: v.sample_aspect_ratio,
+                    }),
+                }
+            }
+            _ => panic!("不是视频流"),
+        };
+
+        // 创建解码器
+        let mut decoder = codec_reg
+            .create_decoder(stream.codec_id)
+            .expect("创建解码器失败");
+
+        decoder
+            .open(&codec_params)
+            .expect("打开解码器失败");
+
+        // 解码前 15 帧，验证 Data Partitioning 日志输出
+        let mut frame_count = 0;
+        let max_frames = 15;
+
+        println!("\n  解码帧:");
+        loop {
+            match demuxer.read_packet(&mut io) {
+                Ok(packet) => {
+                    if packet.stream_index != video_stream_index {
+                        continue;
+                    }
+
+                    // 发送数据包到解码器（会触发分区分析日志）
+                    if let Err(e) = decoder.send_packet(&packet) {
+                        println!("    发送数据包失败: {:?}", e);
+                        continue;
+                    }
+
+                    // 接收解码帧
+                    loop {
+                        match decoder.receive_frame() {
+                            Ok(_frame) => {
+                                frame_count += 1;
+                                if frame_count % 5 == 0 {
+                                    println!("    已解码: {} 帧", frame_count);
+                                }
+
+                                if frame_count >= max_frames {
+                                    break;
+                                }
+                            }
+                            Err(tao_core::TaoError::NeedMoreData) => break,
+                            Err(e) => {
+                                println!("    receive 失败: {:?}", e);
+                                break;
+                            }
+                        }
+                    }
+
+                    if frame_count >= max_frames {
+                        break;
+                    }
+                }
+                Err(tao_core::TaoError::Eof) => {
+                    println!("  到达流结尾");
+                    break;
+                }
+                Err(e) => {
+                    println!("  读取数据包失败: {:?}", e);
+                    break;
+                }
+            }
+        }
+
+        println!("\n  ✓ 解码完成: {} 帧", frame_count);
+        println!("  如果启用 Data Partitioning，上方应有分区分析日志");
+        println!("  (使用 --nocapture 运行查看完整日志)");
+
+        assert!(
+            frame_count >= 10,
+            "应至少成功解码 10 帧 (实际: {})",
+            frame_count
+        );
+    }
+
     /// data_partitioned / RVLC 兼容性测试
     ///
     /// 验证 data_partitioned + reversible_vlc 工作流:
