@@ -154,14 +154,16 @@ impl Mpeg4Decoder {
         let resync_marker_disable = reader.read_bit().unwrap_or(true);
 
         let data_partitioned = reader.read_bit().unwrap_or(false);
+        let mut reversible_vlc = false;
         if data_partitioned {
-            let _reversible_vlc = reader.read_bit();
+            reversible_vlc = reader.read_bit().unwrap_or(false);
         }
 
         self.vol_info = Some(VolInfo {
             vop_time_increment_resolution: time_res,
             fixed_vop_rate: fixed_rate,
             data_partitioned,
+            reversible_vlc,
             quant_type,
             interlacing,
             quarterpel,

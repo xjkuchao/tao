@@ -4,7 +4,6 @@
 
 use super::Mpeg4Decoder;
 use super::bitreader::BitReader;
-use super::tables::ZIGZAG_SCAN;
 use super::types::PredictorDirection;
 use super::vlc::{INTER_AC_VLC, INTRA_AC_VLC, decode_ac_vlc, decode_intra_dc_vlc};
 
@@ -19,6 +18,7 @@ pub(super) fn decode_intra_block_vlc(
     ac_pred_flag: bool,
     ac_coded: bool,
     decoder: &mut Mpeg4Decoder,
+    scan: &[usize; 64],
 ) -> Option<[i32; 64]> {
     let mut block = [0i32; 64];
     let is_luma = plane == 0;
@@ -46,7 +46,7 @@ pub(super) fn decode_intra_block_vlc(
                     if pos >= 64 {
                         break;
                     }
-                    block[ZIGZAG_SCAN[pos]] = level as i32;
+                    block[scan[pos]] = level as i32;
                     pos += 1;
                     if last {
                         break;
@@ -74,8 +74,7 @@ pub(super) fn decode_intra_block_vlc(
                 if let Some(idx) = c_idx {
                     let pred_ac = decoder.predictor_cache[idx];
                     for i in 1..8 {
-                        block[ZIGZAG_SCAN[i]] =
-                            block[ZIGZAG_SCAN[i]].wrapping_add(pred_ac[i] as i32);
+                        block[scan[i]] = block[scan[i]].wrapping_add(pred_ac[i] as i32);
                     }
                 }
             }
@@ -93,8 +92,7 @@ pub(super) fn decode_intra_block_vlc(
                 if let Some(idx) = a_idx {
                     let pred_ac = decoder.predictor_cache[idx];
                     for i in 1..8 {
-                        block[ZIGZAG_SCAN[i * 8]] =
-                            block[ZIGZAG_SCAN[i * 8]].wrapping_add(pred_ac[7 + i] as i32);
+                        block[scan[i * 8]] = block[scan[i * 8]].wrapping_add(pred_ac[7 + i] as i32);
                     }
                 }
             }
@@ -107,10 +105,10 @@ pub(super) fn decode_intra_block_vlc(
     if let Some(cache) = decoder.predictor_cache.get_mut(cache_pos) {
         cache[0] = actual_dc;
         for i in 1..8 {
-            cache[i] = block[ZIGZAG_SCAN[i]] as i16;
+            cache[i] = block[scan[i]] as i16;
         }
         for i in 1..8 {
-            cache[7 + i] = block[ZIGZAG_SCAN[i * 8]] as i16;
+            cache[7 + i] = block[scan[i * 8]] as i16;
         }
     }
 
@@ -118,7 +116,10 @@ pub(super) fn decode_intra_block_vlc(
 }
 
 /// 解码 Inter 块的 DCT 系数
-pub(super) fn decode_inter_block_vlc(reader: &mut BitReader) -> Option<[i32; 64]> {
+pub(super) fn decode_inter_block_vlc(
+    reader: &mut BitReader,
+    scan: &[usize; 64],
+) -> Option<[i32; 64]> {
     let mut block = [0i32; 64];
     let mut pos = 0;
     while pos < 64 {
@@ -129,7 +130,7 @@ pub(super) fn decode_inter_block_vlc(reader: &mut BitReader) -> Option<[i32; 64]
                 if pos >= 64 {
                     break;
                 }
-                block[ZIGZAG_SCAN[pos]] = level as i32;
+                block[scan[pos]] = level as i32;
                 pos += 1;
                 if last {
                     break;

@@ -87,6 +87,9 @@ pub(in crate::decoders) struct VolInfo {
     pub fixed_vop_rate: bool,
     #[allow(dead_code)]
     pub data_partitioned: bool,
+    /// 是否使用可逆 VLC (RVLC) 编码
+    #[allow(dead_code)]
+    pub reversible_vlc: bool,
     /// 量化类型: 0=H.263, 1=MPEG
     pub quant_type: u8,
     /// 是否支持隔行扫描

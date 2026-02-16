@@ -82,6 +82,34 @@ impl Mpeg4Decoder {
             self.quant = ((self.quant as i32 + dq).clamp(1, 31)) as u8;
         }
 
+        // 4a. 隔行模式: field_dct 和 field_pred (B 帧也需处理)
+        let interlacing = self
+            .vol_info
+            .as_ref()
+            .map(|v| v.interlacing)
+            .unwrap_or(false);
+        let field_dct = if interlacing && (cbp != 0) {
+            reader.read_bit().unwrap_or(false)
+        } else {
+            false
+        };
+        let field_pred = if interlacing {
+            reader.read_bit().unwrap_or(false)
+        } else {
+            false
+        };
+        if field_pred {
+            let _field_for_top = reader.read_bit().unwrap_or(false);
+            let _field_for_bot = reader.read_bit().unwrap_or(false);
+        }
+
+        // 选择扫描表
+        let scan_table = if field_dct {
+            &super::tables::ALTERNATE_VERTICAL_SCAN
+        } else {
+            &super::tables::ZIGZAG_SCAN
+        };
+
         // 5. 运动向量解码
         let mb_idx = mb_y as usize * self.mb_stride + mb_x as usize;
         let (forward_mvs, backward_mvs) = match mode {
@@ -143,7 +171,7 @@ impl Mpeg4Decoder {
             let coded = cbp & (1 << (5 - block_idx)) != 0;
 
             let mut block = if coded {
-                decode_inter_block_vlc(reader).unwrap_or([0; 64])
+                decode_inter_block_vlc(reader, scan_table).unwrap_or([0; 64])
             } else {
                 [0i32; 64]
             };
@@ -190,7 +218,7 @@ impl Mpeg4Decoder {
             let coded = cbp & (1 << (1 - plane_idx)) != 0;
 
             let mut block = if coded {
-                decode_inter_block_vlc(reader).unwrap_or([0; 64])
+                decode_inter_block_vlc(reader, scan_table).unwrap_or([0; 64])
             } else {
                 [0i32; 64]
             };

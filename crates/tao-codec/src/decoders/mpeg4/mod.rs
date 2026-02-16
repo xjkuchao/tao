@@ -232,6 +232,27 @@ impl Mpeg4Decoder {
         }
     }
 
+    /// 扫描数据分区中的分包边界
+    ///
+    /// 数据分区的每个分包都有 resync marker。本函数扫描位流以检测分包数量。
+    /// 返回找到的分包数（含第一个隐含分包）。
+    fn scan_data_partitions(data: &[u8]) -> u32 {
+        let mut partition_count = 1u32; // 至少一个分包
+        let mut offset = 0;
+
+        // 简单启发式: 扫描 resync marker 出现次数
+        // resync marker pattern: 16+ 个零位 + 1 个一位
+        while offset < data.len() {
+            // 查找下一个潜在的 resync marker (0xFF 字节序列)
+            if offset + 2 < data.len() && data[offset] == 0x00 && data[offset + 1] == 0x00 {
+                partition_count += 1;
+            }
+            offset += 1;
+        }
+
+        partition_count
+    }
+
     /// 检查 resync marker
     ///
     /// resync marker 是 stuffing bits + (16 + vop_fcode) 个零 + 1 个一.
@@ -455,7 +476,7 @@ impl Mpeg4Decoder {
         let cbp = (cbpy << 2) | cbpc;
 
         // 选择扫描表 (field_dct 使用 alternate vertical scan)
-        let _scan_table = if field_dct {
+        let scan_table = if field_dct {
             &ALTERNATE_VERTICAL_SCAN
         } else {
             &ZIGZAG_SCAN
@@ -478,10 +499,11 @@ impl Mpeg4Decoder {
                     ac_pred_flag,
                     ac_coded,
                     self,
+                    scan_table,
                 )
                 .unwrap_or([0; 64])
             } else if ac_coded {
-                decode_inter_block_vlc(reader).unwrap_or([0; 64])
+                decode_inter_block_vlc(reader, scan_table).unwrap_or([0; 64])
             } else {
                 [0i32; 64]
             };
@@ -552,10 +574,11 @@ impl Mpeg4Decoder {
                     ac_pred_flag,
                     ac_coded,
                     self,
+                    scan_table,
                 )
                 .unwrap_or([0; 64])
             } else if ac_coded {
-                decode_inter_block_vlc(reader).unwrap_or([0; 64])
+                decode_inter_block_vlc(reader, scan_table).unwrap_or([0; 64])
             } else {
                 [0i32; 64]
             };
@@ -789,6 +812,23 @@ impl Decoder for Mpeg4Decoder {
         if self.vol_info.is_none() {
             if let Err(e) = self.parse_vol_header(&packet.data) {
                 debug!("VOL 解析失败: {:?}", e);
+            }
+        }
+
+        // 如果 VOL 指示 data_partitioned 或者可逆 VLC, 目前实现只做警告并尝试降级处理。
+        if let Some(v) = &self.vol_info {
+            if v.data_partitioned {
+                // 扫描分区数量
+                let partition_count = Self::scan_data_partitions(&packet.data);
+                warn!(
+                    "VOL 指定 data_partitioned = true: 扫描到 ~{} 个分包。当前实现仅有限支持分区流，后续需实现完整分区拆分与 RVLC 解码",
+                    partition_count
+                );
+                if v.reversible_vlc {
+                    warn!(
+                        "VOL 指定 reversible_vlc = true (RVLC): 当前为占位实现，将影响分区 B 系数解码，需后续完善"
+                    );
+                }
             }
         }
 
