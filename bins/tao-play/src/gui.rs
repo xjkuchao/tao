@@ -1,7 +1,11 @@
 use eframe::egui;
 use std::sync::mpsc::{Receiver, Sender};
+use std::time::Duration;
 
 use crate::player::{PlayerCommand, PlayerStatus, VideoFrame};
+
+/// 目标重绘间隔 (毫秒), 略高于 30fps 以保证流畅
+const REPAINT_INTERVAL_MS: u64 = 15;
 
 pub struct PlayerApp {
     frame_rx: Receiver<VideoFrame>,
@@ -55,18 +59,27 @@ impl eframe::App for PlayerApp {
             self.last_frame_data = Some(frame);
         }
 
-        // Update texture if we have new frame data
-        if let Some(frame_data) = &self.last_frame_data {
+        // 仅当有新帧数据时更新纹理
+        let has_new_frame = self.last_frame_data.is_some();
+        if let Some(frame_data) = self.last_frame_data.take() {
             let color_image = egui::ColorImage::from_rgb(
                 [frame_data.width as usize, frame_data.height as usize],
                 &frame_data.data,
             );
+            let tex_options = egui::TextureOptions::LINEAR;
 
-            self.current_frame =
-                Some(ctx.load_texture("video_frame", color_image, egui::TextureOptions::LINEAR));
+            match &mut self.current_frame {
+                Some(handle) => {
+                    // 复用已有纹理, 仅更新像素数据, 避免 GPU 内存分配/释放
+                    handle.set(color_image, tex_options);
+                }
+                None => {
+                    // 首次创建纹理
+                    self.current_frame =
+                        Some(ctx.load_texture("video_frame", color_image, tex_options));
+                }
+            }
         }
-        // Optimization: clear last_frame_data to prevent constant re-upload
-        self.last_frame_data = None;
 
         // Receive status updates
         while let Ok(status) = self.status_rx.try_recv() {
@@ -192,7 +205,13 @@ impl eframe::App for PlayerApp {
                 }
             });
 
-        // Request repaint continuously to ensure smooth video playback
-        ctx.request_repaint();
+        // 限制重绘频率, 避免无限速率刷新导致 GPU 占用过高
+        if has_new_frame {
+            // 有新帧时尽快刷新
+            ctx.request_repaint();
+        } else {
+            // 无新帧时按固定间隔轮询, 兼顾响应性和资源消耗
+            ctx.request_repaint_after(Duration::from_millis(REPAINT_INTERVAL_MS));
+        }
     }
 }
