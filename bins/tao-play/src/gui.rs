@@ -83,6 +83,15 @@ impl<'a> VideoDisplayState<'a> {
     }
 }
 
+/// 格式化 PTS 用于日志输出, NaN 显示为 "N/A"
+fn fmt_pts(pts: f64) -> String {
+    if pts.is_nan() {
+        "N/A".to_string()
+    } else {
+        format!("{:.3}s", pts)
+    }
+}
+
 // ── 同步算法 ─────────────────────────────────────────────────────────────
 
 /// 计算两帧之间的持续时间 (秒), 对应 ffplay 的 `vp_duration`
@@ -366,10 +375,10 @@ pub fn run_event_loop(
                     Keycode::Space | Keycode::P => {
                         let mode = play_mode_str(paused, state.step);
                         log::info!(
-                            "[按键] Space/P (暂停/恢复), 当前={}, 帧队列={}, 最近PTS={:.3}s",
+                            "[按键] Space/P (暂停/恢复), 当前={}, 帧队列={}, 最近PTS={}",
                             mode,
                             state.frame_queue.len(),
-                            state.last_pts
+                            fmt_pts(state.last_pts)
                         );
                         let _ = command_tx.send(PlayerCommand::TogglePause);
                     }
@@ -379,10 +388,10 @@ pub fn run_event_loop(
                     Keycode::S => {
                         let mode = play_mode_str(paused, state.step);
                         log::info!(
-                            "[按键] S (单步), 当前={}, 帧队列={}, 最近PTS={:.3}s",
+                            "[按键] S (单步), 当前={}, 帧队列={}, 最近PTS={}",
                             mode,
                             state.frame_queue.len(),
-                            state.last_pts
+                            fmt_pts(state.last_pts)
                         );
                         state.step = true;
                         let _ = command_tx.send(PlayerCommand::StepFrame);
@@ -390,40 +399,40 @@ pub fn run_event_loop(
                     Keycode::Right => {
                         let mode = play_mode_str(paused, state.step);
                         log::info!(
-                            "[按键] Right (+10s), 当前={}, 帧队列={}, 最近PTS={:.3}s",
+                            "[按键] Right (+10s), 当前={}, 帧队列={}, 最近PTS={}",
                             mode,
                             state.frame_queue.len(),
-                            state.last_pts
+                            fmt_pts(state.last_pts)
                         );
                         let _ = command_tx.send(PlayerCommand::Seek(10.0));
                     }
                     Keycode::Left => {
                         let mode = play_mode_str(paused, state.step);
                         log::info!(
-                            "[按键] Left (-10s), 当前={}, 帧队列={}, 最近PTS={:.3}s",
+                            "[按键] Left (-10s), 当前={}, 帧队列={}, 最近PTS={}",
                             mode,
                             state.frame_queue.len(),
-                            state.last_pts
+                            fmt_pts(state.last_pts)
                         );
                         let _ = command_tx.send(PlayerCommand::Seek(-10.0));
                     }
                     Keycode::Up => {
                         let mode = play_mode_str(paused, state.step);
                         log::info!(
-                            "[按键] Up (+60s), 当前={}, 帧队列={}, 最近PTS={:.3}s",
+                            "[按键] Up (+60s), 当前={}, 帧队列={}, 最近PTS={}",
                             mode,
                             state.frame_queue.len(),
-                            state.last_pts
+                            fmt_pts(state.last_pts)
                         );
                         let _ = command_tx.send(PlayerCommand::Seek(60.0));
                     }
                     Keycode::Down => {
                         let mode = play_mode_str(paused, state.step);
                         log::info!(
-                            "[按键] Down (-60s), 当前={}, 帧队列={}, 最近PTS={:.3}s",
+                            "[按键] Down (-60s), 当前={}, 帧队列={}, 最近PTS={}",
                             mode,
                             state.frame_queue.len(),
-                            state.last_pts
+                            fmt_pts(state.last_pts)
                         );
                         let _ = command_tx.send(PlayerCommand::Seek(-60.0));
                     }
