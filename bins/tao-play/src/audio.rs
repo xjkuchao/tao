@@ -1,6 +1,7 @@
 //! 音频输出模块.
 //!
 //! 使用 SDL2 音频子系统进行跨平台音频输出.
+//! 缓冲区大小和时钟补偿逻辑对齐 ffplay.
 
 use log::{debug, info};
 use sdl2::audio::{AudioCallback, AudioDevice, AudioSpecDesired};
@@ -10,6 +11,13 @@ use tao_core::{ChannelLayout, SampleFormat};
 use tao_resample::ResampleContext;
 
 use crate::clock::MediaClock;
+
+// ── ffplay 音频常量 ──────────────────────────────────────────────────────
+
+/// 最小缓冲区大小 (样本数) - ffplay: SDL_AUDIO_MIN_BUFFER_SIZE
+const SDL_AUDIO_MIN_BUFFER_SIZE: u16 = 512;
+/// 最大回调频率 (次/秒) - ffplay: SDL_AUDIO_MAX_CALLBACKS_PER_SEC
+const SDL_AUDIO_MAX_CALLBACKS_PER_SEC: u32 = 30;
 
 /// 音频缓冲区中的数据块
 pub struct AudioChunk {
@@ -21,21 +29,13 @@ pub struct AudioChunk {
 
 /// SDL2 音频回调结构
 struct SdlAudioPlayer {
-    /// 接收通道
     receiver: Arc<Mutex<mpsc::Receiver<AudioChunk>>>,
-    /// 内部缓冲
     buffer: Vec<f32>,
-    /// 媒体时钟
     clock: MediaClock,
-    /// 音频转换器 (重采样/声道映射)
     converter: Option<ResampleContext>,
-    /// 输入声道数 (用于转换器)
     input_channels: u32,
-    /// 输出采样率 (用于时钟计算)
     output_sample_rate: u32,
-    /// 输出声道数 (用于时钟计算)
     output_channels: u32,
-    /// 是否正在播放
     playing: Arc<Mutex<bool>>,
 }
 
@@ -45,7 +45,6 @@ impl AudioCallback for SdlAudioPlayer {
     fn callback(&mut self, out: &mut [f32]) {
         let is_playing = *self.playing.lock().unwrap();
         if !is_playing || self.clock.is_paused() {
-            // 输出静音
             for sample in out.iter_mut() {
                 *sample = 0.0;
             }
@@ -54,10 +53,9 @@ impl AudioCallback for SdlAudioPlayer {
 
         let recv = self.receiver.lock().unwrap();
 
-        // 记录最近收到的 PTS, 用于在输出后更准确地更新时钟
         let mut last_chunk_pts = None;
 
-        // 从通道获取更多数据
+        // 从通道获取数据填充内部缓冲
         while self.buffer.len() < out.len() {
             match recv.try_recv() {
                 Ok(chunk) => {
@@ -78,36 +76,41 @@ impl AudioCallback for SdlAudioPlayer {
             }
         }
 
-        // 填充输出 (音量已在 player.rs 中应用)
+        // 填充输出
         let available = self.buffer.len().min(out.len());
         for (i, sample) in out.iter_mut().enumerate() {
-            if i < available {
-                *sample = self.buffer[i];
-            } else {
-                *sample = 0.0;
-            }
+            *sample = if i < available { self.buffer[i] } else { 0.0 };
         }
 
-        // 移除已消耗的数据
         if available > 0 {
             self.buffer.drain(..available);
         }
 
-        // 在数据实际送出后更新时钟, 并扣除缓冲区中未播放的数据时长
+        // ── 更新音频时钟 (对齐 ffplay sdl_audio_callback) ──
+        //
+        // ffplay: set_clock_at(&audclk,
+        //   audio_clock - (2 * hw_buf_size + write_buf_size) / bytes_per_sec, ...)
+        //
+        // 假设 SDL 音频驱动有 2 个周期缓冲 (与 ffplay 一致):
+        // - hw_buf: 2 个回调缓冲 = 2 * out.len() 个 f32 样本
+        // - write_buf: 内部缓冲中未播放的数据 = self.buffer.len() 个 f32 样本
         if let Some(pts) = last_chunk_pts {
             let out_ch = self.output_channels.max(1) as i64;
-            let buffered_samples = self.buffer.len() as i64 / out_ch;
-            let buffered_us = buffered_samples * 1_000_000 / self.output_sample_rate as i64;
-            self.clock.update_audio_pts(pts - buffered_us);
+            let rate = self.output_sample_rate as i64;
+
+            // 内部缓冲中未播放的帧数
+            let write_buf_frames = self.buffer.len() as i64 / out_ch;
+            // SDL 硬件缓冲 (2 个周期)
+            let hw_buf_frames = 2 * out.len() as i64 / out_ch;
+
+            let total_buffered_us = (hw_buf_frames + write_buf_frames) * 1_000_000 / rate;
+            self.clock.update_audio_pts(pts - total_buffered_us);
         }
     }
 }
 
 /// 音频输出管理器 (留在主线程, 持有 SDL2 设备)
-///
-/// Drop 时 SDL2 设备自动停止; sender 断开后回调自动填充静音.
 pub struct AudioOutput {
-    /// SDL2 音频设备 (需要持有以保持播放)
     _device: AudioDevice<SdlAudioPlayer>,
 }
 
@@ -119,22 +122,22 @@ pub struct AudioSender {
 impl AudioOutput {
     /// 创建音频输出
     ///
-    /// 返回 `(AudioOutput, AudioSender)`:
-    /// - `AudioOutput` 保留在主线程, 持有 SDL2 设备
-    /// - `AudioSender` 传给 player 线程, 用于发送音频数据
+    /// 缓冲区大小按 ffplay 公式计算:
+    /// `max(SDL_AUDIO_MIN_BUFFER_SIZE, 2 << log2(freq / SDL_AUDIO_MAX_CALLBACKS_PER_SEC))`
     pub fn new(
         audio_subsystem: &sdl2::AudioSubsystem,
         sample_rate: u32,
         channels: u32,
         clock: MediaClock,
     ) -> Result<(Self, AudioSender), String> {
+        let buf_size = compute_audio_buf_size(sample_rate);
+
         let desired_spec = AudioSpecDesired {
             freq: Some(sample_rate as i32),
             channels: Some(channels as u8),
-            samples: Some(1024),
+            samples: Some(buf_size),
         };
 
-        // 音频数据通道 (有界缓冲, 防止 OOM)
         let (sender, receiver) = mpsc::sync_channel::<AudioChunk>(32);
         let receiver = Arc::new(Mutex::new(receiver));
         let playing = Arc::new(Mutex::new(true));
@@ -147,8 +150,8 @@ impl AudioOutput {
             let output_channels = spec.channels as u32;
 
             info!(
-                "SDL2 音频设备: {}Hz/{}ch (请求 {}Hz/{}ch)",
-                output_sample_rate, output_channels, sample_rate, channels
+                "SDL2 音频设备: {}Hz/{}ch, 缓冲区 {} 样本 (请求 {}Hz/{}ch, {} 样本)",
+                output_sample_rate, output_channels, spec.samples, sample_rate, channels, buf_size
             );
 
             let converter =
@@ -172,15 +175,14 @@ impl AudioOutput {
             }
         })?;
 
-        // 开始播放
         device.resume();
 
-        debug!("SDL2 音频输出已启动: 输入 {}Hz/{}ch", sample_rate, channels);
+        debug!(
+            "SDL2 音频输出已启动: {}Hz/{}ch, 缓冲区 {} 样本",
+            sample_rate, channels, buf_size
+        );
 
-        let output = Self { _device: device };
-        let audio_sender = AudioSender { sender };
-
-        Ok((output, audio_sender))
+        Ok((Self { _device: device }, AudioSender { sender }))
     }
 }
 
@@ -193,9 +195,20 @@ impl AudioSender {
     }
 }
 
-/// 构建 F32 交错音频转换器.
+/// 按 ffplay 公式计算音频缓冲区大小 (样本数)
 ///
-/// 当输入参数与设备输出参数不一致时, 启用重采样和声道映射.
+/// `max(SDL_AUDIO_MIN_BUFFER_SIZE, 2 << av_log2(freq / SDL_AUDIO_MAX_CALLBACKS_PER_SEC))`
+fn compute_audio_buf_size(sample_rate: u32) -> u16 {
+    let ratio = sample_rate / SDL_AUDIO_MAX_CALLBACKS_PER_SEC;
+    if ratio == 0 {
+        return SDL_AUDIO_MIN_BUFFER_SIZE;
+    }
+    let log2_val = ratio.ilog2();
+    let buf_size = 2u32 << log2_val;
+    buf_size.max(SDL_AUDIO_MIN_BUFFER_SIZE as u32) as u16
+}
+
+/// 构建 F32 交错音频转换器
 fn build_f32_converter(
     input_rate: u32,
     input_channels: u32,
@@ -215,7 +228,7 @@ fn build_f32_converter(
     ))
 }
 
-/// 将一个 F32 交错音频块转换为目标设备参数.
+/// 将一个 F32 交错音频块转换为目标设备参数
 fn convert_chunk_f32(
     input_samples: &[f32],
     input_channels: u32,

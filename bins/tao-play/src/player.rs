@@ -1,11 +1,13 @@
 //! 播放器核心逻辑.
 //!
-//! 实现 demux -> decode -> render 管线.
+//! 实现 demux -> decode 管线.
+//! 解码后的视频帧通过 bounded channel 传递给 GUI 线程,
+//! 由 GUI 线程的 video_refresh 状态机控制显示时机 (对齐 ffplay 架构).
 //! A/V 同步以音频时钟为主.
 
 use log::{debug, info, warn};
 use std::path::Path;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -44,7 +46,7 @@ pub struct VideoFrame {
     pub y_stride: usize,
     pub u_stride: usize,
     pub v_stride: usize,
-    #[allow(dead_code)]
+    /// PTS (秒) - 用于 GUI 线程的 video_refresh 同步
     pub pts: f64,
 }
 
@@ -52,7 +54,9 @@ pub struct VideoFrame {
 #[derive(Debug, Clone)]
 pub enum PlayerCommand {
     TogglePause,
-    Seek(f64), // 相对时间 (秒)
+    /// 单步播放: 如果暂停则恢复, GUI 侧设置 step 标志显示一帧后重新暂停
+    StepFrame,
+    Seek(f64),
     VolumeUp,
     VolumeDown,
     ToggleMute,
@@ -63,7 +67,7 @@ pub enum PlayerCommand {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum PlayerStatus {
-    Time(f64, f64), // 当前时间, 总时长
+    Time(f64, f64),
     Paused(bool),
     Volume(f32),
     End,
@@ -80,7 +84,8 @@ pub struct PlayerConfig {
 
 /// 播放器运行所需的通道和外部资源
 pub struct PlayerChannels {
-    pub frame_tx: Sender<VideoFrame>,
+    /// 视频帧发送端 (bounded, capacity=3, 匹配 ffplay VIDEO_PICTURE_QUEUE_SIZE)
+    pub frame_tx: SyncSender<VideoFrame>,
     pub status_tx: Sender<PlayerStatus>,
     pub command_rx: Receiver<PlayerCommand>,
     /// 音频发送端 (可选, 由主线程创建 SDL2 音频后提供)
@@ -98,7 +103,6 @@ pub struct Player {
 impl Player {
     /// 创建播放器
     pub fn new(config: PlayerConfig) -> Result<Self, String> {
-        // URL 不需要检查文件存在
         if !is_url(&config.input_path) && !Path::new(&config.input_path).exists() {
             return Err(format!("文件不存在: {}", config.input_path));
         }
@@ -110,11 +114,9 @@ impl Player {
     }
 
     /// 准备播放并获取视频尺寸（一次性打开文件）
-    /// 返回 (video_size, io, demuxer) 供后续使用
     pub fn prepare_and_get_size(&self) -> Result<PrepareResult, String> {
         info!("正在打开: {}", self.config.input_path);
 
-        // 打开 I/O
         let mut io = if is_url(&self.config.input_path) {
             IoContext::open_url(&self.config.input_path)
                 .map_err(|e| format!("打开 URL 失败: {}", e))?
@@ -123,15 +125,7 @@ impl Player {
                 .map_err(|e| format!("打开文件失败: {}", e))?
         };
 
-        // 探测格式
-        let filename = if is_url(&self.config.input_path) {
-            filename_from_url(&self.config.input_path)
-        } else {
-            Path::new(&self.config.input_path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(&self.config.input_path)
-        };
+        let filename = extract_filename(&self.config.input_path);
 
         let demuxer = self
             .registry
@@ -140,7 +134,6 @@ impl Player {
 
         let streams = demuxer.streams();
 
-        // 查找视频流尺寸
         let video_size = streams
             .iter()
             .find(|s| s.media_type == MediaType::Video)
@@ -152,7 +145,6 @@ impl Player {
                 }
             });
 
-        // 查找音频流参数
         let audio_info = if !self.config.no_audio {
             streams
                 .iter()
@@ -174,51 +166,7 @@ impl Player {
         Ok((video_size, audio_info, io, demuxer))
     }
 
-    /// 获取视频流尺寸（探测但不开始播放）
-    #[allow(dead_code)]
-    pub fn get_video_size(&self) -> Option<(u32, u32)> {
-        // 打开 I/O
-        let mut io = if is_url(&self.config.input_path) {
-            IoContext::open_url(&self.config.input_path).ok()?
-        } else {
-            IoContext::open_read(&self.config.input_path).ok()?
-        };
-
-        // 探测格式
-        let filename = if is_url(&self.config.input_path) {
-            filename_from_url(&self.config.input_path)
-        } else {
-            Path::new(&self.config.input_path)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(&self.config.input_path)
-        };
-
-        let demuxer = self.registry.open_input(&mut io, Some(filename)).ok()?;
-        let streams = demuxer.streams();
-
-        // 查找视频流
-        let video_stream = streams.iter().find(|s| s.media_type == MediaType::Video)?;
-
-        // 提取尺寸
-        if let StreamParams::Video(v) = &video_stream.params {
-            Some((v.width, v.height))
-        } else {
-            None
-        }
-    }
-
-    /// 在后台线程运行播放器
-    #[allow(dead_code)]
-    pub fn run_async(mut self, channels: PlayerChannels) -> thread::JoinHandle<()> {
-        thread::spawn(move || {
-            if let Err(e) = self.run_loop(None, None, channels) {
-                warn!("Playback error: {}", e);
-            }
-        })
-    }
-
-    /// 使用预打开的 IO 和 Demuxer 在后台线程运行播放器（避免重复打开文件）
+    /// 使用预打开的 IO 和 Demuxer 在后台线程运行播放器
     pub fn run_with_prepared(
         mut self,
         io: IoContext,
@@ -227,7 +175,7 @@ impl Player {
     ) -> thread::JoinHandle<()> {
         thread::spawn(move || {
             if let Err(e) = self.run_loop(Some(io), Some(demuxer), channels) {
-                warn!("Playback error: {}", e);
+                warn!("播放错误: {}", e);
             }
         })
     }
@@ -246,13 +194,10 @@ impl Player {
             clock,
         } = channels;
 
-        // 使用预打开的 IO/Demuxer 或打开新的
         let (mut io, mut demuxer) =
             if let (Some(io), Some(demuxer)) = (pre_opened_io, pre_opened_demuxer) {
-                // 使用已打开的（避免重复下载）
                 (io, demuxer)
             } else {
-                // 重新打开
                 info!("正在打开: {}", self.config.input_path);
 
                 let mut io = if is_url(&self.config.input_path) {
@@ -263,14 +208,7 @@ impl Player {
                         .map_err(|e| format!("打开文件失败: {}", e))?
                 };
 
-                let filename = if is_url(&self.config.input_path) {
-                    filename_from_url(&self.config.input_path)
-                } else {
-                    Path::new(&self.config.input_path)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(&self.config.input_path)
-                };
+                let filename = extract_filename(&self.config.input_path);
 
                 let demuxer = self
                     .registry
@@ -283,7 +221,6 @@ impl Player {
         let streams = demuxer.streams().to_vec();
         info!("发现 {} 条流", streams.len());
 
-        // 查找音频和视频流
         let audio_stream = if !self.config.no_audio {
             streams.iter().find(|s| s.media_type == MediaType::Audio)
         } else {
@@ -299,66 +236,19 @@ impl Player {
             return Err("没有找到可播放的音视频流".into());
         }
 
-        // 创建解码器
         let audio_stream_idx = audio_stream.map(|s| s.index);
         let video_stream_idx = video_stream.map(|s| s.index);
 
-        let mut audio_decoder = if let Some(stream) = audio_stream {
-            let mut codec_registry = tao_codec::registry::CodecRegistry::new();
-            tao_codec::register_all(&mut codec_registry);
-            match codec_registry.create_decoder(stream.codec_id) {
-                Ok(mut dec) => {
-                    let params = build_codec_params(stream);
-                    if let Err(e) = dec.open(&params) {
-                        warn!("打开音频解码器失败: {}", e);
-                        None
-                    } else {
-                        Some(dec)
-                    }
-                }
-                Err(e) => {
-                    warn!("创建音频解码器失败: {}", e);
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        let mut audio_decoder = audio_stream.and_then(create_decoder);
+        let mut video_decoder = video_stream.and_then(create_decoder);
 
-        let mut video_decoder = if let Some(stream) = video_stream {
-            let mut codec_registry = tao_codec::registry::CodecRegistry::new();
-            tao_codec::register_all(&mut codec_registry);
-            match codec_registry.create_decoder(stream.codec_id) {
-                Ok(mut dec) => {
-                    let params = build_codec_params(stream);
-                    if let Err(e) = dec.open(&params) {
-                        warn!("打开视频解码器失败: {}", e);
-                        None
-                    } else {
-                        Some(dec)
-                    }
-                }
-                Err(e) => {
-                    warn!("创建视频解码器失败: {}", e);
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        // 时钟和音频输出由主线程创建并传入 (SDL2 要求)
-
-        // 主播放循环
         info!("开始播放...");
         let start_time = Instant::now();
         let mut eof = false;
-        let mut frames_rendered = 0u64;
+        let mut frames_sent = 0u64;
         let mut current_volume = (self.config.volume * 100.0) as u32;
         let mut muted = false;
-        let mut _seek_target: Option<f64> = None;
 
-        // 计算总时长 (秒)
         let total_duration_sec = streams
             .iter()
             .find_map(|s| {
@@ -371,16 +261,22 @@ impl Player {
             .unwrap_or(0.0);
 
         loop {
-            // 处理命令
+            // ── 处理控制命令 ──
             while let Ok(cmd) = command_rx.try_recv() {
                 match cmd {
                     PlayerCommand::TogglePause => {
                         clock.toggle_pause();
                         status_tx.send(PlayerStatus::Paused(clock.is_paused())).ok();
                     }
+                    PlayerCommand::StepFrame => {
+                        // 单步: 如果暂停则恢复 (GUI 侧会在显示一帧后重新暂停)
+                        if clock.is_paused() {
+                            clock.toggle_pause();
+                            status_tx.send(PlayerStatus::Paused(false)).ok();
+                        }
+                    }
                     PlayerCommand::Seek(offset) => {
-                        // TODO: Implement seek properly
-                        info!("Seek request (not implemented completely): {}s", offset);
+                        info!("Seek 请求 (尚未完整实现): {}s", offset);
                     }
                     PlayerCommand::VolumeUp => {
                         current_volume = (current_volume + 5).min(100);
@@ -397,13 +293,12 @@ impl Player {
                     }
                     PlayerCommand::ToggleMute => {
                         muted = !muted;
-                        status_tx
-                            .send(PlayerStatus::Volume(if muted {
-                                0.0
-                            } else {
-                                current_volume as f32 / 100.0
-                            }))
-                            .ok();
+                        let vol = if muted {
+                            0.0
+                        } else {
+                            current_volume as f32 / 100.0
+                        };
+                        status_tx.send(PlayerStatus::Volume(vol)).ok();
                     }
                     PlayerCommand::Stop => {
                         info!("停止播放");
@@ -412,8 +307,8 @@ impl Player {
                 }
             }
 
-            // 发送状态更新 (Low frequency)
-            if frames_rendered % 30 == 0 {
+            // ── 发送状态更新 (低频率) ──
+            if frames_sent % 30 == 0 {
                 let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
                 status_tx
                     .send(PlayerStatus::Time(current_sec, total_duration_sec))
@@ -425,7 +320,7 @@ impl Player {
                 continue;
             }
 
-            // 读取数据包
+            // ── 读取数据包并解码 ──
             if !eof {
                 match demuxer.read_packet(&mut io) {
                     Ok(packet) => {
@@ -443,9 +338,7 @@ impl Player {
                                                     af.time_base.num,
                                                     af.time_base.den,
                                                 );
-                                                let mut samples =
-                                                    extract_f32_samples(af, &streams, stream_idx);
-                                                // 应用实时音量控制
+                                                let mut samples = extract_f32_samples(af);
                                                 let effective_volume = if muted {
                                                     0.0f32
                                                 } else {
@@ -463,37 +356,24 @@ impl Player {
                             }
                         }
 
-                        // 解码视频
+                        // 解码视频 → 直接入队, 由 GUI 线程控制显示时机
                         if Some(stream_idx) == video_stream_idx {
                             if let Some(dec) = &mut video_decoder {
                                 if dec.send_packet(&packet).is_ok() {
                                     while let Ok(frame) = dec.receive_frame() {
                                         if let Frame::Video(vf) = &frame {
-                                            let frame_pts_us = pts_to_us(
+                                            let pts_us = pts_to_us(
                                                 vf.pts,
                                                 vf.time_base.num,
                                                 vf.time_base.den,
                                             );
-                                            let current_us = clock.current_time_us();
-                                            let delay_us = frame_pts_us - current_us;
+                                            let display_frame = build_yuv_frame(vf, pts_us);
 
-                                            // 帧太迟 (>200ms) 则丢弃, 不阻塞解码循环
-                                            if delay_us < -200_000 {
-                                                continue;
-                                            }
-
-                                            // 帧稍早时短暂让步, 避免 CPU 空转
-                                            // 但不做长时间 sleep 以免阻塞音频处理
-                                            if delay_us > 5_000 {
-                                                std::thread::sleep(Duration::from_millis(1));
-                                            }
-
-                                            let display_frame = build_yuv_frame(vf, frame_pts_us);
-
+                                            // bounded channel: 队满时阻塞, 自动背压
                                             if frame_tx.send(display_frame).is_err() {
                                                 return Ok(());
                                             }
-                                            frames_rendered += 1;
+                                            frames_sent += 1;
                                         }
                                     }
                                 }
@@ -506,49 +386,46 @@ impl Player {
                     }
                     Err(e) => {
                         debug!("读取数据包错误: {}", e);
-                        // Continue if possible?
-                        // eof = true;
                     }
                 }
             }
 
-            // 如果只有视频, 没有音频时钟, 使用系统时钟
+            // 仅视频模式: 用系统时钟驱动
             if audio_sender.is_none() && !eof {
                 let elapsed_us = start_time.elapsed().as_micros() as i64;
                 clock.update_audio_pts(elapsed_us);
             }
 
-            // 如果没有视频, 通过音频播放到结束
+            // 仅音频播放: EOF 后等待音频缓冲区播完
             if video_stream.is_none() && eof {
                 std::thread::sleep(Duration::from_millis(2000));
                 break;
             }
 
             if eof {
-                // Check if we should quit
-                // For now, just exit
                 break;
             }
 
-            // 帧率限制 (避免 CPU 100%)
+            // 无视频流时的帧率限制
             if video_stream.is_none() {
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
 
-        // 通知主线程播放结束 (音频设备由主线程管理)
         status_tx.send(PlayerStatus::End).ok();
 
         let elapsed = start_time.elapsed();
         info!(
-            "播放结束: 渲染 {} 帧, 耗时 {:.1}s",
-            frames_rendered,
+            "播放结束: 发送 {} 帧, 耗时 {:.1}s",
+            frames_sent,
             elapsed.as_secs_f64()
         );
 
         Ok(())
     }
 }
+
+// ── 辅助函数 ─────────────────────────────────────────────────────────────
 
 /// 将 PTS 转换为微秒
 fn pts_to_us(pts: i64, num: i32, den: i32) -> i64 {
@@ -559,59 +436,44 @@ fn pts_to_us(pts: i64, num: i32, den: i32) -> i64 {
 }
 
 /// 从音频帧提取 F32 交错采样
-fn extract_f32_samples(
-    af: &tao_codec::frame::AudioFrame,
-    _streams: &[Stream],
-    _stream_idx: usize,
-) -> Vec<f32> {
+fn extract_f32_samples(af: &tao_codec::frame::AudioFrame) -> Vec<f32> {
     match af.sample_format {
-        SampleFormat::F32 => {
-            // 已经是 F32 交错
-            af.data[0]
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect()
-        }
-        SampleFormat::S16 => {
-            // S16 -> F32
-            af.data[0]
-                .chunks_exact(2)
-                .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
-                .collect()
-        }
+        SampleFormat::F32 => af.data[0]
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect(),
+        SampleFormat::S16 => af.data[0]
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+            .collect(),
         SampleFormat::S32 => af.data[0]
             .chunks_exact(4)
-            .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32 / 2147483648.0)
+            .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32 / 2_147_483_648.0)
             .collect(),
         _ => {
-            // 未知格式, 返回静音
             vec![0.0f32; af.nb_samples as usize * 2]
         }
     }
 }
 
-/// 从解码后的视频帧构建 YUV420p 帧数据, 直接传递给 SDL2 纹理
+/// 从解码后的视频帧构建 YUV420p 帧数据
 fn build_yuv_frame(vf: &tao_codec::frame::VideoFrame, pts_us: i64) -> VideoFrame {
     let w = vf.width as usize;
     let h = vf.height as usize;
 
     match vf.pixel_format {
-        PixelFormat::Yuv420p => {
-            // 直接传递 YUV 平面, 无需 CPU 色彩转换
-            VideoFrame {
-                width: vf.width,
-                height: vf.height,
-                y_data: vf.data[0].clone(),
-                u_data: vf.data[1].clone(),
-                v_data: vf.data[2].clone(),
-                y_stride: vf.linesize[0],
-                u_stride: vf.linesize[1],
-                v_stride: vf.linesize[2],
-                pts: pts_us as f64 / 1_000_000.0,
-            }
-        }
+        PixelFormat::Yuv420p => VideoFrame {
+            width: vf.width,
+            height: vf.height,
+            y_data: vf.data[0].clone(),
+            u_data: vf.data[1].clone(),
+            v_data: vf.data[2].clone(),
+            y_stride: vf.linesize[0],
+            u_stride: vf.linesize[1],
+            v_stride: vf.linesize[2],
+            pts: pts_us as f64 / 1_000_000.0,
+        },
         _ => {
-            // 其他格式: 灰色 YUV 填充 (Y=128, U=128, V=128)
             let uv_w = w.div_ceil(2);
             let uv_h = h.div_ceil(2);
             VideoFrame {
@@ -629,17 +491,44 @@ fn build_yuv_frame(vf: &tao_codec::frame::VideoFrame, pts_us: i64) -> VideoFrame
     }
 }
 
-/// 判断路径是否为 URL
+/// 提取文件名 (从路径或 URL)
+fn extract_filename(path: &str) -> &str {
+    if is_url(path) {
+        path.rsplit('/')
+            .next()
+            .and_then(|s| s.split('?').next())
+            .unwrap_or(path)
+    } else {
+        Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(path)
+    }
+}
+
 fn is_url(path: &str) -> bool {
     path.starts_with("http://") || path.starts_with("https://")
 }
 
-/// 从 URL 提取文件名 (用于格式探测)
-fn filename_from_url(url: &str) -> &str {
-    url.rsplit('/')
-        .next()
-        .and_then(|s| s.split('?').next())
-        .unwrap_or(url)
+/// 创建解码器
+fn create_decoder(stream: &Stream) -> Option<Box<dyn tao_codec::decoder::Decoder>> {
+    let mut codec_registry = tao_codec::registry::CodecRegistry::new();
+    tao_codec::register_all(&mut codec_registry);
+    match codec_registry.create_decoder(stream.codec_id) {
+        Ok(mut dec) => {
+            let params = build_codec_params(stream);
+            if let Err(e) = dec.open(&params) {
+                warn!("打开解码器失败: {}", e);
+                None
+            } else {
+                Some(dec)
+            }
+        }
+        Err(e) => {
+            warn!("创建解码器失败: {}", e);
+            None
+        }
+    }
 }
 
 /// 从流信息构建编解码器参数
