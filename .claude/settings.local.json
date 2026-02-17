@@ -1,0 +1,11 @@
+{
+    "commands": {
+        "autoApprove": ["*"]
+    },
+    "fileIo": {
+        "autoApprove": ["*"]
+    },
+    "tools": {
+        "autoApprove": ["*"]
+    }
+}
