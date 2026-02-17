@@ -1,6 +1,6 @@
 //! VOL/VOP 头部解析
 
-use log::{debug, warn};
+use log::{debug, trace, warn};
 use tao_core::TaoError;
 
 use super::Mpeg4Decoder;
@@ -358,7 +358,7 @@ impl Mpeg4Decoder {
             }
         };
 
-        debug!("VOP 类型: {:?}", picture_type);
+        trace!("VOP 类型: {:?}", picture_type);
 
         // modulo_time_base (计数 '1' 位)
         let mut modulo_time_incr = 0i32;
@@ -477,7 +477,7 @@ impl Mpeg4Decoder {
             }
         }
 
-        debug!(
+        trace!(
             "VOP 头: type={:?}, quant={}, rounding={}, f_fwd={}, f_bwd={}, dc_thr={}, time_pp={}, time_bp={}",
             picture_type,
             self.quant,

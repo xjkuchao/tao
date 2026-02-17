@@ -4,7 +4,7 @@
 
 use std::sync::OnceLock;
 
-use log::warn;
+use log::debug;
 
 use super::bitreader::{BitReader, ReverseBitReader};
 use super::tables::*;
@@ -926,7 +926,7 @@ pub(super) fn decode_mcbpc_p(reader: &mut BitReader) -> Option<(MbType, u8)> {
     // 诊断: MCBPC_P 解码失败
     let bits_10 = reader.peek_bits(10).unwrap_or(0);
     let bits_16 = reader.peek_bits(16).unwrap_or(0);
-    warn!(
+    debug!(
         "MCBPC_P 解码失败: 字节位置={}, 前10位={:010b}, 前16位={:016b}",
         pos_before, bits_10, bits_16
     );
@@ -955,7 +955,7 @@ pub(super) fn decode_cbpy(reader: &mut BitReader, is_intra: bool) -> Option<u8> 
     let bits_10 = reader.peek_bits(10).unwrap_or(0);
     let bits_16 = reader.peek_bits(16).unwrap_or(0);
 
-    warn!(
+    debug!(
         "CBPY 解码失败: 字节位置={}, is_intra={}, bits_left={}, 前10位={:010b}, 前16位={:016b}",
         pos_before, is_intra, bits_remaining, bits_10, bits_16
     );
@@ -1111,9 +1111,9 @@ pub(super) fn decode_ac_rvlc_forward(
     }
 
     if is_intra {
-        warn!("RVLC 前向解码失败: Intra 路径未命中码字");
+        debug!("RVLC 前向解码失败: Intra 路径未命中码字");
     } else {
-        warn!("RVLC 前向解码失败: Inter 路径未命中码字");
+        debug!("RVLC 前向解码失败: Inter 路径未命中码字");
     }
     Err(())
 }
@@ -1171,9 +1171,9 @@ pub(super) fn decode_ac_rvlc_backward(
     }
 
     if is_intra {
-        warn!("RVLC 反向解码失败: Intra 路径未命中码字");
+        debug!("RVLC 反向解码失败: Intra 路径未命中码字");
     } else {
-        warn!("RVLC 反向解码失败: Inter 路径未命中码字");
+        debug!("RVLC 反向解码失败: Inter 路径未命中码字");
     }
     Err(())
 }
@@ -1279,7 +1279,7 @@ pub(super) fn decode_ac_vlc(
         }
     }
 
-    warn!("AC VLC 解码失败: 字节位置 = {}", reader.byte_position());
+    debug!("AC VLC 解码失败: 字节位置 = {}", reader.byte_position());
     Err(())
 }
 

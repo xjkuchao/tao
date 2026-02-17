@@ -3,7 +3,7 @@
 //! 使用 SDL2 音频子系统进行跨平台音频输出.
 //! 缓冲区大小和时钟补偿逻辑对齐 ffplay.
 
-use log::{debug, info};
+use log::{debug, info, warn};
 use sdl2::audio::{AudioCallback, AudioDevice, AudioSpecDesired};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -80,7 +80,7 @@ impl AudioCallback for SdlAudioPlayer {
                         match convert_chunk_f32(&chunk.samples, self.input_channels, conv) {
                             Ok(samples) => self.buffer.extend_from_slice(&samples),
                             Err(e) => {
-                                debug!("音频转换失败, 回退原始数据: {}", e);
+                                warn!("音频转换失败, 回退原始数据: {}", e);
                                 self.buffer.extend_from_slice(&chunk.samples);
                             }
                         }

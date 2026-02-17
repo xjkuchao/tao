@@ -6,7 +6,7 @@
 //! - Backward 模式: 使用后向参考帧 (时间上较晚)
 //! - Interpolate 模式: 使用两个参考帧的加权平均
 
-use log::debug;
+use log::trace;
 use tao_core::TaoResult;
 
 use super::Mpeg4Decoder;
@@ -35,7 +35,7 @@ impl Mpeg4Decoder {
 
         let mb_w = self.mb_stride;
         let mb_h = (self.height as usize).div_ceil(16);
-        debug!(
+        trace!(
             "解码 B 帧: {}x{} ({}x{} MB), TRD={}, TRB={}",
             self.width, self.height, mb_w, mb_h, self.time_pp, self.time_bp
         );

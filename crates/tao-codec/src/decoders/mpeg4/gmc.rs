@@ -7,7 +7,7 @@
 //! - 2 个 warping 点: 仿射变换 (平移+旋转+缩放, 4自由度)
 //! - 3 个 warping 点: 透视变换 (完整 6 自由度)
 
-use log::debug;
+use log::trace;
 
 use super::Mpeg4Decoder;
 use super::bitreader::BitReader;
@@ -77,7 +77,7 @@ impl Mpeg4Decoder {
                     x: dx as i16,
                     y: dy as i16,
                 };
-                debug!("GMC 1-point: 平移 MV=({}, {})", dx, dy);
+                trace!("GMC 1-point: 平移 MV=({}, {})", dx, dy);
             }
             2 | 3 => {
                 // 2/3-point GMC: 仿射/透视变换
@@ -143,7 +143,7 @@ impl Mpeg4Decoder {
             // y 方向偏移: f = dy0
             params.transform[5] = dy0 * den;
 
-            debug!(
+            trace!(
                 "GMC 2-point 仿射: [{}, {}, {}, {}, {}, {}] / {}",
                 params.transform[0],
                 params.transform[1],
@@ -184,7 +184,7 @@ impl Mpeg4Decoder {
                 params.transform[3] = 0;
                 params.transform[4] = den;
                 params.transform[5] = dy * den;
-                debug!("GMC 3-point 退化为平移");
+                trace!("GMC 3-point 退化为平移");
             } else {
                 // 求解 a, b, c (x 方向)
                 params.transform[0] =
@@ -202,7 +202,7 @@ impl Mpeg4Decoder {
                 params.transform[5] =
                     ry0 * den - params.transform[3] * x0 - params.transform[4] * y0;
 
-                debug!(
+                trace!(
                     "GMC 3-point 透视: [{}, {}, {}, {}, {}, {}] / {}",
                     params.transform[0],
                     params.transform[1],

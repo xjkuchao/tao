@@ -47,7 +47,7 @@ mod tables;
 mod types;
 mod vlc;
 
-use log::{debug, warn};
+use log::{debug, trace, warn};
 use tao_core::{PixelFormat, TaoError, TaoResult};
 
 use crate::codec_id::CodecId;
@@ -725,7 +725,7 @@ impl Mpeg4Decoder {
             None => {
                 // CBPY 解码失败 - 这是一个严重问题，表明比特流可能不对齐
                 // 在这种情况下，使用0作为保守的fallback
-                debug!(
+                trace!(
                     "宏块CBPY解码失败: 字节位置={}, mb_type={:?}, cbpc={}, is_intra={}",
                     reader.byte_position(),
                     mb_type,
@@ -839,7 +839,7 @@ impl Mpeg4Decoder {
                 if let Some(dc) = decode_intra_dc_vlc(reader, is_luma) {
                     dc
                 } else {
-                    warn!(
+                    debug!(
                         "Partition B DC 解码失败, MB ({}, {}), block {}",
                         mb_x, mb_y, block_idx
                     );
@@ -932,7 +932,7 @@ impl Mpeg4Decoder {
                     mb_data.ac_coeffs[block_idx][i - 1] = coeff as i16;
                 }
             } else {
-                warn!(
+                debug!(
                     "Partition C AC 解码失败, MB ({}, {}), block {}",
                     mb_x, mb_y, block_idx
                 );
@@ -1447,7 +1447,7 @@ impl Mpeg4Decoder {
         let mb_h = self.height.div_ceil(16) as usize;
         let total_mbs = mb_w * mb_h;
 
-        debug!(
+        trace!(
             "Data Partitioning 解码 {} 帧: {}x{} ({} MB)",
             if is_i_vop { "I" } else { "P" },
             self.width,
@@ -1459,7 +1459,7 @@ impl Mpeg4Decoder {
         let mut mb_data_vec: Vec<Option<PartitionedMacroblockData>> = vec![None; total_mbs];
 
         // === 步骤 1: 从 Partition A 解码所有 MB 头部 ===
-        debug!("  步骤 1: 解码 Partition A (MB 头部)");
+        trace!("  步骤 1: 解码 Partition A (MB 头部)");
         let partition_a_bytes = part_info.partition_a.0 / 8;
         let partition_a_len = (part_info.partition_a.1 - part_info.partition_a.0).div_ceil(8);
 
@@ -1479,19 +1479,19 @@ impl Mpeg4Decoder {
                     ) {
                         mb_data_vec[mb_idx] = Some(mb_data);
                     } else {
-                        warn!("  Partition A 解码失败: MB ({}, {})", mb_x, mb_y);
+                        debug!("  Partition A 解码失败: MB ({}, {})", mb_x, mb_y);
                         // 使用标准顺序解码作为降级
                         return self.decode_frame_standard(packet_data, is_i_vop);
                     }
                 }
             }
         } else {
-            warn!("  Partition A 数据不足，降级到标准解码");
+            debug!("  Partition A 数据不足，降级到标准解码");
             return self.decode_frame_standard(packet_data, is_i_vop);
         }
 
         // === 步骤 2: 从 Partition B 解码所有 DC 系数 ===
-        debug!("  步骤 2: 解码 Partition B (DC 系数)");
+        trace!("  步骤 2: 解码 Partition B (DC 系数)");
         if part_info.partition_b.0 < part_info.partition_b.1 {
             let partition_b_bytes = part_info.partition_b.0 / 8;
             let partition_b_len = (part_info.partition_b.1 - part_info.partition_b.0).div_ceil(8);
@@ -1511,7 +1511,7 @@ impl Mpeg4Decoder {
                                 mb_x as u32,
                                 mb_y as u32,
                             ) {
-                                warn!(
+                                debug!(
                                     "  Partition B 解码失败: MB ({}, {}), 降级到标准解码",
                                     mb_x, mb_y
                                 );
@@ -1524,7 +1524,7 @@ impl Mpeg4Decoder {
         }
 
         // === 步骤 3: 从 Partition C 解码所有 AC 系数 ===
-        debug!("  步骤 3: 解码 Partition C (AC 系数)");
+        trace!("  步骤 3: 解码 Partition C (AC 系数)");
         if part_info.partition_c.0 < part_info.partition_c.1 {
             let partition_c_bytes = part_info.partition_c.0 / 8;
             let partition_c_len = (part_info.partition_c.1 - part_info.partition_c.0).div_ceil(8);
@@ -1544,7 +1544,7 @@ impl Mpeg4Decoder {
                                 mb_x as u32,
                                 mb_y as u32,
                             ) {
-                                warn!("  Partition C 解码失败: MB ({}, {}), 使用零 AC", mb_x, mb_y);
+                                debug!("  Partition C 解码失败: MB ({}, {}), 使用零 AC", mb_x, mb_y);
                                 // 继续处理，使用零 AC 系数
                             }
                         }
@@ -1554,7 +1554,7 @@ impl Mpeg4Decoder {
         }
 
         // === 步骤 4: 重建所有宏块 ===
-        debug!("  步骤 4: 重建宏块到帧");
+        trace!("  步骤 4: 重建宏块到帧");
         for mb_y in 0..mb_h {
             for mb_x in 0..mb_w {
                 let mb_idx = mb_y * mb_w + mb_x;
@@ -1569,7 +1569,7 @@ impl Mpeg4Decoder {
             }
         }
 
-        debug!("  Data Partitioning 解码完成");
+        trace!("  Data Partitioning 解码完成");
         Ok(frame)
     }
 
@@ -1651,7 +1651,7 @@ impl Mpeg4Decoder {
             Some(val) => val,
             None => {
                 // CBPY 解码失败 - 记录诊断信息
-                debug!(
+                trace!(
                     "分区宏块CBPY解码失败: 字节位置={}, mb_type={:?}, cbpc={}, is_intra={}",
                     reader.byte_position(),
                     mb_type,
@@ -2017,7 +2017,7 @@ impl Mpeg4Decoder {
 
         let mb_w = self.width.div_ceil(16) as usize;
         let mb_h = self.height.div_ceil(16) as usize;
-        debug!(
+        trace!(
             "解码 I 帧: {}x{} ({}x{} MB)",
             self.width, self.height, mb_w, mb_h
         );
@@ -2066,7 +2066,7 @@ impl Mpeg4Decoder {
 
         let mb_w = self.mb_stride;
         let mb_h = (self.height as usize).div_ceil(16);
-        debug!(
+        trace!(
             "解码 P 帧: {}x{} ({}x{} MB)",
             self.width, self.height, mb_w, mb_h
         );
@@ -2265,7 +2265,7 @@ impl Decoder for Mpeg4Decoder {
         let has_vop_start_code = find_start_code_offset(&packet.data, START_CODE_VOP).is_some();
         if !has_vop_start_code && Self::is_short_video_header(&packet.data) {
             let header = self.parse_short_video_header(&packet.data)?;
-            debug!(
+            trace!(
                 "检测到 Short Video Header (H.263), TR={}, 使用 H.263 解码路径",
                 header.temporal_reference
             );
@@ -2337,7 +2337,7 @@ impl Decoder for Mpeg4Decoder {
         if is_packed {
             let vop_offsets = Self::find_all_vop_offsets(&packet.data);
             if vop_offsets.len() > 1 {
-                debug!(
+                trace!(
                     "DivX packed bitstream: 检测到 {} 个 VOP, 拆分处理",
                     vop_offsets.len()
                 );
@@ -2391,16 +2391,16 @@ impl Decoder for Mpeg4Decoder {
         if data_partitioned {
             let fcode = self.f_code_forward.saturating_sub(1);
             let (part_info, partition_count) = self.analyze_data_partitions(&packet.data, fcode);
-            debug!("数据分区模式已启用:");
-            debug!("  分区数量: {}", partition_count + 1);
-            debug!(
+            trace!("数据分区模式已启用:");
+            trace!("  分区数量: {}", partition_count + 1);
+            trace!(
                 "  Partition A (MB类型/量化/运动向量): 位 [{}, {}) = {} 字节",
                 part_info.partition_a.0,
                 part_info.partition_a.1,
                 (part_info.partition_a.1 - part_info.partition_a.0).div_ceil(8)
             );
             if partition_count >= 1 {
-                debug!(
+                trace!(
                     "  Partition B (DC系数/RVLC): 位 [{}, {}) = {} 字节",
                     part_info.partition_b.0,
                     part_info.partition_b.1,
@@ -2408,7 +2408,7 @@ impl Decoder for Mpeg4Decoder {
                 );
             }
             if partition_count >= 2 {
-                debug!(
+                trace!(
                     "  Partition C (AC系数): 位 [{}, {}) = {} 字节",
                     part_info.partition_c.0,
                     part_info.partition_c.1,
@@ -2417,7 +2417,7 @@ impl Decoder for Mpeg4Decoder {
             }
 
             if reversible_vlc {
-                debug!("  RVLC 可逆编码已启用 (Partition B 使用 RVLC)");
+                trace!("  RVLC 可逆编码已启用 (Partition B 使用 RVLC)");
             }
 
             // === 使用 Data Partitioning 解码 ===
@@ -2444,11 +2444,11 @@ impl Decoder for Mpeg4Decoder {
             // Data Partitioning 仅支持 I/P 帧
             let mut frame = match vop_info.picture_type {
                 PictureType::I => {
-                    debug!("  使用 Data Partitioning 解码 I 帧");
+                    trace!("  使用 Data Partitioning 解码 I 帧");
                     self.decode_frame_partitioned(&packet.data, &part_info, true)?
                 }
                 PictureType::P => {
-                    debug!("  使用 Data Partitioning 解码 P 帧");
+                    trace!("  使用 Data Partitioning 解码 P 帧");
                     self.decode_frame_partitioned(&packet.data, &part_info, false)?
                 }
                 PictureType::B => {

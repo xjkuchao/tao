@@ -9,7 +9,7 @@
 //! - 无 quarter-pixel
 //! - GOB (Group of Blocks) 结构
 
-use log::debug;
+use log::{debug, trace};
 use tao_core::{TaoError, TaoResult};
 
 use super::Mpeg4Decoder;
@@ -180,7 +180,7 @@ impl Mpeg4Decoder {
             reader.read_bits(8); // PSUPP
         }
 
-        debug!(
+        trace!(
             "Short Video Header: {}x{}, type={:?}, quant={}, tr={}",
             width, height, picture_type, quant, temporal_reference
         );
@@ -242,7 +242,7 @@ impl Mpeg4Decoder {
             reader.read_bits(8);
         }
 
-        debug!(
+        trace!(
             "Short Video Header 解码: {}x{} ({} MB), type={:?}, quant={}",
             self.width,
             self.height,
