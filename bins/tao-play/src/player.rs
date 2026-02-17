@@ -251,6 +251,8 @@ impl Player {
         let mut frames_sent = 0u64;
         let mut current_volume = (self.config.volume * 100.0) as u32;
         let mut muted = false;
+        // seek 后需要解码至少一帧 (即使暂停)
+        let mut seek_flush_pending = false;
 
         let total_duration_sec = streams
             .iter()
@@ -305,8 +307,9 @@ impl Player {
                                             a.flush();
                                         }
                                         let target_us = (target_sec * 1_000_000.0) as i64;
-                                        clock.update_audio_pts(target_us);
+                                        clock.seek_reset(target_us);
                                         eof = false;
+                                        seek_flush_pending = true;
                                         status_tx.send(PlayerStatus::Seeked).ok();
                                         info!("Seek 到 {:.1}s", target_sec);
                                     }
@@ -354,7 +357,7 @@ impl Player {
                     .ok();
             }
 
-            if clock.is_paused() {
+            if clock.is_paused() && !seek_flush_pending {
                 std::thread::sleep(Duration::from_millis(16));
                 continue;
             }
@@ -413,6 +416,7 @@ impl Player {
                                                 return Ok(());
                                             }
                                             frames_sent += 1;
+                                            seek_flush_pending = false;
                                         }
                                     }
                                 }

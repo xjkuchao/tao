@@ -61,6 +61,8 @@ struct VideoDisplayState<'a> {
     tex_height: u32,
     /// 全屏状态
     is_fullscreen: bool,
+    /// Seek 后等待新帧显示 (暂停状态下)
+    seek_frame_pending: bool,
 }
 
 impl<'a> VideoDisplayState<'a> {
@@ -76,6 +78,7 @@ impl<'a> VideoDisplayState<'a> {
             tex_width: 0,
             tex_height: 0,
             is_fullscreen: false,
+            seek_frame_pending: false,
         }
     }
 }
@@ -138,10 +141,15 @@ fn video_refresh<'a>(
 
     // 暂停时只重绘, 不推进帧
     if paused {
-        if state.force_refresh {
+        if state.seek_frame_pending && !state.frame_queue.is_empty() {
+            // Seek 后收到新帧: 显示并停留 (对齐 ffplay 暂停 seek)
             upload_front_frame(state, texture_creator);
             render_current_texture(state, canvas);
             state.frame_queue.pop_front();
+            state.seek_frame_pending = false;
+            state.force_refresh = false;
+        } else if state.force_refresh {
+            render_current_texture(state, canvas);
             state.force_refresh = false;
         }
         return (remaining_time, false);
@@ -315,6 +323,7 @@ pub fn run_event_loop(
     let texture_creator = canvas.texture_creator();
     let mut state = VideoDisplayState::new();
     let mut paused = false;
+    let mut eof = false;
 
     let sdl_context = canvas.window().subsystem().sdl();
     let mut event_pump = sdl_context.event_pump()?;
@@ -391,7 +400,10 @@ pub fn run_event_loop(
         // 2. 接收播放状态更新
         while let Ok(status) = status_rx.try_recv() {
             match status {
-                PlayerStatus::End => break 'running,
+                PlayerStatus::End => {
+                    eof = true;
+                    log::info!("收到播放结束信号，等待帧队列排空");
+                }
                 PlayerStatus::Paused(p) => paused = p,
                 PlayerStatus::Seeked => {
                     // Seek 完成: 清空帧队列和重置 frame_timer
@@ -399,6 +411,7 @@ pub fn run_event_loop(
                     state.frame_timer = 0.0;
                     state.last_pts = f64::NAN;
                     state.force_refresh = true;
+                    state.seek_frame_pending = true;
                 }
                 _ => {}
             }
@@ -412,6 +425,12 @@ pub fn run_event_loop(
         // 4. 视频刷新: 决定帧显示时机
         let (remaining_time, step_completed) =
             video_refresh(&mut state, &clock, &mut canvas, &texture_creator, paused);
+
+        // 检查是否播放完毕
+        if eof && state.frame_queue.is_empty() {
+            log::info!("播放完成，退出");
+            break 'running;
+        }
 
         // 5. 单步完成后重新暂停 (对齐 ffplay: if is->step && !is->paused toggle_pause)
         if step_completed {

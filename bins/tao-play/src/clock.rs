@@ -23,6 +23,8 @@ struct ClockInner {
     paused: AtomicBool,
     /// 暂停时的时间偏移
     pause_offset_us: AtomicI64,
+    /// Seek 后冻结时钟, 等待音频回调更新后解冻
+    seek_pending: AtomicBool,
 }
 
 impl MediaClock {
@@ -35,6 +37,7 @@ impl MediaClock {
                 audio_pts_update_time: std::sync::Mutex::new(None),
                 paused: AtomicBool::new(false),
                 pause_offset_us: AtomicI64::new(0),
+                seek_pending: AtomicBool::new(false),
             }),
         }
     }
@@ -43,12 +46,27 @@ impl MediaClock {
     pub fn update_audio_pts(&self, pts_us: i64) {
         self.inner.audio_pts_us.store(pts_us, Ordering::Relaxed);
         *self.inner.audio_pts_update_time.lock().unwrap() = Some(Instant::now());
+        // 音频回调到达, 解除 seek 冻结
+        self.inner.seek_pending.store(false, Ordering::Release);
+    }
+
+    /// Seek 重置: 设置时钟到目标时间但冻结, 直到音频回调更新
+    ///
+    /// 与 `update_audio_pts` 不同: 不设置 update_time, 避免时钟在
+    /// 帧解码完成前提前推进导致 seek 后加速播放.
+    pub fn seek_reset(&self, target_us: i64) {
+        self.inner.audio_pts_us.store(target_us, Ordering::Relaxed);
+        *self.inner.audio_pts_update_time.lock().unwrap() = None;
+        self.inner.seek_pending.store(true, Ordering::Release);
     }
 
     /// 获取当前播放时间 (微秒)
     ///
-    /// 优先使用音频 PTS + 经过时间;
-    /// 音频尚未启动时, 回退到系统时钟 (避免开头帧堆积加速).
+    /// 三种模式:
+    /// - 暂停中: 返回冻结的音频 PTS
+    /// - Seek 后等待音频: 返回冻结的目标 PTS (防止加速)
+    /// - 正常播放: 音频 PTS + 经过时间
+    /// - 初始启动: 系统时钟兜底
     pub fn current_time_us(&self) -> i64 {
         if self.inner.paused.load(Ordering::Relaxed) {
             return self.inner.audio_pts_us.load(Ordering::Relaxed);
@@ -60,8 +78,11 @@ impl MediaClock {
             // 音频已启动: 使用音频 PTS + 上次更新后的经过时间
             let elapsed = update_time.elapsed().as_micros() as i64;
             base_pts + elapsed
+        } else if self.inner.seek_pending.load(Ordering::Acquire) {
+            // Seek 后冻结: 返回目标 PTS, 等待音频回调更新后解冻
+            base_pts
         } else {
-            // 音频未启动: 回退到系统时钟, 防止所有帧以 delay>0 堆积快速渲染
+            // 初始播放: 回退到系统时钟, 防止所有帧以 delay>0 堆积快速渲染
             self.inner.start_time.elapsed().as_micros() as i64
         }
     }
