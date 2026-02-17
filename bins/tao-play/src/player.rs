@@ -278,6 +278,12 @@ impl Player {
             })
             .unwrap_or(0.0);
 
+        // seek 上限: 减去一帧, 避免 seek 到 duration 边界导致无帧可解码
+        let seek_end_margin = video_stream
+            .map(|s| s.time_base.num as f64 / s.time_base.den as f64)
+            .unwrap_or(0.1);
+        let max_seekable_sec = (total_duration_sec - seek_end_margin).max(0.0);
+
         loop {
             // ── 处理控制命令 ──
             while let Ok(cmd) = command_rx.try_recv() {
@@ -297,7 +303,7 @@ impl Player {
                         let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
                         let is_paused = clock.is_paused();
                         let target_sec = if total_duration_sec > 0.0 {
-                            (current_sec + offset).clamp(0.0, total_duration_sec)
+                            (current_sec + offset).clamp(0.0, max_seekable_sec)
                         } else {
                             (current_sec + offset).max(0.0)
                         };
@@ -506,13 +512,13 @@ impl Player {
                             // 以总时长为基准 (时钟在 EOF 时不准确)
                             let base_sec = total_duration_sec;
                             let target_sec = if total_duration_sec > 0.0 {
-                                (base_sec + offset).clamp(0.0, total_duration_sec)
+                                (base_sec + offset).clamp(0.0, max_seekable_sec)
                             } else {
                                 (base_sec + offset).max(0.0)
                             };
 
                             // 前进 seek 到末尾: 无意义, 忽略
-                            if offset > 0.0 && target_sec >= total_duration_sec {
+                            if offset > 0.0 && target_sec >= max_seekable_sec {
                                 info!("[Seek] 已在末尾, 忽略前进 (offset={:+.1}s)", offset);
                                 continue;
                             }
