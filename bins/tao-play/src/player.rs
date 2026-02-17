@@ -357,7 +357,8 @@ impl Player {
                     .ok();
             }
 
-            if clock.is_paused() && !seek_flush_pending {
+            let is_paused = clock.is_paused();
+            if is_paused && !seek_flush_pending {
                 std::thread::sleep(Duration::from_millis(16));
                 continue;
             }
@@ -368,8 +369,10 @@ impl Player {
                     Ok(packet) => {
                         let stream_idx = packet.stream_index;
 
-                        // 解码音频
-                        if Some(stream_idx) == audio_stream_idx {
+                        // 解码音频 (暂停 seek 时跳过音频, 只处理视频帧)
+                        if Some(stream_idx) == audio_stream_idx
+                            && !(is_paused && seek_flush_pending)
+                        {
                             if let Some(dec) = &mut audio_decoder {
                                 if dec.send_packet(&packet).is_ok() {
                                     while let Ok(frame) = dec.receive_frame() {

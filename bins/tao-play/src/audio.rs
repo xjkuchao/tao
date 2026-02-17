@@ -207,11 +207,13 @@ impl AudioOutput {
 }
 
 impl AudioSender {
-    /// 发送音频数据到播放队列
+    /// 发送音频数据到播放队列 (非阻塞: 通道满时丢弃, 避免 player 线程死锁)
     pub fn send(&self, chunk: AudioChunk) -> Result<(), String> {
-        self.sender
-            .send(chunk)
-            .map_err(|e| format!("发送音频数据失败: {}", e))
+        match self.sender.try_send(chunk) {
+            Ok(()) => Ok(()),
+            Err(mpsc::TrySendError::Full(_)) => Ok(()),
+            Err(mpsc::TrySendError::Disconnected(_)) => Err("音频通道已断开".to_string()),
+        }
     }
 
     /// Seek 时清空音频缓冲 (通知回调线程排空旧数据)
