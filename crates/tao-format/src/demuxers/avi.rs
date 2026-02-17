@@ -557,9 +557,11 @@ impl AviDemuxer {
                 }
             }
 
-            // 跳过块数据
-            let skip = chunk_size as i64 + i64::from(chunk_size % 2);
-            io.seek(std::io::SeekFrom::Current(skip))?;
+            // 跳过块数据 (必须用 skip, 不能用 SeekFrom::Current, 因为有读缓冲)
+            io.skip(chunk_size as usize)?;
+            if chunk_size % 2 != 0 {
+                io.skip(1)?;
+            }
         }
 
         if found_any {
