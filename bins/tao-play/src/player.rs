@@ -344,7 +344,7 @@ impl Player {
                                             (target_sec * audio_sample_rate as f64) as u64;
                                         eof = false;
                                         seek_flush_pending = true;
-                                        status_tx.send(PlayerStatus::Seeked).ok();
+                                        // Seeked 延迟到首帧解码后发送, 避免 GUI 提前清空帧队列
                                         info!(
                                             "[Seek] 成功: demuxer 定位到 ts={}, 流#{}, 已发送帧={}",
                                             ts, stream.index, frames_sent
@@ -480,13 +480,11 @@ impl Player {
 
                                             let display_frame =
                                                 build_yuv_frame(vf, pts_us);
-                                            // bounded channel: 队满时阻塞, 自动背压
-                                            if frame_tx.send(display_frame).is_err()
-                                            {
-                                                return Ok(());
-                                            }
-                                            frames_sent += 1;
                                             if seek_flush_pending {
+                                                // 通知 GUI 清空旧帧 (此时首帧已就绪)
+                                                status_tx
+                                                    .send(PlayerStatus::Seeked)
+                                                    .ok();
                                                 info!(
                                                     "[Seek] 首帧已发送: PTS={:.3}s, 确认时钟",
                                                     frame_pts
@@ -494,6 +492,12 @@ impl Player {
                                                 clock.confirm_seek();
                                                 seek_flush_pending = false;
                                             }
+                                            // bounded channel: 队满时阻塞, 自动背压
+                                            if frame_tx.send(display_frame).is_err()
+                                            {
+                                                return Ok(());
+                                            }
+                                            frames_sent += 1;
                                         }
                                     }
                                 }
@@ -572,9 +576,15 @@ impl Player {
             }
 
             if eof {
+                // seek 后无帧可解码就 EOF: 补发 Seeked 保持 GUI 状态一致
+                if seek_flush_pending {
+                    status_tx.send(PlayerStatus::Seeked).ok();
+                    seek_flush_pending = false;
+                }
+                // 跟踪 GUI 侧暂停状态 (进入 EOF 前 clock 状态即 GUI 已知状态)
+                let mut eof_gui_paused = clock.is_paused();
                 // 暂停时钟, 防止 EOF 期间漂移
-                let was_playing = !clock.is_paused();
-                if was_playing {
+                if !eof_gui_paused {
                     clock.set_paused(true);
                 }
 
@@ -586,7 +596,7 @@ impl Player {
                 );
                 status_tx.send(PlayerStatus::End).ok();
 
-                // EOF 等待循环: 只处理 Seek/Stop, 忽略其他命令
+                // EOF 等待循环: 处理 Seek/Stop/TogglePause
                 loop {
                     match command_rx.recv_timeout(Duration::from_millis(50)) {
                         Ok(PlayerCommand::Stop) => {
@@ -645,7 +655,7 @@ impl Player {
                                                 (target_sec * audio_sample_rate as f64) as u64;
                                             eof = false;
                                             seek_flush_pending = true;
-                                            status_tx.send(PlayerStatus::Seeked).ok();
+                                            // Seeked 延迟到首帧解码后发送
                                             info!(
                                                 "[Seek] 成功: 从 EOF 恢复, 目标={:.3}s",
                                                 target_sec
@@ -662,7 +672,11 @@ impl Player {
                             }
                         }
                         Ok(PlayerCommand::TogglePause) => {
-                            // EOF 后暂停/恢复没有意义, 忽略
+                            // EOF 后切换暂停: 用独立变量跟踪 GUI 状态 (时钟已被强制暂停)
+                            eof_gui_paused = !eof_gui_paused;
+                            status_tx
+                                .send(PlayerStatus::Paused(eof_gui_paused))
+                                .ok();
                         }
                         Ok(_) => {}  // 忽略其他命令
                         Err(_) => {} // 超时, 继续等待
