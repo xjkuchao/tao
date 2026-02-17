@@ -78,6 +78,10 @@ fn main() -> Result<(), String> {
     let (video_width, video_height) = video_size.unwrap_or((640, 480));
 
     // ── 初始化 SDL2 ──
+    // Windows 高 DPI 感知: 防止系统对窗口进行额外缩放 (对齐 ffplay)
+    // 必须在 sdl2::init() 之前设置
+    sdl2::hint::set("SDL_WINDOWS_DPI_AWARENESS", "permonitorv2");
+
     let sdl_context = sdl2::init()?;
     let video_subsystem = sdl_context.video()?;
     let audio_subsystem = sdl_context.audio()?;
