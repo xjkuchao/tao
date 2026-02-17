@@ -245,6 +245,19 @@ impl Player {
         let mut audio_decoder = audio_stream.and_then(create_decoder);
         let mut video_decoder = video_stream.and_then(create_decoder);
 
+        // 音频时钟: 用解码输出的累计采样数计算, 不依赖 demuxer PTS
+        // (AVI 等容器的音频 PTS 可能不准确, 特别是压缩音频)
+        let audio_sample_rate = audio_stream
+            .and_then(|s| {
+                if let StreamParams::Audio(a) = &s.params {
+                    Some(a.sample_rate)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(44100);
+        let mut audio_cum_samples: u64 = 0;
+
         info!("开始播放...");
         let start_time = Instant::now();
         let mut eof = false;
@@ -314,6 +327,9 @@ impl Player {
                                         }
                                         let target_us = (target_sec * 1_000_000.0) as i64;
                                         clock.seek_reset(target_us);
+                                        // 重置音频采样计数器
+                                        audio_cum_samples =
+                                            (target_sec * audio_sample_rate as f64) as u64;
                                         eof = false;
                                         seek_flush_pending = true;
                                         status_tx.send(PlayerStatus::Seeked).ok();
@@ -385,11 +401,12 @@ impl Player {
                                     while let Ok(frame) = dec.receive_frame() {
                                         if let Frame::Audio(af) = &frame {
                                             if let Some(out) = &audio_sender {
-                                                let pts_us = pts_to_us(
-                                                    af.pts,
-                                                    af.time_base.num,
-                                                    af.time_base.den,
-                                                );
+                                                // 用累计采样数计算 PTS (不依赖 demuxer PTS)
+                                                let pts_us = (audio_cum_samples as f64
+                                                    / audio_sample_rate as f64
+                                                    * 1_000_000.0)
+                                                    as i64;
+                                                audio_cum_samples += af.nb_samples as u64;
                                                 let mut samples = extract_f32_samples(af);
                                                 let effective_volume = if muted {
                                                     0.0f32
@@ -530,6 +547,9 @@ impl Player {
                                             clock.set_paused(false);
                                             let target_us = (target_sec * 1_000_000.0) as i64;
                                             clock.seek_reset(target_us);
+                                            // 重置音频采样计数器
+                                            audio_cum_samples =
+                                                (target_sec * audio_sample_rate as f64) as u64;
                                             eof = false;
                                             seek_flush_pending = true;
                                             status_tx.send(PlayerStatus::Seeked).ok();
