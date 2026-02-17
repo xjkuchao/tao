@@ -523,8 +523,11 @@ impl Player {
                             if let Some(stream) = seek_stream {
                                 let tb = &stream.time_base;
                                 if tb.num > 0 && tb.den > 0 {
-                                    // 从文件中间回退, 减少需要解码的帧数
-                                    let retry_sec = (max_seekable_sec / 2.0).max(0.0);
+                                    // 只显示最后 ~0.3 秒帧, 从显示点前 1 秒开始解码构建参考帧
+                                    let skip_threshold =
+                                        (max_seekable_sec - 0.3).max(0.0);
+                                    let retry_sec =
+                                        (skip_threshold - 1.0).max(0.0);
                                     let ts =
                                         (retry_sec * tb.den as f64 / tb.num as f64) as i64;
                                     if demuxer
@@ -549,9 +552,6 @@ impl Player {
                                         clock.seek_reset(retry_us);
                                         audio_cum_samples =
                                             (retry_sec * audio_sample_rate as f64) as u64;
-                                        // 只显示最后 ~1 秒的帧
-                                        let skip_threshold =
-                                            (max_seekable_sec - 1.0).max(0.0);
                                         seek_skip_until = Some(skip_threshold);
                                         info!(
                                             "[Seek] EOF 回退: 从 {:.3}s 解码, 跳过至 {:.3}s 后显示",
