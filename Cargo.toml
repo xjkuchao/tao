@@ -77,12 +77,6 @@ ureq = "3"
 # 临时目录
 tempfile = "3"
 
-# MP3 解码
-puremp3 = "0.1"
-
-# Vorbis 解码
-lewton = "0.10"
-
 [package]
 name = "tao"
 description = "纯 Rust 实现的多媒体处理框架, 对标 FFmpeg"
