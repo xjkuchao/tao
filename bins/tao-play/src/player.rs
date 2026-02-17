@@ -464,7 +464,12 @@ impl Player {
             }
 
             if eof {
-                // 发送 End 信号, 但不退出循环 - 等待 seek/stop 命令
+                // 暂停时钟, 防止 EOF 期间漂移
+                let was_playing = !clock.is_paused();
+                if was_playing {
+                    clock.set_paused(true);
+                }
+
                 let elapsed = start_time.elapsed();
                 info!(
                     "播放结束: 发送 {} 帧, 耗时 {:.1}s",
@@ -481,13 +486,24 @@ impl Player {
                             return Ok(());
                         }
                         Ok(PlayerCommand::Seek(offset)) => {
-                            info!("[Seek] EOF 后 seek: offset={:+.1}s", offset);
-                            let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
+                            // 以总时长为基准 (时钟在 EOF 时不准确)
+                            let base_sec = total_duration_sec;
                             let target_sec = if total_duration_sec > 0.0 {
-                                (current_sec + offset).clamp(0.0, total_duration_sec)
+                                (base_sec + offset).clamp(0.0, total_duration_sec)
                             } else {
-                                (current_sec + offset).max(0.0)
+                                (base_sec + offset).max(0.0)
                             };
+
+                            // 前进 seek 到末尾: 无意义, 忽略
+                            if offset > 0.0 && target_sec >= total_duration_sec {
+                                info!("[Seek] 已在末尾, 忽略前进 (offset={:+.1}s)", offset);
+                                continue;
+                            }
+
+                            info!(
+                                "[Seek] EOF 后 seek: offset={:+.1}s, 目标={:.3}s",
+                                offset, target_sec
+                            );
 
                             let seek_stream = video_stream.or(audio_stream);
                             if let Some(stream) = seek_stream {
@@ -510,6 +526,8 @@ impl Player {
                                             if let Some(a) = &audio_sender {
                                                 a.flush();
                                             }
+                                            // 恢复时钟
+                                            clock.set_paused(false);
                                             let target_us = (target_sec * 1_000_000.0) as i64;
                                             clock.seek_reset(target_us);
                                             eof = false;

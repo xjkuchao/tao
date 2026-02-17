@@ -7,8 +7,17 @@
 //! 在首帧解码完成后显式解冻时钟.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
+
+/// 音频时钟状态 (受 Mutex 保护, 确保 PTS 和更新时间的一致性)
+struct AudioState {
+    /// 音频 PTS (微秒)
+    pts_us: i64,
+    /// 上次更新的系统时间 (None = 尚未收到音频数据)
+    update_time: Option<Instant>,
+}
 
 /// 媒体时钟 (线程安全)
 #[derive(Clone)]
@@ -19,14 +28,10 @@ pub struct MediaClock {
 struct ClockInner {
     /// 时钟创建时间 (用于音频未启动前的系统时钟回退)
     start_time: Instant,
-    /// 音频 PTS (微秒)
-    audio_pts_us: AtomicI64,
-    /// 上次音频 PTS 更新的系统时间
-    audio_pts_update_time: std::sync::Mutex<Option<Instant>>,
+    /// 音频时钟状态 (PTS + 更新时间, 原子一致)
+    audio: Mutex<AudioState>,
     /// 是否已暂停
     paused: AtomicBool,
-    /// 暂停时的时间偏移
-    pause_offset_us: AtomicI64,
     /// Seek 后冻结时钟, 由 player 线程显式解冻
     seek_pending: AtomicBool,
 }
@@ -37,10 +42,11 @@ impl MediaClock {
         Self {
             inner: Arc::new(ClockInner {
                 start_time: Instant::now(),
-                audio_pts_us: AtomicI64::new(0),
-                audio_pts_update_time: std::sync::Mutex::new(None),
+                audio: Mutex::new(AudioState {
+                    pts_us: 0,
+                    update_time: None,
+                }),
                 paused: AtomicBool::new(false),
-                pause_offset_us: AtomicI64::new(0),
                 seek_pending: AtomicBool::new(false),
             }),
         }
@@ -54,8 +60,9 @@ impl MediaClock {
         if self.inner.seek_pending.load(Ordering::Acquire) {
             return;
         }
-        self.inner.audio_pts_us.store(pts_us, Ordering::Relaxed);
-        *self.inner.audio_pts_update_time.lock().unwrap() = Some(Instant::now());
+        let mut audio = self.inner.audio.lock().unwrap();
+        audio.pts_us = pts_us;
+        audio.update_time = Some(Instant::now());
     }
 
     /// Seek 重置: 冻结时钟到目标时间
@@ -66,39 +73,47 @@ impl MediaClock {
     /// - 时钟提前推进导致 seek 后加速播放
     pub fn seek_reset(&self, target_us: i64) {
         self.inner.seek_pending.store(true, Ordering::Release);
-        self.inner.audio_pts_us.store(target_us, Ordering::Relaxed);
-        *self.inner.audio_pts_update_time.lock().unwrap() = None;
+        let mut audio = self.inner.audio.lock().unwrap();
+        audio.pts_us = target_us;
+        audio.update_time = None;
     }
 
     /// 确认 seek 完成: 解冻时钟, 开始从 seek 目标推进
     ///
     /// 由 player 线程在 seek 后首帧解码完成时调用.
-    /// 设置 `audio_pts_update_time` 使时钟从当前值开始正常推进,
+    /// 设置 `update_time` 使时钟从当前值开始正常推进,
     /// 避免回退到系统时钟.
     pub fn confirm_seek(&self) {
-        *self.inner.audio_pts_update_time.lock().unwrap() = Some(Instant::now());
+        {
+            let mut audio = self.inner.audio.lock().unwrap();
+            audio.update_time = Some(Instant::now());
+        }
         self.inner.seek_pending.store(false, Ordering::Release);
     }
 
     /// 获取当前播放时间 (微秒)
     ///
-    /// 四种模式:
+    /// 三种模式:
     /// - 暂停中: 返回冻结的音频 PTS
     /// - Seek 冻结: 返回目标 PTS (不推进)
     /// - 正常播放: 音频 PTS + 经过时间
     /// - 初始启动: 系统时钟兜底
     pub fn current_time_us(&self) -> i64 {
         if self.inner.paused.load(Ordering::Relaxed) {
-            return self.inner.audio_pts_us.load(Ordering::Relaxed);
+            return self.inner.audio.lock().unwrap().pts_us;
         }
 
         if self.inner.seek_pending.load(Ordering::Acquire) {
-            return self.inner.audio_pts_us.load(Ordering::Relaxed);
+            return self.inner.audio.lock().unwrap().pts_us;
         }
 
-        let base_pts = self.inner.audio_pts_us.load(Ordering::Relaxed);
-        let guard = self.inner.audio_pts_update_time.lock().unwrap();
-        if let Some(update_time) = *guard {
+        // 在同一个锁内读取 PTS 和更新时间, 保证一致性
+        let (base_pts, update_time) = {
+            let audio = self.inner.audio.lock().unwrap();
+            (audio.pts_us, audio.update_time)
+        };
+
+        if let Some(update_time) = update_time {
             // 音频已启动: 使用音频 PTS + 上次更新后的经过时间
             let elapsed = update_time.elapsed().as_micros() as i64;
             base_pts + elapsed
@@ -120,14 +135,7 @@ impl MediaClock {
     }
 
     /// 设置暂停
-    #[allow(dead_code)]
     pub fn set_paused(&self, paused: bool) {
         self.inner.paused.store(paused, Ordering::Relaxed);
-    }
-
-    /// 获取暂停偏移量
-    #[allow(dead_code)]
-    pub fn pause_offset_us(&self) -> i64 {
-        self.inner.pause_offset_us.load(Ordering::Relaxed)
     }
 }

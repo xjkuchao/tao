@@ -65,8 +65,10 @@ pub struct AviDemuxer {
     idx1_entries: Vec<Idx1Entry>,
     /// 当前读取的索引位置
     idx_pos: usize,
-    /// 每流已读取的帧计数 (用于 PTS)
+    /// 每流的 PTS 计数器 (视频=帧序号, 音频=累计采样数)
     frame_counts: Vec<i64>,
+    /// 每流的 dwSampleSize (STRH), 非零表示 PCM 音频
+    sample_sizes: Vec<u32>,
     /// 元数据
     metadata: Vec<(String, String)>,
 }
@@ -81,6 +83,7 @@ impl AviDemuxer {
             idx1_entries: Vec::new(),
             idx_pos: 0,
             frame_counts: Vec::new(),
+            sample_sizes: Vec::new(),
             metadata: Vec::new(),
         }))
     }
@@ -242,6 +245,7 @@ impl AviDemuxer {
                     let mut fcc_handler = [0u8; 4];
                     let mut scale: u32 = 1;
                     let mut rate: u32 = 1;
+                    let mut strh_sample_size: u32 = 0;
                     let mut stream_format = Vec::new();
 
                     while io.position()? < strl_end {
@@ -275,8 +279,13 @@ impl AviDemuxer {
                                 let _start = io.read_u32_le()?; // 4 bytes
                                 let length = io.read_u32_le()?; // 4 bytes
                                 // 已读取 36 字节
-                                // 跳过剩余字段 (dwSuggestedBufferSize, dwQuality, dwSampleSize, rcFrame)
-                                io.skip((sub_size - 36) as usize)?;
+                                let _suggested_buffer_size = io.read_u32_le()?; // 4 bytes
+                                let _quality = io.read_u32_le()?; // 4 bytes
+                                strh_sample_size = io.read_u32_le()?; // 4 bytes
+                                // 已读取 48 字节, 跳过剩余字段 (rcFrame 等)
+                                if sub_size > 48 {
+                                    io.skip((sub_size - 48) as usize)?;
+                                }
 
                                 debug!(
                                     "strh: type={:?}, handler={:?}, scale={}, rate={}",
@@ -313,6 +322,11 @@ impl AviDemuxer {
                                         }),
                                         metadata: Vec::new(),
                                     };
+                                    // 视频流 sample_size 固定为 0
+                                    while self.sample_sizes.len() < stream_index {
+                                        self.sample_sizes.push(0);
+                                    }
+                                    self.sample_sizes.push(0);
                                     self.streams.push(stream);
                                     stream_index += 1;
                                 } else if &fcc_type == FCC_AUDS {
@@ -348,7 +362,14 @@ impl AviDemuxer {
                                     let sample_format = Self::resolve_sample_format(codec_id);
                                     let channel_layout =
                                         ChannelLayout::from_channels(channels as u32);
-                                    let time_base = Rational::new(1, sample_rate as i32);
+                                    // 使用 STRH 的 scale/rate 作为时基
+                                    // PCM: scale=1, rate=sample_rate → 1/sample_rate (PTS 为采样数)
+                                    // MP3: scale=1152, rate=44100 → 1152/44100 (PTS 为帧序号)
+                                    let time_base = if scale > 0 && rate > 0 {
+                                        Rational::new(scale as i32, rate as i32)
+                                    } else {
+                                        Rational::new(1, sample_rate as i32)
+                                    };
 
                                     let stream = Stream {
                                         index: stream_index,
@@ -368,6 +389,11 @@ impl AviDemuxer {
                                         }),
                                         metadata: Vec::new(),
                                     };
+                                    // 记录 dwSampleSize (PCM 非零, 压缩音频为零)
+                                    while self.sample_sizes.len() < stream_index {
+                                        self.sample_sizes.push(0);
+                                    }
+                                    self.sample_sizes.push(strh_sample_size);
                                     self.streams.push(stream);
                                     stream_index += 1;
                                 } else if &fcc_type == FCC_VIDS && stream_format.len() >= 40 {
@@ -553,7 +579,12 @@ impl AviDemuxer {
                         last_frame_counts.clone_from(&self.frame_counts);
                         found_any = true;
                     }
-                    self.frame_counts[snum] += 1;
+                    let ss = self.sample_sizes.get(snum).copied().unwrap_or(0);
+                    if ss > 0 {
+                        self.frame_counts[snum] += (chunk_size / ss).max(1) as i64;
+                    } else {
+                        self.frame_counts[snum] += 1;
+                    }
                 }
             }
 
@@ -691,7 +722,14 @@ impl Demuxer for AviDemuxer {
 
             let stream = &self.streams[stream_index];
             let pts = self.frame_counts[stream_index];
-            self.frame_counts[stream_index] += 1;
+            let sample_size = self.sample_sizes.get(stream_index).copied().unwrap_or(0);
+            // PCM 音频: PTS 按采样数累加; 压缩音频/视频: 按帧序号累加
+            let advance = if sample_size > 0 {
+                (entry.size / sample_size).max(1) as i64
+            } else {
+                1
+            };
+            self.frame_counts[stream_index] += advance;
 
             let is_keyframe =
                 (entry.flags & AVIIF_KEYFRAME) != 0 || stream.media_type == MediaType::Audio;
@@ -700,7 +738,7 @@ impl Demuxer for AviDemuxer {
             pkt.stream_index = stream_index;
             pkt.pts = pts;
             pkt.dts = pts;
-            pkt.duration = 1;
+            pkt.duration = advance;
             pkt.time_base = stream.time_base;
             pkt.is_keyframe = is_keyframe;
             pkt.pos = chunk_offset as i64;
@@ -759,7 +797,13 @@ impl Demuxer for AviDemuxer {
 
             let stream = &self.streams[stream_index];
             let pts = self.frame_counts[stream_index];
-            self.frame_counts[stream_index] += 1;
+            let sample_size = self.sample_sizes.get(stream_index).copied().unwrap_or(0);
+            let advance = if sample_size > 0 {
+                (chunk_size / sample_size).max(1) as i64
+            } else {
+                1
+            };
+            self.frame_counts[stream_index] += advance;
 
             let is_keyframe = is_audio || code == b"db" || code == b"dc";
 
@@ -767,7 +811,7 @@ impl Demuxer for AviDemuxer {
             pkt.stream_index = stream_index;
             pkt.pts = pts;
             pkt.dts = pts;
-            pkt.duration = 1;
+            pkt.duration = advance;
             pkt.time_base = stream.time_base;
             pkt.is_keyframe = is_keyframe;
             pkt.pos = pos as i64;
@@ -835,7 +879,12 @@ impl Demuxer for AviDemuxer {
             let snum = ((entry.chunk_id[0].saturating_sub(b'0')) * 10
                 + (entry.chunk_id[1].saturating_sub(b'0'))) as usize;
             if snum < self.frame_counts.len() {
-                self.frame_counts[snum] += 1;
+                let ss = self.sample_sizes.get(snum).copied().unwrap_or(0);
+                if ss > 0 {
+                    self.frame_counts[snum] += (entry.size / ss).max(1) as i64;
+                } else {
+                    self.frame_counts[snum] += 1;
+                }
             }
         }
 

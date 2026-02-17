@@ -1544,7 +1544,10 @@ impl Mpeg4Decoder {
                                 mb_x as u32,
                                 mb_y as u32,
                             ) {
-                                debug!("  Partition C 解码失败: MB ({}, {}), 使用零 AC", mb_x, mb_y);
+                                debug!(
+                                    "  Partition C 解码失败: MB ({}, {}), 使用零 AC",
+                                    mb_x, mb_y
+                                );
                                 // 继续处理，使用零 AC 系数
                             }
                         }
