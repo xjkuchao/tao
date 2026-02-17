@@ -132,7 +132,7 @@ pub struct AudioOutput {
 
 /// 音频数据发送端 (可安全跨线程传递给 player 线程)
 pub struct AudioSender {
-    sender: mpsc::SyncSender<AudioChunk>,
+    sender: mpsc::Sender<AudioChunk>,
     flush_flag: Arc<AtomicBool>,
 }
 
@@ -155,7 +155,7 @@ impl AudioOutput {
             samples: Some(buf_size),
         };
 
-        let (sender, receiver) = mpsc::sync_channel::<AudioChunk>(32);
+        let (sender, receiver) = mpsc::channel::<AudioChunk>();
         let receiver = Arc::new(Mutex::new(receiver));
         let playing = Arc::new(Mutex::new(true));
         let flush_flag = Arc::new(AtomicBool::new(false));
@@ -207,16 +207,14 @@ impl AudioOutput {
 }
 
 impl AudioSender {
-    /// 发送音频数据到播放队列 (非阻塞: 通道满时丢弃, 避免 player 线程死锁)
+    /// 发送音频数据到播放队列 (无界通道, 永不丢弃)
     ///
-    /// 返回 `Ok(true)` 表示入队成功, `Ok(false)` 表示通道满被丢弃.
-    /// 调用方应根据返回值决定是否更新 PTS 计数器.
-    pub fn send(&self, chunk: AudioChunk) -> Result<bool, String> {
-        match self.sender.try_send(chunk) {
-            Ok(()) => Ok(true),
-            Err(mpsc::TrySendError::Full(_)) => Ok(false),
-            Err(mpsc::TrySendError::Disconnected(_)) => Err("音频通道已断开".to_string()),
-        }
+    /// 使用无界通道确保音频数据不会因通道满而被丢弃,
+    /// 从而保证音频时钟 PTS 连续递增, 避免时钟漂移导致的加速/慢放.
+    pub fn send(&self, chunk: AudioChunk) -> Result<(), String> {
+        self.sender
+            .send(chunk)
+            .map_err(|_| "音频通道已断开".to_string())
     }
 
     /// Seek 时清空音频缓冲 (通知回调线程排空旧数据)

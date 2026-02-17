@@ -433,19 +433,11 @@ impl Player {
                                                     *s *= effective_volume;
                                                 }
                                                 let chunk = AudioChunk { samples, pts_us };
-                                                match out.send(chunk) {
-                                                    Ok(true) => {
-                                                        // 入队成功: 递增采样计数
-                                                        audio_cum_samples += nb;
-                                                    }
-                                                    Ok(false) => {
-                                                        // 通道满丢弃: 不递增, 防止后续 PTS 虚高
-                                                    }
-                                                    Err(_) => return Ok(()),
+                                                if out.send(chunk).is_err() {
+                                                    return Ok(());
                                                 }
-                                            } else {
-                                                audio_cum_samples += nb;
                                             }
+                                            audio_cum_samples += nb;
                                         }
                                     }
                                 }
