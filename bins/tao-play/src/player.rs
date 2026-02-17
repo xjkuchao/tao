@@ -464,7 +464,80 @@ impl Player {
             }
 
             if eof {
-                break;
+                // 发送 End 信号, 但不退出循环 - 等待 seek/stop 命令
+                let elapsed = start_time.elapsed();
+                info!(
+                    "播放结束: 发送 {} 帧, 耗时 {:.1}s",
+                    frames_sent,
+                    elapsed.as_secs_f64()
+                );
+                status_tx.send(PlayerStatus::End).ok();
+
+                // EOF 等待循环: 只处理 Seek/Stop, 忽略其他命令
+                loop {
+                    match command_rx.recv_timeout(Duration::from_millis(50)) {
+                        Ok(PlayerCommand::Stop) => {
+                            info!("停止播放");
+                            return Ok(());
+                        }
+                        Ok(PlayerCommand::Seek(offset)) => {
+                            info!("[Seek] EOF 后 seek: offset={:+.1}s", offset);
+                            let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
+                            let target_sec = if total_duration_sec > 0.0 {
+                                (current_sec + offset).clamp(0.0, total_duration_sec)
+                            } else {
+                                (current_sec + offset).max(0.0)
+                            };
+
+                            let seek_stream = video_stream.or(audio_stream);
+                            if let Some(stream) = seek_stream {
+                                let tb = &stream.time_base;
+                                if tb.num > 0 && tb.den > 0 {
+                                    let ts = (target_sec * tb.den as f64 / tb.num as f64) as i64;
+                                    match demuxer.seek(
+                                        &mut io,
+                                        stream.index,
+                                        ts,
+                                        SeekFlags::default(),
+                                    ) {
+                                        Ok(()) => {
+                                            if let Some(d) = &mut video_decoder {
+                                                d.flush();
+                                            }
+                                            if let Some(d) = &mut audio_decoder {
+                                                d.flush();
+                                            }
+                                            if let Some(a) = &audio_sender {
+                                                a.flush();
+                                            }
+                                            let target_us = (target_sec * 1_000_000.0) as i64;
+                                            clock.seek_reset(target_us);
+                                            eof = false;
+                                            seek_flush_pending = true;
+                                            status_tx.send(PlayerStatus::Seeked).ok();
+                                            info!(
+                                                "[Seek] 成功: 从 EOF 恢复, 目标={:.3}s",
+                                                target_sec
+                                            );
+                                        }
+                                        Err(e) => {
+                                            warn!("[Seek] 失败: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                            if !eof {
+                                break; // 跳出 EOF 等待循环, 恢复主循环
+                            }
+                        }
+                        Ok(PlayerCommand::TogglePause) => {
+                            // EOF 后暂停/恢复没有意义, 忽略
+                        }
+                        Ok(_) => {}  // 忽略其他命令
+                        Err(_) => {} // 超时, 继续等待
+                    }
+                }
+                continue; // 跳过主循环末尾, 回到顶部
             }
 
             // 无视频流时的帧率限制
@@ -472,15 +545,6 @@ impl Player {
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
-
-        status_tx.send(PlayerStatus::End).ok();
-
-        let elapsed = start_time.elapsed();
-        info!(
-            "播放结束: 发送 {} 帧, 耗时 {:.1}s",
-            frames_sent,
-            elapsed.as_secs_f64()
-        );
 
         Ok(())
     }

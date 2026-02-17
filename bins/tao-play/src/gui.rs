@@ -475,6 +475,12 @@ pub fn run_event_loop(
                     state.last_pts = f64::NAN;
                     state.force_refresh = true;
                     state.seek_frame_pending = true;
+                    // Seek 后重置 EOF/hold 状态 (player 线程已恢复)
+                    if eof || holding {
+                        eof = false;
+                        holding = false;
+                        paused = false;
+                    }
                     log::info!(
                         "[GUI] Seek 状态: 清空帧队列 (原{}帧), 等待新帧",
                         old_queue_len
