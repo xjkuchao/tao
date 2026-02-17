@@ -127,8 +127,10 @@ http = ["tao-format/http"]
 name = "codec_bench"
 harness = false
 
-# dev 模式对核心 crate 启用基础优化, 避免播放器帧率过低
+# dev 模式对核心 crate 启用完全优化, 避免播放器帧率过低
 [profile.dev.package.tao-codec]
-opt-level = 2
+opt-level = 3
 [profile.dev.package.tao-play]
-opt-level = 2
+opt-level = 3
+[profile.dev.package.tao-resample]
+opt-level = 3

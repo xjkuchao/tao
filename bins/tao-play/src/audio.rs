@@ -120,7 +120,7 @@ impl AudioOutput {
         sample_rate: u32,
         channels: u32,
         clock: MediaClock,
-        volume: f32,
+        _volume: f32,
     ) -> Result<Self, String> {
         let host = cpal::default_host();
         let device = host
@@ -186,12 +186,14 @@ impl AudioOutput {
                     let mut buf = buffer_clone.lock().unwrap();
                     let recv = receiver.lock().unwrap();
 
+                    // 记录最近收到的 PTS, 用于在输出后更准确地更新时钟
+                    let mut last_chunk_pts = None;
+
                     // 从通道获取更多数据
                     while buf.len() < data.len() {
                         match recv.try_recv() {
                             Ok(chunk) => {
-                                // 更新时钟
-                                clock_clone.update_audio_pts(chunk.pts_us);
+                                last_chunk_pts = Some(chunk.pts_us);
                                 if let Some(conv) = &converter {
                                     match convert_chunk_f32(&chunk.samples, channels, conv) {
                                         Ok(samples) => buf.extend_from_slice(&samples),
@@ -208,11 +210,11 @@ impl AudioOutput {
                         }
                     }
 
-                    // 填充输出
+                    // 填充输出 (音量已在 player.rs 中应用)
                     let available = buf.len().min(data.len());
                     for (i, sample) in data.iter_mut().enumerate() {
                         if i < available {
-                            *sample = buf[i] * volume;
+                            *sample = buf[i];
                         } else {
                             *sample = 0.0;
                         }
@@ -221,6 +223,15 @@ impl AudioOutput {
                     // 移除已消耗的数据
                     if available > 0 {
                         buf.drain(..available);
+                    }
+
+                    // 在数据实际送出后更新时钟, 并扣除缓冲区中未播放的数据时长
+                    // 这比在接收时就更新更准确, 避免时钟超前
+                    if let Some(pts) = last_chunk_pts {
+                        let out_ch = output_channels.max(1) as i64;
+                        let buffered_samples = buf.len() as i64 / out_ch;
+                        let buffered_us = buffered_samples * 1_000_000 / output_sample_rate as i64;
+                        clock_clone.update_audio_pts(pts - buffered_us);
                     }
                 },
                 move |err| {

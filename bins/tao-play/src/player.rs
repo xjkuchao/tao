@@ -454,7 +454,6 @@ impl Player {
                                 if dec.send_packet(&packet).is_ok() {
                                     while let Ok(frame) = dec.receive_frame() {
                                         if let Frame::Video(vf) = &frame {
-                                            // A/V 同步: 计算帧显示时间
                                             let frame_pts_us = pts_to_us(
                                                 vf.pts,
                                                 vf.time_base.num,
@@ -463,14 +462,17 @@ impl Player {
                                             let current_us = clock.current_time_us();
                                             let delay_us = frame_pts_us - current_us;
 
-                                            // 如果帧还没到显示时间, 等待
-                                            if delay_us > 1000 {
-                                                std::thread::sleep(Duration::from_micros(
-                                                    delay_us.min(50000) as u64,
-                                                ));
+                                            // 帧太迟 (>200ms) 则丢弃, 不阻塞解码循环
+                                            if delay_us < -200_000 {
+                                                continue;
                                             }
 
-                                            // 发送帧给 UI
+                                            // 帧稍早时短暂让步, 避免 CPU 空转
+                                            // 但不做长时间 sleep 以免阻塞音频处理
+                                            if delay_us > 5_000 {
+                                                std::thread::sleep(Duration::from_millis(1));
+                                            }
+
                                             let rgb_data = convert_frame_to_rgb24(vf);
                                             let display_frame = VideoFrame {
                                                 width: vf.width,
@@ -480,7 +482,6 @@ impl Player {
                                             };
 
                                             if frame_tx.send(display_frame).is_err() {
-                                                // UI closed, exit
                                                 return Ok(());
                                             }
                                             frames_rendered += 1;
