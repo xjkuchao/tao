@@ -378,10 +378,8 @@ impl Player {
                     Ok(packet) => {
                         let stream_idx = packet.stream_index;
 
-                        // 解码音频 (暂停 seek 时跳过音频, 只处理视频帧)
-                        if Some(stream_idx) == audio_stream_idx
-                            && !(is_paused && seek_flush_pending)
-                        {
+                        // 解码音频 (seek flush 期间跳过音频, 避免新数据被回调异步排空导致时钟跳跃)
+                        if Some(stream_idx) == audio_stream_idx && !seek_flush_pending {
                             if let Some(dec) = &mut audio_decoder {
                                 if dec.send_packet(&packet).is_ok() {
                                     while let Ok(frame) = dec.receive_frame() {

@@ -41,6 +41,10 @@ struct Args {
     #[arg(long, default_value = "100")]
     volume: u32,
 
+    /// 播放结束后停留在最后一帧 (对齐 ffplay 默认行为)
+    #[arg(long, help = "播放结束停留, 不自动退出")]
+    hold: bool,
+
     /// 日志级别 (-v debug, -vv trace)
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
@@ -169,5 +173,5 @@ fn main() -> Result<(), String> {
     );
 
     // ── 主线程: SDL2 事件循环 + video_refresh 状态机 ──
-    gui::run_event_loop(canvas, frame_rx, status_rx, command_tx, clock)
+    gui::run_event_loop(canvas, frame_rx, status_rx, command_tx, clock, args.hold)
 }

@@ -336,11 +336,14 @@ pub fn run_event_loop(
     status_rx: Receiver<PlayerStatus>,
     command_tx: std::sync::mpsc::Sender<PlayerCommand>,
     clock: MediaClock,
+    hold: bool,
 ) -> Result<(), String> {
     let texture_creator = canvas.texture_creator();
     let mut state = VideoDisplayState::new();
     let mut paused = false;
     let mut eof = false;
+    // EOF 后是否已进入 hold 停留状态
+    let mut holding = false;
 
     let sdl_context = canvas.window().subsystem().sdl();
     let mut event_pump = sdl_context.event_pump()?;
@@ -491,9 +494,17 @@ pub fn run_event_loop(
             video_refresh(&mut state, &clock, &mut canvas, &texture_creator, paused);
 
         // 检查是否播放完毕
-        if eof && state.frame_queue.is_empty() {
-            log::info!("播放完成，退出");
-            break 'running;
+        if eof && state.frame_queue.is_empty() && !holding {
+            if hold {
+                // --hold 模式: 停留在最后一帧, 等待用户退出
+                holding = true;
+                paused = true;
+                state.force_refresh = true;
+                log::info!("播放完成, --hold 模式: 停留在最后一帧");
+            } else {
+                log::info!("播放完成, 退出");
+                break 'running;
+            }
         }
 
         // 5. 单步完成后重新暂停 (对齐 ffplay: if is->step && !is->paused toggle_pause)
