@@ -1,9 +1,10 @@
 //! 日志初始化模块.
 //!
-//! 双输出:
-//! - console: 彩色, debug 级别
-//! - file: 无色, 无 target, 默认 info, 可通过 -v/-vv/-vvv 或 TAO_LOG 环境变量调整
+//! 双输出 (统一级别):
+//! - console: 彩色
+//! - file: 无色, 无 target
 //!
+//! 级别优先级: TAO_LOG 环境变量 > -v/-vv/-vvv 命令行 > 默认 info
 //! 日志文件输出到 $cwd/logs/{prefix}.{date}.log
 
 use chrono::{Datelike, Local, Timelike};
@@ -35,22 +36,22 @@ pub fn init(file_prefix: &str, verbosity: u8) {
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
     LOG_GUARD.set(guard).ok();
 
-    // Console: debug 级别, 彩色
-    let console_filter = EnvFilter::new("debug");
+    // 统一级别: TAO_LOG 环境变量 > -v 命令行 > 默认 info
+    let level_str = match verbosity {
+        0 => "info",
+        1 => "debug",
+        _ => "trace",
+    };
+    let console_filter =
+        EnvFilter::try_from_env("TAO_LOG").unwrap_or_else(|_| EnvFilter::new(level_str));
+    let file_filter =
+        EnvFilter::try_from_env("TAO_LOG").unwrap_or_else(|_| EnvFilter::new(level_str));
+
     let console_layer = fmt::Layer::default()
         .with_writer(std::io::stdout)
         .with_ansi(true)
         .event_format(ConsoleFormatter)
         .with_filter(console_filter);
-
-    // File: 默认 info, 通过 -v 提升, TAO_LOG 环境变量可覆盖
-    let file_level = match verbosity {
-        0 => "info",
-        1 => "debug",
-        _ => "trace",
-    };
-    let file_filter =
-        EnvFilter::try_from_env("TAO_LOG").unwrap_or_else(|_| EnvFilter::new(file_level));
 
     let file_layer = fmt::Layer::default()
         .with_writer(non_blocking)
