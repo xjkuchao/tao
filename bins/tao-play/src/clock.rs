@@ -124,8 +124,19 @@ impl MediaClock {
     }
 
     /// 切换暂停状态
+    ///
+    /// 恢复时重置 `update_time`, 防止时钟跳跃:
+    /// 暂停期间 `update_time` 不更新, 恢复后如果不重置,
+    /// `current_time_us()` 会将暂停时长计入经过时间.
     pub fn toggle_pause(&self) {
         let was_paused = self.inner.paused.load(Ordering::Relaxed);
+        if was_paused {
+            // 恢复播放: 重置 update_time 使经过时间从此刻开始计算
+            let mut audio = self.inner.audio.lock().unwrap();
+            if audio.update_time.is_some() {
+                audio.update_time = Some(Instant::now());
+            }
+        }
         self.inner.paused.store(!was_paused, Ordering::Relaxed);
     }
 
@@ -135,7 +146,16 @@ impl MediaClock {
     }
 
     /// 设置暂停
+    ///
+    /// 恢复时重置 `update_time`, 防止时钟跳跃 (与 `toggle_pause` 同理).
     pub fn set_paused(&self, paused: bool) {
+        if !paused && self.inner.paused.load(Ordering::Relaxed) {
+            // 从暂停恢复: 重置 update_time
+            let mut audio = self.inner.audio.lock().unwrap();
+            if audio.update_time.is_some() {
+                audio.update_time = Some(Instant::now());
+            }
+        }
         self.inner.paused.store(paused, Ordering::Relaxed);
     }
 }

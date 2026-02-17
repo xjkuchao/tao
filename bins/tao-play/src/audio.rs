@@ -208,10 +208,13 @@ impl AudioOutput {
 
 impl AudioSender {
     /// 发送音频数据到播放队列 (非阻塞: 通道满时丢弃, 避免 player 线程死锁)
-    pub fn send(&self, chunk: AudioChunk) -> Result<(), String> {
+    ///
+    /// 返回 `Ok(true)` 表示入队成功, `Ok(false)` 表示通道满被丢弃.
+    /// 调用方应根据返回值决定是否更新 PTS 计数器.
+    pub fn send(&self, chunk: AudioChunk) -> Result<bool, String> {
         match self.sender.try_send(chunk) {
-            Ok(()) => Ok(()),
-            Err(mpsc::TrySendError::Full(_)) => Ok(()),
+            Ok(()) => Ok(true),
+            Err(mpsc::TrySendError::Full(_)) => Ok(false),
             Err(mpsc::TrySendError::Disconnected(_)) => Err("音频通道已断开".to_string()),
         }
     }

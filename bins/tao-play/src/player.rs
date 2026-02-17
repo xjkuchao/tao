@@ -412,16 +412,14 @@ impl Player {
                                 if dec.send_packet(&packet).is_ok() {
                                     while let Ok(frame) = dec.receive_frame() {
                                         if let Frame::Audio(af) = &frame {
-                                            // 始终累计采样数
-                                            audio_cum_samples += af.nb_samples as u64;
+                                            let nb = af.nb_samples as u64;
                                             // 跳过阶段: 只累计不发送 (避免播放错位音频)
                                             if seek_skip_until.is_some() {
+                                                audio_cum_samples += nb;
                                                 continue;
                                             }
                                             if let Some(out) = &audio_sender {
-                                                let pts_us = ((audio_cum_samples
-                                                    - af.nb_samples as u64)
-                                                    as f64
+                                                let pts_us = (audio_cum_samples as f64
                                                     / audio_sample_rate as f64
                                                     * 1_000_000.0)
                                                     as i64;
@@ -435,7 +433,18 @@ impl Player {
                                                     *s *= effective_volume;
                                                 }
                                                 let chunk = AudioChunk { samples, pts_us };
-                                                let _ = out.send(chunk);
+                                                match out.send(chunk) {
+                                                    Ok(true) => {
+                                                        // 入队成功: 递增采样计数
+                                                        audio_cum_samples += nb;
+                                                    }
+                                                    Ok(false) => {
+                                                        // 通道满丢弃: 不递增, 防止后续 PTS 虚高
+                                                    }
+                                                    Err(_) => return Ok(()),
+                                                }
+                                            } else {
+                                                audio_cum_samples += nb;
                                             }
                                         }
                                     }
@@ -506,16 +515,18 @@ impl Player {
                     }
                     Err(TaoError::Eof) => {
                         if seek_flush_pending && !seek_eof_retried {
-                            // seek 后立即 EOF 且未解码出任何帧
-                            // 可能 idx1 keyframe 标记不准确, 从头开始解码
-                            // 跳过前面的帧 (仅构建参考帧), 只显示末尾帧
+                            // seek 到末尾后立即 EOF 且未解码出帧:
+                            // 可能 idx1 keyframe 标记不准确, 从较近位置回退重试
                             seek_eof_retried = true;
                             let seek_stream = video_stream.or(audio_stream);
                             let mut retried = false;
                             if let Some(stream) = seek_stream {
                                 let tb = &stream.time_base;
                                 if tb.num > 0 && tb.den > 0 {
-                                    let ts = 0i64;
+                                    // 从文件中间回退, 减少需要解码的帧数
+                                    let retry_sec = (max_seekable_sec / 2.0).max(0.0);
+                                    let ts =
+                                        (retry_sec * tb.den as f64 / tb.num as f64) as i64;
                                     if demuxer
                                         .seek(
                                             &mut io,
@@ -534,15 +545,17 @@ impl Player {
                                         if let Some(a) = &audio_sender {
                                             a.flush();
                                         }
-                                        clock.seek_reset(0);
-                                        audio_cum_samples = 0;
+                                        let retry_us = (retry_sec * 1_000_000.0) as i64;
+                                        clock.seek_reset(retry_us);
+                                        audio_cum_samples =
+                                            (retry_sec * audio_sample_rate as f64) as u64;
                                         // 只显示最后 ~1 秒的帧
                                         let skip_threshold =
                                             (max_seekable_sec - 1.0).max(0.0);
                                         seek_skip_until = Some(skip_threshold);
                                         info!(
-                                            "[Seek] EOF 回退: 从头解码, 跳过至 {:.3}s 后显示",
-                                            skip_threshold
+                                            "[Seek] EOF 回退: 从 {:.3}s 解码, 跳过至 {:.3}s 后显示",
+                                            retry_sec, skip_threshold
                                         );
                                         retried = true;
                                     }
