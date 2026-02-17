@@ -19,4 +19,10 @@ tao-resample.workspace = true
 clap.workspace = true
 log.workspace = true
 env_logger.workspace = true
+# Linux/macOS: 从源码编译 SDL2
+[target.'cfg(not(windows))'.dependencies]
 sdl2 = { version = "0.38", features = ["bundled"] }
+
+# Windows: 通过 vcpkg 获取预编译 SDL2
+[target.'cfg(windows)'.dependencies]
+sdl2 = { version = "0.38", features = ["static-link", "use-vcpkg"] }
