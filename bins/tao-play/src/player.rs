@@ -268,6 +268,8 @@ impl Player {
         let mut seek_flush_pending = false;
         // seek 后立即 EOF 的重试标记 (防止无限循环)
         let mut seek_eof_retried = false;
+        // EOF 回退重试时: 跳过前面的帧 (仅构建参考帧), 只显示此 PTS 之后的帧
+        let mut seek_skip_until: Option<f64> = None;
 
         let total_duration_sec = streams
             .iter()
@@ -303,6 +305,7 @@ impl Player {
                     }
                     PlayerCommand::Seek(offset) => {
                         seek_eof_retried = false;
+                        seek_skip_until = None;
                         let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
                         let is_paused = clock.is_paused();
                         let target_sec = if total_duration_sec > 0.0 {
@@ -409,13 +412,19 @@ impl Player {
                                 if dec.send_packet(&packet).is_ok() {
                                     while let Ok(frame) = dec.receive_frame() {
                                         if let Frame::Audio(af) = &frame {
+                                            // 始终累计采样数
+                                            audio_cum_samples += af.nb_samples as u64;
+                                            // 跳过阶段: 只累计不发送 (避免播放错位音频)
+                                            if seek_skip_until.is_some() {
+                                                continue;
+                                            }
                                             if let Some(out) = &audio_sender {
-                                                // 用累计采样数计算 PTS (不依赖 demuxer PTS)
-                                                let pts_us = (audio_cum_samples as f64
+                                                let pts_us = ((audio_cum_samples
+                                                    - af.nb_samples as u64)
+                                                    as f64
                                                     / audio_sample_rate as f64
                                                     * 1_000_000.0)
                                                     as i64;
-                                                audio_cum_samples += af.nb_samples as u64;
                                                 let mut samples = extract_f32_samples(af);
                                                 let effective_volume = if muted {
                                                     0.0f32
@@ -445,11 +454,35 @@ impl Player {
                                                 vf.time_base.num,
                                                 vf.time_base.den,
                                             );
-                                            let display_frame = build_yuv_frame(vf, pts_us);
+                                            let frame_pts =
+                                                pts_us as f64 / 1_000_000.0;
 
-                                            let frame_pts = display_frame.pts;
+                                            // 跳过阶段: 仅解码构建参考帧, 不入队
+                                            if let Some(threshold) = seek_skip_until
+                                            {
+                                                if frame_pts < threshold {
+                                                    continue;
+                                                }
+                                                // 到达显示阈值: 重置时钟和音频采样到此位置
+                                                seek_skip_until = None;
+                                                let display_us =
+                                                    (frame_pts * 1_000_000.0)
+                                                        as i64;
+                                                clock.seek_reset(display_us);
+                                                audio_cum_samples = (frame_pts
+                                                    * audio_sample_rate as f64)
+                                                    as u64;
+                                                info!(
+                                                    "[Seek] 跳过完成: 从 PTS={:.3}s 开始显示",
+                                                    frame_pts
+                                                );
+                                            }
+
+                                            let display_frame =
+                                                build_yuv_frame(vf, pts_us);
                                             // bounded channel: 队满时阻塞, 自动背压
-                                            if frame_tx.send(display_frame).is_err() {
+                                            if frame_tx.send(display_frame).is_err()
+                                            {
                                                 return Ok(());
                                             }
                                             frames_sent += 1;
@@ -470,17 +503,22 @@ impl Player {
                     Err(TaoError::Eof) => {
                         if seek_flush_pending && !seek_eof_retried {
                             // seek 后立即 EOF 且未解码出任何帧
-                            // 可能 idx1 keyframe 标记不准确, 向前回退重试
+                            // 可能 idx1 keyframe 标记不准确, 从头开始解码
+                            // 跳过前面的帧 (仅构建参考帧), 只显示末尾帧
                             seek_eof_retried = true;
-                            let retry_sec = (max_seekable_sec - 5.0).max(0.0);
                             let seek_stream = video_stream.or(audio_stream);
                             let mut retried = false;
                             if let Some(stream) = seek_stream {
                                 let tb = &stream.time_base;
                                 if tb.num > 0 && tb.den > 0 {
-                                    let ts = (retry_sec * tb.den as f64 / tb.num as f64) as i64;
+                                    let ts = 0i64;
                                     if demuxer
-                                        .seek(&mut io, stream.index, ts, SeekFlags::default())
+                                        .seek(
+                                            &mut io,
+                                            stream.index,
+                                            ts,
+                                            SeekFlags::default(),
+                                        )
                                         .is_ok()
                                     {
                                         if let Some(d) = &mut video_decoder {
@@ -492,11 +530,16 @@ impl Player {
                                         if let Some(a) = &audio_sender {
                                             a.flush();
                                         }
-                                        let target_us = (retry_sec * 1_000_000.0) as i64;
-                                        clock.seek_reset(target_us);
-                                        audio_cum_samples =
-                                            (retry_sec * audio_sample_rate as f64) as u64;
-                                        info!("[Seek] EOF 回退重试: 从 {:.3}s 开始", retry_sec);
+                                        clock.seek_reset(0);
+                                        audio_cum_samples = 0;
+                                        // 只显示最后 ~1 秒的帧
+                                        let skip_threshold =
+                                            (max_seekable_sec - 1.0).max(0.0);
+                                        seek_skip_until = Some(skip_threshold);
+                                        info!(
+                                            "[Seek] EOF 回退: 从头解码, 跳过至 {:.3}s 后显示",
+                                            skip_threshold
+                                        );
                                         retried = true;
                                     }
                                 }
@@ -551,6 +594,8 @@ impl Player {
                             return Ok(());
                         }
                         Ok(PlayerCommand::Seek(offset)) => {
+                            seek_eof_retried = false;
+                            seek_skip_until = None;
                             // 以总时长为基准 (时钟在 EOF 时不准确)
                             let base_sec = total_duration_sec;
                             let target_sec = if total_duration_sec > 0.0 {
