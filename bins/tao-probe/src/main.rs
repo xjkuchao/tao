@@ -135,11 +135,21 @@ fn main() {
     tao_format::register_all(&mut format_registry);
 
     // 打开文件
-    let mut io = match IoContext::open_read(input_path) {
-        Ok(io) => io,
-        Err(e) => {
-            eprintln!("错误: 无法打开文件 '{input_path}': {e}");
-            process::exit(1);
+    let mut io = if input_path.starts_with("http://") || input_path.starts_with("https://") {
+        match IoContext::open_url(input_path) {
+            Ok(io) => io,
+            Err(e) => {
+                eprintln!("错误: 无法打开 URL '{input_path}': {e}");
+                process::exit(1);
+            }
+        }
+    } else {
+        match IoContext::open_read(input_path) {
+            Ok(io) => io,
+            Err(e) => {
+                eprintln!("错误: 无法打开文件 '{input_path}': {e}");
+                process::exit(1);
+            }
         }
     };
 

@@ -75,7 +75,8 @@ impl FfmpegComparer {
 
         // 构建 FFmpeg 命令
         let mut cmd = Command::new("ffmpeg");
-        cmd.arg("-i")
+        cmd.arg("-y") // Overwrite output file
+            .arg("-i")
             .arg(&self.input_file)
             .arg("-pix_fmt")
             .arg("yuv420p")

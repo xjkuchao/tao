@@ -1365,53 +1365,56 @@ impl Mpeg4Decoder {
             // 写入帧
             for y in 0..8 {
                 for x in 0..8 {
-                    let px = (mb_x as usize * 8 + x).min(uv_width - 1);
-                    let py = (mb_y as usize * 8 + y).min(uv_height - 1);
-                    let idx = py * uv_width + px;
-                    let residual = block[y * 8 + x];
-                    let val = if is_intra {
-                        residual.clamp(0, 255) as u8
-                    } else if let Some(ref_frame) = &self.reference_frame {
-                        let pred = if field_pred {
-                            let field_select = Self::select_field_for_chroma_line(
-                                py,
-                                mb_data.field_for_top,
-                                mb_data.field_for_bot,
-                            );
-                            let mv = if field_select {
-                                chroma_mv_top
+                    let px = mb_x as usize * 8 + x;
+                    let py = mb_y as usize * 8 + y;
+
+                    if px < uv_width && py < uv_height {
+                        let idx = py * uv_width + px;
+                        let residual = block[y * 8 + x];
+                        let val = if is_intra {
+                            residual.clamp(0, 255) as u8
+                        } else if let Some(ref_frame) = &self.reference_frame {
+                            let pred = if field_pred {
+                                let field_select = Self::select_field_for_chroma_line(
+                                    py,
+                                    mb_data.field_for_top,
+                                    mb_data.field_for_bot,
+                                );
+                                let mv = if field_select {
+                                    chroma_mv_top
+                                } else {
+                                    chroma_mv_bot
+                                };
+                                let mv_y = Self::scale_field_mv_y(mv.y);
+                                Self::motion_compensate_field(
+                                    ref_frame,
+                                    plane_idx + 1,
+                                    px as isize,
+                                    py as isize,
+                                    mv.x,
+                                    mv_y,
+                                    self.rounding_control,
+                                    chroma_quarterpel,
+                                    field_select,
+                                )
                             } else {
-                                chroma_mv_bot
+                                Self::motion_compensate(
+                                    ref_frame,
+                                    plane_idx + 1,
+                                    px as isize,
+                                    py as isize,
+                                    chroma_mv.x,
+                                    chroma_mv.y,
+                                    self.rounding_control,
+                                    chroma_quarterpel,
+                                )
                             };
-                            let mv_y = Self::scale_field_mv_y(mv.y);
-                            Self::motion_compensate_field(
-                                ref_frame,
-                                plane_idx + 1,
-                                px as isize,
-                                py as isize,
-                                mv.x,
-                                mv_y,
-                                self.rounding_control,
-                                chroma_quarterpel,
-                                field_select,
-                            )
+                            (pred as i32 + residual).clamp(0, 255) as u8
                         } else {
-                            Self::motion_compensate(
-                                ref_frame,
-                                plane_idx + 1,
-                                px as isize,
-                                py as isize,
-                                chroma_mv.x,
-                                chroma_mv.y,
-                                self.rounding_control,
-                                chroma_quarterpel,
-                            )
+                            (residual + 128).clamp(0, 255) as u8
                         };
-                        (pred as i32 + residual).clamp(0, 255) as u8
-                    } else {
-                        (residual + 128).clamp(0, 255) as u8
-                    };
-                    frame.data[plane_idx + 1][idx] = val;
+                        frame.data[plane_idx + 1][idx] = val;
+                    }
                 }
             }
         }
