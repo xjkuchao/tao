@@ -16,22 +16,34 @@ use tao_format::io::IoContext;
 use tao_format::registry::FormatRegistry;
 use tao_format::stream::{Stream, StreamParams};
 
-use crate::audio::{AudioChunk, AudioOutput};
+use crate::audio::{AudioChunk, AudioSender};
 use crate::clock::MediaClock;
 
-/// 播放准备结果: (视频尺寸, IO 上下文, 解封装器)
+/// 音频流参数 (用于在主线程创建 SDL2 音频输出)
+pub struct AudioInfo {
+    pub sample_rate: u32,
+    pub channels: u32,
+}
+
+/// 播放准备结果: (视频尺寸, 音频信息, IO 上下文, 解封装器)
 type PrepareResult = (
     Option<(u32, u32)>,
+    Option<AudioInfo>,
     IoContext,
     Box<dyn tao_format::demuxer::Demuxer>,
 );
 
-/// 视频帧数据
+/// 视频帧数据 (YUV420p 平面格式, 由 SDL2 GPU 做色彩转换)
 #[derive(Clone)]
 pub struct VideoFrame {
     pub width: u32,
     pub height: u32,
-    pub data: Vec<u8>,
+    pub y_data: Vec<u8>,
+    pub u_data: Vec<u8>,
+    pub v_data: Vec<u8>,
+    pub y_stride: usize,
+    pub u_stride: usize,
+    pub v_stride: usize,
     #[allow(dead_code)]
     pub pts: f64,
 }
@@ -49,12 +61,12 @@ pub enum PlayerCommand {
 
 /// 播放器状态更新
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum PlayerStatus {
     Time(f64, f64), // 当前时间, 总时长
     Paused(bool),
     Volume(f32),
     End,
-    #[allow(dead_code)]
     Error(String),
 }
 
@@ -64,6 +76,17 @@ pub struct PlayerConfig {
     pub no_video: bool,
     pub no_audio: bool,
     pub volume: f32,
+}
+
+/// 播放器运行所需的通道和外部资源
+pub struct PlayerChannels {
+    pub frame_tx: Sender<VideoFrame>,
+    pub status_tx: Sender<PlayerStatus>,
+    pub command_rx: Receiver<PlayerCommand>,
+    /// 音频发送端 (可选, 由主线程创建 SDL2 音频后提供)
+    pub audio_sender: Option<AudioSender>,
+    /// 媒体时钟 (由主线程创建)
+    pub clock: MediaClock,
 }
 
 /// 播放器
@@ -129,7 +152,26 @@ impl Player {
                 }
             });
 
-        Ok((video_size, io, demuxer))
+        // 查找音频流参数
+        let audio_info = if !self.config.no_audio {
+            streams
+                .iter()
+                .find(|s| s.media_type == MediaType::Audio)
+                .and_then(|stream| {
+                    if let StreamParams::Audio(a) = &stream.params {
+                        Some(AudioInfo {
+                            sample_rate: a.sample_rate,
+                            channels: a.channel_layout.channels,
+                        })
+                    } else {
+                        None
+                    }
+                })
+        } else {
+            None
+        };
+
+        Ok((video_size, audio_info, io, demuxer))
     }
 
     /// 获取视频流尺寸（探测但不开始播放）
@@ -168,16 +210,9 @@ impl Player {
 
     /// 在后台线程运行播放器
     #[allow(dead_code)]
-    pub fn run_async(
-        mut self,
-        frame_tx: Sender<VideoFrame>,
-        status_tx: Sender<PlayerStatus>,
-        command_rx: Receiver<PlayerCommand>,
-    ) -> thread::JoinHandle<()> {
+    pub fn run_async(mut self, channels: PlayerChannels) -> thread::JoinHandle<()> {
         thread::spawn(move || {
-            if let Err(e) = self.run_loop(None, None, frame_tx, status_tx, command_rx) {
-                // Ignore error sending if channel closed
-                // status_tx.send(PlayerStatus::Error(e)).ok();
+            if let Err(e) = self.run_loop(None, None, channels) {
                 warn!("Playback error: {}", e);
             }
         })
@@ -188,13 +223,10 @@ impl Player {
         mut self,
         io: IoContext,
         demuxer: Box<dyn tao_format::demuxer::Demuxer>,
-        frame_tx: Sender<VideoFrame>,
-        status_tx: Sender<PlayerStatus>,
-        command_rx: Receiver<PlayerCommand>,
+        channels: PlayerChannels,
     ) -> thread::JoinHandle<()> {
         thread::spawn(move || {
-            if let Err(e) = self.run_loop(Some(io), Some(demuxer), frame_tx, status_tx, command_rx)
-            {
+            if let Err(e) = self.run_loop(Some(io), Some(demuxer), channels) {
                 warn!("Playback error: {}", e);
             }
         })
@@ -204,10 +236,16 @@ impl Player {
         &mut self,
         pre_opened_io: Option<IoContext>,
         pre_opened_demuxer: Option<Box<dyn tao_format::demuxer::Demuxer>>,
-        frame_tx: Sender<VideoFrame>,
-        status_tx: Sender<PlayerStatus>,
-        command_rx: Receiver<PlayerCommand>,
+        channels: PlayerChannels,
     ) -> Result<(), String> {
+        let PlayerChannels {
+            frame_tx,
+            status_tx,
+            command_rx,
+            audio_sender,
+            clock,
+        } = channels;
+
         // 使用预打开的 IO/Demuxer 或打开新的
         let (mut io, mut demuxer) =
             if let (Some(io), Some(demuxer)) = (pre_opened_io, pre_opened_demuxer) {
@@ -309,30 +347,7 @@ impl Player {
             None
         };
 
-        // 创建时钟
-        let clock = MediaClock::new();
-
-        // 创建音频输出
-        let audio_output = if let (Some(_dec), Some(stream)) = (&audio_decoder, audio_stream) {
-            if let StreamParams::Audio(a) = &stream.params {
-                match AudioOutput::new(
-                    a.sample_rate,
-                    a.channel_layout.channels,
-                    clock.clone(),
-                    self.config.volume,
-                ) {
-                    Ok(out) => Some(out),
-                    Err(e) => {
-                        warn!("创建音频输出失败: {}", e);
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        // 时钟和音频输出由主线程创建并传入 (SDL2 要求)
 
         // 主播放循环
         info!("开始播放...");
@@ -422,7 +437,7 @@ impl Player {
                                 if dec.send_packet(&packet).is_ok() {
                                     while let Ok(frame) = dec.receive_frame() {
                                         if let Frame::Audio(af) = &frame {
-                                            if let Some(out) = &audio_output {
+                                            if let Some(out) = &audio_sender {
                                                 let pts_us = pts_to_us(
                                                     af.pts,
                                                     af.time_base.num,
@@ -473,13 +488,7 @@ impl Player {
                                                 std::thread::sleep(Duration::from_millis(1));
                                             }
 
-                                            let rgb_data = convert_frame_to_rgb24(vf);
-                                            let display_frame = VideoFrame {
-                                                width: vf.width,
-                                                height: vf.height,
-                                                data: rgb_data,
-                                                pts: frame_pts_us as f64 / 1_000_000.0,
-                                            };
+                                            let display_frame = build_yuv_frame(vf, frame_pts_us);
 
                                             if frame_tx.send(display_frame).is_err() {
                                                 return Ok(());
@@ -504,7 +513,7 @@ impl Player {
             }
 
             // 如果只有视频, 没有音频时钟, 使用系统时钟
-            if audio_output.is_none() && !eof {
+            if audio_sender.is_none() && !eof {
                 let elapsed_us = start_time.elapsed().as_micros() as i64;
                 clock.update_audio_pts(elapsed_us);
             }
@@ -527,11 +536,7 @@ impl Player {
             }
         }
 
-        // 清理
-        if let Some(out) = &audio_output {
-            out.stop();
-        }
-
+        // 通知主线程播放结束 (音频设备由主线程管理)
         status_tx.send(PlayerStatus::End).ok();
 
         let elapsed = start_time.elapsed();
@@ -585,61 +590,41 @@ fn extract_f32_samples(
     }
 }
 
-/// 将视频帧转换为 RGB24 数据
-fn convert_frame_to_rgb24(vf: &tao_codec::frame::VideoFrame) -> Vec<u8> {
+/// 从解码后的视频帧构建 YUV420p 帧数据, 直接传递给 SDL2 纹理
+fn build_yuv_frame(vf: &tao_codec::frame::VideoFrame, pts_us: i64) -> VideoFrame {
     let w = vf.width as usize;
     let h = vf.height as usize;
 
     match vf.pixel_format {
-        PixelFormat::Rgb24 => {
-            // 已经是 RGB24
-            vf.data[0].clone()
-        }
         PixelFormat::Yuv420p => {
-            // YUV420P -> RGB24 (定点整数运算, 避免浮点开销)
-            // BT.601 full range: R = Y + 1.402*V, G = Y - 0.344*U - 0.714*V, B = Y + 1.772*U
-            // 使用 <<16 定点: 1.402*65536=91881, 0.344*65536=22544, 0.714*65536=46793, 1.772*65536=116130
-            const CR_R: i32 = 91881;
-            const CB_G: i32 = 22544;
-            const CR_G: i32 = 46793;
-            const CB_B: i32 = 116130;
-            const FP_HALF: i32 = 1 << 15; // 舍入偏移
-
-            let mut rgb = vec![0u8; w * h * 3];
-            let y_plane = &vf.data[0];
-            let u_plane = &vf.data[1];
-            let v_plane = &vf.data[2];
-            let y_stride = vf.linesize[0];
-            let u_stride = vf.linesize[1];
-
-            for row in 0..h {
-                let y_row = row * y_stride;
-                let uv_row = (row >> 1) * u_stride;
-                let dst_row = row * w * 3;
-
-                for col in 0..w {
-                    let y_idx = y_row + col;
-                    let uv_idx = uv_row + (col >> 1);
-
-                    let y_val = *y_plane.get(y_idx).unwrap_or(&16) as i32;
-                    let cb = *u_plane.get(uv_idx).unwrap_or(&128) as i32 - 128;
-                    let cr = *v_plane.get(uv_idx).unwrap_or(&128) as i32 - 128;
-
-                    let r = y_val + ((CR_R * cr + FP_HALF) >> 16);
-                    let g = y_val - ((CB_G * cb + CR_G * cr + FP_HALF) >> 16);
-                    let b = y_val + ((CB_B * cb + FP_HALF) >> 16);
-
-                    let dst = dst_row + col * 3;
-                    rgb[dst] = r.clamp(0, 255) as u8;
-                    rgb[dst + 1] = g.clamp(0, 255) as u8;
-                    rgb[dst + 2] = b.clamp(0, 255) as u8;
-                }
+            // 直接传递 YUV 平面, 无需 CPU 色彩转换
+            VideoFrame {
+                width: vf.width,
+                height: vf.height,
+                y_data: vf.data[0].clone(),
+                u_data: vf.data[1].clone(),
+                v_data: vf.data[2].clone(),
+                y_stride: vf.linesize[0],
+                u_stride: vf.linesize[1],
+                v_stride: vf.linesize[2],
+                pts: pts_us as f64 / 1_000_000.0,
             }
-            rgb
         }
         _ => {
-            // 其他格式: 灰色填充
-            vec![128u8; w * h * 3]
+            // 其他格式: 灰色 YUV 填充 (Y=128, U=128, V=128)
+            let uv_w = w.div_ceil(2);
+            let uv_h = h.div_ceil(2);
+            VideoFrame {
+                width: vf.width,
+                height: vf.height,
+                y_data: vec![128u8; w * h],
+                u_data: vec![128u8; uv_w * uv_h],
+                v_data: vec![128u8; uv_w * uv_h],
+                y_stride: w,
+                u_stride: uv_w,
+                v_stride: uv_w,
+                pts: pts_us as f64 / 1_000_000.0,
+            }
         }
     }
 }

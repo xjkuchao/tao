@@ -3,8 +3,8 @@
 //! Tao 多媒体播放器, 对标 FFmpeg 的 ffplay.
 //!
 //! 支持:
-//! - 音频播放 (通过 cpal 跨平台音频输出)
-//! - 视频显示 (通过 egui/eframe 窗口渲染)
+//! - 音频播放 (通过 SDL2 音频子系统)
+//! - 视频显示 (通过 SDL2 YUV 纹理, GPU 硬件色彩转换)
 //! - A/V 同步 (基于音频时钟)
 //! - HTTP/HTTPS URL 播放 (通过 ureq 下载)
 //! - 基本控制: 空格暂停, ESC/Q 退出
@@ -14,9 +14,10 @@ mod clock;
 mod gui;
 mod player;
 
-use crate::player::{Player, PlayerConfig};
+use crate::audio::AudioOutput;
+use crate::clock::MediaClock;
+use crate::player::{Player, PlayerChannels, PlayerConfig};
 use clap::Parser;
-use eframe::egui;
 use log::info;
 use std::sync::mpsc;
 
@@ -40,12 +41,7 @@ struct Args {
     volume: u32,
 }
 
-fn main() -> eframe::Result<()> {
-    // Force Wayland backend to avoid X11/Wayland混合issues
-    unsafe {
-        std::env::set_var("WINIT_UNIX_BACKEND", "wayland");
-    }
-
+fn main() -> Result<(), String> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let args = Args::parse();
@@ -61,7 +57,7 @@ fn main() -> eframe::Result<()> {
         volume: initial_volume,
     };
 
-    // Create player
+    // 创建播放器
     let player = match Player::new(config) {
         Ok(p) => p,
         Err(e) => {
@@ -70,8 +66,8 @@ fn main() -> eframe::Result<()> {
         }
     };
 
-    // Prepare and get video size (opens file once)
-    let (video_size, io, demuxer) = match player.prepare_and_get_size() {
+    // 准备播放并获取视频/音频信息 (一次性打开文件)
+    let (video_size, audio_info, io, demuxer) = match player.prepare_and_get_size() {
         Ok(result) => result,
         Err(e) => {
             eprintln!("准备播放失败: {}", e);
@@ -82,36 +78,60 @@ fn main() -> eframe::Result<()> {
     let (window_width, window_height) = video_size.unwrap_or((640, 480));
     info!("窗口尺寸: {}x{}", window_width, window_height);
 
-    // Create channels
+    // 初始化 SDL2
+    let sdl_context = sdl2::init()?;
+    let video_subsystem = sdl_context.video()?;
+    let audio_subsystem = sdl_context.audio()?;
+
+    // 创建窗口 + 渲染器
+    let window = video_subsystem
+        .window("tao-play", window_width, window_height)
+        .position_centered()
+        .resizable()
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let canvas = window
+        .into_canvas()
+        .accelerated()
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    // 创建媒体时钟
+    let clock = MediaClock::new();
+
+    // 在主线程创建 SDL2 音频输出 (SDL2 要求)
+    // _audio_output 必须保留在主线程 (持有 SDL2 设备), audio_sender 传给 player 线程
+    let (_audio_output, audio_sender) = if let Some(ai) = &audio_info {
+        match AudioOutput::new(&audio_subsystem, ai.sample_rate, ai.channels, clock.clone()) {
+            Ok((out, sender)) => (Some(out), Some(sender)),
+            Err(e) => {
+                log::warn!("创建音频输出失败: {}", e);
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
+
+    // 创建通道
     let (frame_tx, frame_rx) = mpsc::channel();
     let (status_tx, status_rx) = mpsc::channel();
     let (command_tx, command_rx) = mpsc::channel();
 
-    // Start player in background thread with pre-opened file
-    let _player_handle = player.run_with_prepared(io, demuxer, frame_tx, status_tx, command_rx);
+    // 在后台线程启动播放器 (audio_sender 可跨线程, _audio_output 留在主线程)
+    let _player_handle = player.run_with_prepared(
+        io,
+        demuxer,
+        PlayerChannels {
+            frame_tx,
+            status_tx,
+            command_rx,
+            audio_sender,
+            clock,
+        },
+    );
 
-    // Run GUI with proper window size
-    // Note: Window positioning on Wayland/WSL is controlled by the compositor.
-    // The position hint below may be ignored - this is expected Wayland behavior.
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([window_width as f32, window_height as f32])
-            .with_title("tao-play")
-            .with_position(egui::pos2(f32::NAN, f32::NAN)), // Request centered (compositor decides)
-        ..Default::default()
-    };
-
-    eframe::run_native(
-        "tao-play",
-        options,
-        Box::new(move |cc| {
-            Box::new(gui::PlayerApp::new(
-                cc,
-                frame_rx,
-                status_rx,
-                command_tx,
-                initial_volume,
-            ))
-        }),
-    )
+    // 主线程运行 SDL2 事件循环
+    gui::run_event_loop(canvas, frame_rx, status_rx, command_tx)
 }

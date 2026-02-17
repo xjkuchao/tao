@@ -1,217 +1,129 @@
-use eframe::egui;
-use std::sync::mpsc::{Receiver, Sender};
+//! SDL2 视频渲染和事件循环.
+//!
+//! 使用 SDL2 YUV 纹理进行硬件加速渲染, GPU 做色彩空间转换.
+
+use sdl2::event::Event;
+use sdl2::keyboard::Keycode;
+use sdl2::pixels::PixelFormatEnum;
+use sdl2::render::{Canvas, TextureAccess};
+use sdl2::video::Window;
+use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use crate::player::{PlayerCommand, PlayerStatus, VideoFrame};
 
-/// 目标重绘间隔 (毫秒), 略高于 30fps 以保证流畅
-const REPAINT_INTERVAL_MS: u64 = 15;
-
-pub struct PlayerApp {
+/// 运行 SDL2 事件循环 (在主线程)
+///
+/// 接收视频帧并渲染到窗口, 处理键盘事件.
+pub fn run_event_loop(
+    mut canvas: Canvas<Window>,
     frame_rx: Receiver<VideoFrame>,
     status_rx: Receiver<PlayerStatus>,
-    command_tx: Sender<PlayerCommand>,
+    command_tx: std::sync::mpsc::Sender<PlayerCommand>,
+) -> Result<(), String> {
+    let texture_creator = canvas.texture_creator();
 
-    current_frame: Option<egui::TextureHandle>,
-    last_frame_data: Option<VideoFrame>,
+    // YUV 纹理 (延迟创建, 等待首帧确定尺寸)
+    let mut texture = None;
+    let mut tex_width = 0u32;
+    let mut tex_height = 0u32;
 
-    volume: f32,
-    is_paused: bool, // Display only
-    current_time: f64,
-    total_duration: f64,
+    let sdl_context = canvas.window().subsystem().sdl();
+    let mut event_pump = sdl_context.event_pump()?;
 
-    osd_text: String,
-    osd_timer: f32,
-}
-
-impl PlayerApp {
-    pub fn new(
-        cc: &eframe::CreationContext<'_>,
-        frame_rx: Receiver<VideoFrame>,
-        status_rx: Receiver<PlayerStatus>,
-        command_tx: Sender<PlayerCommand>,
-        initial_volume: f32,
-    ) -> Self {
-        let mut visuals = egui::Visuals::dark();
-        visuals.window_rounding = 8.0.into();
-        cc.egui_ctx.set_visuals(visuals);
-
-        Self {
-            frame_rx,
-            status_rx,
-            command_tx,
-            current_frame: None,
-            last_frame_data: None,
-            volume: initial_volume,
-            is_paused: false,
-            current_time: 0.0,
-            total_duration: 0.0,
-            osd_text: String::new(),
-            osd_timer: 0.0,
-        }
-    }
-}
-
-impl eframe::App for PlayerApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Receive frames
-        while let Ok(frame) = self.frame_rx.try_recv() {
-            self.last_frame_data = Some(frame);
-        }
-
-        // 仅当有新帧数据时更新纹理
-        let has_new_frame = self.last_frame_data.is_some();
-        if let Some(frame_data) = self.last_frame_data.take() {
-            let color_image = egui::ColorImage::from_rgb(
-                [frame_data.width as usize, frame_data.height as usize],
-                &frame_data.data,
-            );
-            let tex_options = egui::TextureOptions::LINEAR;
-
-            match &mut self.current_frame {
-                Some(handle) => {
-                    // 复用已有纹理, 仅更新像素数据, 避免 GPU 内存分配/释放
-                    handle.set(color_image, tex_options);
+    'running: loop {
+        // 1. 处理 SDL2 事件
+        for event in event_pump.poll_iter() {
+            match event {
+                Event::Quit { .. } => {
+                    let _ = command_tx.send(PlayerCommand::Stop);
+                    break 'running;
                 }
-                None => {
-                    // 首次创建纹理
-                    self.current_frame =
-                        Some(ctx.load_texture("video_frame", color_image, tex_options));
-                }
+                Event::KeyDown {
+                    keycode: Some(key), ..
+                } => match key {
+                    Keycode::Space => {
+                        let _ = command_tx.send(PlayerCommand::TogglePause);
+                    }
+                    Keycode::Right => {
+                        let _ = command_tx.send(PlayerCommand::Seek(10.0));
+                    }
+                    Keycode::Left => {
+                        let _ = command_tx.send(PlayerCommand::Seek(-10.0));
+                    }
+                    Keycode::Up => {
+                        let _ = command_tx.send(PlayerCommand::VolumeUp);
+                    }
+                    Keycode::Down => {
+                        let _ = command_tx.send(PlayerCommand::VolumeDown);
+                    }
+                    Keycode::M => {
+                        let _ = command_tx.send(PlayerCommand::ToggleMute);
+                    }
+                    Keycode::Escape | Keycode::Q => {
+                        let _ = command_tx.send(PlayerCommand::Stop);
+                        break 'running;
+                    }
+                    _ => {}
+                },
+                _ => {}
             }
         }
 
-        // Receive status updates
-        while let Ok(status) = self.status_rx.try_recv() {
-            match status {
-                PlayerStatus::Time(t, d) => {
-                    self.current_time = t;
-                    self.total_duration = d;
-                }
-                PlayerStatus::Paused(p) => self.is_paused = p,
-                PlayerStatus::Volume(v) => self.volume = v,
-                PlayerStatus::End => {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-                PlayerStatus::Error(e) => {
-                    self.osd_text = format!("Error: {}", e);
-                    self.osd_timer = 5.0;
-                }
+        // 2. 接收状态更新
+        while let Ok(status) = status_rx.try_recv() {
+            if let PlayerStatus::End = status {
+                break 'running;
             }
         }
 
-        // Handle Input
-        if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
-            let _ = self.command_tx.send(PlayerCommand::TogglePause);
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
-            let _ = self.command_tx.send(PlayerCommand::Seek(10.0));
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
-            let _ = self.command_tx.send(PlayerCommand::Seek(-10.0));
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
-            let _ = self.command_tx.send(PlayerCommand::VolumeUp);
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
-            let _ = self.command_tx.send(PlayerCommand::VolumeDown);
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::M)) {
-            let _ = self.command_tx.send(PlayerCommand::ToggleMute);
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Q)) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            let _ = self.command_tx.send(PlayerCommand::Stop);
+        // 3. 接收视频帧 (取最新一帧, 丢弃中间帧)
+        let mut latest_frame = None;
+        while let Ok(frame) = frame_rx.try_recv() {
+            latest_frame = Some(frame);
         }
 
-        // Render UI
-        egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(egui::Color32::BLACK))
-            .show(ctx, |ui| {
-                // Draw video
-                if let Some(texture) = &self.current_frame {
-                    let texture_size = texture.size_vec2();
-                    let available_size = ui.available_size();
+        // 4. 更新纹理并渲染
+        if let Some(frame) = latest_frame {
+            // 如果尺寸变化或首次, 重新创建纹理
+            if texture.is_none() || frame.width != tex_width || frame.height != tex_height {
+                tex_width = frame.width;
+                tex_height = frame.height;
+                texture = Some(
+                    texture_creator
+                        .create_texture(
+                            PixelFormatEnum::IYUV,
+                            TextureAccess::Streaming,
+                            tex_width,
+                            tex_height,
+                        )
+                        .map_err(|e| e.to_string())?,
+                );
+            }
 
-                    // Calculate final size: use original size if it fits, otherwise scale down
-                    let final_size = if texture_size.x <= available_size.x
-                        && texture_size.y <= available_size.y
-                    {
-                        // Video fits in window, use original size
-                        texture_size
-                    } else {
-                        // Video is larger than window, scale down maintaining aspect ratio
-                        let texture_aspect = texture_size.x / texture_size.y;
-                        let available_aspect = available_size.x / available_size.y;
+            if let Some(tex) = &mut texture {
+                // 上传 YUV 数据到 GPU (硬件色彩转换)
+                tex.update_yuv(
+                    None,
+                    &frame.y_data,
+                    frame.y_stride,
+                    &frame.u_data,
+                    frame.u_stride,
+                    &frame.v_data,
+                    frame.v_stride,
+                )
+                .map_err(|e| e.to_string())?;
 
-                        if texture_aspect > available_aspect {
-                            // Video is wider than available space
-                            egui::Vec2::new(available_size.x, available_size.x / texture_aspect)
-                        } else {
-                            // Video is taller than available space
-                            egui::Vec2::new(available_size.y * texture_aspect, available_size.y)
-                        }
-                    };
-
-                    // Center the video
-                    let offset = (available_size - final_size) * 0.5;
-                    let image_rect =
-                        egui::Rect::from_min_size(ui.min_rect().min + offset, final_size);
-
-                    // Draw the video texture
-                    ui.painter().image(
-                        texture.id(),
-                        image_rect,
-                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
-                }
-
-                // Draw OSD / Controls overlay
-                let max_rect = ui.max_rect();
-
-                // Progress Bar
-                if self.total_duration > 0.0 {
-                    let progress = (self.current_time / self.total_duration).clamp(0.0, 1.0);
-                    let bar_height = 4.0;
-                    let bar_rect = egui::Rect::from_min_size(
-                        egui::Pos2::new(10.0, max_rect.bottom() - 20.0),
-                        egui::Vec2::new(max_rect.width() - 20.0, bar_height),
-                    );
-
-                    // Background
-                    ui.painter()
-                        .rect_filled(bar_rect, 2.0, egui::Color32::from_gray(50));
-
-                    // Fill
-                    let fill_rect = egui::Rect::from_min_size(
-                        bar_rect.min,
-                        egui::Vec2::new(bar_rect.width() * progress as f32, bar_height),
-                    );
-                    ui.painter()
-                        .rect_filled(fill_rect, 2.0, egui::Color32::from_rgb(0, 119, 204));
-                }
-
-                // OSD Text
-                if self.osd_timer > 0.0 {
-                    self.osd_timer -= ctx.input(|i| i.stable_dt);
-                    ui.painter().text(
-                        egui::Pos2::new(20.0, 20.0),
-                        egui::Align2::LEFT_TOP,
-                        &self.osd_text,
-                        egui::FontId::proportional(20.0),
-                        egui::Color32::WHITE,
-                    );
-                }
-            });
-
-        // 限制重绘频率, 避免无限速率刷新导致 GPU 占用过高
-        if has_new_frame {
-            // 有新帧时尽快刷新
-            ctx.request_repaint();
-        } else {
-            // 无新帧时按固定间隔轮询, 兼顾响应性和资源消耗
-            ctx.request_repaint_after(Duration::from_millis(REPAINT_INTERVAL_MS));
+                canvas.clear();
+                // SDL2 自动缩放纹理到窗口大小, 保持宽高比由窗口管理
+                canvas.copy(tex, None, None)?;
+                canvas.present();
+            }
         }
+
+        // 5. 短暂休眠避免 CPU 空转 (~120fps 轮询上限)
+        std::thread::sleep(Duration::from_millis(8));
     }
+
+    Ok(())
 }

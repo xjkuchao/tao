@@ -19,9 +19,4 @@ tao-resample.workspace = true
 clap.workspace = true
 log.workspace = true
 env_logger.workspace = true
-cpal = "0.15"
-eframe = { version = "0.26", default-features = false, features = [
-    "glow",
-    "wayland",
-] }
-egui = "0.26"
+sdl2 = { version = "0.38", features = ["bundled"] }
