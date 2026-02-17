@@ -280,7 +280,11 @@ impl Player {
                     }
                     PlayerCommand::Seek(offset) => {
                         let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
-                        let target_sec = (current_sec + offset).max(0.0);
+                        let target_sec = if total_duration_sec > 0.0 {
+                            (current_sec + offset).clamp(0.0, total_duration_sec)
+                        } else {
+                            (current_sec + offset).max(0.0)
+                        };
 
                         // 优先视频流 seek (关键帧对齐)
                         let seek_stream = video_stream.or(audio_stream);

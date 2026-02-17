@@ -517,6 +517,11 @@ impl AviDemuxer {
 
         let movi_end = self.movi_data_start + self.movi_list_size;
 
+        // 记录目标流最后一次出现的块位置和帧计数, 供目标超出末尾时回退
+        let mut last_chunk_start = self.movi_data_start;
+        let mut last_frame_counts = self.frame_counts.clone();
+        let mut found_any = false;
+
         // 扫描块头, 跳过数据, 直到找到目标流的目标帧
         while io.position()? < movi_end {
             let chunk_start = io.position()?;
@@ -530,17 +535,23 @@ impl AviDemuxer {
             };
 
             // 解析流号: 前两个字符必须是 ASCII 数字
-            if chunk_id.len() >= 4 && chunk_id[0].is_ascii_digit() && chunk_id[1].is_ascii_digit() {
+            if chunk_id[0].is_ascii_digit() && chunk_id[1].is_ascii_digit() {
                 let snum = ((chunk_id[0] - b'0') * 10 + (chunk_id[1] - b'0')) as usize;
                 if snum < self.streams.len() {
-                    if snum == stream_index && self.frame_counts[snum] >= target_frame {
-                        // 找到目标帧, 回退到块头
-                        io.seek(std::io::SeekFrom::Start(chunk_start))?;
-                        debug!(
-                            "无索引 seek: 流 {} 帧 {} (扫描到 {})",
-                            stream_index, target_frame, chunk_start
-                        );
-                        return Ok(());
+                    if snum == stream_index {
+                        if self.frame_counts[snum] >= target_frame {
+                            // 找到目标帧, 回退到块头
+                            io.seek(std::io::SeekFrom::Start(chunk_start))?;
+                            debug!(
+                                "无索引 seek: 流 {} 帧 {} (扫描到 {})",
+                                stream_index, target_frame, chunk_start
+                            );
+                            return Ok(());
+                        }
+                        // 记录最后可用位置
+                        last_chunk_start = chunk_start;
+                        last_frame_counts.clone_from(&self.frame_counts);
+                        found_any = true;
                     }
                     self.frame_counts[snum] += 1;
                 }
@@ -551,10 +562,21 @@ impl AviDemuxer {
             io.seek(std::io::SeekFrom::Current(skip))?;
         }
 
-        // 已到文件末尾, 回到起始位置
-        io.seek(std::io::SeekFrom::Start(self.movi_data_start))?;
-        self.frame_counts = vec![0; self.streams.len()];
-        Err(TaoError::Eof)
+        if found_any {
+            // 目标帧超出末尾: 定位到目标流的最后一帧
+            io.seek(std::io::SeekFrom::Start(last_chunk_start))?;
+            self.frame_counts = last_frame_counts;
+            debug!(
+                "无索引 seek: 流 {} 目标帧 {} 超出末尾, 定位到最后一帧",
+                stream_index, target_frame
+            );
+            Ok(())
+        } else {
+            // movi 中没有找到目标流的任何数据
+            io.seek(std::io::SeekFrom::Start(self.movi_data_start))?;
+            self.frame_counts = vec![0; self.streams.len()];
+            Err(TaoError::Eof)
+        }
     }
 }
 
