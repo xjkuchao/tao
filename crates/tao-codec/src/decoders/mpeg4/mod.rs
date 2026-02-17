@@ -167,6 +167,8 @@ pub struct Mpeg4Decoder {
     alternate_vertical_scan: bool,
     /// DivX packed bitstream 队列 (一个 packet 中拆分出的多个 VOP)
     packed_frames: std::collections::VecDeque<Vec<u8>>,
+    /// Seek/flush 后等待关键帧, 丢弃非 I 帧避免花屏
+    wait_keyframe: bool,
     /// 当前 video packet (slice) 起始宏块 X 坐标
     resync_mb_x: usize,
     /// 当前 video packet (slice) 起始宏块 Y 坐标
@@ -206,6 +208,7 @@ impl Mpeg4Decoder {
             gmc_params: GmcParameters::default(),
             alternate_vertical_scan: false,
             packed_frames: std::collections::VecDeque::new(),
+            wait_keyframe: false,
             resync_mb_x: 0,
             resync_mb_y: 0,
         }))
@@ -2266,6 +2269,15 @@ impl Decoder for Mpeg4Decoder {
                 "检测到 Short Video Header (H.263), TR={}, 使用 H.263 解码路径",
                 header.temporal_reference
             );
+            // Seek 后等待关键帧: 丢弃非 I 帧避免花屏
+            if self.wait_keyframe {
+                if header.picture_type == PictureType::I {
+                    self.wait_keyframe = false;
+                } else {
+                    return Ok(());
+                }
+            }
+
             let mut frame = self.decode_short_header_frame(&packet.data, &header)?;
 
             // 设置帧元数据
@@ -2491,10 +2503,13 @@ impl Decoder for Mpeg4Decoder {
     }
 
     fn flush(&mut self) {
-        debug!("MPEG4 解码器已刷新，输出 DPB 中剩余 {} 帧", self.dpb.len());
-        // flush 时，DPB 中的帧会在 receive_frame 中逐个返回
-        // 不需要在这里清空
+        debug!("MPEG4 解码器已刷新, 清空参考帧和 DPB");
+        self.dpb.clear();
         self.pending_frame = None;
+        self.reference_frame = None;
+        self.backward_reference = None;
+        self.packed_frames.clear();
+        self.wait_keyframe = true;
     }
 }
 
@@ -2531,6 +2546,15 @@ impl Mpeg4Decoder {
         let mut reader = BitReader::new(&packet.data[vop_offset..]);
 
         let vop_info = self.parse_vop_header(&mut reader)?;
+
+        // Seek 后等待关键帧: 丢弃非 I 帧避免花屏
+        if self.wait_keyframe {
+            if vop_info.picture_type == PictureType::I {
+                self.wait_keyframe = false;
+            } else {
+                return Ok(());
+            }
+        }
 
         if !vop_info.vop_coded {
             if let Some(ref_frame) = &self.reference_frame {
@@ -2699,6 +2723,7 @@ mod tests {
             gmc_params: GmcParameters::default(),
             alternate_vertical_scan: false,
             packed_frames: std::collections::VecDeque::new(),
+            wait_keyframe: false,
             resync_mb_x: 0,
             resync_mb_y: 0,
         }

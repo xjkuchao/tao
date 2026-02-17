@@ -792,19 +792,38 @@ impl Demuxer for AviDemuxer {
         }
 
         let target = timestamp.max(0) as usize;
+        let is_video = stream_index < self.streams.len()
+            && self.streams[stream_index].media_type == MediaType::Video;
+
+        // 遍历 idx1, 找到 target 帧位置, 同时记录最近的关键帧位置
         let mut idx_pos = 0;
+        let mut last_keyframe_idx = 0;
         let mut count = 0;
+        let mut found = false;
 
         for (i, entry) in self.idx1_entries.iter().enumerate() {
             let snum = ((entry.chunk_id[0].saturating_sub(b'0')) * 10
                 + (entry.chunk_id[1].saturating_sub(b'0'))) as usize;
             if snum == stream_index {
-                if count == target {
+                let is_keyframe = (entry.flags & AVIIF_KEYFRAME) != 0;
+                if is_keyframe || !is_video {
+                    last_keyframe_idx = i;
+                }
+                if count >= target {
                     idx_pos = i;
+                    found = true;
                     break;
                 }
                 count += 1;
             }
+        }
+
+        // 视频流: 回退到最近的关键帧, 避免从非关键帧开始解码导致花屏
+        if is_video && found {
+            idx_pos = last_keyframe_idx;
+        } else if is_video && !found {
+            // target 超出范围, 定位到最后一个关键帧
+            idx_pos = last_keyframe_idx;
         }
 
         self.idx_pos = idx_pos;
