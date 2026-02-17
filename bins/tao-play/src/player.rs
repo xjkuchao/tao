@@ -266,6 +266,8 @@ impl Player {
         let mut muted = false;
         // seek 后需要解码至少一帧 (即使暂停)
         let mut seek_flush_pending = false;
+        // seek 后立即 EOF 的重试标记 (防止无限循环)
+        let mut seek_eof_retried = false;
 
         let total_duration_sec = streams
             .iter()
@@ -300,6 +302,7 @@ impl Player {
                         }
                     }
                     PlayerCommand::Seek(offset) => {
+                        seek_eof_retried = false;
                         let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
                         let is_paused = clock.is_paused();
                         let target_sec = if total_duration_sec > 0.0 {
@@ -465,8 +468,47 @@ impl Player {
                         }
                     }
                     Err(TaoError::Eof) => {
-                        debug!("demuxer 读取完成 (EOF)");
-                        eof = true;
+                        if seek_flush_pending && !seek_eof_retried {
+                            // seek 后立即 EOF 且未解码出任何帧
+                            // 可能 idx1 keyframe 标记不准确, 向前回退重试
+                            seek_eof_retried = true;
+                            let retry_sec = (max_seekable_sec - 5.0).max(0.0);
+                            let seek_stream = video_stream.or(audio_stream);
+                            let mut retried = false;
+                            if let Some(stream) = seek_stream {
+                                let tb = &stream.time_base;
+                                if tb.num > 0 && tb.den > 0 {
+                                    let ts = (retry_sec * tb.den as f64 / tb.num as f64) as i64;
+                                    if demuxer
+                                        .seek(&mut io, stream.index, ts, SeekFlags::default())
+                                        .is_ok()
+                                    {
+                                        if let Some(d) = &mut video_decoder {
+                                            d.flush();
+                                        }
+                                        if let Some(d) = &mut audio_decoder {
+                                            d.flush();
+                                        }
+                                        if let Some(a) = &audio_sender {
+                                            a.flush();
+                                        }
+                                        let target_us = (retry_sec * 1_000_000.0) as i64;
+                                        clock.seek_reset(target_us);
+                                        audio_cum_samples =
+                                            (retry_sec * audio_sample_rate as f64) as u64;
+                                        info!("[Seek] EOF 回退重试: 从 {:.3}s 开始", retry_sec);
+                                        retried = true;
+                                    }
+                                }
+                            }
+                            if !retried {
+                                debug!("demuxer 读取完成 (EOF)");
+                                eof = true;
+                            }
+                        } else {
+                            debug!("demuxer 读取完成 (EOF)");
+                            eof = true;
+                        }
                     }
                     Err(e) => {
                         debug!("读取数据包错误: {}", e);
