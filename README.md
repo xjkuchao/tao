@@ -1,117 +1,63 @@
-# Tao (道)
+<div align="center">
 
-Tao 是一个用纯 Rust 编写的多媒体处理框架，目标是全功能复刻 FFmpeg。
+<img src="docs/assets/logo_text.svg" alt="Tao Logo" width="600" />
 
-## 项目特性
+# Tao
 
-- **纯 Rust 实现**: 内存安全、线程安全、无运行时依赖
-- **多种使用方式**:
-    - Rust 库: 其他 Rust 项目可通过 `tao` crate 直接调用
-    - C FFI (DLL/SO): 通过 `tao-ffi` crate 导出 C 兼容接口
-    - 命令行工具: `tao` (对标 ffmpeg) 和 `tao-probe` (对标 ffprobe)
-- **模块化架构**: 清晰的 crate 划分，职责分明
+**A pure Rust multimedia processing framework.**
 
-## 项目结构
+[English](README.md) | [中文 (Chinese)](README_CN.md)
 
-```
-tao/
-├── crates/           # 库 crate
-│   ├── tao-core/     # 核心类型与工具 (对标 libavutil)
-│   ├── tao-codec/    # 编解码器框架 (对标 libavcodec)
-│   ├── tao-format/   # 容器格式框架 (对标 libavformat)
-│   ├── tao-filter/   # 滤镜框架 (对标 libavfilter)
-│   ├── tao-scale/    # 图像缩放 (对标 libswscale)
-│   ├── tao-resample/ # 音频重采样 (对标 libswresample)
-│   └── tao-ffi/      # C FFI 导出层
-├── bins/             # 可执行文件
-│   ├── tao-cli/      # 命令行工具 (对标 ffmpeg)
-│   ├── tao-probe/    # 探测工具 (对标 ffprobe)
-│   └── tao-play/     # 播放器工具
-├── tests/            # 集成测试
-└── benches/          # 性能基准测试
-```
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+</div>
 
-## 快速开始
+## What is Tao?
 
-### 构建项目
+Tao (道) is a multimedia processing framework written in pure Rust, aiming to be a modern, memory-safe alternative to FFmpeg. It provides a comprehensive suite of tools and libraries for recording, converting, and streaming audio and video.
 
-```bash
-# 检查代码
-cargo check
+**WARNING**: Tao is currently in the early stages of development. APIs are subject to change.
 
-# 运行测试
-cargo test
+## Design Goals
 
-# 构建所有 crate
-cargo build --all
+*   **Pure Rust**: Leveraging Rust's memory safety and concurrency features.
+*   **Modular**: Components are split into crates (`tao-core`, `tao-codec`, `tao-format`, etc.).
+*   **Performance**: Aiming for high performance comparable to C/C++ implementations.
+*   **Compatibility**: Striving for feature parity with FFmpeg.
 
-# 构建发布版本
-cargo build --release
-```
+## Features
 
-### 使用命令行工具
+*   **Tao CLI**: Command-line tool similar to `ffmpeg`.
+*   **Tao Probe**: Multimedia stream analyzer similar to `ffprobe`.
+*   **Tao Play**: Simple media player similar to `ffplay`.
+*   **Format Support**: Support for common containers (MP4, MKV, AVI, etc.).
+*   **Codec Support**: Support for common codecs (H.264, AAC, etc.).
 
-```bash
-# 探测媒体文件信息
-cargo run --package tao-probe -- input.mp4
+## Documentation
 
-# 转码示例
-cargo run --package tao-cli -- -i input.mp4 -o output.mkv
+*   [Quick Start Guide](docs/quick_start.md)
+*   [API Documentation](docs/api_docs.md)
 
-# 播放媒体文件
-cargo run --package tao-play -- input.mp4
-```
+## Contributing
 
-## 开发规范
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md).
 
-**重要**: 本项目开发规范维护在 `.github/` 与 `.cursor/` 目录内的规则文件中。
+## Credits & Inspiration
 
-所有开发人员和 AI 工具 (Cursor, Copilot, GitHub Copilot, Claude Code 等) 在参与本项目开发时，**必须严格遵守** 规则文件中规定的所有规则和约定，包括但不限于：
+Tao is heavily inspired by and references the architecture and implementation of:
+*   [FFmpeg](https://ffmpeg.org/)
+*   [XVid](https://www.xvid.com/)
+*   And many other open-source multimedia projects.
 
-- 代码组织与模块化
-- Rust 编码规范
-- 错误处理规范
-- 测试规范
-- 提交规范
-- 注释规范 (全部使用中文)
-- 代码质量要求 (0 警告容忍)
+We thank the open-source community for their tremendous work in this field.
 
-在开始任何开发工作前，请务必仔细阅读 [.github/copilot-instructions.md](.github/copilot-instructions.md) 和 [.cursor/rules/README.md](.cursor/rules/README.md)。
+## AI Acknowledgment
 
-## 代码质量检查
+This project utilizes various AI models, including Gemini, Claude, and Codex, for code generation and assistance. Approximately 99% of the work is automated by AI, with human supervision for process control and testing.
 
-提交代码前必须执行以下检查，确保全部通过:
+## Contact
 
-```bash
-# 1. 代码格式检查
-cargo fmt --check
+For inquiries, please contact: **xjkuchao@gmail.com** (Subject: Tao Project).
 
-# 2. Clippy 检查 (0 警告容忍)
-cargo clippy -- -D warnings
+## License
 
-# 3. 编译检查
-cargo check
-
-# 4. 运行所有测试
-cargo test
-```
-
-**严格要求**: 任何 Clippy 警告都必须在提交前修复，不允许忽略。
-
-## 许可证
-
-本项目使用 MIT 或 Apache-2.0 双许可证 (待定)。
-
-## 贡献
-
-欢迎贡献！在提交 PR 前请确保：
-
-1. 已阅读并遵守规则文件中的所有规范
-2. 所有代码质量检查通过 (见上文)
-3. 添加了必要的测试
-4. 更新了相关文档
-
-## 联系方式
-
-- 问题反馈: 请使用 GitHub Issues
-- 开发讨论: (待定)
+This project is licensed under the MIT License - see the [LICENSE-MIT](LICENSE-MIT) file for details.
