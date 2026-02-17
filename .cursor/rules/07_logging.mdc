@@ -21,22 +21,109 @@ globs:
   - 不依赖 tokio, 使用 `tracing-appender` 按日滚动
   - 支持 `-v` / `-vv` / `-vvv` 命令行参数和 `TAO_LOG` 环境变量
 
+## 日志级别体系 (重要)
+
+### 命令行级别映射
+
+| verbosity | 参数 | 过滤规则 | 用途 |
+|-----------|------|----------|------|
+| 0 (默认) | 无 | `info` | 关键生命周期事件 |
+| 1 | `-v` | `debug` | 内部状态/决策 |
+| 2 | `-vv` | tao crate=`trace`, 第三方=`info` | 项目详细数据流 |
+| 3+ | `-vvv` | 全局 `trace` | 含第三方依赖的完整追踪 |
+
+- Console 和 File 统一使用相同的过滤级别
+- `TAO_LOG` 环境变量可覆盖命令行级别, 支持精细控制:
+  `TAO_LOG="tao_codec::decoders=trace,info"`
+
+### 日志级别使用规范 (强制)
+
+编写代码时, 必须严格按以下标准选择日志级别:
+
+#### `error!` - 不可恢复的致命错误
+
+- 程序无法继续运行或丧失核心功能
+- 示例: 文件打开失败, 内存分配失败, 关键依赖不可用
+- **频率**: 极低, 通常伴随程序退出或功能完全丧失
+
+```rust
+error!("打开文件失败: {}", path);
+error!("音频设备初始化失败, 无法播放");
+```
+
+#### `warn!` - 可恢复的异常/降级
+
+- 出现问题但程序可以继续运行, 功能可能不完整
+- 示例: 数据损坏但可跳过, 回退到次优方案, 性能降级
+- **频率**: 低, 每个异常场景出现一次
+
+```rust
+warn!("VSync 渲染器创建失败, 回退到无 VSync");
+warn!("[Seek] 失败: {}", e);
+warn!("音频转换失败, 回退原始数据: {}", e);
+```
+
+#### `info!` - 关键生命周期事件 (默认可见)
+
+- 程序启动/关闭, 资源打开/释放, 用户触发的操作结果
+- 示例: 文件打开, 格式识别, 播放开始/结束, seek 操作, 按键事件
+- **频率**: 低到中, 每个用户操作/重要阶段一条
+- **原则**: 用户运行程序后, info 日志应能完整描述 "发生了什么"
+
+```rust
+info!("正在打开: {}", path);
+info!("视频尺寸 {}x{}", width, height);
+info!("[Seek] offset={:+.1}s, 目标={:.3}s", offset, target);
+info!("播放结束: 发送 {} 帧, 耗时 {:.1}s", frames, elapsed);
+```
+
+#### `debug!` - 内部状态/决策 (需 `-v`)
+
+- 开发调试信息: 内部状态变化, 分支决策, 配置解析结果
+- 示例: 解码器参数, 同步决策, 缓冲区状态, 流信息
+- **频率**: 中, 可能每秒数条, 但不会每帧都出现
+- **原则**: 帮助开发者理解 "为什么这样做"
+
+```rust
+debug!("选择解码器: codec_id={:?}, 参数={:?}", id, params);
+debug!("音频缓冲区状态: 队列={}, 延迟={}ms", queue_len, latency);
+debug!("A/V 同步决策: diff={:.3}s, delay={:.3}s", diff, delay);
+```
+
+#### `trace!` - 高频热路径数据 (需 `-vv`)
+
+- 每帧/每包/每次回调级别的详细数据
+- 示例: 每个数据包的 PTS/DTS, 每帧解码耗时, 每次音频回调
+- **频率**: 极高, 可能每秒数百条
+- **原则**: 仅在排查细粒度时序/数据问题时需要
+- **注意**: trace 日志本身会影响性能, 热路径中避免复杂的格式化
+
+```rust
+trace!("解码视频帧: PTS={}, size={}x{}", pts, w, h);
+trace!("音频回调: 填充 {} 样本, PTS={:.3}s", samples, pts);
+trace!("demux 包: stream={}, pts={}, size={}", idx, pts, size);
+```
+
+### 禁止事项
+
+- **禁止** 在热路径 (每帧/每包) 中使用 `info!` 或更高级别
+- **禁止** 在 `error!`/`warn!` 中记录正常流程 (如 EOF 不是错误)
+- **禁止** 日志消息中包含大量二进制数据或超长字符串
+- **禁止** 在性能关键路径中使用复杂的 `format!` 表达式作为日志参数
+
 ## 日志输出规则
 
 ### 控制台输出
 
-- **始终固定为 debug 级别**
+- 与文件统一级别 (默认 info)
 - 输出到 stdout
 - 带颜色输出 (ANSI)
-- 过滤规则: `debug`
 
 ### 文件输出
 
-- **可通过命令行参数、环境变量等改变日志过滤级别**
-- 文件级别通过 `LoggingConfig.level` 配置
+- 与控制台统一级别
 - 无颜色输出 (纯文本)
 - 支持按日期自动切换日志文件
-- 支持历史日志压缩和自动清理
 
 ## 日志文件管理
 
@@ -53,7 +140,7 @@ globs:
 
 ### 文件前缀规范
 
-- **tao-cli**: 使用 `file_prefix = "tao"`
+- **tao-cli**: 使用 `file_prefix = "tao-cli"`
 - **tao-probe**: 使用 `file_prefix = "tao-probe"`
 - **tao-play**: 使用 `file_prefix = "tao-play"`
 
@@ -97,14 +184,6 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
-## 日志级别使用
-
-- `error!`: 致命错误, 无法继续处理
-- `warn!`: 可恢复错误, 损坏但可跳过的数据
-- `info!`: 打开文件, 识别格式, 开始/完成转码
-- `debug!`: 流信息, 编解码器参数, 数据包细节
-- `trace!`: 详细的调试信息, 性能追踪
-
 ## AI 调试规范
 
 当需要调试代码时:
@@ -129,13 +208,16 @@ fn main() -> anyhow::Result<()> {
 5. 日志文件比 console 输出更高效:
    - 不受终端缓冲区限制
    - 可以用 Read/Grep 工具精准搜索
-   - 文件日志默认 info 级别, 不含 debug 噪音
-   - 需要更多细节时使用 `-v` 或 `-vv` 运行
+   - 默认 info 级别, 不含 debug 噪音
+   - 需要更多细节时使用 `-v` / `-vv` / `-vvv` 运行
 6. 如需调整日志级别:
    ```bash
    # 通过命令行参数
-   cargo run --package tao-play -- -v file.avi     # debug 级别
-   cargo run --package tao-play -- -vv file.avi    # trace 级别
-   # 通过环境变量
+   cargo run --package tao-play -- file.avi          # info (默认)
+   cargo run --package tao-play -- -v file.avi       # debug
+   cargo run --package tao-play -- -vv file.avi      # trace (tao crate)
+   cargo run --package tao-play -- -vvv file.avi     # trace (全局)
+   # 通过环境变量 (精细控制)
    TAO_LOG=debug cargo run --package tao-play -- file.avi
+   TAO_LOG="tao_codec=trace,info" cargo run --package tao-play -- file.avi
    ```

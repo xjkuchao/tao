@@ -4,7 +4,12 @@
 //! - console: 彩色
 //! - file: 无色, 无 target
 //!
-//! 级别优先级: TAO_LOG 环境变量 > -v/-vv/-vvv 命令行 > 默认 info
+//! 级别体系 (优先级: TAO_LOG 环境变量 > 命令行 > 默认):
+//! - 默认:   info  (关键生命周期事件)
+//! - `-v`:   debug (内部状态/决策)
+//! - `-vv`:  trace (仅 tao 项目 crate, 第三方依赖保持 info)
+//! - `-vvv`: trace (全局, 含第三方依赖)
+//!
 //! 日志文件输出到 $cwd/logs/{prefix}.{date}.log
 
 use chrono::{Datelike, Local, Timelike};
@@ -19,10 +24,50 @@ use tracing_subscriber::{
 
 static LOG_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
 
+/// 本项目所有 crate 的 target 前缀 (用于 -vv 级别的定向 trace)
+const TAO_CRATE_TARGETS: &[&str] = &[
+    "tao",
+    "tao_core",
+    "tao_codec",
+    "tao_format",
+    "tao_filter",
+    "tao_scale",
+    "tao_resample",
+    "tao_ffi",
+    "tao_cli",
+    "tao_probe",
+    "tao_play",
+];
+
+/// 构建 -vv 级别的 EnvFilter: tao crate trace, 其余 info
+fn build_tao_trace_filter() -> EnvFilter {
+    let mut directives = TAO_CRATE_TARGETS
+        .iter()
+        .map(|t| format!("{t}=trace"))
+        .collect::<Vec<_>>();
+    directives.push("info".to_string());
+    EnvFilter::new(directives.join(","))
+}
+
+/// 根据 verbosity 构建 EnvFilter
+///
+/// - 0: info
+/// - 1: debug
+/// - 2: trace (仅 tao crate, 第三方依赖保持 info)
+/// - 3+: trace (全局, 含第三方依赖)
+fn build_filter(verbosity: u8) -> EnvFilter {
+    match verbosity {
+        0 => EnvFilter::new("info"),
+        1 => EnvFilter::new("debug"),
+        2 => build_tao_trace_filter(),
+        _ => EnvFilter::new("trace"),
+    }
+}
+
 /// 初始化日志系统
 ///
 /// - `file_prefix`: 日志文件前缀 (如 "tao-play")
-/// - `verbosity`: 0=info, 1=debug, 2+=trace (由 -v/-vv/-vvv 控制)
+/// - `verbosity`: 0=info, 1=debug, 2=trace(tao), 3+=trace(all)
 pub fn init(file_prefix: &str, verbosity: u8) {
     std::fs::create_dir_all("logs").ok();
 
@@ -36,16 +81,11 @@ pub fn init(file_prefix: &str, verbosity: u8) {
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
     LOG_GUARD.set(guard).ok();
 
-    // 统一级别: TAO_LOG 环境变量 > -v 命令行 > 默认 info
-    let level_str = match verbosity {
-        0 => "info",
-        1 => "debug",
-        _ => "trace",
-    };
+    // 统一级别: TAO_LOG 环境变量 > 命令行 verbosity > 默认 info
     let console_filter =
-        EnvFilter::try_from_env("TAO_LOG").unwrap_or_else(|_| EnvFilter::new(level_str));
+        EnvFilter::try_from_env("TAO_LOG").unwrap_or_else(|_| build_filter(verbosity));
     let file_filter =
-        EnvFilter::try_from_env("TAO_LOG").unwrap_or_else(|_| EnvFilter::new(level_str));
+        EnvFilter::try_from_env("TAO_LOG").unwrap_or_else(|_| build_filter(verbosity));
 
     let console_layer = fmt::Layer::default()
         .with_writer(std::io::stdout)
