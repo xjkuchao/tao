@@ -73,18 +73,17 @@ impl Mpeg4Decoder {
             }
         };
 
-        let first_line = mb_y == 0;
+        // 使用 slice 边界代替帧边界 (对标 FFmpeg ff_h263_pred_motion)
+        let first_slice_line = mb_y as usize == self.resync_mb_y;
+        let first_slice_col = mb_x as usize == self.resync_mb_x;
 
         let (mv_a, mv_b, mv_c) = if block_k == 0 || block_k > 3 {
-            // 16x16 模式或 4MV block 0: 使用 MB 边界处的 block
-            // A: 左 MB 的 block 1 (与当前 MB 相邻的右侧)
-            // B: 上 MB 的 block 2 (与当前 MB 相邻的下侧)
-            // C: 右上 MB 的 block 2
+            // 16x16 模式或 4MV block 0
             let a = get_mv(mb_x as i32 - 1, mb_y as i32, 1);
 
-            // 第一行特殊处理 (H.263/MPEG-4 标准: 无上方邻居时不取 median)
-            if first_line {
-                if mb_x == 0 {
+            // slice 首行: 上方邻居不可用, 只使用左邻居
+            if first_slice_line {
+                if first_slice_col {
                     return MotionVector { x: 0, y: 0 };
                 }
                 return a;
@@ -96,11 +95,10 @@ impl Mpeg4Decoder {
         } else {
             match block_k {
                 1 => {
-                    // Block 1 (右上): A=同 MB block 0, B=上 MB block 3, C=右上 MB block 2
+                    // Block 1: A=同 MB block 0 (始终可用)
                     let a = get_mv(mb_x as i32, mb_y as i32, 0);
 
-                    // 第一行特殊处理
-                    if first_line {
+                    if first_slice_line {
                         return a;
                     }
 
@@ -109,20 +107,18 @@ impl Mpeg4Decoder {
                     (a, b, c)
                 }
                 2 => {
-                    // Block 2 (左下): A=左 MB block 3, B=同 MB block 0, C=同 MB block 1
-                    // B 和 C 在同一 MB 内, 第一行也有效
+                    // Block 2: B/C 在同一 MB 内始终可用, A 来自左 MB
                     let mut a = get_mv(mb_x as i32 - 1, mb_y as i32, 3);
                     let b = get_mv(mb_x as i32, mb_y as i32, 0);
                     let c = get_mv(mb_x as i32, mb_y as i32, 1);
-                    // 第一行且为行首 MB 时, A 设为 0
-                    if first_line && mb_x == 0 {
+                    // slice 首行首列: 左邻居不可用
+                    if first_slice_line && first_slice_col {
                         a = MotionVector { x: 0, y: 0 };
                     }
                     (a, b, c)
                 }
                 3 => {
-                    // Block 3 (右下): A=同 MB block 2, B=同 MB block 1, C=同 MB block 0
-                    // 全部在同一 MB 内, 无需特殊处理
+                    // Block 3: 全部在同一 MB 内, 无需 slice 边界处理
                     let a = get_mv(mb_x as i32, mb_y as i32, 2);
                     let b = get_mv(mb_x as i32, mb_y as i32, 1);
                     let c = get_mv(mb_x as i32, mb_y as i32, 0);

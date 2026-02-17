@@ -294,6 +294,15 @@ impl Mpeg4Decoder {
     /// 对于 8 位精度: 1024 / 8 = 128 (quant 1-4).
     const DC_PRED_DEFAULT: i16 = 128;
 
+    /// 检查指定宏块是否在当前 video packet (slice) 范围内
+    ///
+    /// 通过比较线性宏块索引与当前 slice 起始位置判断.
+    pub(super) fn is_in_current_slice(&self, mb_x: usize, mb_y: usize) -> bool {
+        let nb_linear = mb_y * self.mb_stride + mb_x;
+        let resync_linear = self.resync_mb_y * self.mb_stride + self.resync_mb_x;
+        nb_linear >= resync_linear
+    }
+
     /// 获取 Intra DC 预测方向和预测值
     ///
     /// 参考 FFmpeg mpeg4_pred_dc: 在 slice 边界处将不可用邻居
@@ -2016,9 +2025,6 @@ impl Mpeg4Decoder {
         let total_mbs = mb_w * mb_h;
         let mut mb_idx = 0usize;
         while mb_idx < total_mbs {
-            let mb_x = (mb_idx % mb_w) as u32;
-            let mb_y = (mb_idx / mb_w) as u32;
-
             // 检查 resync marker (错误恢复)
             if !resync_disabled && Self::check_resync_marker(reader, 0) {
                 if let Some((mb_num, new_quant)) = self.parse_video_packet_header(reader) {
@@ -2027,7 +2033,7 @@ impl Mpeg4Decoder {
                     let target = mb_num as usize;
                     if target < total_mbs && target >= mb_idx {
                         mb_idx = target;
-                        // 更新 slice 起始位置, 用于 DC 预测边界处理
+                        // 更新 slice 起始位置, 用于 DC/AC/MV 预测边界处理
                         self.resync_mb_x = mb_idx % mb_w;
                         self.resync_mb_y = mb_idx / mb_w;
                     } else {
@@ -2036,6 +2042,8 @@ impl Mpeg4Decoder {
                 }
             }
 
+            let mb_x = (mb_idx % mb_w) as u32;
+            let mb_y = (mb_idx / mb_w) as u32;
             self.decode_macroblock(&mut frame, mb_x, mb_y, reader, true);
             mb_idx += 1;
         }
@@ -2067,9 +2075,6 @@ impl Mpeg4Decoder {
         let total_mbs = mb_w * mb_h;
         let mut mb_idx = 0usize;
         while mb_idx < total_mbs {
-            let mb_x = (mb_idx % mb_w) as u32;
-            let mb_y = (mb_idx / mb_w) as u32;
-
             // 检查 resync marker (错误恢复)
             if !resync_disabled && Self::check_resync_marker(reader, fcode.saturating_sub(1)) {
                 if let Some((mb_num, new_quant)) = self.parse_video_packet_header(reader) {
@@ -2077,8 +2082,18 @@ impl Mpeg4Decoder {
                     self.quant = new_quant;
                     let target = mb_num as usize;
                     if target < total_mbs && target >= mb_idx {
+                        // 填充 gap: 跳过的 MB 从参考帧复制 (视为 not_coded)
+                        for skip_idx in mb_idx..target {
+                            let skip_x = (skip_idx % mb_w) as u32;
+                            let skip_y = (skip_idx / mb_w) as u32;
+                            self.copy_mb_from_ref(&mut frame, skip_x, skip_y);
+                            // 清零 MV 缓存
+                            if skip_idx < self.mv_cache.len() {
+                                self.mv_cache[skip_idx] = [MotionVector::default(); 4];
+                            }
+                        }
                         mb_idx = target;
-                        // 更新 slice 起始位置, 用于 DC 预测边界处理
+                        // 更新 slice 起始位置, 用于 DC/AC/MV 预测边界处理
                         self.resync_mb_x = mb_idx % mb_w;
                         self.resync_mb_y = mb_idx / mb_w;
                     } else {
@@ -2087,6 +2102,9 @@ impl Mpeg4Decoder {
                 }
             }
 
+            // 重新计算坐标 (可能因 resync 跳转而改变)
+            let mb_x = (mb_idx % mb_w) as u32;
+            let mb_y = (mb_idx / mb_w) as u32;
             self.decode_macroblock(&mut frame, mb_x, mb_y, reader, false);
             mb_idx += 1;
         }

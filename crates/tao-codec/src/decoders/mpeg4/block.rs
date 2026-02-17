@@ -85,46 +85,68 @@ pub(super) fn decode_intra_block_vlc(
         }
     }
 
-    // 3. AC 预测
+    // 3. AC 预测 (需检查 slice 边界, 跨 slice 的邻居 AC 不可用)
     if ac_pred_flag {
         match direction {
             PredictorDirection::Vertical => {
-                let c_idx = match block_idx {
-                    0 => decoder.get_neighbor_block_idx(mb_x as isize, mb_y as isize - 1, 2),
-                    1 => decoder.get_neighbor_block_idx(mb_x as isize, mb_y as isize - 1, 3),
-                    2 => decoder.get_neighbor_block_idx(mb_x as isize, mb_y as isize, 0),
-                    3 => decoder.get_neighbor_block_idx(mb_x as isize, mb_y as isize, 1),
-                    4 | 5 => {
-                        decoder.get_neighbor_block_idx(mb_x as isize, mb_y as isize - 1, block_idx)
-                    }
-                    _ => None,
+                // Vertical 预测使用上方邻居
+                let (nb_mx, nb_my) = match block_idx {
+                    0 | 1 | 4 | 5 => (mb_x as usize, mb_y.wrapping_sub(1) as usize),
+                    _ => (mb_x as usize, mb_y as usize), // block 2, 3: 同 MB 内
                 };
-                if let Some(idx) = c_idx {
-                    let pred_ac = decoder.predictor_cache[idx];
-                    for i in 1..8 {
-                        let idx = ac_scan[i];
-                        let value = block[idx] + pred_ac[i] as i32;
-                        block[idx] = value.clamp(COEFF_MIN, COEFF_MAX);
+                let in_slice =
+                    matches!(block_idx, 2 | 3) || decoder.is_in_current_slice(nb_mx, nb_my);
+                if in_slice {
+                    let c_idx = match block_idx {
+                        0 => decoder.get_neighbor_block_idx(mb_x as isize, mb_y as isize - 1, 2),
+                        1 => decoder.get_neighbor_block_idx(mb_x as isize, mb_y as isize - 1, 3),
+                        2 => decoder.get_neighbor_block_idx(mb_x as isize, mb_y as isize, 0),
+                        3 => decoder.get_neighbor_block_idx(mb_x as isize, mb_y as isize, 1),
+                        4 | 5 => decoder.get_neighbor_block_idx(
+                            mb_x as isize,
+                            mb_y as isize - 1,
+                            block_idx,
+                        ),
+                        _ => None,
+                    };
+                    if let Some(idx) = c_idx {
+                        let pred_ac = decoder.predictor_cache[idx];
+                        for i in 1..8 {
+                            let idx = ac_scan[i];
+                            let value = block[idx] + pred_ac[i] as i32;
+                            block[idx] = value.clamp(COEFF_MIN, COEFF_MAX);
+                        }
                     }
                 }
             }
             PredictorDirection::Horizontal => {
-                let a_idx = match block_idx {
-                    0 => decoder.get_neighbor_block_idx(mb_x as isize - 1, mb_y as isize, 1),
-                    1 => decoder.get_neighbor_block_idx(mb_x as isize, mb_y as isize, 0),
-                    2 => decoder.get_neighbor_block_idx(mb_x as isize - 1, mb_y as isize, 3),
-                    3 => decoder.get_neighbor_block_idx(mb_x as isize, mb_y as isize, 2),
-                    4 | 5 => {
-                        decoder.get_neighbor_block_idx(mb_x as isize - 1, mb_y as isize, block_idx)
-                    }
-                    _ => None,
+                // Horizontal 预测使用左方邻居
+                let (nb_mx, nb_my) = match block_idx {
+                    0 | 2 | 4 | 5 => (mb_x.wrapping_sub(1) as usize, mb_y as usize),
+                    _ => (mb_x as usize, mb_y as usize), // block 1, 3: 同 MB 内
                 };
-                if let Some(idx) = a_idx {
-                    let pred_ac = decoder.predictor_cache[idx];
-                    for i in 1..8 {
-                        let idx = ac_scan[i * 8];
-                        let value = block[idx] + pred_ac[7 + i] as i32;
-                        block[idx] = value.clamp(COEFF_MIN, COEFF_MAX);
+                let in_slice =
+                    matches!(block_idx, 1 | 3) || decoder.is_in_current_slice(nb_mx, nb_my);
+                if in_slice {
+                    let a_idx = match block_idx {
+                        0 => decoder.get_neighbor_block_idx(mb_x as isize - 1, mb_y as isize, 1),
+                        1 => decoder.get_neighbor_block_idx(mb_x as isize, mb_y as isize, 0),
+                        2 => decoder.get_neighbor_block_idx(mb_x as isize - 1, mb_y as isize, 3),
+                        3 => decoder.get_neighbor_block_idx(mb_x as isize, mb_y as isize, 2),
+                        4 | 5 => decoder.get_neighbor_block_idx(
+                            mb_x as isize - 1,
+                            mb_y as isize,
+                            block_idx,
+                        ),
+                        _ => None,
+                    };
+                    if let Some(idx) = a_idx {
+                        let pred_ac = decoder.predictor_cache[idx];
+                        for i in 1..8 {
+                            let idx = ac_scan[i * 8];
+                            let value = block[idx] + pred_ac[7 + i] as i32;
+                            block[idx] = value.clamp(COEFF_MIN, COEFF_MAX);
+                        }
                     }
                 }
             }
