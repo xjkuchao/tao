@@ -5,6 +5,7 @@
 
 use log::{debug, info};
 use sdl2::audio::{AudioCallback, AudioDevice, AudioSpecDesired};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use tao_core::{ChannelLayout, SampleFormat};
@@ -37,6 +38,8 @@ struct SdlAudioPlayer {
     output_sample_rate: u32,
     output_channels: u32,
     playing: Arc<Mutex<bool>>,
+    /// Seek 时由 player 线程置 true, 回调中排空缓冲后重置
+    flush_flag: Arc<AtomicBool>,
 }
 
 impl AudioCallback for SdlAudioPlayer {
@@ -45,6 +48,19 @@ impl AudioCallback for SdlAudioPlayer {
     fn callback(&mut self, out: &mut [f32]) {
         let is_playing = *self.playing.lock().unwrap();
         if !is_playing || self.clock.is_paused() {
+            for sample in out.iter_mut() {
+                *sample = 0.0;
+            }
+            return;
+        }
+
+        // Seek 后排空旧数据
+        if self.flush_flag.load(Ordering::Acquire) {
+            self.buffer.clear();
+            let recv = self.receiver.lock().unwrap();
+            while recv.try_recv().is_ok() {}
+            drop(recv);
+            self.flush_flag.store(false, Ordering::Release);
             for sample in out.iter_mut() {
                 *sample = 0.0;
             }
@@ -117,6 +133,7 @@ pub struct AudioOutput {
 /// 音频数据发送端 (可安全跨线程传递给 player 线程)
 pub struct AudioSender {
     sender: mpsc::SyncSender<AudioChunk>,
+    flush_flag: Arc<AtomicBool>,
 }
 
 impl AudioOutput {
@@ -141,9 +158,11 @@ impl AudioOutput {
         let (sender, receiver) = mpsc::sync_channel::<AudioChunk>(32);
         let receiver = Arc::new(Mutex::new(receiver));
         let playing = Arc::new(Mutex::new(true));
+        let flush_flag = Arc::new(AtomicBool::new(false));
 
         let playing_clone = playing.clone();
         let receiver_clone = receiver.clone();
+        let flush_flag_clone = flush_flag.clone();
 
         let device = audio_subsystem.open_playback(None, &desired_spec, |spec| {
             let output_sample_rate = spec.freq as u32;
@@ -172,6 +191,7 @@ impl AudioOutput {
                 output_sample_rate,
                 output_channels,
                 playing: playing_clone,
+                flush_flag: flush_flag_clone,
             }
         })?;
 
@@ -182,7 +202,7 @@ impl AudioOutput {
             sample_rate, channels, buf_size
         );
 
-        Ok((Self { _device: device }, AudioSender { sender }))
+        Ok((Self { _device: device }, AudioSender { sender, flush_flag }))
     }
 }
 
@@ -192,6 +212,11 @@ impl AudioSender {
         self.sender
             .send(chunk)
             .map_err(|e| format!("发送音频数据失败: {}", e))
+    }
+
+    /// Seek 时清空音频缓冲 (通知回调线程排空旧数据)
+    pub fn flush(&self) {
+        self.flush_flag.store(true, Ordering::Release);
     }
 }
 

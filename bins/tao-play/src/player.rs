@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use tao_codec::codec_parameters::{AudioCodecParams, CodecParameters, CodecParamsType};
 use tao_codec::frame::Frame;
 use tao_core::{MediaType, PixelFormat, SampleFormat, TaoError};
+use tao_format::demuxer::SeekFlags;
 use tao_format::io::IoContext;
 use tao_format::registry::FormatRegistry;
 use tao_format::stream::{Stream, StreamParams};
@@ -70,6 +71,8 @@ pub enum PlayerStatus {
     Time(f64, f64),
     Paused(bool),
     Volume(f32),
+    /// Seek 完成, GUI 应清空帧队列并重置 frame_timer
+    Seeked,
     End,
     Error(String),
 }
@@ -276,7 +279,39 @@ impl Player {
                         }
                     }
                     PlayerCommand::Seek(offset) => {
-                        info!("Seek 请求 (尚未完整实现): {}s", offset);
+                        let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
+                        let target_sec = (current_sec + offset).max(0.0);
+
+                        // 优先视频流 seek (关键帧对齐)
+                        let seek_stream = video_stream.or(audio_stream);
+                        if let Some(stream) = seek_stream {
+                            let tb = &stream.time_base;
+                            if tb.num > 0 && tb.den > 0 {
+                                let ts = (target_sec * tb.den as f64 / tb.num as f64) as i64;
+                                match demuxer.seek(&mut io, stream.index, ts, SeekFlags::default())
+                                {
+                                    Ok(()) => {
+                                        if let Some(d) = &mut video_decoder {
+                                            d.flush();
+                                        }
+                                        if let Some(d) = &mut audio_decoder {
+                                            d.flush();
+                                        }
+                                        if let Some(a) = &audio_sender {
+                                            a.flush();
+                                        }
+                                        let target_us = (target_sec * 1_000_000.0) as i64;
+                                        clock.update_audio_pts(target_us);
+                                        eof = false;
+                                        status_tx.send(PlayerStatus::Seeked).ok();
+                                        info!("Seek 到 {:.1}s", target_sec);
+                                    }
+                                    Err(e) => {
+                                        warn!("Seek 失败: {}", e);
+                                    }
+                                }
+                            }
+                        }
                     }
                     PlayerCommand::VolumeUp => {
                         current_volume = (current_volume + 5).min(100);

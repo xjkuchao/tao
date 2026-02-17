@@ -393,6 +393,13 @@ pub fn run_event_loop(
             match status {
                 PlayerStatus::End => break 'running,
                 PlayerStatus::Paused(p) => paused = p,
+                PlayerStatus::Seeked => {
+                    // Seek 完成: 清空帧队列和重置 frame_timer
+                    state.frame_queue.clear();
+                    state.frame_timer = 0.0;
+                    state.last_pts = f64::NAN;
+                    state.force_refresh = true;
+                }
                 _ => {}
             }
         }
