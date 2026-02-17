@@ -501,6 +501,61 @@ impl AviDemuxer {
         debug!("idx1: {} 个索引条目", self.idx1_entries.len());
         Ok(())
     }
+
+    /// 无 idx1 索引时的回退 seek: 从 movi 起始扫描块头定位到目标帧
+    fn seek_no_idx1(
+        &mut self,
+        io: &mut IoContext,
+        stream_index: usize,
+        timestamp: i64,
+    ) -> TaoResult<()> {
+        let target_frame = timestamp.max(0);
+
+        // 回到 movi 数据起始位置
+        io.seek(std::io::SeekFrom::Start(self.movi_data_start))?;
+        self.frame_counts = vec![0; self.streams.len()];
+
+        let movi_end = self.movi_data_start + self.movi_list_size;
+
+        // 扫描块头, 跳过数据, 直到找到目标流的目标帧
+        while io.position()? < movi_end {
+            let chunk_start = io.position()?;
+            let chunk_id = match io.read_tag() {
+                Ok(tag) => tag,
+                Err(_) => break,
+            };
+            let chunk_size = match io.read_u32_le() {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+
+            // 解析流号: 前两个字符必须是 ASCII 数字
+            if chunk_id.len() >= 4 && chunk_id[0].is_ascii_digit() && chunk_id[1].is_ascii_digit() {
+                let snum = ((chunk_id[0] - b'0') * 10 + (chunk_id[1] - b'0')) as usize;
+                if snum < self.streams.len() {
+                    if snum == stream_index && self.frame_counts[snum] >= target_frame {
+                        // 找到目标帧, 回退到块头
+                        io.seek(std::io::SeekFrom::Start(chunk_start))?;
+                        debug!(
+                            "无索引 seek: 流 {} 帧 {} (扫描到 {})",
+                            stream_index, target_frame, chunk_start
+                        );
+                        return Ok(());
+                    }
+                    self.frame_counts[snum] += 1;
+                }
+            }
+
+            // 跳过块数据
+            let skip = chunk_size as i64 + i64::from(chunk_size % 2);
+            io.seek(std::io::SeekFrom::Current(skip))?;
+        }
+
+        // 已到文件末尾, 回到起始位置
+        io.seek(std::io::SeekFrom::Start(self.movi_data_start))?;
+        self.frame_counts = vec![0; self.streams.len()];
+        Err(TaoError::Eof)
+    }
 }
 
 impl Demuxer for AviDemuxer {
@@ -709,9 +764,7 @@ impl Demuxer for AviDemuxer {
         }
 
         if self.idx1_entries.is_empty() {
-            return Err(TaoError::NotImplemented(
-                "无 idx1 索引, 暂不支持 seek".into(),
-            ));
+            return self.seek_no_idx1(io, stream_index, timestamp);
         }
 
         let target = timestamp.max(0) as usize;
