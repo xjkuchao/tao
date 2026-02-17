@@ -419,7 +419,10 @@ impl Player {
                                                 return Ok(());
                                             }
                                             frames_sent += 1;
-                                            seek_flush_pending = false;
+                                            if seek_flush_pending {
+                                                clock.confirm_seek();
+                                                seek_flush_pending = false;
+                                            }
                                         }
                                     }
                                 }
