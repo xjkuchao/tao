@@ -595,7 +595,15 @@ fn convert_frame_to_rgb24(vf: &tao_codec::frame::VideoFrame) -> Vec<u8> {
             vf.data[0].clone()
         }
         PixelFormat::Yuv420p => {
-            // YUV420P -> RGB24 (简化转换)
+            // YUV420P -> RGB24 (定点整数运算, 避免浮点开销)
+            // BT.601 full range: R = Y + 1.402*V, G = Y - 0.344*U - 0.714*V, B = Y + 1.772*U
+            // 使用 <<16 定点: 1.402*65536=91881, 0.344*65536=22544, 0.714*65536=46793, 1.772*65536=116130
+            const CR_R: i32 = 91881;
+            const CB_G: i32 = 22544;
+            const CR_G: i32 = 46793;
+            const CB_B: i32 = 116130;
+            const FP_HALF: i32 = 1 << 15; // 舍入偏移
+
             let mut rgb = vec![0u8; w * h * 3];
             let y_plane = &vf.data[0];
             let u_plane = &vf.data[1];
@@ -604,34 +612,26 @@ fn convert_frame_to_rgb24(vf: &tao_codec::frame::VideoFrame) -> Vec<u8> {
             let u_stride = vf.linesize[1];
 
             for row in 0..h {
+                let y_row = row * y_stride;
+                let uv_row = (row >> 1) * u_stride;
+                let dst_row = row * w * 3;
+
                 for col in 0..w {
-                    let y_idx = row * y_stride + col;
-                    let u_idx = (row / 2) * u_stride + col / 2;
+                    let y_idx = y_row + col;
+                    let uv_idx = uv_row + (col >> 1);
 
-                    let y = if y_idx < y_plane.len() {
-                        y_plane[y_idx] as f32
-                    } else {
-                        16.0
-                    };
-                    let u = if u_idx < u_plane.len() {
-                        u_plane[u_idx] as f32 - 128.0
-                    } else {
-                        0.0
-                    };
-                    let v = if u_idx < v_plane.len() {
-                        v_plane[u_idx] as f32 - 128.0
-                    } else {
-                        0.0
-                    };
+                    let y_val = *y_plane.get(y_idx).unwrap_or(&16) as i32;
+                    let cb = *u_plane.get(uv_idx).unwrap_or(&128) as i32 - 128;
+                    let cr = *v_plane.get(uv_idx).unwrap_or(&128) as i32 - 128;
 
-                    let r = (y + 1.402 * v).clamp(0.0, 255.0) as u8;
-                    let g = (y - 0.344 * u - 0.714 * v).clamp(0.0, 255.0) as u8;
-                    let b = (y + 1.772 * u).clamp(0.0, 255.0) as u8;
+                    let r = y_val + ((CR_R * cr + FP_HALF) >> 16);
+                    let g = y_val - ((CB_G * cb + CR_G * cr + FP_HALF) >> 16);
+                    let b = y_val + ((CB_B * cb + FP_HALF) >> 16);
 
-                    let dst_idx = (row * w + col) * 3;
-                    rgb[dst_idx] = r;
-                    rgb[dst_idx + 1] = g;
-                    rgb[dst_idx + 2] = b;
+                    let dst = dst_row + col * 3;
+                    rgb[dst] = r.clamp(0, 255) as u8;
+                    rgb[dst + 1] = g.clamp(0, 255) as u8;
+                    rgb[dst + 2] = b.clamp(0, 255) as u8;
                 }
             }
             rgb

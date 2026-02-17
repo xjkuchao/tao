@@ -219,6 +219,8 @@ mod tests {
             gmc_params: GmcParameters::default(),
             alternate_vertical_scan: false,
             packed_frames: std::collections::VecDeque::new(),
+            resync_mb_x: 0,
+            resync_mb_y: 0,
         }
     }
 

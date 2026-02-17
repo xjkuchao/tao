@@ -167,6 +167,10 @@ pub struct Mpeg4Decoder {
     alternate_vertical_scan: bool,
     /// DivX packed bitstream 队列 (一个 packet 中拆分出的多个 VOP)
     packed_frames: std::collections::VecDeque<Vec<u8>>,
+    /// 当前 video packet (slice) 起始宏块 X 坐标
+    resync_mb_x: usize,
+    /// 当前 video packet (slice) 起始宏块 Y 坐标
+    resync_mb_y: usize,
 }
 
 impl Mpeg4Decoder {
@@ -202,6 +206,8 @@ impl Mpeg4Decoder {
             gmc_params: GmcParameters::default(),
             alternate_vertical_scan: false,
             packed_frames: std::collections::VecDeque::new(),
+            resync_mb_x: 0,
+            resync_mb_y: 0,
         }))
     }
 
@@ -282,21 +288,32 @@ impl Mpeg4Decoder {
         }
     }
 
+    /// 默认 DC 预测值 (量化域)
+    ///
+    /// 对应 FFmpeg 的 1024 (未缩放域) / dc_scaler.
+    /// 对于 8 位精度: 1024 / 8 = 128 (quant 1-4).
+    const DC_PRED_DEFAULT: i16 = 128;
+
     /// 获取 Intra DC 预测方向和预测值
+    ///
+    /// 参考 FFmpeg mpeg4_pred_dc: 在 slice 边界处将不可用邻居
+    /// 重置为默认值, 保证 video packet 间的独立解码能力.
     pub(super) fn get_intra_predictor(
         &self,
         mb_x: usize,
         mb_y: usize,
         block_idx: usize,
     ) -> (i16, PredictorDirection) {
+        let def = Self::DC_PRED_DEFAULT;
         let get_dc = |x: isize, y: isize, idx: usize| -> i16 {
             self.get_neighbor_block_idx(x, y, idx)
                 .and_then(|pos| self.predictor_cache.get(pos))
                 .map(|b| b[0])
-                .unwrap_or(128) // 边界处使用 128 (量化域的默认值)
+                .unwrap_or(def)
         };
 
-        let (dc_a, dc_b, dc_c) = match block_idx {
+        // A = 左, B = 左上, C = 上
+        let (mut dc_a, mut dc_b, mut dc_c) = match block_idx {
             0 => (
                 get_dc(mb_x as isize - 1, mb_y as isize, 1),
                 get_dc(mb_x as isize - 1, mb_y as isize - 1, 3),
@@ -322,8 +339,32 @@ impl Mpeg4Decoder {
                 get_dc(mb_x as isize - 1, mb_y as isize - 1, block_idx),
                 get_dc(mb_x as isize, mb_y as isize - 1, block_idx),
             ),
-            _ => (128, 128, 128),
+            _ => (def, def, def),
         };
+
+        // Slice 边界处理 (对标 FFmpeg mpeg4_pred_dc):
+        // 在 video packet 的首行, 上方和左上邻居属于前一个 packet, 不可用.
+        let first_slice_line = mb_y == self.resync_mb_y;
+        if first_slice_line && block_idx != 3 {
+            // block 3 的上方/左上是同一 MB 内的 block 0/1, 始终可用
+            if block_idx != 2 {
+                // block 0, 1, 4, 5: 上方和左上来自上一行 MB
+                dc_b = def;
+                dc_c = def;
+            }
+            if block_idx != 1 && mb_x == self.resync_mb_x {
+                // slice 首列首行: 左邻居也不可用
+                dc_b = def;
+                dc_a = def;
+            }
+        }
+        // slice 第二行首列: 左上角邻居 (上一行的前一列) 不可用
+        if mb_x == self.resync_mb_x
+            && mb_y == self.resync_mb_y + 1
+            && (block_idx == 0 || block_idx == 4 || block_idx == 5)
+        {
+            dc_b = def;
+        }
 
         let grad_hor = (dc_a - dc_b).abs();
         let grad_ver = (dc_c - dc_b).abs();
@@ -493,45 +534,85 @@ impl Mpeg4Decoder {
     /// 先检查到字节边界的 stuffing bits 是否全为 0,
     /// 然后检查后续 (17 + fcode - 1) 位是否为 "000...001" 模式.
     fn check_resync_marker(reader: &BitReader, vop_fcode: u8) -> bool {
-        let nbits = reader.bits_to_byte_align();
-        // 检查 stuffing bits (到字节边界) 是否全为 0
-        if nbits > 0 {
-            let Some(stuffing) = reader.peek_bits(nbits) else {
-                return false;
-            };
-            if stuffing != 0 {
-                return false;
-            }
-        }
+        // 参考 FFmpeg mpeg4_is_resync:
+        // MPEG-4 resync marker 前有 stuffing bits (0 + 1...1 到字节对齐),
+        // 然后是 prefix_length 个零位 + 1 位.
+        //
+        // 前缀表: 每个位偏移对应的 16-bit peek 值
+        // bit_offset=0: stuffing=01111111 + 8 zeros = 0x7F00
+        // bit_offset=1: stuffing=0111111  + 9 zeros = 0x7E00
+        // ...
+        // bit_offset=7: stuffing=0        + 15 zeros = 0x0000
+        const RESYNC_PREFIX: [u16; 8] = [
+            0x7F00, 0x7E00, 0x7C00, 0x7800, 0x7000, 0x6000, 0x4000, 0x0000,
+        ];
 
-        // resync marker 长度 = 17 + (fcode - 1) = 16 + fcode
-        let marker_len = 16 + vop_fcode as u32;
-        let total_bits = nbits as u32 + marker_len;
-        if total_bits > 32 {
-            return false;
-        }
-
-        let Some(bits) = reader.peek_bits(total_bits as u8) else {
+        let Some(v) = reader.peek_bits(16) else {
             return false;
         };
 
-        // 所有位为 0 除最后一位为 1
-        bits == 1
+        let bit_offset = reader.bit_position() & 7;
+        if v as u16 != RESYNC_PREFIX[bit_offset] {
+            return false;
+        }
+
+        // 前缀匹配, 需要进一步验证后续有足够的 marker 零位
+        // 16-bit peek 中已包含的 marker 零位数 = 8 + bit_offset
+        // 需要的总零位数 (prefix_length) = 16 + vop_fcode
+        // 还需额外零位 = prefix_length - (8 + bit_offset) = 8 + vop_fcode - bit_offset
+        let zeros_seen = 8 + bit_offset;
+        let prefix_length = 16 + vop_fcode as usize;
+        if zeros_seen >= prefix_length {
+            // 已经看到足够的零位, 只需验证下一个位是 1
+            // 但我们只 peek 了 16 位, 无法检查第 17 位
+            // 对于 I-VOP (fcode=0): prefix=16, zeros_seen=8+bit_offset
+            // 当 bit_offset >= 8 时 (不可能) 才满足. 实际不会走这个分支 (I-VOP).
+            return true;
+        }
+
+        // 需要额外 peek 更多位来验证
+        let extra_zeros = prefix_length - zeros_seen;
+        let check_bits = (16 + extra_zeros + 1) as u8; // 16 前缀 + 额外零位 + 1 终止位
+        if check_bits > 32 {
+            return false;
+        }
+        let Some(full_bits) = reader.peek_bits(check_bits) else {
+            return false;
+        };
+        // 最后 (extra_zeros + 1) 位应为: extra_zeros 个 0 + 1 个 1 → 值为 1
+        let tail = full_bits & ((1 << (extra_zeros + 1)) - 1);
+        tail == 1
     }
 
     /// 跳过 resync marker 并解析 video packet header
     ///
     /// 返回 (macroblock_number, new_quant)
     fn parse_video_packet_header(&self, reader: &mut BitReader) -> Option<(u32, u8)> {
-        // 跳过 stuffing bits
-        let nbits = reader.bits_to_byte_align();
-        if nbits > 0 {
-            reader.read_bits(nbits)?;
+        // 保存位置, 解析失败时恢复
+        let saved_pos = reader.snapshot_position();
+
+        // 跳过 stuffing bits: MPEG-4 标准定义为 '0' + '1...1' 到字节对齐
+        // 无论当前是否字节对齐, 至少消耗 1 位 '0'
+        reader.read_bits(1)?;
+        let align_bits = reader.bits_to_byte_align();
+        if align_bits > 0 {
+            reader.read_bits(align_bits)?;
         }
 
-        // 跳过 resync marker (16 + fcode 位)
-        let marker_len = 16 + self.f_code_forward;
-        reader.read_bits(marker_len)?;
+        // 跳过 resync marker: prefix_length 个零位 + 1 个终止位
+        // 计数连续零位直到遇到 '1'
+        let mut zero_count = 0u32;
+        loop {
+            let bit = reader.read_bit()?;
+            if bit {
+                break; // 遇到终止位 '1'
+            }
+            zero_count += 1;
+            if zero_count > 32 {
+                reader.restore_position(saved_pos);
+                return None;
+            }
+        }
 
         // macroblock_number (变长: log2(total_mbs) 位)
         let total_mbs = self.mb_stride * (self.height as usize).div_ceil(16);
@@ -1914,6 +1995,9 @@ impl Mpeg4Decoder {
     /// 解码 I 帧
     fn decode_i_frame(&mut self, reader: &mut BitReader) -> TaoResult<VideoFrame> {
         self.init_frame_decode();
+        // 帧起始: slice 从 (0,0) 开始
+        self.resync_mb_x = 0;
+        self.resync_mb_y = 0;
         let mut frame = self.create_blank_frame(PictureType::I);
 
         let mb_w = self.width.div_ceil(16) as usize;
@@ -1943,6 +2027,9 @@ impl Mpeg4Decoder {
                     let target = mb_num as usize;
                     if target < total_mbs && target >= mb_idx {
                         mb_idx = target;
+                        // 更新 slice 起始位置, 用于 DC 预测边界处理
+                        self.resync_mb_x = mb_idx % mb_w;
+                        self.resync_mb_y = mb_idx / mb_w;
                     } else {
                         warn!("I 帧 resync marker 宏块号异常: {}", mb_num);
                     }
@@ -1958,6 +2045,9 @@ impl Mpeg4Decoder {
     /// 解码 P 帧
     fn decode_p_frame(&mut self, reader: &mut BitReader) -> TaoResult<VideoFrame> {
         self.init_frame_decode();
+        // 帧起始: slice 从 (0,0) 开始
+        self.resync_mb_x = 0;
+        self.resync_mb_y = 0;
         let mut frame = self.create_blank_frame(PictureType::P);
 
         let mb_w = self.mb_stride;
@@ -1988,6 +2078,9 @@ impl Mpeg4Decoder {
                     let target = mb_num as usize;
                     if target < total_mbs && target >= mb_idx {
                         mb_idx = target;
+                        // 更新 slice 起始位置, 用于 DC 预测边界处理
+                        self.resync_mb_x = mb_idx % mb_w;
+                        self.resync_mb_y = mb_idx / mb_w;
                     } else {
                         warn!("P 帧 resync marker 宏块号异常: {}", mb_num);
                     }
@@ -2585,6 +2678,8 @@ mod tests {
             gmc_params: GmcParameters::default(),
             alternate_vertical_scan: false,
             packed_frames: std::collections::VecDeque::new(),
+            resync_mb_x: 0,
+            resync_mb_y: 0,
         }
     }
 
@@ -2766,18 +2861,37 @@ mod tests {
 
     #[test]
     fn test_resync_marker_check() {
-        // 字节对齐位置, 17 个零 + 1 个一 = 0x00 0x00 0x01 (3 bytes = 24 bits)
-        // 但 fcode=1, marker_len = 16+1 = 17 bits
-        // 需要 17 bits: 0000_0000_0000_0000_1 = 17 位
+        // MPEG-4 resync marker 格式: stuffing (0 + 1...1 字节对齐) + prefix_length 零 + 1
+        // prefix_length = 16 + vop_fcode
 
-        // 已对齐, peek 17 bits = 1
-        let data = [0x00, 0x00, 0x80]; // 17 位: 0000_0000_0000_0000_1
+        // 测试 1: 字节对齐, fcode=0 (I-VOP), prefix_length=16
+        // stuffing = 0x7F (01111111), marker = 16 zeros + 1
+        let data = [0x7F, 0x00, 0x00, 0x80];
+        let reader = BitReader::new(&data);
+        assert!(Mpeg4Decoder::check_resync_marker(&reader, 0));
+
+        // 测试 2: 字节对齐, fcode=1, prefix_length=17
+        // stuffing = 0x7F, marker = 17 zeros + 1
+        let data = [0x7F, 0x00, 0x00, 0x40];
         let reader = BitReader::new(&data);
         assert!(Mpeg4Decoder::check_resync_marker(&reader, 1));
 
-        // 非 resync marker
+        // 测试 3: 非字节对齐 (bit_offset=1), fcode=0
+        // 前 1 位是前一个宏块的数据, 之后是 stuffing + marker
+        // 从 bit_offset=1: 0111111 00000000 00000000 1
+        let data = [0xBF, 0x00, 0x00, 0x80];
+        let mut reader = BitReader::new(&data);
+        reader.read_bits(1); // 消耗 1 位
+        assert!(Mpeg4Decoder::check_resync_marker(&reader, 0));
+
+        // 测试 4: 非 resync marker (无效数据)
         let data = [0x00, 0x01, 0x00];
         let reader = BitReader::new(&data);
-        assert!(!Mpeg4Decoder::check_resync_marker(&reader, 1));
+        assert!(!Mpeg4Decoder::check_resync_marker(&reader, 0));
+
+        // 测试 5: 非 resync marker (数据中没有正确的 stuffing 模式)
+        let data = [0xFF, 0x00, 0x00, 0x80];
+        let reader = BitReader::new(&data);
+        assert!(!Mpeg4Decoder::check_resync_marker(&reader, 0));
     }
 }
