@@ -142,6 +142,12 @@ fn video_refresh<'a>(
     // 暂停时只重绘, 不推进帧
     if paused {
         if state.seek_frame_pending && !state.frame_queue.is_empty() {
+            let front_pts = state.frame_queue.front().map(|f| f.pts).unwrap_or(0.0);
+            log::info!(
+                "[GUI] Seek 帧显示: PTS={:.3}s, 队列={}, 暂停=true",
+                front_pts,
+                state.frame_queue.len()
+            );
             // Seek 后收到新帧: 显示并停留 (对齐 ffplay 暂停 seek)
             upload_front_frame(state, texture_creator);
             render_current_texture(state, canvas);
@@ -305,6 +311,17 @@ fn toggle_fullscreen(state: &mut VideoDisplayState, canvas: &mut Canvas<Window>)
     state.force_refresh = true;
 }
 
+/// 返回当前播放模式的中文描述
+fn play_mode_str(paused: bool, step: bool) -> &'static str {
+    if step {
+        "单步"
+    } else if paused {
+        "暂停"
+    } else {
+        "播放"
+    }
+}
+
 // ── 事件循环 ─────────────────────────────────────────────────────────────
 
 /// 运行 SDL2 事件循环 (在主线程)
@@ -344,25 +361,67 @@ pub fn run_event_loop(
                         break 'running;
                     }
                     Keycode::Space | Keycode::P => {
+                        let mode = play_mode_str(paused, state.step);
+                        log::info!(
+                            "[按键] Space/P (暂停/恢复), 当前={}, 帧队列={}, 最近PTS={:.3}s",
+                            mode,
+                            state.frame_queue.len(),
+                            state.last_pts
+                        );
                         let _ = command_tx.send(PlayerCommand::TogglePause);
                     }
                     Keycode::F => {
                         toggle_fullscreen(&mut state, &mut canvas);
                     }
                     Keycode::S => {
+                        let mode = play_mode_str(paused, state.step);
+                        log::info!(
+                            "[按键] S (单步), 当前={}, 帧队列={}, 最近PTS={:.3}s",
+                            mode,
+                            state.frame_queue.len(),
+                            state.last_pts
+                        );
                         state.step = true;
                         let _ = command_tx.send(PlayerCommand::StepFrame);
                     }
                     Keycode::Right => {
+                        let mode = play_mode_str(paused, state.step);
+                        log::info!(
+                            "[按键] Right (+10s), 当前={}, 帧队列={}, 最近PTS={:.3}s",
+                            mode,
+                            state.frame_queue.len(),
+                            state.last_pts
+                        );
                         let _ = command_tx.send(PlayerCommand::Seek(10.0));
                     }
                     Keycode::Left => {
+                        let mode = play_mode_str(paused, state.step);
+                        log::info!(
+                            "[按键] Left (-10s), 当前={}, 帧队列={}, 最近PTS={:.3}s",
+                            mode,
+                            state.frame_queue.len(),
+                            state.last_pts
+                        );
                         let _ = command_tx.send(PlayerCommand::Seek(-10.0));
                     }
                     Keycode::Up => {
+                        let mode = play_mode_str(paused, state.step);
+                        log::info!(
+                            "[按键] Up (+60s), 当前={}, 帧队列={}, 最近PTS={:.3}s",
+                            mode,
+                            state.frame_queue.len(),
+                            state.last_pts
+                        );
                         let _ = command_tx.send(PlayerCommand::Seek(60.0));
                     }
                     Keycode::Down => {
+                        let mode = play_mode_str(paused, state.step);
+                        log::info!(
+                            "[按键] Down (-60s), 当前={}, 帧队列={}, 最近PTS={:.3}s",
+                            mode,
+                            state.frame_queue.len(),
+                            state.last_pts
+                        );
                         let _ = command_tx.send(PlayerCommand::Seek(-60.0));
                     }
                     Keycode::Num9 | Keycode::KpDivide => {
@@ -406,12 +465,17 @@ pub fn run_event_loop(
                 }
                 PlayerStatus::Paused(p) => paused = p,
                 PlayerStatus::Seeked => {
+                    let old_queue_len = state.frame_queue.len();
                     // Seek 完成: 清空帧队列和重置 frame_timer
                     state.frame_queue.clear();
                     state.frame_timer = 0.0;
                     state.last_pts = f64::NAN;
                     state.force_refresh = true;
                     state.seek_frame_pending = true;
+                    log::info!(
+                        "[GUI] Seek 状态: 清空帧队列 (原{}帧), 等待新帧",
+                        old_queue_len
+                    );
                 }
                 _ => {}
             }

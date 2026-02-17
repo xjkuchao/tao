@@ -16,10 +16,10 @@ globs:
 
 ## 日志模块位置
 
-- 日志初始化模块位于 `src/logging/`
-- 包含两个文件:
-    - `mod.rs` - 日志初始化和配置
-    - `task.rs` - 日志维护任务 (日志切换、清理、压缩)
+- 根 crate 日志模块位于 `src/logging/` (含 tokio 维护任务)
+- 各 bin 的轻量日志模块位于 `bins/{name}/src/logging.rs`
+  - 不依赖 tokio, 使用 `tracing-appender` 按日滚动
+  - 支持 `-v` / `-vv` / `-vvv` 命令行参数和 `TAO_LOG` 环境变量
 
 ## 日志输出规则
 
@@ -66,23 +66,33 @@ globs:
 
 ## 日志初始化示例
 
+### bin 项目 (tao-cli / tao-play / tao-probe)
+
+```rust
+mod logging;
+
+fn main() {
+    let args = Args::parse();
+    // file_prefix 按项目写死, verbosity 由 -v 参数控制
+    logging::init("tao-play", args.verbose);
+    log::info!("程序启动");
+}
+```
+
+### 根 crate (含 tokio 维护任务)
+
 ```rust
 use tao::logging::{init, LoggingConfig};
 
 fn main() -> anyhow::Result<()> {
-    // 初始化日志系统
     init(LoggingConfig {
-        level: std::env::var("TAO_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+        level: "info".to_string(),
         directory: "logs".to_string(),
-        file_prefix: "tao".to_string(),  // tao-cli 使用 "tao"
+        file_prefix: "tao".to_string(),
         retention_days: 30,
         compress_history: true,
         cleanup_interval_seconds: 3600,
     })?;
-
-    // 开始使用日志
-    tracing::info!("程序启动");
-
     Ok(())
 }
 ```
@@ -99,9 +109,33 @@ fn main() -> anyhow::Result<()> {
 
 当需要调试代码时:
 
-1. **优先查看日志文件而非控制台输出**
-2. 日志文件位于 `logs/{file_prefix}.{date}.log`
-3. 调试前可以删除对应的日志文件, 避免历史日志污染
-4. 示例: 删除 `logs/tao.2026-02-16.log` 重新运行程序生成新日志
-5. 通过日志文件分析程序执行流程和错误原因
-6. 减少频繁读取控制台输出, 提高调试效率
+1. **优先读取 `logs/` 目录下日志文件, 而非 console 输出**
+2. 日志文件位于 `logs/{file_prefix}.{YYYY-MM-DD}.log`
+   - tao-play: `logs/tao-play.2026-02-17.log`
+   - tao-cli: `logs/tao-cli.2026-02-17.log`
+   - tao-probe: `logs/tao-probe.2026-02-17.log`
+3. **测试前清理历史日志**, 避免污染:
+   ```bash
+   rm -f logs/tao-play.*.log   # 清理 tao-play 历史日志
+   rm -f logs/*.log             # 清理所有历史日志
+   ```
+4. 运行程序后直接读取日志文件分析:
+   ```bash
+   # 读取最新日志
+   cat logs/tao-play.$(date +%Y-%m-%d).log
+   # 搜索特定关键字
+   rg "Seek" logs/tao-play.*.log
+   ```
+5. 日志文件比 console 输出更高效:
+   - 不受终端缓冲区限制
+   - 可以用 Read/Grep 工具精准搜索
+   - 文件日志默认 info 级别, 不含 debug 噪音
+   - 需要更多细节时使用 `-v` 或 `-vv` 运行
+6. 如需调整日志级别:
+   ```bash
+   # 通过命令行参数
+   cargo run --package tao-play -- -v file.avi     # debug 级别
+   cargo run --package tao-play -- -vv file.avi    # trace 级别
+   # 通过环境变量
+   TAO_LOG=debug cargo run --package tao-play -- file.avi
+   ```

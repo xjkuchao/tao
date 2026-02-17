@@ -12,6 +12,7 @@
 mod audio;
 mod clock;
 mod gui;
+mod logging;
 mod player;
 
 use crate::audio::AudioOutput;
@@ -39,12 +40,15 @@ struct Args {
     /// 音量 (0-100, 默认 100)
     #[arg(long, default_value = "100")]
     volume: u32,
+
+    /// 日志级别 (-v debug, -vv trace)
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbose: u8,
 }
 
 fn main() -> Result<(), String> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-
     let args = Args::parse();
+    logging::init("tao-play", args.verbose);
 
     info!("tao-play: 打开 {}", args.input);
 

@@ -2,6 +2,8 @@
 //!
 //! 对标 FFmpeg 的 ffprobe 命令行工具, 用于分析多媒体文件的详细信息.
 
+mod logging;
+
 use clap::Parser;
 use serde::Serialize;
 use std::process;
@@ -36,6 +38,10 @@ struct Cli {
     /// 静默模式 (只输出探测结果)
     #[arg(short, long)]
     quiet: bool,
+
+    /// 文件日志级别 (-v debug, -vv trace)
+    #[arg(long = "verbose", action = clap::ArgAction::Count)]
+    verbose: u8,
 }
 
 // ============================================================
@@ -112,8 +118,8 @@ struct PacketSummary {
 // ============================================================
 
 fn main() {
-    env_logger::init();
     let cli = Cli::parse();
+    logging::init("tao-probe", cli.verbose);
 
     if cli.input.is_none() {
         print_banner();

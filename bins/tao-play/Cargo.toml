@@ -18,7 +18,10 @@ tao-scale.workspace = true
 tao-resample.workspace = true
 clap.workspace = true
 log.workspace = true
-env_logger.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+chrono.workspace = true
 # Linux/macOS: 从源码编译 SDL2
 [target.'cfg(not(windows))'.dependencies]
 sdl2 = { version = "0.38", features = ["bundled"] }

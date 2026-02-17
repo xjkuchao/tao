@@ -6,8 +6,8 @@
 //! (防止旧音频数据覆盖 seek 目标). Player 线程通过 `confirm_seek`
 //! 在首帧解码完成后显式解冻时钟.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Instant;
 
 /// 媒体时钟 (线程安全)

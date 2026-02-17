@@ -2,6 +2,8 @@
 //!
 //! 对标 FFmpeg 的 ffmpeg 命令行工具, 提供音视频转码、格式转换等功能.
 
+mod logging;
+
 use clap::Parser;
 use std::process;
 
@@ -79,11 +81,15 @@ struct Cli {
     /// 显示版本和编译信息
     #[arg(long)]
     build_info: bool,
+
+    /// 日志级别 (-v debug, -vv trace)
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbose: u8,
 }
 
 fn main() {
-    env_logger::init();
     let cli = Cli::parse();
+    logging::init("tao-cli", cli.verbose);
 
     if cli.build_info {
         print_build_info();

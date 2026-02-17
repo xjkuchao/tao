@@ -282,11 +282,17 @@ impl Player {
                     }
                     PlayerCommand::Seek(offset) => {
                         let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
+                        let is_paused = clock.is_paused();
                         let target_sec = if total_duration_sec > 0.0 {
                             (current_sec + offset).clamp(0.0, total_duration_sec)
                         } else {
                             (current_sec + offset).max(0.0)
                         };
+
+                        info!(
+                            "[Seek] offset={:+.1}s, 时钟={:.3}s, 目标={:.3}s, 总时长={:.1}s, 暂停={}",
+                            offset, current_sec, target_sec, total_duration_sec, is_paused
+                        );
 
                         // 优先视频流 seek (关键帧对齐)
                         let seek_stream = video_stream.or(audio_stream);
@@ -311,10 +317,13 @@ impl Player {
                                         eof = false;
                                         seek_flush_pending = true;
                                         status_tx.send(PlayerStatus::Seeked).ok();
-                                        info!("Seek 到 {:.1}s", target_sec);
+                                        info!(
+                                            "[Seek] 成功: demuxer 定位到 ts={}, 流#{}, 已发送帧={}",
+                                            ts, stream.index, frames_sent
+                                        );
                                     }
                                     Err(e) => {
-                                        warn!("Seek 失败: {}", e);
+                                        warn!("[Seek] 失败: {}", e);
                                     }
                                 }
                             }
@@ -414,12 +423,17 @@ impl Player {
                                             );
                                             let display_frame = build_yuv_frame(vf, pts_us);
 
+                                            let frame_pts = display_frame.pts;
                                             // bounded channel: 队满时阻塞, 自动背压
                                             if frame_tx.send(display_frame).is_err() {
                                                 return Ok(());
                                             }
                                             frames_sent += 1;
                                             if seek_flush_pending {
+                                                info!(
+                                                    "[Seek] 首帧已发送: PTS={:.3}s, 确认时钟",
+                                                    frame_pts
+                                                );
                                                 clock.confirm_seek();
                                                 seek_flush_pending = false;
                                             }
