@@ -75,13 +75,34 @@ fn main() -> Result<(), String> {
         }
     };
 
-    let (window_width, window_height) = video_size.unwrap_or((640, 480));
-    info!("窗口尺寸: {}x{}", window_width, window_height);
+    let (video_width, video_height) = video_size.unwrap_or((640, 480));
 
     // 初始化 SDL2
     let sdl_context = sdl2::init()?;
     let video_subsystem = sdl_context.video()?;
     let audio_subsystem = sdl_context.audio()?;
+
+    // 设置纹理缩放质量为双线性插值 (与 ffplay 一致), 必须在创建纹理前设置
+    sdl2::hint::set("SDL_RENDER_SCALE_QUALITY", "linear");
+
+    // 计算窗口尺寸: 限制不超过屏幕 2/3, 保持宽高比 (与 ffplay 行为一致)
+    let (window_width, window_height) = {
+        let (mut w, mut h) = (video_width, video_height);
+        if let Ok(bounds) = video_subsystem.display_bounds(0) {
+            let max_w = bounds.width() * 2 / 3;
+            let max_h = bounds.height() * 2 / 3;
+            if w > max_w || h > max_h {
+                let scale = f64::min(max_w as f64 / w as f64, max_h as f64 / h as f64);
+                w = (w as f64 * scale) as u32;
+                h = (h as f64 * scale) as u32;
+            }
+        }
+        (w, h)
+    };
+    info!(
+        "视频 {}x{}, 窗口 {}x{}",
+        video_width, video_height, window_width, window_height
+    );
 
     // 创建窗口 + 渲染器
     let window = video_subsystem

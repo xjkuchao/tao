@@ -13,6 +13,8 @@ pub struct MediaClock {
 }
 
 struct ClockInner {
+    /// 时钟创建时间 (用于音频未启动前的系统时钟回退)
+    start_time: Instant,
     /// 音频 PTS (微秒)
     audio_pts_us: AtomicI64,
     /// 上次音频 PTS 更新的系统时间
@@ -28,6 +30,7 @@ impl MediaClock {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(ClockInner {
+                start_time: Instant::now(),
                 audio_pts_us: AtomicI64::new(0),
                 audio_pts_update_time: std::sync::Mutex::new(None),
                 paused: AtomicBool::new(false),
@@ -44,8 +47,8 @@ impl MediaClock {
 
     /// 获取当前播放时间 (微秒)
     ///
-    /// 如果有音频时钟, 使用音频 PTS + 经过时间;
-    /// 如果没有音频, 返回 0.
+    /// 优先使用音频 PTS + 经过时间;
+    /// 音频尚未启动时, 回退到系统时钟 (避免开头帧堆积加速).
     pub fn current_time_us(&self) -> i64 {
         if self.inner.paused.load(Ordering::Relaxed) {
             return self.inner.audio_pts_us.load(Ordering::Relaxed);
@@ -54,10 +57,12 @@ impl MediaClock {
         let base_pts = self.inner.audio_pts_us.load(Ordering::Relaxed);
         let guard = self.inner.audio_pts_update_time.lock().unwrap();
         if let Some(update_time) = *guard {
+            // 音频已启动: 使用音频 PTS + 上次更新后的经过时间
             let elapsed = update_time.elapsed().as_micros() as i64;
             base_pts + elapsed
         } else {
-            base_pts
+            // 音频未启动: 回退到系统时钟, 防止所有帧以 delay>0 堆积快速渲染
+            self.inner.start_time.elapsed().as_micros() as i64
         }
     }
 
