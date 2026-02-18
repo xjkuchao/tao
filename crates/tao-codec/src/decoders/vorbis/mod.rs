@@ -18,7 +18,7 @@ mod setup;
 mod synthesis;
 
 use log::warn;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use tao_core::{ChannelLayout, TaoError, TaoResult};
 
 use crate::codec_id::CodecId;
@@ -31,7 +31,7 @@ use self::bitreader::{LsbBitReader, ilog};
 use self::codebook::CodebookHuffman;
 use self::floor::{build_floor_context, decode_floor_curves};
 use self::headers::{VorbisHeaders, parse_comment_header, parse_identification_header};
-use self::imdct::{imdct_from_residue, overlap_add};
+use self::imdct::{build_vorbis_window, imdct_from_residue, overlap_add};
 use self::residue::{apply_coupling_inverse, decode_residue_approx};
 use self::setup::{FloorConfig, ParsedSetup, parse_setup_packet};
 use self::synthesis::synthesize_frame;
@@ -63,6 +63,7 @@ pub struct VorbisDecoder {
     prev_packet_granule: i64,
     samples_since_last_granule: i64,
     overlap: Vec<Vec<f32>>,
+    window_cache: HashMap<(usize, usize, bool, bool, bool), Vec<f32>>,
 }
 
 impl VorbisDecoder {
@@ -86,6 +87,7 @@ impl VorbisDecoder {
             prev_packet_granule: tao_core::timestamp::NOPTS_VALUE,
             samples_since_last_granule: 0,
             overlap: Vec::new(),
+            window_cache: HashMap::new(),
         }))
     }
 
@@ -366,10 +368,13 @@ impl VorbisDecoder {
         let td = imdct_from_residue(
             &residue,
             blocksize as usize,
-            headers.blocksize0 as usize,
-            is_long_block,
-            prev_window_flag,
-            next_window_flag,
+            self.get_or_build_window(
+                blocksize as usize,
+                headers.blocksize0 as usize,
+                is_long_block,
+                prev_window_flag,
+                next_window_flag,
+            ),
         );
         let td = overlap_add(&td, &mut self.overlap, out_samples as usize);
         let frame = synthesize_frame(
@@ -519,6 +524,35 @@ impl VorbisDecoder {
         }
         Ok(())
     }
+
+    fn get_or_build_window(
+        &mut self,
+        n: usize,
+        short_n: usize,
+        is_long_block: bool,
+        prev_window_flag: bool,
+        next_window_flag: bool,
+    ) -> &[f32] {
+        let key = (
+            n,
+            short_n,
+            is_long_block,
+            prev_window_flag,
+            next_window_flag,
+        );
+        self.window_cache
+            .entry(key)
+            .or_insert_with(|| {
+                build_vorbis_window(
+                    n,
+                    short_n,
+                    is_long_block,
+                    prev_window_flag,
+                    next_window_flag,
+                )
+            })
+            .as_slice()
+    }
 }
 
 impl Decoder for VorbisDecoder {
@@ -546,6 +580,7 @@ impl Decoder for VorbisDecoder {
         self.prev_packet_granule = tao_core::timestamp::NOPTS_VALUE;
         self.samples_since_last_granule = 0;
         self.overlap.clear();
+        self.window_cache.clear();
         self.codebook_huffmans = None;
 
         if let CodecParamsType::Audio(AudioCodecParams {
@@ -605,5 +640,6 @@ impl Decoder for VorbisDecoder {
         self.prev_packet_granule = tao_core::timestamp::NOPTS_VALUE;
         self.samples_since_last_granule = 0;
         self.overlap.clear();
+        self.window_cache.clear();
     }
 }

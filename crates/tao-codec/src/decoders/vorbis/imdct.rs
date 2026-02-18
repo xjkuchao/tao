@@ -10,10 +10,7 @@ use super::residue::ResidueSpectrum;
 pub(crate) fn imdct_from_residue(
     residue: &ResidueSpectrum,
     blocksize: usize,
-    short_blocksize: usize,
-    is_long_block: bool,
-    prev_window_flag: bool,
-    next_window_flag: bool,
+    window: &[f32],
 ) -> TimeDomainBlock {
     if blocksize == 0 {
         return TimeDomainBlock {
@@ -24,13 +21,6 @@ pub(crate) fn imdct_from_residue(
     let n = blocksize;
     let n2 = n / 2;
     let pi = std::f32::consts::PI;
-    let window = build_vorbis_window(
-        n,
-        short_blocksize,
-        is_long_block,
-        prev_window_flag,
-        next_window_flag,
-    );
     let mut channels_td = Vec::with_capacity(residue.channels.len());
 
     for spectrum in &residue.channels {
@@ -51,7 +41,7 @@ pub(crate) fn imdct_from_residue(
         }
 
         for (m, out) in td.iter_mut().enumerate() {
-            *out *= window[m];
+            *out *= window.get(m).copied().unwrap_or(1.0);
         }
         channels_td.push(td);
     }
@@ -61,7 +51,7 @@ pub(crate) fn imdct_from_residue(
     }
 }
 
-fn build_vorbis_window(
+pub(crate) fn build_vorbis_window(
     n: usize,
     short_n: usize,
     is_long_block: bool,
