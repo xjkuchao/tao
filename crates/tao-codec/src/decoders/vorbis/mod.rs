@@ -24,7 +24,7 @@ use crate::packet::Packet;
 
 use self::bitreader::{LsbBitReader, ilog};
 use self::headers::{VorbisHeaders, parse_comment_header, parse_identification_header};
-use self::setup::parse_setup_packet;
+use self::setup::{ParsedSetup, parse_setup_packet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HeaderStage {
@@ -40,7 +40,7 @@ pub struct VorbisDecoder {
     flushing: bool,
     stage: HeaderStage,
     headers: Option<VorbisHeaders>,
-    mode_block_flags: Vec<bool>,
+    parsed_setup: Option<ParsedSetup>,
     sample_rate: u32,
     channel_layout: ChannelLayout,
     setup_degraded: bool,
@@ -59,7 +59,7 @@ impl VorbisDecoder {
             flushing: false,
             stage: HeaderStage::Identification,
             headers: None,
-            mode_block_flags: Vec::new(),
+            parsed_setup: None,
             sample_rate: 0,
             channel_layout: ChannelLayout::STEREO,
             setup_degraded: false,
@@ -92,28 +92,39 @@ impl VorbisDecoder {
             .as_ref()
             .ok_or_else(|| TaoError::InvalidData("Vorbis setup 前缺少 identification 头".into()))?;
 
-        self.mode_block_flags = match parse_setup_packet(packet, headers.channels) {
-            Ok(modes) if !modes.is_empty() => {
+        self.parsed_setup = Some(match parse_setup_packet(packet, headers.channels) {
+            Ok(parsed) if !parsed.mode_block_flags.is_empty() => {
                 self.setup_degraded = false;
                 self.setup_degraded_reason = None;
-                modes
+                parsed
             }
             Ok(_) => {
                 self.setup_degraded = false;
                 self.setup_degraded_reason = None;
-                vec![false]
+                ParsedSetup {
+                    mode_block_flags: vec![false],
+                    floor_count: 1,
+                    residue_count: 1,
+                    mapping_count: 1,
+                }
             }
             Err(e) => {
                 warn!("Vorbis setup 严格解析失败, 暂降级继续: {}", e);
                 self.setup_degraded = true;
                 self.setup_degraded_reason = Some(e.to_string());
-                if headers.blocksize0 == headers.blocksize1 {
+                let mode_block_flags = if headers.blocksize0 == headers.blocksize1 {
                     vec![false]
                 } else {
                     vec![false, true]
+                };
+                ParsedSetup {
+                    mode_block_flags,
+                    floor_count: 1,
+                    residue_count: 1,
+                    mapping_count: 1,
                 }
             }
-        };
+        });
 
         self.stage = HeaderStage::Audio;
         Ok(())
@@ -124,8 +135,20 @@ impl VorbisDecoder {
             .headers
             .as_ref()
             .ok_or_else(|| TaoError::Codec("Vorbis 头信息未就绪".into()))?;
-        if self.mode_block_flags.is_empty() {
+        let parsed_setup = self
+            .parsed_setup
+            .as_ref()
+            .ok_or_else(|| TaoError::Codec("Vorbis setup 信息未就绪".into()))?;
+        if parsed_setup.mode_block_flags.is_empty() {
             return Err(TaoError::Codec("Vorbis mode 表为空".into()));
+        }
+        if parsed_setup.floor_count == 0
+            || parsed_setup.residue_count == 0
+            || parsed_setup.mapping_count == 0
+        {
+            return Err(TaoError::InvalidData(
+                "Vorbis setup 关键信息计数非法".into(),
+            ));
         }
 
         let mut br = LsbBitReader::new(packet);
@@ -134,16 +157,16 @@ impl VorbisDecoder {
             return Err(TaoError::InvalidData("Vorbis 音频包首位必须为 0".into()));
         }
 
-        let mode_bits = ilog(self.mode_block_flags.len() as u32 - 1);
+        let mode_bits = ilog(parsed_setup.mode_block_flags.len() as u32 - 1);
         let mode_number = br.read_bits(mode_bits)? as usize;
-        if mode_number >= self.mode_block_flags.len() {
+        if mode_number >= parsed_setup.mode_block_flags.len() {
             return Err(TaoError::InvalidData(format!(
                 "Vorbis mode 索引越界: {}",
                 mode_number,
             )));
         }
 
-        let blocksize = if self.mode_block_flags[mode_number] {
+        let blocksize = if parsed_setup.mode_block_flags[mode_number] {
             headers.blocksize1
         } else {
             headers.blocksize0
@@ -202,7 +225,7 @@ impl Decoder for VorbisDecoder {
         self.flushing = false;
         self.stage = HeaderStage::Identification;
         self.headers = None;
-        self.mode_block_flags.clear();
+        self.parsed_setup = None;
         self.setup_degraded = false;
         self.setup_degraded_reason = None;
         self.pending_frames.clear();

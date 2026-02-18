@@ -2,7 +2,15 @@ use tao_core::{TaoError, TaoResult};
 
 use super::bitreader::{LsbBitReader, ilog};
 
-pub(crate) fn parse_setup_packet(packet: &[u8], channels: u8) -> TaoResult<Vec<bool>> {
+#[derive(Debug, Clone)]
+pub(crate) struct ParsedSetup {
+    pub(crate) mode_block_flags: Vec<bool>,
+    pub(crate) floor_count: u32,
+    pub(crate) residue_count: u32,
+    pub(crate) mapping_count: u32,
+}
+
+pub(crate) fn parse_setup_packet(packet: &[u8], channels: u8) -> TaoResult<ParsedSetup> {
     if packet.len() < 8 {
         return Err(TaoError::InvalidData("Vorbis setup 头包长度不足".into()));
     }
@@ -62,7 +70,12 @@ pub(crate) fn parse_setup_packet(packet: &[u8], channels: u8) -> TaoResult<Vec<b
         ));
     }
 
-    Ok(modes)
+    Ok(ParsedSetup {
+        mode_block_flags: modes,
+        floor_count,
+        residue_count,
+        mapping_count,
+    })
 }
 
 fn parse_codebooks(br: &mut LsbBitReader<'_>) -> TaoResult<u32> {
