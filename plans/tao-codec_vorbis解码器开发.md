@@ -64,6 +64,7 @@
 - [x] 为 residue 向量注入增加临时增益归一化, 避免当前阶段幅度失真导致对比不可用。
 - [x] 修复 residue type2 误按声道重复解码问题, 改为按声道组单次解码避免位流错位。
 - [x] 修正 IMDCT 角度公式分母错误(`N/2 -> N`), 收敛频域到时域变换比例。
+- [x] 接入 long-block 在 short 邻接场景的 Vorbis 窗形选择逻辑(使用 prev/next window flag)。
 - [ ] 窗口、IMDCT、重叠相加。
 - [ ] floor1 恢复、residue 解码、耦合反变换。
 - [ ] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。
@@ -74,8 +75,8 @@
 - [x] 与 FFmpeg 比较 MSE/PSNR/最大误差并输出报告。
 - [ ] 建立并满足误差阈值。
 - 当前基线:
-  - `data/1.ogg`: PSNR 约 `18.43dB`, max_err 约 `1.306054`
-  - `data/2.ogg`: PSNR 约 `13.50dB`, max_err 约 `1.220143`
+  - `data/1.ogg`: PSNR 约 `18.43dB`, max_err 约 `1.319237`
+  - `data/2.ogg`: PSNR 约 `13.50dB`, max_err 约 `1.215723`
   - 样本长度: `data/1.ogg` Tao=FFmpeg=`881996`; `data/2.ogg` Tao=`2645998`, FFmpeg=`2646000`
 - 验收: 两个样本对比测试通过。
 

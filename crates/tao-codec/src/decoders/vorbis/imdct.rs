@@ -7,7 +7,14 @@ pub(crate) struct TimeDomainBlock {
 use super::residue::ResidueSpectrum;
 
 /// 将 residue 频谱执行 IMDCT 并应用 Vorbis 窗函数.
-pub(crate) fn imdct_from_residue(residue: &ResidueSpectrum, blocksize: usize) -> TimeDomainBlock {
+pub(crate) fn imdct_from_residue(
+    residue: &ResidueSpectrum,
+    blocksize: usize,
+    short_blocksize: usize,
+    is_long_block: bool,
+    prev_window_flag: bool,
+    next_window_flag: bool,
+) -> TimeDomainBlock {
     if blocksize == 0 {
         return TimeDomainBlock {
             channels: vec![Vec::new(); residue.channels.len()],
@@ -17,6 +24,13 @@ pub(crate) fn imdct_from_residue(residue: &ResidueSpectrum, blocksize: usize) ->
     let n = blocksize;
     let n2 = n / 2;
     let pi = std::f32::consts::PI;
+    let window = build_vorbis_window(
+        n,
+        short_blocksize,
+        is_long_block,
+        prev_window_flag,
+        next_window_flag,
+    );
     let mut channels_td = Vec::with_capacity(residue.channels.len());
 
     for spectrum in &residue.channels {
@@ -37,16 +51,81 @@ pub(crate) fn imdct_from_residue(residue: &ResidueSpectrum, blocksize: usize) ->
         }
 
         for (m, out) in td.iter_mut().enumerate() {
-            let t = (m as f32 + 0.5) / n as f32;
-            let inner = (pi * t).sin();
-            let w = (0.5 * pi * inner * inner).sin();
-            *out *= w;
+            *out *= window[m];
         }
         channels_td.push(td);
     }
 
     TimeDomainBlock {
         channels: channels_td,
+    }
+}
+
+fn build_vorbis_window(
+    n: usize,
+    short_n: usize,
+    is_long_block: bool,
+    prev_window_flag: bool,
+    next_window_flag: bool,
+) -> Vec<f32> {
+    let mut window = vec![0.0f32; n];
+    if n == 0 {
+        return window;
+    }
+    if !is_long_block {
+        fill_window_segment(&mut window, 0, n / 2, n / 2);
+        fill_window_segment(&mut window, n / 2, n, n / 2);
+        return window;
+    }
+
+    let left_start;
+    let left_end;
+    let left_len;
+    if prev_window_flag {
+        left_start = 0;
+        left_end = n / 2;
+        left_len = n / 2;
+    } else {
+        left_start = (n / 4).saturating_sub(short_n / 4);
+        left_end = left_start + short_n / 2;
+        left_len = short_n / 2;
+    }
+
+    let right_start;
+    let right_end;
+    let right_len;
+    if next_window_flag {
+        right_start = n / 2;
+        right_end = n;
+        right_len = n / 2;
+    } else {
+        right_start = n.saturating_sub(n / 4).saturating_sub(short_n / 4);
+        right_end = right_start + short_n / 2;
+        right_len = short_n / 2;
+    }
+
+    fill_window_segment(&mut window, left_start, left_end, left_len);
+    for w in window
+        .iter_mut()
+        .take(right_start.min(n))
+        .skip(left_end.min(n))
+    {
+        *w = 1.0;
+    }
+    fill_window_segment(&mut window, right_start, right_end, right_len);
+    window
+}
+
+fn fill_window_segment(window: &mut [f32], start: usize, end: usize, len: usize) {
+    if len == 0 {
+        return;
+    }
+    let pi = std::f32::consts::PI;
+    for i in start..end.min(window.len()) {
+        let x = (i - start) as f32 + 0.5;
+        let angle = x / len as f32 * (pi / 2.0);
+        let inner = angle.sin();
+        window[i] = (0.5 * pi * inner * inner).sin();
     }
 }
 

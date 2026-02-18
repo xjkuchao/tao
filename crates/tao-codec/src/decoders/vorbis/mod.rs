@@ -265,9 +265,12 @@ impl VorbisDecoder {
         } else {
             headers.blocksize0
         };
-        if parsed_setup.mode_block_flags[mode_number] {
-            let _prev_window_flag = br.read_flag()?;
-            let _next_window_flag = br.read_flag()?;
+        let mut prev_window_flag = true;
+        let mut next_window_flag = true;
+        let is_long_block = parsed_setup.mode_block_flags[mode_number];
+        if is_long_block {
+            prev_window_flag = br.read_flag()?;
+            next_window_flag = br.read_flag()?;
         }
 
         if self.first_audio_packet {
@@ -352,7 +355,14 @@ impl VorbisDecoder {
         if self.overlap.len() != channels {
             self.overlap = vec![Vec::new(); channels];
         }
-        let td = imdct_from_residue(&residue, blocksize as usize);
+        let td = imdct_from_residue(
+            &residue,
+            blocksize as usize,
+            headers.blocksize0 as usize,
+            is_long_block,
+            prev_window_flag,
+            next_window_flag,
+        );
         let td = overlap_add(&td, &mut self.overlap, out_samples as usize);
         let frame = synthesize_frame(
             &td,
