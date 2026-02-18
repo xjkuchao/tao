@@ -5,7 +5,7 @@ use super::codebook::{CodebookHuffman, decode_codebook_scalar, decode_codebook_v
 use super::floor::FloorCurves;
 use super::setup::{CouplingStep, MappingConfig, ParsedSetup, ResidueConfig};
 
-const RESIDUE_VECTOR_GAIN: f32 = 0.0003;
+const RESIDUE_VECTOR_GAIN: f32 = 0.00024;
 
 /// residue 解码阶段输出的频谱占位数据.
 #[derive(Debug, Clone)]

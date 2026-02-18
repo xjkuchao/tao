@@ -67,7 +67,7 @@
 - [x] 接入 long-block 在 short 邻接场景的 Vorbis 窗形选择逻辑(使用 prev/next window flag)。
 - [x] 重构 residue2 扁平索引推进逻辑(`flat_idx`), 清理跨向量边界的样本偏移风险。
 - [x] 将 codebook Huffman 构建前移到 setup 阶段并缓存复用, 移除每音频包重复构建。
-- [x] 对 residue 向量增益进行样本扫描调优, 将 `RESIDUE_VECTOR_GAIN` 收敛到 `0.0003`。
+- [x] 对 residue 向量增益进行样本扫描调优, 将 `RESIDUE_VECTOR_GAIN` 收敛到 `0.00024`。
 - [ ] 窗口、IMDCT、重叠相加。
 - [ ] floor1 恢复、residue 解码、耦合反变换。
 - [ ] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。
@@ -78,8 +78,8 @@
 - [x] 与 FFmpeg 比较 MSE/PSNR/最大误差并输出报告。
 - [ ] 建立并满足误差阈值。
 - 当前基线:
-  - `data/1.ogg`: PSNR 约 `19.06dB`, max_err 约 `0.946521`
-  - `data/2.ogg`: PSNR 约 `13.53dB`, max_err 约 `1.032822`
+  - `data/1.ogg`: PSNR 约 `19.21dB`, max_err 约 `0.946385`
+  - `data/2.ogg`: PSNR 约 `13.53dB`, max_err 约 `1.019693`
   - 样本长度: `data/1.ogg` Tao=FFmpeg=`881996`; `data/2.ogg` Tao=`2645998`, FFmpeg=`2646000`
 - 验收: 两个样本对比测试通过。
 
