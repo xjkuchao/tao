@@ -1,5 +1,6 @@
 use tao_core::{TaoError, TaoResult};
 
+#[derive(Clone)]
 pub(crate) struct LsbBitReader<'a> {
     data: &'a [u8],
     bit_pos: usize,
@@ -48,6 +49,31 @@ impl<'a> LsbBitReader<'a> {
 
     pub(crate) fn bit_position(&self) -> usize {
         self.bit_pos
+    }
+
+    pub(crate) fn read_bits_at(&self, bit_pos: usize, n: u8) -> TaoResult<u32> {
+        if n == 0 {
+            return Ok(0);
+        }
+        if n > 32 {
+            return Err(TaoError::InvalidArgument(format!(
+                "Vorbis read_bits_at 位数非法: {}",
+                n,
+            )));
+        }
+        let total_bits = self.data.len().saturating_mul(8);
+        if bit_pos.saturating_add(n as usize) > total_bits {
+            return Err(TaoError::Eof);
+        }
+
+        let mut out = 0u32;
+        for i in 0..n {
+            let idx = bit_pos + i as usize;
+            let byte = self.data[idx / 8];
+            let bit = (byte >> (idx % 8)) & 1;
+            out |= u32::from(bit) << i;
+        }
+        Ok(out)
     }
 }
 

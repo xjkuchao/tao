@@ -158,15 +158,33 @@ fn parse_time_domain_transforms(br: &mut LsbBitReader<'_>) -> TaoResult<()> {
 
 fn parse_floors(br: &mut LsbBitReader<'_>) -> TaoResult<u32> {
     let floor_count = br.read_bits(6)? + 1;
-    for _ in 0..floor_count {
+    for floor_idx in 0..floor_count {
+        let floor_type_pos = br.bit_position();
         let floor_type = br.read_bits(16)?;
         match floor_type {
             0 => parse_floor0(br)?,
             1 => parse_floor1(br)?,
             _ => {
+                let mut hints = Vec::new();
+                for delta in -8i32..=8 {
+                    let probe_pos = if delta < 0 {
+                        floor_type_pos.saturating_sub((-delta) as usize)
+                    } else {
+                        floor_type_pos.saturating_add(delta as usize)
+                    };
+                    if let Ok(v) = br.read_bits_at(probe_pos, 16)
+                        && (v == 0 || v == 1)
+                    {
+                        hints.push(format!("delta={delta},type={v}"));
+                    }
+                }
                 return Err(TaoError::InvalidData(format!(
-                    "Vorbis floor_type 不支持: {}",
+                    "Vorbis floor_type 不支持: {} (floor_idx={}, floor_count={}, bit={}, hints=[{}])",
                     floor_type,
+                    floor_idx,
+                    floor_count,
+                    floor_type_pos,
+                    hints.join(";")
                 )));
             }
         }
