@@ -281,7 +281,7 @@ fn dequantize_floor1_y(v: i32, predicted: i32, range: i32) -> i32 {
     } else if highroom > lowroom {
         predicted + (v - lowroom)
     } else {
-        predicted - (v - highroom) + 1
+        predicted - (v - highroom) - 1
     }
 }
 

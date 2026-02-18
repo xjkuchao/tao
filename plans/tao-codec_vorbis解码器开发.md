@@ -84,6 +84,7 @@
 - [x] residue 解码改为按 codebook 向量写入并去除临时增益。
 - [x] IMDCT 缩放因子调整为 `1/N` 并改进 overlap 产出区间。
 - [x] flush 尾样本输出加入能量阈值, 用于抑制极小尾噪声。
+- [x] 修正 floor1 dequantize 边界偏移.
 - [ ] 窗口、IMDCT、重叠相加。
 - [ ] floor1 恢复、residue 解码、耦合反变换。
 - [ ] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。
@@ -95,8 +96,8 @@
 - [x] 接入 Lewton 对比并输出精度百分比。
 - [ ] 建立并满足误差阈值。
 - 当前基线:
-  - `data/1.ogg`: PSNR 约 `18.76dB`, max_err 约 `1.621305`, 精度 约 `45.90%`
-  - `data/2.ogg`: PSNR 约 `13.02dB`, max_err 约 `6.791577`, 精度 约 `46.96%`
+  - `data/1.ogg`: PSNR 约 `18.97dB`, max_err 约 `1.160806`, 精度 约 `47.10%`
+  - `data/2.ogg`: PSNR 约 `13.19dB`, max_err 约 `6.657622`, 精度 约 `47.97%`
   - Lewton/FFmpeg: PSNR 约 `95.08dB`, max_err 约 `0.000031`, 精度 约 `100.00%`
   - 样本长度: `data/1.ogg` Tao=FFmpeg=`881996`; `data/2.ogg` Tao=FFmpeg=`2646000`
 - 验收: 两个样本对比测试通过。
