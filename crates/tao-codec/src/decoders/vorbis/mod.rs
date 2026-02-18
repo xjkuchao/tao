@@ -29,7 +29,7 @@ use crate::packet::Packet;
 use self::bitreader::{LsbBitReader, ilog};
 use self::floor::build_floor_context;
 use self::headers::{VorbisHeaders, parse_comment_header, parse_identification_header};
-use self::imdct::{imdct_placeholder, overlap_add_placeholder};
+use self::imdct::{imdct_from_residue, overlap_add};
 use self::residue::decode_residue_placeholder;
 use self::setup::{ParsedSetup, parse_setup_packet};
 use self::synthesis::synthesize_frame;
@@ -280,8 +280,8 @@ impl VorbisDecoder {
         if self.overlap.len() != channels {
             self.overlap = vec![Vec::new(); channels];
         }
-        let td = imdct_placeholder(channels, out_samples as usize);
-        let td = overlap_add_placeholder(&td, &mut self.overlap, out_samples as usize);
+        let td = imdct_from_residue(&residue, blocksize as usize);
+        let td = overlap_add(&td, &mut self.overlap, out_samples as usize);
         let frame = synthesize_frame(
             &td,
             self.sample_rate,
