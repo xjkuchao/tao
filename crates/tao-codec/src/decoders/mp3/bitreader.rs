@@ -120,9 +120,15 @@ impl<'a> BitReader<'a> {
         (self.data.len() - self.byte_pos) * 8 - self.bit_pos as usize
     }
 
-    /// 当前位置 (byte_pos, bit_pos)
-    pub fn position(&self) -> (usize, u8) {
-        (self.byte_pos, self.bit_pos)
+    /// 当前绝对位偏移 (从起始位置开始的总位数)
+    pub fn bit_offset(&self) -> usize {
+        self.byte_pos * 8 + self.bit_pos as usize
+    }
+
+    /// 定位到指定的绝对位偏移
+    pub fn seek_to_bit(&mut self, bit_offset: usize) {
+        self.byte_pos = bit_offset / 8;
+        self.bit_pos = (bit_offset % 8) as u8;
     }
 
 }

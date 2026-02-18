@@ -112,6 +112,8 @@ bytes.workspace = true
 criterion.workspace = true
 tempfile.workspace = true
 tao-format = { workspace = true, features = ["http"] }
+symphonia = { version = "0.5.5", features = ["mp3"] }
+minimp3 = "0.6"
 
 [features]
 default = []

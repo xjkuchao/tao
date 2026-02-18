@@ -17,14 +17,15 @@ pub type XrSpectrum = [f32; 576];
 pub type Scalefactors = [u8; 40];
 
 /// Granule 解码上下文
+/// 注意: overlap 缓冲区不在此结构中, 而是在解码器状态中
+/// 因为 overlap 需要跨 granule 和跨帧保持
 #[derive(Debug, Clone)]
 pub struct GranuleContext {
     pub scalefac: Scalefactors,
     pub is: IsSpectrum,
     pub xr: XrSpectrum,
-    /// IMDCT 重叠缓冲区 (每个 channel 独立)
-    /// 32 subbands * 18 samples
-    pub overlap: [[f32; 18]; 32],
+    /// rzero: 最后一个非零 Huffman 样本之后的索引 (big_values + count1 样本数)
+    pub rzero: usize,
 }
 
 impl Default for GranuleContext {
@@ -33,7 +34,7 @@ impl Default for GranuleContext {
             scalefac: [0; 40],
             is: [0; 576],
             xr: [0.0; 576],
-            overlap: [[0.0; 18]; 32],
+            rzero: 0,
         }
     }
 }

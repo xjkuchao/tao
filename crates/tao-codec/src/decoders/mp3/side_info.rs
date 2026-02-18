@@ -58,8 +58,10 @@ impl SideInfo {
         // 2. private_bits
         let private_bits_len = if is_mpeg1 {
             if nch == 1 { 5 } else { 3 }
+        } else if nch == 1 {
+            1
         } else {
-            if nch == 1 { 1 } else { 2 }
+            2
         };
         side_info.private_bits = reader.read_bits(private_bits_len).unwrap();
 
@@ -95,13 +97,18 @@ impl SideInfo {
                         dst.subblock_gain[i] = reader.read_bits(3).unwrap() as u8;
                     }
 
-                    // region count implicit for block_type 2
+                    // windows_switching 时 region counts 不从比特流传输, 使用隐式值
+                    // 参考 ISO 11172-3 / minimp3:
+                    //   block_type=2 纯短块: region0_count=8, region1_count=36
+                    //   block_type=2 混合块 / block_type=1,3: region0_count=7, region1_count=36
+                    // region1_count 设为足够大的值确保 region2 为空
+                    // (因为 windows_switching 时只传输 2 个 table_select)
                     if dst.block_type == 2 && !dst.mixed_block_flag {
-                        dst.region0_count = 8; // implicit
-                        dst.region1_count = 12; // implicit
+                        dst.region0_count = 8;
+                        dst.region1_count = 36;
                     } else {
-                        dst.region0_count = 7; // implicit? No, strictly defined by standard logic but here region counts are not transmitted
-                        // For block_type 2, region0/1 are not transmitted.
+                        dst.region0_count = 7;
+                        dst.region1_count = 36;
                     }
                 } else {
                     for i in 0..3 {

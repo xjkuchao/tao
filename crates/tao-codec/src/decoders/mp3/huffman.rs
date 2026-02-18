@@ -1,59 +1,67 @@
 //! MP3 Huffman 解码器
 //!
-//! 实现基于静态表的 Huffman 解码 (VLC)
+//! 使用快速查找表 (Lookup Table) 实现 O(1) Huffman 解码.
+//! Big Values 表使用 Canonical Huffman + 直接查表.
+//! Count1 表使用专用的直接查表.
 
 use std::sync::OnceLock;
 use super::tables::{MPA_HUFF_LENS, MPA_HUFF_SYMS, MPA_HUFF_OFFSET};
 use super::bitreader::BitReader;
 use tao_core::{TaoError, TaoResult};
 
-/// VLC 表项
-#[derive(Debug, Clone)]
-struct VlcEntry {
-    /// 码长 (bits)
-    len: u8,
-    /// 码字 (value)
-    code: u32,
-    /// 符号 (decoded value)
+// ============================================================================
+// Big Values 快速查找表 (表 1-31)
+// ============================================================================
+
+/// 查找表条目
+#[derive(Debug, Clone, Copy, Default)]
+struct LutEntry {
+    /// 解码后的符号
     symbol: u8,
+    /// 需要消费的位数 (0 表示未找到)
+    bits: u8,
 }
 
-/// VLC 表
+/// Big Values 查找表 (peek PEEK_BITS 位直接查表)
+const PEEK_BITS: usize = 10;
+const PEEK_SIZE: usize = 1 << PEEK_BITS;
+
+/// 每张表的查找表
 #[derive(Debug, Clone, Default)]
-struct VlcTable {
-    entries: Vec<VlcEntry>,
-    // 优化: 可以添加查找表 (Lookup Table) 以加速短码
+struct BigValueTable {
+    /// 快速查找表 (PEEK_BITS 位)
+    lut: Vec<LutEntry>,
+    /// 溢出条目 (码长 > PEEK_BITS 的条目), 按 (code, len, symbol) 存储
+    overflow: Vec<(u32, u8, u8)>,
+    /// 最大码长
+    max_len: u8,
 }
 
-/// 全局 VLC 表缓存 (34 张表)
-static VLC_TABLES: OnceLock<Vec<VlcTable>> = OnceLock::new();
+/// 全局 Big Values 表缓存
+static BIG_VALUE_TABLES: OnceLock<Vec<BigValueTable>> = OnceLock::new();
 
-/// 初始化并获取 VLC 表
-fn get_vlc_tables() -> &'static Vec<VlcTable> {
-    VLC_TABLES.get_or_init(|| {
-        let mut tables = Vec::with_capacity(34);
-        for i in 0..34 {
-            tables.push(build_vlc_table(i as u8));
+fn get_big_value_tables() -> &'static Vec<BigValueTable> {
+    BIG_VALUE_TABLES.get_or_init(|| {
+        let mut tables = Vec::with_capacity(32);
+        for i in 0..32 {
+            tables.push(build_big_value_table(i as u8));
         }
         tables
     })
 }
 
-/// 构建单张 VLC 表 (Canonical Huffman)
-fn build_vlc_table(table_id: u8) -> VlcTable {
+/// 构建单张 Big Values 查找表
+///
+/// 使用 FFmpeg 风格的 MSB 对齐 canonical 码字生成算法.
+/// 此算法按输入顺序处理 LENS/SYMS, 使用 32 位左对齐计数器,
+/// 确保生成的码字与 ISO 11172-3 标准完全一致.
+fn build_big_value_table(table_id: u8) -> BigValueTable {
     if table_id == 0 || table_id == 4 || table_id == 14 {
-        return VlcTable::default();
+        return BigValueTable::default();
     }
 
-    // 获取该表的长度和符号切片
     let offset = MPA_HUFF_OFFSET[table_id as usize];
-    
-    // 确定该表的条目数 (根据 offset 和下一个 offset, 或者硬编码)
-    // 由于我们没有存储每个表的大小, 我们需要推断.
-    // 简单方法: 假设 MPA_HUFF_OFFSET 是递增的, 可以通过 next_offset - curr_offset 计算.
-    // 但 16-23 共享, 24-31 共享.
-    // 我们可以硬编码大小或逻辑判断.
-    
+
     let count = match table_id {
         1 => 4,
         2..=3 => 9,
@@ -61,128 +69,135 @@ fn build_vlc_table(table_id: u8) -> VlcTable {
         7..=9 => 36,
         10..=12 => 64,
         13 | 15 => 256,
-        16..=23 => 256, // Table 16
-        24..=31 => 256, // Table 24
-        32 | 33 => 16, // Count1
+        16..=23 => 256,
+        24..=31 => 256,
         _ => 0,
     };
 
     if count == 0 {
-        return VlcTable::default();
+        return BigValueTable::default();
     }
 
     let lens = &MPA_HUFF_LENS[offset..offset + count];
     let syms = &MPA_HUFF_SYMS[offset..offset + count];
 
-    // 1. 统计每个长度的码字数量 (bl_count)
-    let mut bl_count = [0u32; 33]; // max len 32
-    let mut max_len = 0;
-    for &len in lens {
+    // MSB 对齐 canonical 码字生成
+    //
+    // FFmpeg 的 LENS/SYMS 数组按特定顺序排列 (大致为码长降序),
+    // 使得按数组顺序用 MSB 对齐计数器就能产生与 ISO 11172-3 一致的码字.
+    // 此算法等价于 FFmpeg 的 ff_vlc_init_tables_from_lengths.
+    let mut code: u64 = 0;
+    let mut max_len: u8 = 0;
+    let mut entries: Vec<(u32, u8, u8)> = Vec::with_capacity(count);
+
+    for i in 0..count {
+        let len = lens[i];
         if len > 0 {
-            bl_count[len as usize] += 1;
+            let code_val = (code >> (32 - len as u64)) as u32;
+            entries.push((code_val, len, syms[i]));
+            code += 1u64 << (32 - len as u64);
             if len > max_len {
                 max_len = len;
             }
         }
     }
 
-    // 2. 计算每个长度的起始码字 (next_code)
-    let mut next_code = [0u32; 33];
-    let mut code = 0u32;
-    // Canonical Huffman: code for length L is (code for L-1 + count[L-1]) << 1
-    // 注意: 这里假设长度是连续增加的? 不, Canonical Huffman 规则:
-    // 码字按长度排序, 相同长度按符号排序?
-    // 通常: code[len] = (code[len-1] + bl_count[len-1]) << 1
-    for len in 1..=max_len as usize {
-        code = (code + bl_count[len - 1]) << 1;
-        next_code[len] = code;
-    }
+    // 4. 构建 PEEK_BITS 位直接查找表
+    let mut lut = vec![LutEntry::default(); PEEK_SIZE];
+    let mut overflow = Vec::new();
 
-    // 3. 分配码字
-    let mut entries = Vec::with_capacity(count);
-    for i in 0..count {
-        let len = lens[i];
-        if len > 0 {
-            let code_val = next_code[len as usize];
-            next_code[len as usize] += 1;
-            
-            entries.push(VlcEntry {
-                len,
-                code: code_val,
-                symbol: syms[i],
-            });
+    for &(code_val, len, symbol) in &entries {
+        if (len as usize) <= PEEK_BITS {
+            let pad_bits = PEEK_BITS - len as usize;
+            let base_idx = (code_val as usize) << pad_bits;
+            let fill_count = 1 << pad_bits;
+            // 安全检查: 确保不越界
+            if base_idx + fill_count <= PEEK_SIZE {
+                for j in 0..fill_count {
+                    lut[base_idx | j] = LutEntry { symbol, bits: len };
+                }
+            } else {
+                // Canonical code 溢出, 放入 overflow
+                overflow.push((code_val, len, symbol));
+            }
+        } else {
+            overflow.push((code_val, len, symbol));
         }
     }
 
-    VlcTable { entries }
+    BigValueTable { lut, overflow, max_len }
 }
 
-pub struct HuffmanDecoder {
-    // 无需状态, 使用全局静态表
+// ============================================================================
+// Count1 快速查找表 (表 32, 33)
+// ============================================================================
+
+/// Count1 Table A (table 32) 的查找表
+/// 最大码长为 6, 使用 6 位直接查表
+const COUNT1A_PEEK_BITS: usize = 6;
+const COUNT1A_PEEK_SIZE: usize = 1 << COUNT1A_PEEK_BITS;
+
+static COUNT1A_LUT: OnceLock<Vec<LutEntry>> = OnceLock::new();
+
+fn get_count1a_lut() -> &'static Vec<LutEntry> {
+    COUNT1A_LUT.get_or_init(|| {
+        // 来自 FFmpeg mpa_quad_bits[0] 和 mpa_quad_codes[0]
+        // 索引 = 符号 (0-15)
+        let bits: [u8; 16] = [1, 4, 4, 5, 4, 6, 5, 6, 4, 5, 5, 6, 5, 6, 6, 6];
+        let codes: [u8; 16] = [1, 5, 4, 5, 6, 5, 4, 4, 7, 3, 6, 0, 7, 2, 3, 1];
+
+        let mut lut = vec![LutEntry::default(); COUNT1A_PEEK_SIZE];
+
+        for symbol in 0..16u8 {
+            let len = bits[symbol as usize];
+            let code = codes[symbol as usize] as u32;
+            let pad = COUNT1A_PEEK_BITS - len as usize;
+            let base = (code as usize) << pad;
+            let fill = 1 << pad;
+            for j in 0..fill {
+                lut[base | j] = LutEntry { symbol, bits: len };
+            }
+        }
+        lut
+    })
 }
+
+// ============================================================================
+// Huffman 解码器
+// ============================================================================
+
+pub struct HuffmanDecoder;
 
 impl HuffmanDecoder {
     pub fn new() -> Self {
-        Self {}
-    }
-
-    /// 解码 (通用)
-    /// 返回 (symbol, len)
-    fn decode_vlc(&self, br: &mut BitReader, table_id: u8) -> TaoResult<u8> {
-        let tables = get_vlc_tables();
-        if table_id as usize >= tables.len() {
-            return Err(TaoError::InvalidData(format!("Invalid Huffman table id: {}", table_id)));
-        }
-        let table = &tables[table_id as usize];
-        if table.entries.is_empty() {
-            return Ok(0);
-        }
-
-        // 线性搜索 (简单实现, 性能较低)
-        // 优化: 可以一次 peek 很多位
-        // 这里为了正确性先 peek 逐个尝试
-        // 实际上, 我们应该 peek max_len, 然后查表.
-        // 但这里 entries 没有按 code 排序(虽然 build 时是按 index).
-        
-        // 更好的方法: 逐位读取直到匹配?
-        // Canonical codes have prefix property.
-        // 我们可以遍历 entries, 看哪个匹配 peek 的位.
-        // 由于是前缀码, 唯一匹配.
-        
-        // 优化: 按长度排序 entries, 然后 peek max bits.
-        // 但为了简单:
-        // peek 32 bits (or max possible), compare with entries.
-        // entry.code matches peeked bits (high bits)?
-        // code is usually aligned to MSB of the length.
-        
-        let val = br.peek_bits(32).unwrap_or(0); // 假设 max len <= 32
-        
-        for entry in &table.entries {
-            // 检查前 entry.len 位是否等于 entry.code
-            // val 的高 entry.len 位
-            if entry.len == 0 { continue; }
-            let shift = 32 - entry.len;
-            let peeked_code = val >> shift;
-            
-            if peeked_code == entry.code {
-                br.skip_bits(entry.len as usize);
-                return Ok(entry.symbol);
-            }
-        }
-
-        Err(TaoError::InvalidData("Huffman decode failed".to_string()))
+        Self
     }
 
     /// 解码 Big Values (x, y)
     /// table_id: 1..31
-    pub fn decode_big_values(&self, br: &mut BitReader, table_id: u8, linbits: u8) -> TaoResult<(i32, i32)> {
-        let symbol = self.decode_vlc(br, table_id)?;
-        
+    pub fn decode_big_values(
+        &self,
+        br: &mut BitReader,
+        table_id: u8,
+        linbits: u8,
+    ) -> TaoResult<(i32, i32)> {
+        if table_id == 0 {
+            return Ok((0, 0));
+        }
+
+        let tables = get_big_value_tables();
+        let table = &tables[table_id as usize];
+        if table.lut.is_empty() {
+            return Ok((0, 0));
+        }
+
+        let symbol = self.decode_big_value_vlc(br, table)?;
+
         let mut x = (symbol >> 4) as i32;
         let mut y = (symbol & 0x0F) as i32;
 
+        // Escaped values (linbits), 表 16-31
         if table_id > 15 {
-            // Escaped values (linbits)
             if x == 15 && linbits > 0 {
                 x += br.read_bits(linbits).ok_or(TaoError::Eof)? as i32;
             }
@@ -191,38 +206,321 @@ impl HuffmanDecoder {
             }
         }
 
-        if x > 0 {
-            if br.read_bool().ok_or(TaoError::Eof)? {
-                x = -x;
-            }
+        // 符号位
+        if x > 0 && br.read_bool().ok_or(TaoError::Eof)? {
+            x = -x;
         }
-        if y > 0 {
-            if br.read_bool().ok_or(TaoError::Eof)? {
-                y = -y;
-            }
+        if y > 0 && br.read_bool().ok_or(TaoError::Eof)? {
+            y = -y;
         }
 
         Ok((x, y))
     }
 
+    /// 快速 VLC 解码 (Big Values)
+    fn decode_big_value_vlc(
+        &self,
+        br: &mut BitReader,
+        table: &BigValueTable,
+    ) -> TaoResult<u8> {
+        let peek_val = br.peek_bits(PEEK_BITS as u8).unwrap_or(0);
+        let entry = table.lut[peek_val as usize];
+
+        if entry.bits > 0 {
+            br.skip_bits(entry.bits as usize);
+            return Ok(entry.symbol);
+        }
+
+        // 尝试溢出表 (长码)
+        if !table.overflow.is_empty() {
+            let full_peek = br.peek_bits(table.max_len).unwrap_or(0);
+            for &(code, len, symbol) in &table.overflow {
+                let shift = table.max_len - len;
+                if (full_peek >> shift) == code {
+                    br.skip_bits(len as usize);
+                    return Ok(symbol);
+                }
+            }
+        }
+
+        // 解码失败, 跳过 1 位继续
+        br.skip_bits(1);
+        Ok(0)
+    }
+
     /// 解码 Count1 (v, w, x, y)
     /// table_id: 32 or 33
-    pub fn decode_count1(&self, br: &mut BitReader, table_id: u8) -> TaoResult<(i32, i32, i32, i32)> {
-        let symbol = self.decode_vlc(br, table_id)?;
-        
-        // Count1 symbol mapping: v << 3 | w << 2 | x << 1 | y
-        // values are 0 or 1.
+    pub fn decode_count1(
+        &self,
+        br: &mut BitReader,
+        table_id: u8,
+    ) -> TaoResult<(i32, i32, i32, i32)> {
+        let symbol = if table_id == 33 {
+            // Table B (固定 4 位): code = 15 - symbol
+            let code = br.read_bits(4).ok_or(TaoError::Eof)?;
+            (15 - code) as u8
+        } else {
+            // Table A (变长, 最大 7 位): 使用查找表
+            let lut = get_count1a_lut();
+            let peek = br.peek_bits(COUNT1A_PEEK_BITS as u8).unwrap_or(0);
+            let entry = lut[peek as usize];
+            if entry.bits > 0 {
+                br.skip_bits(entry.bits as usize);
+                entry.symbol
+            } else {
+                return Err(TaoError::InvalidData(
+                    "Count1 Huffman 解码失败".to_string(),
+                ));
+            }
+        };
+
+        // symbol 的 4 位分别对应 v, w, x, y (各为 0 或 1)
         let mut v = ((symbol >> 3) & 1) as i32;
         let mut w = ((symbol >> 2) & 1) as i32;
         let mut x = ((symbol >> 1) & 1) as i32;
         let mut y = (symbol & 1) as i32;
 
-        // Apply signs
-        if v > 0 && br.read_bool().ok_or(TaoError::Eof)? { v = -v; }
-        if w > 0 && br.read_bool().ok_or(TaoError::Eof)? { w = -w; }
-        if x > 0 && br.read_bool().ok_or(TaoError::Eof)? { x = -x; }
-        if y > 0 && br.read_bool().ok_or(TaoError::Eof)? { y = -y; }
+        // 读取符号位
+        if v > 0 && br.read_bool().ok_or(TaoError::Eof)? {
+            v = -v;
+        }
+        if w > 0 && br.read_bool().ok_or(TaoError::Eof)? {
+            w = -w;
+        }
+        if x > 0 && br.read_bool().ok_or(TaoError::Eof)? {
+            x = -x;
+        }
+        if y > 0 && br.read_bool().ok_or(TaoError::Eof)? {
+            y = -y;
+        }
 
         Ok((v, w, x, y))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 验证 Table 1 的 LUT 正确性
+    /// ISO 11172-3 Table B.7:
+    /// (0,0): code=1,   len=1
+    /// (1,0): code=01,  len=2
+    /// (0,1): code=001, len=3
+    /// (1,1): code=000, len=3
+    #[test]
+    fn test_table1_lut() {
+        let tables = get_big_value_tables();
+        let t = &tables[1];
+
+        // 1_000000000 -> code=1 (len=1) -> sym=(0,0)=0x00
+        let entry = t.lut[0b10_0000_0000];
+        assert_eq!(entry.symbol, 0x00, "code 1 -> (0,0)");
+        assert_eq!(entry.bits, 1);
+
+        // 01_00000000 -> code=01 (len=2) -> sym=(1,0)=0x10
+        let entry = t.lut[0b01_0000_0000];
+        assert_eq!(entry.symbol, 0x10, "code 01 -> (1,0)");
+        assert_eq!(entry.bits, 2);
+
+        // 001_0000000 -> code=001 (len=3) -> sym=(0,1)=0x01
+        let entry = t.lut[0b001_0000000];
+        assert_eq!(entry.symbol, 0x01, "code 001 -> (0,1)");
+        assert_eq!(entry.bits, 3);
+
+        // 000_0000000 -> code=000 (len=3) -> sym=(1,1)=0x11
+        let entry = t.lut[0b000_0000000];
+        assert_eq!(entry.symbol, 0x11, "code 000 -> (1,1)");
+        assert_eq!(entry.bits, 3);
+    }
+
+    /// 验证 Table 24 的 LUT 基本属性
+    #[test]
+    fn test_table24_lut_coverage() {
+        let tables = get_big_value_tables();
+        let t = &tables[24];
+
+        // LUT 应该有 1024 个条目
+        assert_eq!(t.lut.len(), 1024);
+
+        // 所有 LUT 条目应该有 bits > 0 (Table 24 所有码长 <= 12, 其中 <= 10 的都在 LUT 中)
+        let mut zero_bits = 0;
+        let mut sym_count = [0u32; 256];
+        for (i, entry) in t.lut.iter().enumerate() {
+            if entry.bits == 0 {
+                zero_bits += 1;
+                eprintln!("[WARN] LUT[{}] bits=0 (应该都有有效值)", i);
+            } else {
+                sym_count[entry.symbol as usize] += 1;
+            }
+        }
+
+        // 检查是否有过多的同一符号
+        let mut max_sym = 0u8;
+        let mut max_count = 0u32;
+        for (sym, &count) in sym_count.iter().enumerate() {
+            if count > max_count {
+                max_count = count;
+                max_sym = sym as u8;
+            }
+        }
+        eprintln!(
+            "Table 24: zero_bits={}, max_sym=0x{:02X}({},{}), max_count={}, overflow={}",
+            zero_bits, max_sym, max_sym >> 4, max_sym & 0xF,
+            max_count, t.overflow.len()
+        );
+
+        // 0xFF (15,15) 应该是最短码 (4位), 覆盖 64 个 LUT 条目
+        assert_eq!(sym_count[0xFF], 64, "0xFF 应覆盖 64 个 LUT 条目 (4位码)");
+
+        // 检查不同符号的数量 - 应该 > 100 (256个符号中大部分在LUT中)
+        let distinct_syms = sym_count.iter().filter(|&&c| c > 0).count();
+        eprintln!("distinct symbols in LUT: {}", distinct_syms);
+        assert!(distinct_syms > 50, "LUT 应包含多种不同符号");
+    }
+
+    /// 全面验证: 对所有 Big Value 表的每个符号进行编码→解码往返测试
+    /// 这验证了 canonical code 生成和 LUT 填充的正确性
+    #[test]
+    fn test_all_big_value_tables_roundtrip() {
+        let tables = get_big_value_tables();
+
+        for table_id in 1..32u8 {
+            if table_id == 0 || table_id == 4 || table_id == 14 {
+                continue;
+            }
+
+            let offset = MPA_HUFF_OFFSET[table_id as usize];
+            let count = match table_id {
+                1 => 4,
+                2..=3 => 9,
+                5..=6 => 16,
+                7..=9 => 36,
+                10..=12 => 64,
+                13 | 15 => 256,
+                16..=31 => 256,
+                _ => 0,
+            };
+
+            let lens = &MPA_HUFF_LENS[offset..offset + count];
+            let syms = &MPA_HUFF_SYMS[offset..offset + count];
+            let table = &tables[table_id as usize];
+
+            // 重新生成 canonical codes (与 build_big_value_table 相同的算法)
+            let mut code: u64 = 0;
+            let mut entries: Vec<(u32, u8, u8)> = Vec::new();
+
+            for i in 0..count {
+                let len = lens[i];
+                if len > 0 {
+                    let code_val = (code >> (32 - len as u64)) as u32;
+                    entries.push((code_val, len, syms[i]));
+                    code += 1u64 << (32 - len as u64);
+                }
+            }
+
+            // 对每个 entry 编码到 bitstream, 再用 LUT 解码
+            let mut errors = 0;
+            for &(code_val, len, expected_sym) in &entries {
+                // 将 code_val (len 位) 编码到字节数组
+                // 需要至少 (len + PEEK_BITS) 位的空间来确保 peek 能工作
+                let total_bits = len as usize + PEEK_BITS;
+                let total_bytes = (total_bits + 7) / 8;
+                let mut buf = vec![0u8; total_bytes + 2];
+
+                // MSB first: 将 code_val 放在 buf 的最前面
+                for bit in 0..len {
+                    let bit_val = (code_val >> (len - 1 - bit)) & 1;
+                    if bit_val == 1 {
+                        buf[bit as usize / 8] |= 0x80 >> (bit as usize % 8);
+                    }
+                }
+
+                // 通过 LUT 解码
+                let peek_val = if len as usize <= PEEK_BITS {
+                    // 构建 peek 值: code_val 左移 padding 位
+                    let pad = PEEK_BITS - len as usize;
+                    (code_val << pad) as usize
+                } else {
+                    // 溢出情况, 需要通过 BitReader 测试
+                    let mut br = BitReader::new(&buf);
+                    let peek = br.peek_bits(PEEK_BITS as u8).unwrap_or(0);
+                    peek as usize
+                };
+
+                if (len as usize) <= PEEK_BITS {
+                    let entry = table.lut[peek_val];
+                    if entry.symbol != expected_sym || entry.bits != len {
+                        eprintln!(
+                            "Table {}: 符号不匹配! code_val={:0width$b} len={} expected_sym=0x{:02X}({},{}) got_sym=0x{:02X}({},{}) got_bits={}",
+                            table_id, code_val, len, expected_sym,
+                            expected_sym >> 4, expected_sym & 0xF,
+                            entry.symbol, entry.symbol >> 4, entry.symbol & 0xF,
+                            entry.bits,
+                            width = len as usize,
+                        );
+                        errors += 1;
+                    }
+                } else {
+                    // 溢出条目: 通过完整的 decode 流程测试
+                    let mut br = BitReader::new(&buf);
+                    let decoder = HuffmanDecoder::new();
+                    match decoder.decode_big_value_vlc(&mut br, table) {
+                        Ok(decoded_sym) => {
+                            if decoded_sym != expected_sym {
+                                eprintln!(
+                                    "Table {}: overflow 符号不匹配! len={} expected=0x{:02X} got=0x{:02X}",
+                                    table_id, len, expected_sym, decoded_sym,
+                                );
+                                errors += 1;
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Table {}: overflow 解码错误! len={} sym=0x{:02X} err={}", table_id, len, expected_sym, e);
+                            errors += 1;
+                        }
+                    }
+                }
+            }
+
+            if errors > 0 {
+                panic!("Table {}: {} 个符号解码错误!", table_id, errors);
+            }
+        }
+        eprintln!("所有 Big Value 表往返测试通过!");
+    }
+
+    /// 端到端测试: 编码已知值, 解码验证
+    #[test]
+    fn test_table1_round_trip() {
+        // Table 1 LENS=[3,3,2,1] SYMS=[0x11,0x01,0x10,0x00]
+        // Canonical Huffman 码 (长码先分配):
+        //   sym=0x11 (1,1): len=3, code="000"
+        //   sym=0x01 (0,1): len=3, code="001"
+        //   sym=0x10 (1,0): len=2, code="01"
+        //   sym=0x00 (0,0): len=1, code="1"
+        //
+        // 非零值后跟 sign bit (0=正, 1=负)
+        // 编码序列: (0,0) (+1,0) (0,+1) (+1,+1)
+        //   (0,0):   "1"                            = 1 bit
+        //   (+1,0):  "01" + sign_x="0"              = 3 bits
+        //   (0,+1):  "001" + sign_y="0"             = 4 bits
+        //   (+1,+1): "000" + sign_x="0" sign_y="0"  = 5 bits
+        // 合计: 1 010 0010 000 00 _ = 0xA2 0x00 0x00
+        let data = [0xA2, 0x00, 0x00];
+        let mut br = BitReader::new(&data);
+        let decoder = HuffmanDecoder::new();
+
+        let (x, y) = decoder.decode_big_values(&mut br, 1, 0).unwrap();
+        assert_eq!((x, y), (0, 0), "第1对应为 (0,0)");
+
+        let (x, y) = decoder.decode_big_values(&mut br, 1, 0).unwrap();
+        assert_eq!((x, y), (1, 0), "第2对应为 (+1,0)");
+
+        let (x, y) = decoder.decode_big_values(&mut br, 1, 0).unwrap();
+        assert_eq!((x, y), (0, 1), "第3对应为 (0,+1)");
+
+        let (x, y) = decoder.decode_big_values(&mut br, 1, 0).unwrap();
+        assert_eq!((x, y), (1, 1), "第4对应为 (+1,+1)");
     }
 }

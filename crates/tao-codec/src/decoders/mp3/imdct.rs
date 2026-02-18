@@ -2,97 +2,105 @@
 //!
 //! 实现 18点 (Long Block) 和 6点 (Short Block) IMDCT, 窗口加权, 重叠相加.
 
-use std::f32::consts::PI;
+use std::f64::consts::PI;
 use std::sync::OnceLock;
 use super::side_info::Granule;
 
 /// IMDCT 窗口表 (36 点)
-/// 包含 4 种窗口类型: 0=Normal, 1=Start, 2=Short, 3=Stop
+/// 包含 4 种窗口类型: 0=Normal, 1=Start, 2=Short(占位), 3=Stop
+/// 使用 f64 精度计算角度后转为 f32 存储
 static IMDCT_WINDOWS: OnceLock<[[f32; 36]; 4]> = OnceLock::new();
 
+#[allow(clippy::needless_range_loop)]
 fn get_imdct_windows() -> &'static [[f32; 36]; 4] {
     IMDCT_WINDOWS.get_or_init(|| {
-        let mut windows = [[0.0; 36]; 4];
-        
-        // Block Type 0: Normal
+        let mut windows = [[0.0f32; 36]; 4];
+
         for i in 0..36 {
-            windows[0][i] = (PI / 36.0 * (i as f32 + 0.5)).sin();
+            windows[0][i] = (PI / 36.0 * (i as f64 + 0.5)).sin() as f32;
         }
-        
-        // Block Type 1: Start
+
         for i in 0..18 {
-            windows[1][i] = (PI / 36.0 * (i as f32 + 0.5)).sin();
+            windows[1][i] = (PI / 36.0 * (i as f64 + 0.5)).sin() as f32;
         }
         for i in 18..24 {
-            windows[1][i] = (PI / 36.0 * ((i - 18) as f32 + 0.5)).sin(); // Incorrect formula?
-            // FFmpeg:
-            // 0..18: sin(pi/36 * (i+0.5))
-            // 18..24: 1.0 (window[i] = 1.0)
-            // 24..30: sin(pi/12 * (i-18+0.5)) -> No.
-            // Let's use standard formula.
-            // Start block: 
-            // 0-17: Normal window (sin(pi/36...))
-            // 18-23: 1.0
-            // 24-29: Short window (sin(pi/12 * (i-24+0.5)))
-            // 30-35: 0.0
+            windows[1][i] = 1.0;
         }
-        // Correcting Type 1 (Start)
-        for i in 0..18 { windows[1][i] = (PI / 36.0 * (i as f32 + 0.5)).sin(); }
-        for i in 18..24 { windows[1][i] = 1.0; }
-        for i in 24..30 { windows[1][i] = (PI / 12.0 * ((i - 24) as f32 + 0.5)).sin(); }
-        for i in 30..36 { windows[1][i] = 0.0; }
-        
-        // Block Type 3: Stop
-        // 0-5: 0.0
-        // 6-11: Short window (sin(pi/12 * (i-6+0.5)))
-        // 12-17: 1.0
-        // 18-35: Normal window (sin(pi/36 * (i+0.5)))
-        for i in 0..6 { windows[3][i] = 0.0; }
-        for i in 6..12 { windows[3][i] = (PI / 12.0 * ((i - 6) as f32 + 0.5)).sin(); }
-        for i in 12..18 { windows[3][i] = 1.0; }
-        for i in 18..36 { windows[3][i] = (PI / 36.0 * (i as f32 + 0.5)).sin(); }
-        
-        // Block Type 2: Short
-        // 0-5: 0.0
-        // 6-11: Short window
-        // 12-17: 0.0 -> Wait, short blocks are 3x12 samples.
-        // The window applied here is for the whole granule (36 samples)?
-        // No, short blocks have 3 overlapping windows of 12 samples each.
-        // But the output of IMDCT is 3x12.
-        // The "window" stored here is for overlap-add of the *whole* granule with previous/next?
-        // Actually, for short blocks, we compute 3 small IMDCTs, window them, and overlap-add WITHIN the granule.
-        // The resulting 18 samples (0..17) are overlapped with previous granule.
-        // The samples 18..35 are stored for next.
-        // So Type 2 here is effectively:
-        // 0-5: 0.0
-        // 6-11: sin(pi/12 * (i-6+0.5))
-        // 12-35: 0.0?
-        // No, this table is used for Long Blocks logic or unified logic?
-        // Let's implement specific logic for Short blocks.
-        // This table will be used for Normal/Start/Stop.
-        // For Short blocks, we need a 12-point window.
-        
+        for i in 24..30 {
+            windows[1][i] = (PI / 12.0 * ((i - 18) as f64 + 0.5)).sin() as f32;
+        }
+        for i in 30..36 {
+            windows[1][i] = 0.0;
+        }
+
+        for i in 0..6 {
+            windows[3][i] = 0.0;
+        }
+        for i in 6..12 {
+            windows[3][i] = (PI / 12.0 * ((i - 6) as f64 + 0.5)).sin() as f32;
+        }
+        for i in 12..18 {
+            windows[3][i] = 1.0;
+        }
+        for i in 18..36 {
+            windows[3][i] = (PI / 36.0 * (i as f64 + 0.5)).sin() as f32;
+        }
+
         windows
     })
 }
 
 /// Short Block Window (12 points)
+/// 使用 f64 精度计算角度后转为 f32 存储
 static SHORT_WINDOW: OnceLock<[f32; 12]> = OnceLock::new();
 fn get_short_window() -> &'static [f32; 12] {
     SHORT_WINDOW.get_or_init(|| {
-        let mut w = [0.0; 12];
-        for i in 0..12 {
-            w[i] = (PI / 12.0 * (i as f32 + 0.5)).sin();
+        let mut w = [0.0f32; 12];
+        for (i, val) in w.iter_mut().enumerate() {
+            *val = (PI / 12.0 * (i as f64 + 0.5)).sin() as f32;
         }
         w
     })
 }
 
+/// 18 点 IMDCT 余弦表 (预计算, f64 精度角度)
+/// cos(π/(2*36) * (2i + 1 + 18) * (2k + 1)) = cos(π/72 * (2i + 19) * (2k + 1))
+static IMDCT18_COS: OnceLock<[[f32; 18]; 36]> = OnceLock::new();
+#[allow(clippy::needless_range_loop)]
+fn get_imdct18_cos() -> &'static [[f32; 18]; 36] {
+    IMDCT18_COS.get_or_init(|| {
+        let mut table = [[0.0f32; 18]; 36];
+        for (i, row) in table.iter_mut().enumerate() {
+            for (k, val) in row.iter_mut().enumerate() {
+                *val = (PI / 72.0 * (2.0 * i as f64 + 19.0) * (2.0 * k as f64 + 1.0)).cos()
+                    as f32;
+            }
+        }
+        table
+    })
+}
+
+/// 6 点 IMDCT 余弦表 (预计算, f64 精度角度)
+/// cos(π/(2*12) * (2i + 1 + 6) * (2k + 1)) = cos(π/24 * (2i + 7) * (2k + 1))
+static IMDCT6_COS: OnceLock<[[f32; 6]; 12]> = OnceLock::new();
+fn get_imdct6_cos() -> &'static [[f32; 6]; 12] {
+    IMDCT6_COS.get_or_init(|| {
+        let mut table = [[0.0f32; 6]; 12];
+        for (i, row) in table.iter_mut().enumerate() {
+            for (k, val) in row.iter_mut().enumerate() {
+                *val = (PI / 24.0 * (2.0 * i as f64 + 7.0) * (2.0 * k as f64 + 1.0)).cos()
+                    as f32;
+            }
+        }
+        table
+    })
+}
+
 /// 执行 IMDCT, Windowing, Overlap-Add
-/// 
-/// 输入: xr[576] (频域)
+///
+/// 输入: xr[576] (频域, 32 subbands * 18 samples)
 /// 输出: output[576] (时域, 32 subbands * 18 samples)
-/// 状态: overlap[2][32][18] (每个 channel 一个)
+/// 状态: overlap[32][18] (每个 channel 独立, 跨 granule/帧保持)
 pub fn imdct(
     granule: &Granule,
     xr: &[f32; 576],
@@ -101,103 +109,69 @@ pub fn imdct(
 ) {
     let windows = get_imdct_windows();
     let short_win = get_short_window();
-    let block_type = if granule.windows_switching_flag { granule.block_type } else { 0 };
-    
-    // Process 32 subbands
+    let cos18 = get_imdct18_cos();
+    let cos6 = get_imdct6_cos();
+    let block_type = if granule.windows_switching_flag {
+        granule.block_type
+    } else {
+        0
+    };
+
     for sb in 0..32 {
         let sb_idx = sb * 18;
-        let input_chunk = &xr[sb_idx..sb_idx+18]; // 18 freq samples
-        
-        let mut raw_out = [0.0; 36]; // IMDCT output (36 samples)
-        
-        // Determine if this subband is short block
-        // Mixed blocks: sb 0, 1 are long, others are short (if block_type=2)
-        let is_short = granule.windows_switching_flag && granule.block_type == 2 && 
-                       (!granule.mixed_block_flag || sb >= 2);
-                       
+        let input_chunk = &xr[sb_idx..sb_idx + 18];
+
+        let mut raw_out = [0.0f32; 36];
+
+        // 判断当前子带是否为短块
+        let is_short = granule.windows_switching_flag
+            && granule.block_type == 2
+            && (!granule.mixed_block_flag || sb >= 2);
+
         if is_short {
-            // Short Blocks (3 * 12 samples, overlapping)
-            // Input: 18 coefficients.
-            // Sorted as: W0[0..5], W1[0..5], W2[0..5] (after reordering)
-            // Reordering was done in Phase 3.
-            // So input_chunk[0..6] is W0, [6..12] is W1, [12..18] is W2.
-            
-            // Output of each 6-point IMDCT is 12 samples.
-            // They overlap:
-            // W0: 0..11
-            // W1: 6..17
-            // W2: 12..23
-            // Total length 24?
-            // Wait, Short blocks result in 18 valid samples (plus overlap).
-            // Normal IMDCT 18->36.
-            // Short IMDCTs produce 12 samples each.
-            // 3 windows.
-            // Placement in 36-sample buffer:
-            // W0 starts at 0? No.
-            // ISO 11172-3:
-            // "The 18 sample output... is calculated as follows:"
-            // For k=0..5, y[k] = 0
-            // For k=6..11, y[k] = w0[k-6] * s0[k-6]
-            // For k=12..17, y[k] = w0[k-6]*s0[k-6] + w1[k-12]*s1[k-12]
-            // ...
-            // The standard defines precise overlapping.
-            // Let's implement 3x 6-point IMDCT.
-            
-            let mut w_out = [[0.0; 12]; 3];
-            
+            // 短块: 3 个 6 点 IMDCT
+            let mut w_out = [[0.0f32; 12]; 3];
+
             for w in 0..3 {
-                let win_in = &input_chunk[w*6..(w+1)*6];
-                imdct6(win_in, &mut w_out[w]);
-                // Windowing
-                for i in 0..12 {
-                    w_out[w][i] *= short_win[i];
+                let win_in = &input_chunk[w * 6..(w + 1) * 6];
+                imdct6_fast(win_in, &mut w_out[w], cos6);
+                // 窗口加权
+                for (sample, &win_val) in w_out[w].iter_mut().zip(short_win.iter()) {
+                    *sample *= win_val;
                 }
             }
-            
-            // Overlap and place in raw_out (36 samples)
-            // raw_out is initialized to 0.0
-            // Window 0: start at 6?
-            // Spec:
-            // z[0..5] = 0
-            // z[6..11] = s[0][0..5]
-            // z[12..17] = s[0][6..11] + s[1][0..5]
-            // z[18..23] = s[1][6..11] + s[2][0..5]
-            // z[24..29] = s[2][6..11]
-            // z[30..35] = 0
-            
-            // Note: s[w] is w_out[w]
+
+            // 重叠放置到 36 点缓冲区
             for i in 0..6 {
-                raw_out[6+i] += w_out[0][i];
-                raw_out[12+i] += w_out[0][6+i];
-                
-                raw_out[12+i] += w_out[1][i];
-                raw_out[18+i] += w_out[1][6+i];
-                
-                raw_out[18+i] += w_out[2][i];
-                raw_out[24+i] += w_out[2][6+i];
+                raw_out[6 + i] += w_out[0][i];
+                raw_out[12 + i] += w_out[0][6 + i] + w_out[1][i];
+                raw_out[18 + i] += w_out[1][6 + i] + w_out[2][i];
+                raw_out[24 + i] += w_out[2][6 + i];
             }
-            
         } else {
-            // Long Blocks (18-point IMDCT)
-            imdct18(input_chunk, &mut raw_out);
-            
-            // Windowing
-            let win_idx = if granule.windows_switching_flag && granule.block_type == 2 && granule.mixed_block_flag && sb < 2 {
-                 0 // Normal window for long part of mixed block
+            // 长块: 18 点 IMDCT
+            imdct18_fast(input_chunk, &mut raw_out, cos18);
+
+            // 窗口加权
+            let win_idx = if granule.windows_switching_flag
+                && granule.block_type == 2
+                && granule.mixed_block_flag
+                && sb < 2
+            {
+                0 // 混合块的长块部分使用 Normal 窗口
             } else {
-                 block_type as usize
+                block_type as usize
             };
-            
+
             let win = &windows[win_idx];
-            for i in 0..36 {
-                raw_out[i] *= win[i];
+            for (sample, &win_val) in raw_out.iter_mut().zip(win.iter()) {
+                *sample *= win_val;
             }
         }
-        
+
         // Overlap-Add
-        // Output 18 samples = raw_out[0..18] + prev_overlap
-        // Next overlap = raw_out[18..36]
-        
+        // 输出 18 个样本 = raw_out[0..18] + 上次的 overlap
+        // 新的 overlap = raw_out[18..36]
         for i in 0..18 {
             output[sb * 18 + i] = raw_out[i] + overlap[sb][i];
             overlap[sb][i] = raw_out[18 + i];
@@ -205,41 +179,230 @@ pub fn imdct(
     }
 }
 
-/// 6-point IMDCT
-/// Input: 6 freq samples
-/// Output: 12 time samples
-fn imdct6(input: &[f32], output: &mut [f32]) {
-    // Naive implementation or optimized? 6 is small.
-    // Formula: x[i] = sum(k=0..5) X[k] * cos(pi/12 * (2i + 1 + 6) * (2k + 1))
-    // i = 0..11
-    
-    for i in 0..12 {
-        let mut sum = 0.0;
-        for k in 0..6 {
-            let angle = PI / 12.0 * (2.0 * i as f32 + 7.0) * (2.0 * k as f32 + 1.0);
-            sum += input[k] * angle.cos();
+/// 6 点 IMDCT (使用预计算余弦表, f64 累加)
+/// 输入: 6 个频域样本
+/// 输出: 12 个时域样本
+fn imdct6_fast(input: &[f32], output: &mut [f32; 12], cos_table: &[[f32; 6]; 12]) {
+    for (out, cos_row) in output.iter_mut().zip(cos_table.iter()) {
+        let mut sum = 0.0f64;
+        for (&inp, &cos_val) in input.iter().zip(cos_row.iter()) {
+            sum += inp as f64 * cos_val as f64;
         }
-        output[i] = sum * (1.0 / 6.0);
+        *out = sum as f32;
     }
 }
 
-/// 18-point IMDCT
-/// Input: 18 freq samples
-/// Output: 36 time samples
-fn imdct18(input: &[f32], output: &mut [f32]) {
-    // Formula: x[i] = sum(k=0..17) X[k] * cos(pi/36 * (2i + 1 + 18) * (2k + 1))
-    // i = 0..35
-    
-    // Using Fast DCT (Lee's algorithm) or simple O(N^2) since N=18?
-    // 18*36 = 648 ops per subband * 32 subbands = 20k ops. Very fast.
-    // Optimization: Precompute cosines.
-    
-    for i in 0..36 {
-        let mut sum = 0.0;
-        for k in 0..18 {
-            let angle = PI / 36.0 * (2.0 * i as f32 + 19.0) * (2.0 * k as f32 + 1.0);
-            sum += input[k] * angle.cos();
+/// 18 点 IMDCT (使用预计算余弦表, f64 累加)
+/// 输入: 18 个频域样本
+/// 输出: 36 个时域样本
+fn imdct18_fast(input: &[f32], output: &mut [f32; 36], cos_table: &[[f32; 18]; 36]) {
+    for (out, cos_row) in output.iter_mut().zip(cos_table.iter()) {
+        let mut sum = 0.0f64;
+        for (&inp, &cos_val) in input.iter().zip(cos_row.iter()) {
+            sum += inp as f64 * cos_val as f64;
         }
-        output[i] = sum * (1.0 / 18.0);
+        *out = sum as f32;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f64::consts::PI as PI64;
+
+    /// f64 精度参考 18 点 IMDCT
+    fn imdct18_reference(input: &[f32; 18]) -> [f64; 36] {
+        let mut output = [0.0f64; 36];
+        for i in 0..36 {
+            let mut sum = 0.0f64;
+            for k in 0..18 {
+                let angle = PI64 / 72.0 * (2.0 * i as f64 + 19.0) * (2.0 * k as f64 + 1.0);
+                sum += input[k] as f64 * angle.cos();
+            }
+            output[i] = sum;
+        }
+        output
+    }
+
+    /// f64 精度参考 6 点 IMDCT
+    fn imdct6_reference(input: &[f32; 6]) -> [f64; 12] {
+        let mut output = [0.0f64; 12];
+        for i in 0..12 {
+            let mut sum = 0.0f64;
+            for k in 0..6 {
+                let angle = PI64 / 24.0 * (2.0 * i as f64 + 7.0) * (2.0 * k as f64 + 1.0);
+                sum += input[k] as f64 * angle.cos();
+            }
+            output[i] = sum;
+        }
+        output
+    }
+
+    #[test]
+    fn test_imdct18_accuracy() {
+        let input: [f32; 18] = [
+            0.5, -0.3, 0.8, -0.1, 0.4, -0.6, 0.2, -0.9, 0.7,
+            -0.4, 0.1, -0.5, 0.3, -0.8, 0.6, -0.2, 0.9, -0.7,
+        ];
+        let cos_table = get_imdct18_cos();
+        let mut actual = [0.0f32; 36];
+        imdct18_fast(&input, &mut actual, cos_table);
+
+        let expected = imdct18_reference(&input);
+
+        let mut max_err = 0.0f64;
+        for i in 0..36 {
+            let err = (actual[i] as f64 - expected[i]).abs();
+            if err > max_err {
+                max_err = err;
+            }
+        }
+
+        eprintln!("=== 18 点 IMDCT 精度测试 ===");
+        eprintln!("最大误差: {:.10}", max_err);
+
+        assert!(max_err < 1e-4, "IMDCT18 误差过大: {:.6}", max_err);
+    }
+
+    #[test]
+    fn test_imdct6_accuracy() {
+        let input: [f32; 6] = [0.5, -0.3, 0.8, -0.1, 0.4, -0.6];
+        let cos_table = get_imdct6_cos();
+        let mut actual = [0.0f32; 12];
+        imdct6_fast(&input, &mut actual, cos_table);
+
+        let expected = imdct6_reference(&input);
+
+        let mut max_err = 0.0f64;
+        for i in 0..12 {
+            let err = (actual[i] as f64 - expected[i]).abs();
+            if err > max_err {
+                max_err = err;
+            }
+        }
+
+        eprintln!("=== 6 点 IMDCT 精度测试 ===");
+        eprintln!("最大误差: {:.10}", max_err);
+
+        assert!(max_err < 1e-4, "IMDCT6 误差过大: {:.6}", max_err);
+    }
+
+    #[test]
+    fn test_imdct_full_long_block() {
+        // 测试完整的 IMDCT (长块, Normal窗口) + overlap-add
+        let mut granule = Granule::default();
+        granule.windows_switching_flag = false;
+        granule.block_type = 0;
+
+        let mut xr = [0.0f32; 576];
+        // 仅在子带 0 放入数据
+        for k in 0..18 {
+            xr[k] = (k as f32 + 1.0) * 0.1;
+        }
+
+        let mut overlap = [[0.0f32; 18]; 32];
+        let mut output = [0.0f32; 576];
+
+        // 第一次调用
+        imdct(&granule, &xr, &mut overlap, &mut output);
+
+        // 参考: 长块 IMDCT + Normal 窗口
+        let input18: [f32; 18] = core::array::from_fn(|k| (k as f32 + 1.0) * 0.1);
+        let ref_raw = imdct18_reference(&input18);
+
+        // Normal 窗口
+        let windows = get_imdct_windows();
+        let win = &windows[0];
+
+        let mut max_err = 0.0f64;
+        for i in 0..18 {
+            // output[i] = ref_raw[i] * win[i] + overlap_prev[i] (overlap_prev=0)
+            let expected = ref_raw[i] * win[i] as f64;
+            let err = (output[i] as f64 - expected).abs();
+            if err > max_err {
+                max_err = err;
+            }
+        }
+
+        eprintln!("=== IMDCT 完整长块测试 ===");
+        eprintln!("最大误差 (output): {:.10}", max_err);
+
+        // 验证 overlap
+        let mut max_ovl_err = 0.0f64;
+        for i in 0..18 {
+            let expected_ovl = ref_raw[18 + i] * win[18 + i] as f64;
+            let err = (overlap[0][i] as f64 - expected_ovl).abs();
+            if err > max_ovl_err {
+                max_ovl_err = err;
+            }
+        }
+        eprintln!("最大误差 (overlap): {:.10}", max_ovl_err);
+
+        assert!(max_err < 1e-4, "IMDCT 长块输出误差过大: {:.6}", max_err);
+        assert!(max_ovl_err < 1e-4, "IMDCT 长块 overlap 误差过大: {:.6}", max_ovl_err);
+    }
+
+    #[test]
+    fn test_imdct_short_block() {
+        // 测试完整的 IMDCT (纯短块) + overlap-add
+        let mut granule = Granule::default();
+        granule.windows_switching_flag = true;
+        granule.block_type = 2;
+        granule.mixed_block_flag = false;
+
+        let mut xr = [0.0f32; 576];
+        // 子带 0: 3 个窗口各 6 个样本
+        for k in 0..18 {
+            xr[k] = (k as f32 + 1.0) * 0.05;
+        }
+
+        let mut overlap = [[0.0f32; 18]; 32];
+        let mut output = [0.0f32; 576];
+
+        imdct(&granule, &xr, &mut overlap, &mut output);
+
+        // 参考计算
+        let short_win = get_short_window();
+        let win0: [f32; 6] = core::array::from_fn(|i| xr[i]);
+        let win1: [f32; 6] = core::array::from_fn(|i| xr[6 + i]);
+        let win2: [f32; 6] = core::array::from_fn(|i| xr[12 + i]);
+
+        let y0 = imdct6_reference(&win0);
+        let y1 = imdct6_reference(&win1);
+        let y2 = imdct6_reference(&win2);
+
+        // 加窗
+        let y0w: Vec<f64> = y0.iter().enumerate().map(|(i, &v)| v * short_win[i] as f64).collect();
+        let y1w: Vec<f64> = y1.iter().enumerate().map(|(i, &v)| v * short_win[i] as f64).collect();
+        let y2w: Vec<f64> = y2.iter().enumerate().map(|(i, &v)| v * short_win[i] as f64).collect();
+
+        // 重叠放置
+        let mut ref_raw = [0.0f64; 36];
+        for i in 0..6 {
+            ref_raw[6 + i] += y0w[i];
+            ref_raw[12 + i] += y0w[6 + i] + y1w[i];
+            ref_raw[18 + i] += y1w[6 + i] + y2w[i];
+            ref_raw[24 + i] += y2w[6 + i];
+        }
+
+        let mut max_err = 0.0f64;
+        for i in 0..18 {
+            let expected = ref_raw[i]; // overlap=0
+            let err = (output[i] as f64 - expected).abs();
+            if err > max_err {
+                max_err = err;
+            }
+        }
+
+        eprintln!("=== IMDCT 短块测试 ===");
+        eprintln!("最大误差 (output): {:.10}", max_err);
+        for i in 0..18 {
+            eprintln!(
+                "  out[{:2}] tao={:12.8}  ref={:12.8}  diff={:+.8}",
+                i, output[i], ref_raw[i], output[i] as f64 - ref_raw[i]
+            );
+        }
+
+        assert!(max_err < 1e-4, "IMDCT 短块输出误差过大: {:.6}", max_err);
     }
 }

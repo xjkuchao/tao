@@ -13,16 +13,13 @@ mod stereo;
 mod synthesis;
 mod tables;
 
-use std::collections::VecDeque;
-use tao_core::{
-    ChannelLayout, Rational, SampleFormat, TaoError,
-    TaoResult,
-};
 use crate::codec_id::CodecId;
-use crate::packet::Packet;
-use crate::decoder::Decoder;
-use crate::frame::{Frame, AudioFrame};
 use crate::codec_parameters::CodecParameters;
+use crate::decoder::Decoder;
+use crate::frame::{AudioFrame, Frame};
+use crate::packet::Packet;
+use std::collections::VecDeque;
+use tao_core::{ChannelLayout, Rational, SampleFormat, TaoError, TaoResult};
 
 use self::bitreader::BitReader;
 use self::header::{Mp3Header, MpegVersion};
@@ -36,10 +33,12 @@ pub struct Mp3Decoder {
     /// 输入缓冲区 (存储未处理的数据包)
     buffer: Vec<u8>,
     /// 比特储备库 (Bit Reservoir)
-    /// 存储从各个帧中提取出的 main_data
     main_data: VecDeque<u8>,
-    /// Granule 解码上下文
+    /// Granule 解码上下文 [granule][channel]
     granule_data: [[GranuleContext; 2]; 2],
+    /// IMDCT 重叠缓冲区 [channel][subband][sample]
+    /// 跨 granule 和跨帧保持
+    overlap: [[[f32; 18]; 32]; 2],
     /// 合成滤波器状态 (每个 channel 一个)
     synth_ctx: [SynthContext; 2],
     /// 是否已打开
@@ -52,6 +51,8 @@ pub struct Mp3Decoder {
     channel_layout: ChannelLayout,
     /// 累计 PTS
     next_pts: i64,
+    /// 帧计数器 (临时诊断用)
+    frame_count: usize,
 }
 
 impl Mp3Decoder {
@@ -60,12 +61,14 @@ impl Mp3Decoder {
             buffer: Vec::with_capacity(4096),
             main_data: VecDeque::with_capacity(4096),
             granule_data: Default::default(),
+            overlap: [[[0.0; 18]; 32]; 2],
             synth_ctx: Default::default(),
             opened: false,
             sample_rate: 44100,
             channels: 2,
             channel_layout: ChannelLayout::from_channels(2),
             next_pts: 0,
+            frame_count: 0,
         }))
     }
 
@@ -74,24 +77,15 @@ impl Mp3Decoder {
         if data.len() < 2 {
             return None;
         }
-        for i in 0..data.len() - 1 {
-            if data[i] == 0xFF && (data[i + 1] & 0xE0) == 0xE0 {
-                return Some(i);
-            }
-        }
-        None
+        (0..data.len() - 1).find(|&i| data[i] == 0xFF && (data[i + 1] & 0xE0) == 0xE0)
     }
 
     /// 解码一帧
-    /// 如果成功解码一帧, 返回 (consumed_bytes, Some(Frame))
-    /// 如果数据不足, 返回 (0, None)
-    /// 如果出错 (如无效帧), 返回 (skipped_bytes, None)
     fn decode_one_frame(&mut self) -> TaoResult<(usize, Option<Frame>)> {
         // 1. 查找同步字
         let sync_offset = match Self::find_sync_word(&self.buffer) {
             Some(offset) => offset,
             None => {
-                // 没有同步字, 丢弃除了最后 1 字节外的所有数据 (防止切断同步字)
                 let len = self.buffer.len();
                 if len > 1 {
                     return Ok((len - 1, None));
@@ -100,7 +94,6 @@ impl Mp3Decoder {
             }
         };
 
-        // 丢弃同步字前的垃圾数据
         if sync_offset > 0 {
             return Ok((sync_offset, None));
         }
@@ -119,10 +112,7 @@ impl Mp3Decoder {
 
         let header = match Mp3Header::parse(header_bytes) {
             Ok(h) => h,
-            Err(_) => {
-                // 伪同步字, 跳过 1 字节重试
-                return Ok((1, None));
-            }
+            Err(_) => return Ok((1, None)),
         };
 
         // 3. 检查完整帧数据
@@ -130,16 +120,13 @@ impl Mp3Decoder {
             return Ok((0, None));
         }
 
-        // 提取当前帧数据切片
         let frame_data = &self.buffer[..header.frame_size];
 
         // 4. 解析 Side Information
-        // Side Info 紧接在 Header (和 CRC) 之后
         let side_info_start = 4 + if header.has_crc { 2 } else { 0 };
         let side_info_end = side_info_start + header.side_info_size;
 
         if frame_data.len() < side_info_end {
-            // 理论上 frame_size 应该足够包含 side_info, 除非 frame_size 计算错误或 header 损坏
             return Ok((1, None));
         }
 
@@ -149,135 +136,137 @@ impl Mp3Decoder {
             Err(_) => return Ok((1, None)),
         };
 
-        // 5. 检查 Bit Reservoir 是否足够 (backpointer)
-        // main_data_begin 指示当前帧的主数据开始位置相对于"当前帧主数据结束位置"之前的偏移?
-        // 不, main_data_begin 是相对于"当前帧主数据开始位置"之前的偏移.
-        // 即: decoding_start = (current_main_data_start) - main_data_begin
-        // self.main_data 目前包含之前的历史数据.
+        // 5. Bit Reservoir 管理
         if (self.main_data.len() as u32) < side_info.main_data_begin {
-            // 数据不足 (可能是流的开始), 无法解码当前帧
-            // 但我们需要消耗当前帧数据并将其 Main Data 放入 Reservoir
+            // 数据不足, 将 Main Data 放入储备库但不解码
             let main_data_slice = &frame_data[side_info_end..];
             self.main_data.extend(main_data_slice);
 
-            // 更新 PTS (即使是静音也需要)
             let spf = if header.version == MpegVersion::Mpeg1 {
                 1152
             } else {
                 576
             };
             self.next_pts += spf;
-
-            // 消耗当前帧
             return Ok((header.frame_size, None));
         }
 
         // 6. 将 Main Data 放入 Bit Reservoir
-        // Main Data 在 Side Info 之后, 直到帧尾
         let main_data_slice = &frame_data[side_info_end..];
         self.main_data.extend(main_data_slice);
 
-        // 7. 解码 Main Data (Phase 2 & 3 & 4)
-        // 计算 Main Data 在 buffer 中的起始位置
-        // main_data_begin 指示当前帧数据的起始点相对于当前帧 Main Data 起始点的偏移
+        // 计算 Main Data 的起始位置
         let current_main_data_len = main_data_slice.len();
         let total_len = self.main_data.len();
         let current_start_index = total_len - current_main_data_len;
 
         if (side_info.main_data_begin as usize) > current_start_index {
-            // 数据不足 (可能是 buffer 被清理了)
             return Ok((header.frame_size, None));
         }
 
         let bit_reservoir_start = current_start_index - side_info.main_data_begin as usize;
 
-        // 获取连续的 slice
         self.main_data.make_contiguous();
         let (slice, _) = self.main_data.as_slices();
-        // slice 现在包含所有数据 (因为 make_contiguous 了)
 
-        // 创建 BitReader
-        // 注意: 我们只从 bit_reservoir_start 开始读取, 但长度限制在哪里?
-        // 实际上每个 granule 有 part2_3_length.
+        // 诊断: Frame 1 的比特储备库字节
+        if self.frame_count == 1 {
+            let br_data = &slice[bit_reservoir_start..];
+            let show_len = br_data.len().min(16);
+            eprintln!(
+                "[reservoir] frame=1: main_data_begin={}, reservoir_start={}, total_buf={}, br_len={}, first_{}bytes={:02x?}",
+                side_info.main_data_begin, bit_reservoir_start,
+                slice.len(), br_data.len(), show_len,
+                &br_data[..show_len]
+            );
+        }
+
         let mut br = BitReader::new(&slice[bit_reservoir_start..]);
 
         let huffman = huffman::HuffmanDecoder::new();
 
-        let nch = if header.mode == crate::decoders::mp3::header::ChannelMode::SingleChannel {
+        let nch = if header.mode == header::ChannelMode::SingleChannel {
             1
         } else {
             2
         };
         let is_mpeg1 = header.version == MpegVersion::Mpeg1;
         let ngr = if is_mpeg1 { 2 } else { 1 };
-        
+
         let mut pcm_buffer = Vec::new();
 
-        // 重置 granule data (可选, 防止干扰)
-        // self.granule_data = Default::default(); // 不必要, 会覆盖
+        // 构建 SFB 累积边界表 (用于 Huffman region 边界计算)
+        let sfb_long_bounds = tables::build_sfb_long_bounds(header.samplerate);
 
         for gr in 0..ngr {
             // --- Phase 2: Huffman Decoding ---
             for ch in 0..nch {
-                let part2_3_length = side_info.granules[gr][ch].part2_3_length as usize;
-                let big_values = side_info.granules[gr][ch].big_values as usize * 2;
-                let global_gain = side_info.granules[gr][ch].global_gain;
-                let scalefac_compress = side_info.granules[gr][ch].scalefac_compress;
-                let block_type = side_info.granules[gr][ch].block_type;
+                let granule = &side_info.granules[gr][ch];
+                let part2_3_length = granule.part2_3_length as usize;
+                let scalefac_compress = granule.scalefac_compress;
 
-                // Calculate start of data for this granule/channel
-                let start_pos = br.position();
+                let start_bit = br.bit_offset();
 
                 // --- Part 2: Scalefactors ---
-                // 解决借用冲突: 如果是 gr=1, 先克隆 gr=0 的 scalefactors
                 let prev_scalefac = if gr == 1 {
                     self.granule_data[0][ch].scalefac
                 } else {
                     [0; 40]
                 };
 
-                // 获取当前 channel 的 scalefactor 数据引用
                 let scalefac = &mut self.granule_data[gr][ch].scalefac;
+                // 初始化 scalefac, 防止前一帧 (可能是不同 block type) 的残留值
+                // (长块 band 21 / 短块 band 36-39 等未传输的 scalefactor 必须为 0)
+                scalefac.fill(0);
 
-                // 计算 scalefactor 长度 (slen1, slen2)
                 let (slen1, slen2) = if is_mpeg1 {
-                    let idx = granule.scalefac_compress as usize;
+                    let idx = scalefac_compress as usize;
                     let table = tables::SLEN_TABLE[idx];
                     (table[0] as usize, table[1] as usize)
                 } else {
-                    // MPEG-2 LSF logic (simplified placeholder)
                     (0, 0)
                 };
 
-                // 解码 Scalefactors
-                let mut part2_bits = 0;
+                let mut _part2_bits = 0;
                 if is_mpeg1 && granule.block_type == 2 && granule.mixed_block_flag {
-                    // Mixed blocks (8 Long + 9*3 Short)
-                    // Long part (bands 0-7 -> 8 scalefactors)
-                    // Short part (bands 3-11 -> 9 scalefactors * 3 windows)
-
-                    // 8 Long scalefactors (bands 0-7)
-                    // Bands 0-5: slen1, Bands 6-7: slen1 (since 0-10 use slen1)
-                    // Note: scfsi logic applies to long blocks part?
-                    // Standard says: "If mixed_block_flag is set... the first 2 subbands are long blocks... the remaining subbands are short blocks"
-                    // Wait, bands 0-1 are long blocks (mapping to 0-7 long sfbs?).
-                    // Let's simplify: Treat mixed as separate logic.
-                    // For now, implement standard Long and Short logic.
-
-                    // 暂时只支持非 mixed blocks 以简化 Phase 2
-                    // TODO: Implement mixed blocks
+                    // Mixed blocks: 简化处理
+                    // 8 个长块 scalefactors (slen1)
+                    for sf in scalefac.iter_mut().take(8) {
+                        let len = slen1;
+                        if len > 0 {
+                            if let Some(val) = br.read_bits(len as u8) {
+                                *sf = val as u8;
+                                _part2_bits += len;
+                            }
+                        } else {
+                            *sf = 0;
+                        }
+                    }
+                    // 短块 scalefactors
+                    for band in 3..12 {
+                        let len = if band < 6 { slen1 } else { slen2 };
+                        if len > 0 {
+                            for win in 0..3 {
+                                if let Some(val) = br.read_bits(len as u8) {
+                                    scalefac[8 + (band - 3) * 3 + win] = val as u8;
+                                    _part2_bits += len;
+                                }
+                            }
+                        } else {
+                            for win in 0..3 {
+                                scalefac[8 + (band - 3) * 3 + win] = 0;
+                            }
+                        }
+                    }
                 } else if is_mpeg1 && granule.block_type == 2 {
                     // Short blocks (12 bands * 3 windows)
-                    // Order: Band 0 (W0, W1, W2), Band 1 (W0, W1, W2)...
-                    // slen1 for bands 0-5, slen2 for bands 6-11
-
                     for band in 0..12 {
                         let len = if band < 6 { slen1 } else { slen2 };
                         if len > 0 {
                             for win in 0..3 {
                                 if let Some(val) = br.read_bits(len as u8) {
                                     scalefac[band * 3 + win] = val as u8;
-                                    part2_bits += len;
+                                    _part2_bits += len;
                                 }
                             }
                         } else {
@@ -287,16 +276,7 @@ impl Mp3Decoder {
                         }
                     }
                 } else if is_mpeg1 {
-                    // Long blocks (21 bands)
-                    // Bands 0-10: slen1, Bands 11-20: slen2
-                    // Granule 0: Read all
-                    // Granule 1: Check scfsi
-
-                    // Group 0: bands 0-5
-                    // Group 1: bands 6-10
-                    // Group 2: bands 11-15
-                    // Group 3: bands 16-20
-
+                    // Long blocks (21 bands, 4 groups, scfsi)
                     let scfsi = &side_info.scfsi[ch];
                     let groups = [(0, 6), (6, 11), (11, 16), (16, 21)];
 
@@ -307,53 +287,87 @@ impl Mp3Decoder {
                             let len = if band < 11 { slen1 } else { slen2 };
 
                             if use_prev {
-                                // Copy from granule 0
-                                // Note: We are writing to granule 1, reading from cloned granule 0
                                 scalefac[band] = prev_scalefac[band];
-                            } else {
-                                // Read from stream
-                                if len > 0 {
-                                    if let Some(val) = br.read_bits(len as u8) {
-                                        scalefac[band] = val as u8;
-                                        part2_bits += len;
-                                    }
-                                } else {
-                                    scalefac[band] = 0;
+                            } else if len > 0 {
+                                if let Some(val) = br.read_bits(len as u8) {
+                                    scalefac[band] = val as u8;
+                                    _part2_bits += len;
                                 }
+                            } else {
+                                scalefac[band] = 0;
                             }
                         }
                     }
                 }
 
-                // --- Part 3: Huffman Decoding ---
-                let _part3_bits = part2_3_length - part2_bits;
-
-                // Big Values
-                let big_values = granule.big_values as usize * 2;
-                // Regions
-                let mut region1_start = granule.region0_count as usize + 1;
-                let mut region2_start =
-                    granule.region0_count as usize + 1 + granule.region1_count as usize + 1;
-
-                // Adjust for block_type 2 (Short blocks)
-                if granule.windows_switching_flag && granule.block_type == 2 {
-                    region1_start = 36; // Hardcoded boundary for short blocks
-                    region2_start = 576; // End
+                // 诊断: Frame 1 位偏移追踪
+                if self.frame_count == 1 {
+                    let post_sf_bit = br.bit_offset();
+                    let actual_sf_bits = post_sf_bit - start_bit;
+                    let expected_sf_bits = if is_mpeg1 && granule.block_type == 2 && granule.mixed_block_flag {
+                        8 * slen1 + 9 * slen1 + 18 * slen2 // 混合块: 8 long + 9*3 short(slen1) + 6*3 short(slen2)
+                    } else if is_mpeg1 && granule.block_type == 2 {
+                        18 * slen1 + 18 * slen2 // 纯短块: 6*3*slen1 + 6*3*slen2
+                    } else if is_mpeg1 && gr == 1 {
+                        // 长块 gr=1: 需要考虑 scfsi
+                        let scfsi = &side_info.scfsi[ch];
+                        let group_bands = [6usize, 5, 5, 5]; // groups: 0-5, 6-10, 11-15, 16-20
+                        let mut expected = 0usize;
+                        for (g, &count) in group_bands.iter().enumerate() {
+                            if scfsi[g] == 0 {
+                                let len = if g < 2 { slen1 } else { slen2 };
+                                expected += count * len;
+                            }
+                        }
+                        expected
+                    } else if is_mpeg1 {
+                        11 * slen1 + 10 * slen2 // 长块 gr=0: 全部读取
+                    } else { 0 };
+                    eprintln!(
+                        "[bit-diag] frame=1 gr={} ch={}: start_bit={}, post_sf_bit={}, actual_sf_bits={}, expected_sf_bits={}, part2_3_len={}, slen1={}, slen2={}, block_type={}",
+                        gr, ch, start_bit, post_sf_bit, actual_sf_bits, expected_sf_bits,
+                        part2_3_length, slen1, slen2, granule.block_type
+                    );
+                    if gr == 1 {
+                        eprintln!(
+                            "[bit-diag] frame=1 scfsi[ch={}] = {:?}",
+                            ch, side_info.scfsi[ch]
+                        );
+                    }
+                    if actual_sf_bits != expected_sf_bits {
+                        eprintln!(
+                            "[BIT-MISMATCH] frame=1 gr={} ch={}: 实际消耗 {} bits, 预期 {} bits, 差异 {} bits!",
+                            gr, ch, actual_sf_bits, expected_sf_bits,
+                            actual_sf_bits as isize - expected_sf_bits as isize
+                        );
+                    }
                 }
 
-                // Get IS buffer
+                // --- Part 3: Huffman Decoding ---
+                let big_values = granule.big_values as usize * 2;
+
+                // 使用 SFB 累积边界表计算 region 边界 (样本索引)
+                let (region1_start, region2_start) =
+                    if granule.windows_switching_flag && granule.block_type == 2 {
+                        (36usize, 576usize) // 短块固定边界
+                    } else {
+                        let r0 = (granule.region0_count + 1) as usize;
+                        let r1 = r0 + (granule.region1_count + 1) as usize;
+                        (sfb_long_bounds[r0.min(22)], sfb_long_bounds[r1.min(22)])
+                    };
+
                 let is = &mut self.granule_data[gr][ch].is;
-                // Clear IS buffer (important for zeroing out upper frequencies)
                 is.fill(0);
 
-                // Huffman Loop
-                // big_values pairs
-                for i in (0..big_values).step_by(2) {
-                    if i >= 576 {
+                let end_bit = start_bit + part2_3_length;
+
+                // Huffman big_values 区域 (带位预算检查, 与 symphonia 一致)
+                let mut i = 0usize;
+                while i < big_values.min(576) {
+                    if br.bit_offset() >= end_bit {
                         break;
                     }
 
-                    // Determine table_id
                     let table_id = if i < region1_start {
                         granule.table_select[0]
                     } else if i < region2_start {
@@ -369,26 +383,17 @@ impl Mp3Decoder {
                             is[i + 1] = y;
                         }
                     }
+                    i += 2;
                 }
 
-                // Count1 Loop (Quadruples)
-                // Decode until part3_bits consumed
-                // Note: This is tricky. We need to check bits_left < remaining part3_bits
-                // Count1 table is table_select[3] (implied 32 or 33)
+                // Count1 区域 (四元组)
                 let count1_table = if granule.count1table_select { 33 } else { 32 };
 
-                let mut i = big_values;
                 while i < 576 {
-                    let current_pos = br.position();
-                    let byte_diff = current_pos.0 - start_pos.0;
-                    let bit_diff = current_pos.1 as isize - start_pos.1 as isize;
-                    let bits_read_so_far = (byte_diff as isize * 8 + bit_diff) as usize;
-
-                    if bits_read_so_far >= part2_3_length {
+                    if br.bit_offset() >= end_bit {
                         break;
                     }
 
-                    // Decode quad
                     if let Ok((v, w, x, y)) = huffman.decode_count1(&mut br, count1_table) {
                         is[i] = v;
                         if i + 1 < 576 {
@@ -406,25 +411,74 @@ impl Mp3Decoder {
                     }
                 }
 
-                // Skip padding bits
-                // Align to end of granule
-                // br.set_position(start_pos + part2_3_length)
-                // 由于 BitReader API 限制, 我们手动 skip 剩余
-                // 重新计算精确消耗
-                let current_pos = br.position();
-                let byte_diff = current_pos.0 - start_pos.0;
-                let bit_diff = current_pos.1 as isize - start_pos.1 as isize;
-                let bits_consumed = (byte_diff as isize * 8 + bit_diff) as usize;
-
-                if bits_consumed < part2_3_length {
-                    br.skip_bits(part2_3_length - bits_consumed);
-                } else if bits_consumed > part2_3_length {
-                    // Over-read! This shouldn't happen with correct logic, but Huffman can over-read.
-                    // Backtrack? Or just warn.
-                    // For now, ignore.
+                // 如果 count1 解码超出了 part2_3_length 边界,
+                // 丢弃最后一组四元组 (其值基于越界比特, 不可信)
+                if br.bit_offset() > end_bit && i > big_values {
+                    i -= 4;
+                    for val in is.iter_mut().take((i + 4).min(576)).skip(i) {
+                        *val = 0;
+                    }
                 }
 
+                // rzero: Huffman 解码样本数 (big_values + count1), 之后的样本全为 0
+                self.granule_data[gr][ch].rzero = i;
+
+                br.seek_to_bit(end_bit);
+
                 // --- Phase 3: Requantization ---
+                self.granule_data[gr][ch].xr.fill(0.0);
+
+                // 诊断: Frame 0-1 的 block_type
+                if self.frame_count <= 1 && ch == 0 {
+                    eprintln!(
+                        "[diag-si] frame={} gr={}: block_type={}, wsf={}, big_values={}, mode={:?}, mode_ext={}",
+                        self.frame_count, gr, granule.block_type, granule.windows_switching_flag,
+                        granule.big_values, header.mode, header.mode_extension
+                    );
+                }
+
+                // 诊断: Frame 0 gr=1 和 Frame 1 gr=0 的关键数据 (short blocks)
+                if ch == 0 && ((self.frame_count == 0 && gr == 1) || (self.frame_count == 1 && gr == 0)) {
+                    let is = &self.granule_data[gr][ch].is;
+                    let nonzero_is = is.iter().filter(|&&x| x != 0).count();
+                    eprintln!(
+                        "[diag-short] frame={} gr={}: global_gain={}, subblock_gain={:?}, scalefac_compress={}, scalefac_scale={}",
+                        self.frame_count, gr, granule.global_gain, granule.subblock_gain,
+                        granule.scalefac_compress, granule.scalefac_scale
+                    );
+                    eprintln!(
+                        "[diag-short] big_values={}, nonzero_is={}/576",
+                        granule.big_values, nonzero_is
+                    );
+                    eprintln!(
+                        "[diag-short] is[0..18] = {:?}",
+                        &is[0..18]
+                    );
+                    eprintln!(
+                        "[diag-short] scalefac[0..12] = {:?}",
+                        &self.granule_data[gr][ch].scalefac[0..12]
+                    );
+                }
+
+                // 诊断: Frame 1 gr=1 ch=0 的 is[] 和 side_info
+                if self.frame_count == 1 && gr == 1 && ch == 0 {
+                    let is = &self.granule_data[gr][ch].is;
+                    let nonzero_is = is.iter().filter(|&&x| x != 0).count();
+                    eprintln!(
+                        "[diag-huff] frame=1 gr=1 ch=0: big_values={}, part2_3_len={}, table_select={:?}, count1tab={}",
+                        granule.big_values, granule.part2_3_length,
+                        granule.table_select, granule.count1table_select
+                    );
+                    eprintln!(
+                        "[diag-huff] global_gain={}, scalefac_compress={}, block_type={}, wsf={}",
+                        granule.global_gain, granule.scalefac_compress,
+                        granule.block_type, granule.windows_switching_flag
+                    );
+                    eprintln!("[diag-huff] nonzero_is={}/576", nonzero_is);
+                    eprintln!("[diag-huff] is[0..36] = {:?}", &is[0..36]);
+                    eprintln!("[diag-huff] scalefac[0..21] = {:?}", &self.granule_data[gr][ch].scalefac[0..21]);
+                }
+
                 requantize::requantize(
                     granule,
                     &mut self.granule_data[gr][ch],
@@ -432,141 +486,206 @@ impl Mp3Decoder {
                     header.samplerate,
                 )?;
 
-                // --- Phase 3: Reordering (Short blocks) ---
+                // 诊断: 验证 requantize 计算精度
+                if self.frame_count == 1 && gr == 1 && ch == 0 {
+                    let xr_val = self.granule_data[gr][ch].xr[2];
+                    let is_val = self.granule_data[gr][ch].is[2];
+                    let sf_val = self.granule_data[gr][ch].scalefac[0];
+                    let expect_mult = 2.0f32.powf(0.25 * (granule.global_gain as f32 - 210.0));
+                    eprintln!(
+                        "[diag-verify] is[2]={}, sf[0]={}, global_gain={}, preflag={}, sf_scale={}, expect_mult={:.8}, actual_xr={:.8}",
+                        is_val, sf_val, granule.global_gain, granule.preflag, granule.scalefac_scale, expect_mult, xr_val
+                    );
+                    let xr = &self.granule_data[gr][ch].xr;
+                    eprintln!("[diag-req] xr[0..18] = {:?}", &xr[0..18].iter().map(|x| format!("{:.6}", x)).collect::<Vec<_>>());
+                }
+
+            }
+
+            // --- Phase 3: Stereo Processing (在 reorder 之前, 因为立体声处理需要 SFB 顺序) ---
+            // 诊断: stereo 前后 xr RMS
+            let pre_stereo_rms = if self.frame_count == 1 && gr == 0 {
+                let rms0: f32 = (self.granule_data[gr][0].xr.iter().map(|x| x*x).sum::<f32>() / 576.0).sqrt();
+                let rms1: f32 = if nch > 1 { (self.granule_data[gr][1].xr.iter().map(|x| x*x).sum::<f32>() / 576.0).sqrt() } else { 0.0 };
+                eprintln!("[diag-stereo] frame=1 gr=0 BEFORE stereo: ch0_rms={:.8}, ch1_rms={:.8}", rms0, rms1);
+                Some((rms0, rms1))
+            } else { None };
+
+            stereo::process_stereo(
+                gr,
+                &header,
+                &mut self.granule_data,
+                &side_info.granules,
+                header.samplerate,
+            );
+
+            if let Some((pre0, pre1)) = pre_stereo_rms {
+                let post0: f32 = (self.granule_data[gr][0].xr.iter().map(|x| x*x).sum::<f32>() / 576.0).sqrt();
+                let post1: f32 = if nch > 1 { (self.granule_data[gr][1].xr.iter().map(|x| x*x).sum::<f32>() / 576.0).sqrt() } else { 0.0 };
+                eprintln!("[diag-stereo] frame=1 gr=0 AFTER stereo:  ch0_rms={:.8}, ch1_rms={:.8}", post0, post1);
+                eprintln!("[diag-stereo] ratio: ch0={:.4}, ch1={:.4}", post0 / pre0.max(1e-10), post1 / pre1.max(1e-10));
+            }
+
+            // Joint stereo 处理后, 两个通道的非零范围扩展到两者的最大值
+            if nch == 2 && header.mode == header::ChannelMode::JointStereo {
+                let max_rzero = self.granule_data[gr][0].rzero.max(self.granule_data[gr][1].rzero);
+                self.granule_data[gr][0].rzero = max_rzero;
+                self.granule_data[gr][1].rzero = max_rzero;
+            }
+
+            // --- Phase 3: Reorder + Alias Reduction ---
+            for ch in 0..nch {
+                let granule = &side_info.granules[gr][ch];
+
+                // Reorder (短块重排序)
                 reorder::reorder(
                     granule,
                     &mut self.granule_data[gr][ch].xr,
                     header.version,
                     header.samplerate,
                 );
-            }
 
-            // --- Phase 3: Stereo Processing ---
-            // Stereo processing requires both channels to be requantized
-            stereo::process_stereo(gr, &header, &mut self.granule_data, &side_info.granules);
-
-            // --- Phase 3: Alias Reduction ---
-            for ch in 0..nch {
-                let granule = &side_info.granules[gr][ch];
+                // Alias Reduction (抗混叠, 限制处理范围到 rzero 附近)
+                let rzero = self.granule_data[gr][ch].rzero;
                 alias::alias_reduction(
                     granule,
                     &mut self.granule_data[gr][ch].xr,
+                    rzero,
                     header.version,
-                    header.samplerate
+                    header.samplerate,
                 );
             }
-            
+
             // --- Phase 4: IMDCT & Synthesis ---
-            // 准备 IMDCT 输出缓冲区 (576 samples)
-            
-            // 存储双声道的 PCM 输出
             let mut pcm_ch = [[0.0f32; 576]; 2];
-            
-            for ch in 0..nch {
+
+            for (ch, pcm_channel) in pcm_ch.iter_mut().enumerate().take(nch) {
                 let granule = &side_info.granules[gr][ch];
-                let ctx = &mut self.granule_data[gr][ch];
-                
-                // 1. IMDCT (输入 xr, 输出到 xr)
-                // 由于 IMDCT 输出是时域 576 samples, 而 data::xr 是 576 频域.
-                // 我们直接复用 ctx.xr 作为输入, 使用局部 buffer 作为输出.
+                let ctx = &self.granule_data[gr][ch];
+
+                // Overlap 诊断: Frame 1 ch=0 全部 granule
+                let diag_overlap = self.frame_count == 1 && ch == 0;
+                if diag_overlap {
+                    let ovl = &self.overlap[0][0];
+                    let ovl_rms: f32 = (ovl.iter().map(|x| x * x).sum::<f32>() / 18.0).sqrt();
+                    eprintln!(
+                        "[ovl-before] frame=1 gr={} ch=0 sb=0: rms={:.8}, all_18={:?}",
+                        gr, ovl_rms, &ovl[..18]
+                    );
+                    let xr_sb0 = &ctx.xr[0..18];
+                    eprintln!(
+                        "[ovl-before] xr[sb0] = {:?}",
+                        xr_sb0.iter().map(|x| format!("{:.6}", x)).collect::<Vec<_>>()
+                    );
+                    eprintln!(
+                        "[block-info] frame=1 gr={} ch=0: block_type={}, mixed={}, wsf={}",
+                        gr, granule.block_type, granule.mixed_block_flag,
+                        granule.windows_switching_flag
+                    );
+                }
+
+                // 1. IMDCT (使用每通道共享的 overlap 缓冲区)
                 let mut imdct_out = [0.0; 576];
-                imdct::imdct(granule, &ctx.xr, &mut ctx.overlap, &mut imdct_out);
-                
+                imdct::imdct(granule, &ctx.xr, &mut self.overlap[ch], &mut imdct_out);
+
+                if diag_overlap {
+                    let ovl = &self.overlap[0][0];
+                    let ovl_rms: f32 = (ovl.iter().map(|x| x * x).sum::<f32>() / 18.0).sqrt();
+                    eprintln!(
+                        "[ovl-after] frame=1 gr={} ch=0 sb=0: rms={:.8}, vals={:?}",
+                        gr, ovl_rms, &ovl[..18]
+                    );
+                    eprintln!(
+                        "[ovl-after] imdct_out[sb0] = {:?}",
+                        &imdct_out[0..18].iter().map(|x| format!("{:.6}", x)).collect::<Vec<_>>()
+                    );
+                }
+
                 // 2. Frequency Inversion
                 synthesis::frequency_inversion(&mut imdct_out);
-                
+
                 // 3. Polyphase Synthesis
-                // 按时间顺序处理: k=0..17
                 let synth = &mut self.synth_ctx[ch];
-                
-                for k in 0..18 {
-                    // 收集 32 个子带的第 k 个样本
-                    let mut subband_samples = [0.0; 32];
+
+                // 诊断: Frame 1 gr=1 ch=0 全 32 子带的 xr (alias后) 和 imdct_out
+                if self.frame_count == 1 && gr == 1 && ch == 0 {
+                    let mut xr_energies = Vec::new();
+                    let mut imdct_energies = Vec::new();
                     for sb in 0..32 {
-                         subband_samples[sb] = imdct_out[sb * 18 + k];
+                        let xr_rms: f32 = (ctx.xr[sb*18..(sb+1)*18].iter()
+                            .map(|x| x*x).sum::<f32>() / 18.0).sqrt();
+                        let im_rms: f32 = (imdct_out[sb*18..(sb+1)*18].iter()
+                            .map(|x| x*x).sum::<f32>() / 18.0).sqrt();
+                        xr_energies.push(format!("{:.4}", xr_rms));
+                        imdct_energies.push(format!("{:.4}", im_rms));
                     }
-                    
+                    eprintln!("[sb-diag] frame=1 gr=1 ch=0 xr_rms_per_sb = {:?}", &xr_energies[..8]);
+                    eprintln!("[sb-diag] frame=1 gr=1 ch=0 imdct_rms_per_sb = {:?}", &imdct_energies[..8]);
+                    eprintln!("[sb-diag] xr_rms sb8-15 = {:?}", &xr_energies[8..16]);
+                    eprintln!("[sb-diag] imdct_rms sb8-15 = {:?}", &imdct_energies[8..16]);
+                }
+
+                for k in 0..18 {
+                    let mut subband_samples = [0.0; 32];
+                    for (sb, sample) in subband_samples.iter_mut().enumerate() {
+                        *sample = imdct_out[sb * 18 + k];
+                    }
+
+                    // 诊断: Frame 1 gr=1 ch=0 ts=9 的全部子带样本
+                    if self.frame_count == 1 && gr == 1 && ch == 0 && k == 9 {
+                        eprintln!(
+                            "[ts9-diag] frame=1 gr=1 ch=0 ts=9 subband_samples = {:?}",
+                            subband_samples.iter().map(|x| format!("{:.5}", x)).collect::<Vec<_>>()
+                        );
+                    }
+
                     let mut synth_out = [0.0; 32];
                     synthesis::synthesis_filter(synth, &subband_samples, &mut synth_out);
-                    
-                    // 存入 pcm_ch
-                    for j in 0..32 {
-                        pcm_ch[ch][k * 32 + j] = synth_out[j];
-                    }
+
+                    pcm_channel[k * 32..k * 32 + 32].copy_from_slice(&synth_out);
+                }
+
+                if self.frame_count == 2 && gr == 0 && ch == 0 {
+                    let pcm_rms: f32 = (pcm_channel.iter().map(|x| x * x).sum::<f32>() / 576.0).sqrt();
+                    eprintln!("[stage] frame=2 gr=0: pcm_rms={:.8} (synthesis 输出)", pcm_rms);
                 }
             }
-            
+
             // 4. Interleave & Output
             for i in 0..576 {
-                for ch in 0..nch {
-                    let val = pcm_ch[ch][i];
-                    // Clamp & Convert
-                    // Float range depends on decoder scaling.
-                    // Assuming +/- 1.0 range (with correct scaling in synthesis window)
-                    // If scaling was 32768.0, then values are +/- 32768.0
-                    // synthesis.rs used 1.0/32768.0 scaling on window coefficients.
-                    // So output should be +/- 1.0 (roughly).
-                    // Let's assume +/- 1.0 for now.
-                    
-                    pcm_buffer.push(val);
+                for pcm_channel in pcm_ch.iter().take(nch) {
+                    pcm_buffer.push(pcm_channel[i]);
                 }
             }
         }
-        
+
         // 8. 创建音频帧
-        // let nb_samples = pcm_buffer.len() / nch as usize;
-        // let mut frame = AudioFrame::new(
-        //     nb_samples as u32,
-        //     header.samplerate,
-        //     SampleFormat::F32,
-        //     ChannelLayout::from_channels(nch),
-        // );
-        
-        // let pcm_bytes: Vec<u8> = pcm_buffer.iter().flat_map(|s| s.to_le_bytes()).collect();
-        // frame.planes = vec![pcm_bytes];
-        // frame.pts = self.next_pts;
-        // frame.time_base = Rational::new(1, header.samplerate as i32);
-        // frame.duration = nb_samples as i64;
- 
-        // self.next_pts += nb_samples as i64;
-        // self.sample_rate = header.samplerate;
-        // self.channels = nch;
-        // self.channel_layout = ChannelLayout::from_channels(nch);
- 
-        // // Bit Reservoir management
-        // let keep_len = 512;
-        // if self.main_data.len() > keep_len {
-        //     let remove_cnt = self.main_data.len() - keep_len;
-        //     self.main_data.drain(0..remove_cnt);
-        // }
- 
-        // Ok((header.frame_size, Some(Frame::Audio(frame))))
-        
-        // 使用 AudioFrame::create
-        let nb_samples = pcm_buffer.len() / nch as usize;
+        let nb_samples = pcm_buffer.len() / nch;
         let mut frame = AudioFrame::new(
-             nb_samples as u32,
-             header.samplerate,
-             SampleFormat::F32,
-             ChannelLayout::from_channels(nch as u32),
+            nb_samples as u32,
+            header.samplerate,
+            SampleFormat::F32,
+            ChannelLayout::from_channels(nch as u32),
         );
         let pcm_bytes: Vec<u8> = pcm_buffer.iter().flat_map(|s| s.to_le_bytes()).collect();
         frame.data = vec![pcm_bytes];
         frame.pts = self.next_pts;
         frame.time_base = Rational::new(1, header.samplerate as i32);
         frame.duration = nb_samples as i64;
-        
+
         self.next_pts += nb_samples as i64;
+        self.frame_count += 1;
         self.sample_rate = header.samplerate;
         self.channels = nch as u32;
         self.channel_layout = ChannelLayout::from_channels(nch as u32);
-        
+
+        // Bit Reservoir 管理: 保留最近 512 字节
         let keep_len = 512;
         if self.main_data.len() > keep_len {
             let remove_cnt = self.main_data.len() - keep_len;
             self.main_data.drain(0..remove_cnt);
         }
-        
+
         Ok((header.frame_size, Some(Frame::Audio(frame))))
     }
 }
@@ -585,6 +704,10 @@ impl Decoder for Mp3Decoder {
         self.buffer.clear();
         self.main_data.clear();
         self.next_pts = 0;
+        self.frame_count = 0;
+        // 重置 overlap 和 synth 状态
+        self.overlap = [[[0.0; 18]; 32]; 2];
+        self.synth_ctx = Default::default();
         Ok(())
     }
 
@@ -617,5 +740,8 @@ impl Decoder for Mp3Decoder {
         self.buffer.clear();
         self.main_data.clear();
         self.next_pts = 0;
+        self.frame_count = 0;
+        self.overlap = [[[0.0; 18]; 32]; 2];
+        self.synth_ctx = Default::default();
     }
 }
