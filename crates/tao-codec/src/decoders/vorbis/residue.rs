@@ -141,8 +141,9 @@ fn decode_one_residue(
     let class_count = residue.classifications.max(1) as usize;
 
     let mut vec_buf = Vec::<f32>::new();
+    let mut class_vec = vec![0usize; partitions];
     if residue.residue_type == 2 {
-        let mut class_vec = vec![0usize; partitions];
+        class_vec.fill(0);
         let mut p = 0usize;
         while p < partitions {
             let sym = match decode_codebook_scalar(br, classbook, classbook_huffman) {
@@ -200,7 +201,7 @@ fn decode_one_residue(
     }
 
     for &ch in channels {
-        let mut class_vec = vec![0usize; partitions];
+        class_vec.fill(0);
         let mut p = 0usize;
         while p < partitions {
             let sym = match decode_codebook_scalar(br, classbook, classbook_huffman) {
