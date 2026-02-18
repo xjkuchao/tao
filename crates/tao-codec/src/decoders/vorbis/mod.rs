@@ -32,7 +32,7 @@ use self::codebook::CodebookHuffman;
 use self::floor::{build_floor_context, decode_floor_curves};
 use self::headers::{VorbisHeaders, parse_comment_header, parse_identification_header};
 use self::imdct::{imdct_from_residue, overlap_add};
-use self::residue::{apply_coupling_inverse, decode_residue_placeholder};
+use self::residue::{apply_coupling_inverse, decode_residue_approx};
 use self::setup::{FloorConfig, ParsedSetup, parse_setup_packet};
 use self::synthesis::synthesize_frame;
 
@@ -316,7 +316,15 @@ impl VorbisDecoder {
             &huffmans,
             blocksize as usize / 2,
         )?;
-        let mut residue = decode_residue_placeholder(parsed_setup, channels, blocksize as usize)?;
+        let mut residue = decode_residue_approx(
+            &mut br,
+            parsed_setup,
+            mapping,
+            &floor_curves,
+            &huffmans,
+            channels,
+            blocksize as usize,
+        )?;
         for ch in 0..channels {
             if !floor_curves.nonzero.get(ch).copied().unwrap_or(false) {
                 if let Some(sp) = residue.channels.get_mut(ch) {

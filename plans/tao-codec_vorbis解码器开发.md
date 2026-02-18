@@ -58,6 +58,7 @@
 - [x] 接入 channel coupling 反变换流程(当前 residue 仍为占位频谱)。
 - [x] 修正 long-window 包头标志位消费并接入基于 mapping 的 floor 上下文映射。
 - [x] 接入 floor1 音频包解析与曲线重建(当前幅度映射为近似实现)。
+- [x] 接入 residue 近似解码(按 bitstream/codebook 消费并生成频谱占位增量)。
 - [ ] 窗口、IMDCT、重叠相加。
 - [ ] floor1 恢复、residue 解码、耦合反变换。
 - [ ] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。
