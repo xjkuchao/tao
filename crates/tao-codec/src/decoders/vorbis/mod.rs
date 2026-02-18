@@ -286,7 +286,15 @@ impl VorbisDecoder {
 
         if self.first_audio_packet {
             self.first_audio_packet = false;
-            self.prev_blocksize = blocksize;
+            self.prev_blocksize = if is_long_block {
+                if prev_window_flag {
+                    headers.blocksize1
+                } else {
+                    headers.blocksize0
+                }
+            } else {
+                headers.blocksize0
+            };
             if packet_pts != tao_core::timestamp::NOPTS_VALUE && packet_pts >= 0 {
                 self.prev_packet_granule = packet_pts;
                 self.next_pts = packet_pts;
