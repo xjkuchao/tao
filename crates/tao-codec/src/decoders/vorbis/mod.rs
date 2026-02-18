@@ -31,7 +31,7 @@ use self::floor::build_floor_context;
 use self::headers::{VorbisHeaders, parse_comment_header, parse_identification_header};
 use self::imdct::{imdct_from_residue, overlap_add};
 use self::residue::decode_residue_placeholder;
-use self::setup::{ParsedSetup, parse_setup_packet};
+use self::setup::{FloorConfig, ParsedSetup, parse_setup_packet};
 use self::synthesis::synthesize_frame;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +124,18 @@ impl VorbisDecoder {
                         submap_floor: vec![0],
                         submap_residue: vec![0],
                     }],
+                    codebooks: Vec::new(),
+                    floors: vec![self::setup::FloorConfig::Floor0],
+                    residues: vec![self::setup::ResidueConfig {
+                        residue_type: 0,
+                        begin: 0,
+                        end: 0,
+                        partition_size: 1,
+                        classifications: 1,
+                        classbook: 0,
+                        cascades: vec![0],
+                        books: vec![[None; 8]],
+                    }],
                     floor_count: 1,
                     residue_count: 1,
                     mapping_count: 1,
@@ -147,6 +159,18 @@ impl VorbisDecoder {
                         channel_mux: vec![0; headers.channels as usize],
                         submap_floor: vec![0],
                         submap_residue: vec![0],
+                    }],
+                    codebooks: Vec::new(),
+                    floors: vec![self::setup::FloorConfig::Floor0],
+                    residues: vec![self::setup::ResidueConfig {
+                        residue_type: 0,
+                        begin: 0,
+                        end: 0,
+                        partition_size: 1,
+                        classifications: 1,
+                        classbook: 0,
+                        cascades: vec![0],
+                        books: vec![[None; 8]],
                     }],
                     floor_count: 1,
                     residue_count: 1,
@@ -184,6 +208,7 @@ impl VorbisDecoder {
                 "Vorbis setup 关键信息计数非法".into(),
             ));
         }
+        self.validate_setup_runtime(parsed_setup)?;
 
         let mut br = LsbBitReader::new(packet);
         let channels = self.channel_layout.channels as usize;
@@ -300,6 +325,105 @@ impl VorbisDecoder {
                 .saturating_add(frame.duration);
         }
         self.pending_frames.push_back(Frame::Audio(frame));
+        Ok(())
+    }
+
+    fn validate_setup_runtime(&self, setup: &ParsedSetup) -> TaoResult<()> {
+        for cb in &setup.codebooks {
+            if cb.dimensions == 0 || cb.entries == 0 {
+                return Err(TaoError::InvalidData("Vorbis codebook 参数非法".into()));
+            }
+            if cb.lengths.len() != cb.entries as usize {
+                return Err(TaoError::InvalidData("Vorbis codebook 长度表不匹配".into()));
+            }
+            if cb.lookup_type > 2 {
+                return Err(TaoError::InvalidData(
+                    "Vorbis codebook lookup_type 非法".into(),
+                ));
+            }
+        }
+
+        for floor in &setup.floors {
+            match floor {
+                FloorConfig::Floor0 => {}
+                FloorConfig::Floor1(f1) => {
+                    if f1.partitions as usize != f1.partition_classes.len() {
+                        return Err(TaoError::InvalidData(
+                            "Vorbis floor1 partitions 不匹配".into(),
+                        ));
+                    }
+                    if f1.multiplier == 0 || f1.multiplier > 4 {
+                        return Err(TaoError::InvalidData(
+                            "Vorbis floor1 multiplier 非法".into(),
+                        ));
+                    }
+                    if f1.range_bits > 15 || f1.x_list.len() < 2 {
+                        return Err(TaoError::InvalidData("Vorbis floor1 x_list 非法".into()));
+                    }
+                    for c in &f1.classes {
+                        if c.dimensions == 0 {
+                            return Err(TaoError::InvalidData(
+                                "Vorbis floor1 class dimensions 非法".into(),
+                            ));
+                        }
+                        if c.subclasses > 3 {
+                            return Err(TaoError::InvalidData(
+                                "Vorbis floor1 class subclasses 非法".into(),
+                            ));
+                        }
+                        if c.masterbook.is_some() && c.subclasses == 0 {
+                            return Err(TaoError::InvalidData(
+                                "Vorbis floor1 class masterbook 状态非法".into(),
+                            ));
+                        }
+                        let expect_books = 1usize << c.subclasses;
+                        if c.subclass_books.len() != expect_books {
+                            return Err(TaoError::InvalidData(
+                                "Vorbis floor1 subclass_books 长度非法".into(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        for residue in &setup.residues {
+            if residue.residue_type > 2 {
+                return Err(TaoError::InvalidData("Vorbis residue_type 非法".into()));
+            }
+            if residue.partition_size == 0 {
+                return Err(TaoError::InvalidData(
+                    "Vorbis residue partition_size 非法".into(),
+                ));
+            }
+            if residue.end < residue.begin {
+                return Err(TaoError::InvalidData("Vorbis residue 区间非法".into()));
+            }
+            if residue.classifications == 0 {
+                return Err(TaoError::InvalidData(
+                    "Vorbis residue classifications 非法".into(),
+                ));
+            }
+            if residue.cascades.len() != residue.classifications as usize
+                || residue.books.len() != residue.classifications as usize
+            {
+                return Err(TaoError::InvalidData(
+                    "Vorbis residue 分类表长度非法".into(),
+                ));
+            }
+            for (ci, cascade) in residue.cascades.iter().copied().enumerate() {
+                for bit in 0..8usize {
+                    let has_book = residue.books[ci][bit].is_some();
+                    let mask_on = (cascade & (1u8 << bit)) != 0;
+                    if has_book != mask_on {
+                        return Err(TaoError::InvalidData(
+                            "Vorbis residue cascade/book 映射不一致".into(),
+                        ));
+                    }
+                }
+            }
+            let _ = residue.classbook;
+        }
         Ok(())
     }
 }

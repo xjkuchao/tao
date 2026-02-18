@@ -7,9 +7,56 @@ pub(crate) struct ParsedSetup {
     pub(crate) mode_block_flags: Vec<bool>,
     pub(crate) mode_mappings: Vec<u8>,
     pub(crate) mappings: Vec<MappingConfig>,
+    pub(crate) codebooks: Vec<CodebookConfig>,
+    pub(crate) floors: Vec<FloorConfig>,
+    pub(crate) residues: Vec<ResidueConfig>,
     pub(crate) floor_count: u32,
     pub(crate) residue_count: u32,
     pub(crate) mapping_count: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CodebookConfig {
+    pub(crate) dimensions: u16,
+    pub(crate) entries: u32,
+    pub(crate) lengths: Vec<u8>,
+    pub(crate) lookup_type: u8,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum FloorConfig {
+    Floor0,
+    Floor1(Floor1Config),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Floor1Class {
+    pub(crate) dimensions: u8,
+    pub(crate) subclasses: u8,
+    pub(crate) masterbook: Option<u8>,
+    pub(crate) subclass_books: Vec<Option<u8>>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Floor1Config {
+    pub(crate) partitions: u8,
+    pub(crate) partition_classes: Vec<u8>,
+    pub(crate) classes: Vec<Floor1Class>,
+    pub(crate) multiplier: u8,
+    pub(crate) range_bits: u8,
+    pub(crate) x_list: Vec<u16>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ResidueConfig {
+    pub(crate) residue_type: u8,
+    pub(crate) begin: u32,
+    pub(crate) end: u32,
+    pub(crate) partition_size: u32,
+    pub(crate) classifications: u8,
+    pub(crate) classbook: u8,
+    pub(crate) cascades: Vec<u8>,
+    pub(crate) books: Vec<[Option<u8>; 8]>,
 }
 
 #[derive(Debug, Clone)]
@@ -35,7 +82,7 @@ pub(crate) fn parse_setup_packet(packet: &[u8], channels: u8) -> TaoResult<Parse
     }
 
     let mut br = LsbBitReader::new(&packet[7..]);
-    let _codebook_count = parse_codebooks(&mut br).map_err(|e| {
+    let codebooks = parse_codebooks(&mut br).map_err(|e| {
         TaoError::InvalidData(format!(
             "Vorbis setup codebooks 解析失败(bit={}): {}",
             br.bit_position(),
@@ -49,20 +96,23 @@ pub(crate) fn parse_setup_packet(packet: &[u8], channels: u8) -> TaoResult<Parse
             e
         ))
     })?;
-    let floor_count = parse_floors(&mut br).map_err(|e| {
+    let floors = parse_floors(&mut br).map_err(|e| {
         TaoError::InvalidData(format!(
             "Vorbis setup floors 解析失败(bit={}): {}",
             br.bit_position(),
             e
         ))
     })?;
-    let residue_count = parse_residues(&mut br).map_err(|e| {
+    let residues = parse_residues(&mut br).map_err(|e| {
         TaoError::InvalidData(format!(
             "Vorbis setup residues 解析失败(bit={}): {}",
             br.bit_position(),
             e
         ))
     })?;
+
+    let floor_count = floors.len() as u32;
+    let residue_count = residues.len() as u32;
     let mappings = parse_mappings(&mut br, channels, floor_count, residue_count).map_err(|e| {
         TaoError::InvalidData(format!(
             "Vorbis setup mappings 解析失败(bit={}): {}",
@@ -91,13 +141,17 @@ pub(crate) fn parse_setup_packet(packet: &[u8], channels: u8) -> TaoResult<Parse
         mode_mappings,
         mapping_count: mappings.len() as u32,
         mappings,
+        codebooks,
+        floors,
+        residues,
         floor_count,
         residue_count,
     })
 }
 
-fn parse_codebooks(br: &mut LsbBitReader<'_>) -> TaoResult<u32> {
+fn parse_codebooks(br: &mut LsbBitReader<'_>) -> TaoResult<Vec<CodebookConfig>> {
     let codebook_count = br.read_bits(8)? + 1;
+    let mut codebooks = Vec::with_capacity(codebook_count as usize);
     for _ in 0..codebook_count {
         let sync = br.read_bits(24)?;
         if sync != 0x564342 {
@@ -106,7 +160,7 @@ fn parse_codebooks(br: &mut LsbBitReader<'_>) -> TaoResult<u32> {
             )));
         }
 
-        let dimensions = br.read_bits(16)?;
+        let dimensions = br.read_bits(16)? as u16;
         if dimensions == 0 {
             return Err(TaoError::InvalidData(
                 "Vorbis codebook dimensions 不能为 0".into(),
@@ -121,9 +175,10 @@ fn parse_codebooks(br: &mut LsbBitReader<'_>) -> TaoResult<u32> {
         }
 
         let ordered = br.read_flag()?;
+        let mut lengths = vec![0u8; entries as usize];
         if ordered {
             let mut current_entry = 0u32;
-            let mut _current_length = br.read_bits(5)? + 1;
+            let mut current_length = br.read_bits(5)? + 1;
             while current_entry < entries {
                 let left = entries - current_entry;
                 let bits = ilog(left);
@@ -133,20 +188,24 @@ fn parse_codebooks(br: &mut LsbBitReader<'_>) -> TaoResult<u32> {
                         "Vorbis codebook ordered 长度组无效".into(),
                     ));
                 }
-                current_entry += number;
-                _current_length += 1;
+                for _ in 0..number {
+                    lengths[current_entry as usize] = current_length as u8;
+                    current_entry += 1;
+                }
+                current_length += 1;
             }
         } else {
             let sparse = br.read_flag()?;
-            for _ in 0..entries {
+            for i in 0..entries {
                 let used = if sparse { br.read_flag()? } else { true };
                 if used {
-                    let _length = br.read_bits(5)? + 1;
+                    let length = br.read_bits(5)? + 1;
+                    lengths[i as usize] = length as u8;
                 }
             }
         }
 
-        let lookup_type = br.read_bits(4)?;
+        let lookup_type = br.read_bits(4)? as u8;
         if lookup_type > 2 {
             return Err(TaoError::InvalidData(format!(
                 "Vorbis codebook lookup_type 非法: {}",
@@ -160,18 +219,25 @@ fn parse_codebooks(br: &mut LsbBitReader<'_>) -> TaoResult<u32> {
             let _sequence_p = br.read_flag()?;
 
             let quant_values = if lookup_type == 1 {
-                lookup1_values(entries, dimensions)
+                lookup1_values(entries, dimensions as u32)
             } else {
                 entries
-                    .checked_mul(dimensions)
+                    .checked_mul(dimensions as u32)
                     .ok_or_else(|| TaoError::InvalidData("Vorbis quant_values 溢出".into()))?
             };
             for _ in 0..quant_values {
                 let _ = br.read_bits(value_bits as u8)?;
             }
         }
+
+        codebooks.push(CodebookConfig {
+            dimensions,
+            entries,
+            lengths,
+            lookup_type,
+        });
     }
-    Ok(codebook_count)
+    Ok(codebooks)
 }
 
 fn parse_time_domain_transforms(br: &mut LsbBitReader<'_>) -> TaoResult<()> {
@@ -187,14 +253,18 @@ fn parse_time_domain_transforms(br: &mut LsbBitReader<'_>) -> TaoResult<()> {
     Ok(())
 }
 
-fn parse_floors(br: &mut LsbBitReader<'_>) -> TaoResult<u32> {
+fn parse_floors(br: &mut LsbBitReader<'_>) -> TaoResult<Vec<FloorConfig>> {
     let floor_count = br.read_bits(6)? + 1;
+    let mut floors = Vec::with_capacity(floor_count as usize);
     for floor_idx in 0..floor_count {
         let floor_type_pos = br.bit_position();
         let floor_type = br.read_bits(16)?;
         match floor_type {
-            0 => parse_floor0(br)?,
-            1 => parse_floor1(br)?,
+            0 => {
+                parse_floor0(br)?;
+                floors.push(FloorConfig::Floor0);
+            }
+            1 => floors.push(FloorConfig::Floor1(parse_floor1(br)?)),
             _ => {
                 let mut hints = Vec::new();
                 for delta in -8i32..=8 {
@@ -220,7 +290,7 @@ fn parse_floors(br: &mut LsbBitReader<'_>) -> TaoResult<u32> {
             }
         }
     }
-    Ok(floor_count)
+    Ok(floors)
 }
 
 fn parse_floor0(br: &mut LsbBitReader<'_>) -> TaoResult<()> {
@@ -239,7 +309,7 @@ fn parse_floor0(br: &mut LsbBitReader<'_>) -> TaoResult<()> {
     Ok(())
 }
 
-fn parse_floor1(br: &mut LsbBitReader<'_>) -> TaoResult<()> {
+fn parse_floor1(br: &mut LsbBitReader<'_>) -> TaoResult<Floor1Config> {
     let partitions = br.read_bits(5)?;
     let mut partition_classes = Vec::with_capacity(partitions as usize);
     let mut maximum_class = 0u32;
@@ -250,19 +320,32 @@ fn parse_floor1(br: &mut LsbBitReader<'_>) -> TaoResult<()> {
     }
 
     let class_count = maximum_class + 1;
-    let mut class_dimensions = vec![0u32; class_count as usize];
-    for class_idx in 0..class_count {
+    let mut classes = Vec::with_capacity(class_count as usize);
+    for _ in 0..class_count {
         let dim = br.read_bits(3)? + 1;
-        class_dimensions[class_idx as usize] = dim;
 
         let subclass = br.read_bits(2)?;
-        if subclass > 0 {
-            let _masterbook = br.read_bits(8)?;
-        }
+        let masterbook = if subclass > 0 {
+            Some(br.read_bits(8)? as u8)
+        } else {
+            None
+        };
         let count = 1u32 << subclass;
+        let mut subclass_books = Vec::with_capacity(count as usize);
         for _ in 0..count {
-            let _ = br.read_bits(8)?;
+            let v = br.read_bits(8)? as i32 - 1;
+            if v >= 0 {
+                subclass_books.push(Some(v as u8));
+            } else {
+                subclass_books.push(None);
+            }
         }
+        classes.push(Floor1Class {
+            dimensions: dim as u8,
+            subclasses: subclass as u8,
+            masterbook,
+            subclass_books,
+        });
     }
 
     let multiplier = br.read_bits(2)? + 1;
@@ -273,19 +356,29 @@ fn parse_floor1(br: &mut LsbBitReader<'_>) -> TaoResult<()> {
     }
 
     let range_bits = br.read_bits(4)?;
-    // floor1 的前两个点 X=0 和 X=(1<<range_bits) 为隐式常量, 不占用位流.
-    for class_num in partition_classes {
-        let class_idx = class_num as usize;
-        let dim = class_dimensions[class_idx];
+    let mut x_list = vec![0u16, (1u32 << range_bits) as u16];
+    for class_num in &partition_classes {
+        let class_idx = *class_num as usize;
+        let dim = classes[class_idx].dimensions as u32;
         for _ in 0..dim {
-            let _ = br.read_bits(range_bits as u8)?;
+            let x = br.read_bits(range_bits as u8)? as u16;
+            x_list.push(x);
         }
     }
-    Ok(())
+
+    Ok(Floor1Config {
+        partitions: partitions as u8,
+        partition_classes: partition_classes.into_iter().map(|v| v as u8).collect(),
+        classes,
+        multiplier: multiplier as u8,
+        range_bits: range_bits as u8,
+        x_list,
+    })
 }
 
-fn parse_residues(br: &mut LsbBitReader<'_>) -> TaoResult<u32> {
+fn parse_residues(br: &mut LsbBitReader<'_>) -> TaoResult<Vec<ResidueConfig>> {
     let residue_count = br.read_bits(6)? + 1;
+    let mut residues = Vec::with_capacity(residue_count as usize);
     for _ in 0..residue_count {
         let residue_type = br.read_bits(16)?;
         if residue_type > 2 {
@@ -294,29 +387,41 @@ fn parse_residues(br: &mut LsbBitReader<'_>) -> TaoResult<u32> {
                 residue_type,
             )));
         }
-        let _begin = br.read_bits(24)?;
-        let _end = br.read_bits(24)?;
-        let _partition_size = br.read_bits(24)? + 1;
+        let begin = br.read_bits(24)?;
+        let end = br.read_bits(24)?;
+        let partition_size = br.read_bits(24)? + 1;
         let classifications = br.read_bits(6)? + 1;
-        let _classbook = br.read_bits(8)?;
+        let classbook = br.read_bits(8)? as u8;
 
-        let mut cascades = vec![0u32; classifications as usize];
+        let mut cascades = vec![0u8; classifications as usize];
         for cascade in &mut cascades {
             let low_bits = br.read_bits(3)?;
             let bitflag = br.read_flag()?;
             let high_bits = if bitflag { br.read_bits(5)? } else { 0 };
-            *cascade = (high_bits << 3) | low_bits;
+            *cascade = ((high_bits << 3) | low_bits) as u8;
         }
 
-        for cascade in cascades {
-            for bit in 0..8 {
+        let mut books = vec![[None; 8]; classifications as usize];
+        for (ci, cascade) in cascades.iter().copied().enumerate() {
+            for (bit, slot) in books[ci].iter_mut().enumerate().take(8) {
                 if (cascade & (1 << bit)) != 0 {
-                    let _ = br.read_bits(8)?;
+                    *slot = Some(br.read_bits(8)? as u8);
                 }
             }
         }
+
+        residues.push(ResidueConfig {
+            residue_type: residue_type as u8,
+            begin,
+            end,
+            partition_size,
+            classifications: classifications as u8,
+            classbook,
+            cascades,
+            books,
+        });
     }
-    Ok(residue_count)
+    Ok(residues)
 }
 
 fn parse_mappings(
