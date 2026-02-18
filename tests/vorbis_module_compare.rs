@@ -5,12 +5,14 @@
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use lewton::inside_ogg::OggStreamReader;
 use tao::codec::codec_parameters::{AudioCodecParams, CodecParamsType};
 use tao::codec::frame::Frame;
 use tao::codec::packet::Packet;
 use tao::codec::{CodecId, CodecParameters, CodecRegistry};
 use tao::core::{ChannelLayout, SampleFormat, TaoError};
 use tao::format::{FormatRegistry, IoContext};
+use tracing::info;
 
 static FF_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -18,6 +20,10 @@ fn make_ffmpeg_tmp_path(tag: &str) -> String {
     let pid = std::process::id();
     let seq = FF_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("data/tmp_{}_{}_{}.raw", tag, pid, seq)
+}
+
+fn init_test_tracing() {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
 }
 
 fn decode_vorbis_with_tao(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn std::error::Error>> {
@@ -156,47 +162,121 @@ fn decode_vorbis_with_ffmpeg(
     Ok((sr, ch, pcm))
 }
 
-fn compare_pcm(a: &[f32], b: &[f32]) -> (usize, f64, f64) {
-    let n = a.len().min(b.len());
+fn decode_vorbis_with_lewton(
+    path: &str,
+) -> Result<(u32, u32, Vec<f32>), Box<dyn std::error::Error>> {
+    let file = std::fs::File::open(path)?;
+    let mut reader = OggStreamReader::new(file)?;
+    let sr = reader.ident_hdr.audio_sample_rate;
+    let ch = reader.ident_hdr.audio_channels as u32;
+
+    let mut out = Vec::<f32>::new();
+    loop {
+        match reader.read_dec_packet_itl()? {
+            Some(pkt) => {
+                out.extend(pkt.into_iter().map(|v| v as f32 / 32768.0));
+            }
+            None => break,
+        }
+    }
+
+    Ok((sr, ch, out))
+}
+
+struct CompareStats {
+    n: usize,
+    max_err: f64,
+    psnr: f64,
+    precision_pct: f64,
+}
+
+fn compare_pcm(reference: &[f32], test: &[f32]) -> CompareStats {
+    let n = reference.len().min(test.len());
     if n == 0 {
-        return (0, 0.0, f64::INFINITY);
+        return CompareStats {
+            n: 0,
+            max_err: 0.0,
+            psnr: f64::INFINITY,
+            precision_pct: 0.0,
+        };
     }
     let mut mse = 0.0f64;
     let mut max_err = 0.0f64;
+    let mut ref_power = 0.0f64;
     for i in 0..n {
-        let d = (a[i] - b[i]) as f64;
+        let r = reference[i] as f64;
+        let t = test[i] as f64;
+        let d = t - r;
         let ad = d.abs();
         max_err = max_err.max(ad);
         mse += d * d;
+        ref_power += r * r;
     }
     mse /= n as f64;
+    ref_power /= n as f64;
     let psnr = if mse > 0.0 {
         20.0 * (1.0 / mse.sqrt()).log10()
     } else {
         f64::INFINITY
     };
-    (n, max_err, psnr)
+    let mut precision_pct = if ref_power > 0.0 {
+        (ref_power / (ref_power + mse)) * 100.0
+    } else if mse == 0.0 {
+        100.0
+    } else {
+        0.0
+    };
+    if precision_pct.is_nan() {
+        precision_pct = 0.0;
+    }
+    if precision_pct < 0.0 {
+        precision_pct = 0.0;
+    }
+    if precision_pct > 100.0 {
+        precision_pct = 100.0;
+    }
+
+    CompareStats {
+        n,
+        max_err,
+        psnr,
+        precision_pct,
+    }
 }
 
 fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    init_test_tracing();
     let (tao_sr, tao_ch, tao_pcm) = decode_vorbis_with_tao(path)?;
     let (ff_sr, ff_ch, ff_pcm) = decode_vorbis_with_ffmpeg(path)?;
+    let (lewton_sr, lewton_ch, lewton_pcm) = decode_vorbis_with_lewton(path)?;
 
     assert_eq!(tao_sr, ff_sr, "采样率不匹配");
     assert_eq!(tao_ch, ff_ch, "通道数不匹配");
+    assert_eq!(lewton_sr, ff_sr, "Lewton 采样率不匹配");
+    assert_eq!(lewton_ch, ff_ch, "Lewton 通道数不匹配");
 
-    let (n, max_err, psnr) = compare_pcm(&tao_pcm, &ff_pcm);
-    println!(
-        "[{}] 样本={}, Tao={}, FFmpeg={}, max_err={:.6}, psnr={:.2}dB",
+    let stats_tao = compare_pcm(&ff_pcm, &tao_pcm);
+    let stats_lewton = compare_pcm(&ff_pcm, &lewton_pcm);
+    info!(
+        "[{}] Tao对比样本={}, Lewton对比样本={}, Tao={}, FFmpeg={}, Lewton={}, \
+Tao/FFmpeg: max_err={:.6}, psnr={:.2}dB, 精度={:.2}%, \
+Lewton/FFmpeg: max_err={:.6}, psnr={:.2}dB, 精度={:.2}%, FFmpeg=100%",
         path,
-        n,
+        stats_tao.n,
+        stats_lewton.n,
         tao_pcm.len(),
         ff_pcm.len(),
-        max_err,
-        psnr
+        lewton_pcm.len(),
+        stats_tao.max_err,
+        stats_tao.psnr,
+        stats_tao.precision_pct,
+        stats_lewton.max_err,
+        stats_lewton.psnr,
+        stats_lewton.precision_pct
     );
 
-    assert!(n > 0, "无可比较样本");
+    assert!(stats_tao.n > 0, "无可比较样本");
+    assert!(stats_lewton.n > 0, "Lewton 无可比较样本");
     Ok(())
 }
 
