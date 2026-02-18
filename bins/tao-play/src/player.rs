@@ -71,6 +71,7 @@ pub enum PlayerStatus {
     Time(f64, f64),
     Paused(bool),
     Volume(f32),
+    Muted(bool),
     /// Seek 完成, GUI 应清空帧队列并重置 frame_timer
     Seeked,
     End,
@@ -288,13 +289,24 @@ impl Player {
             .unwrap_or(0.1);
         let max_seekable_sec = (total_duration_sec - seek_end_margin).max(0.0);
 
-        loop {
+        if let Some(a) = &audio_sender {
+            a.set_volume(current_volume as f32 / 100.0);
+            a.set_muted(muted);
+        }
+
+        'main: loop {
             // ── 处理控制命令 ──
             while let Ok(cmd) = command_rx.try_recv() {
                 match cmd {
                     PlayerCommand::TogglePause => {
                         clock.toggle_pause();
-                        status_tx.send(PlayerStatus::Paused(clock.is_paused())).ok();
+                        let paused = clock.is_paused();
+                        let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
+                        info!(
+                            "[控制] 切换暂停: paused={}, 时钟={:.3}s",
+                            paused, current_sec
+                        );
+                        status_tx.send(PlayerStatus::Paused(paused)).ok();
                     }
                     PlayerCommand::StepFrame => {
                         // 单步: 如果暂停则恢复 (GUI 侧会在显示一帧后重新暂停)
@@ -360,28 +372,37 @@ impl Player {
                     PlayerCommand::VolumeUp => {
                         current_volume = (current_volume + 5).min(100);
                         muted = false;
+                        if let Some(a) = &audio_sender {
+                            a.set_volume(current_volume as f32 / 100.0);
+                            a.set_muted(false);
+                        }
                         status_tx
                             .send(PlayerStatus::Volume(current_volume as f32 / 100.0))
                             .ok();
+                        status_tx.send(PlayerStatus::Muted(false)).ok();
                     }
                     PlayerCommand::VolumeDown => {
                         current_volume = current_volume.saturating_sub(5);
+                        if let Some(a) = &audio_sender {
+                            a.set_volume(current_volume as f32 / 100.0);
+                        }
                         status_tx
                             .send(PlayerStatus::Volume(current_volume as f32 / 100.0))
                             .ok();
                     }
                     PlayerCommand::ToggleMute => {
                         muted = !muted;
-                        let vol = if muted {
-                            0.0
-                        } else {
-                            current_volume as f32 / 100.0
-                        };
-                        status_tx.send(PlayerStatus::Volume(vol)).ok();
+                        if let Some(a) = &audio_sender {
+                            a.set_muted(muted);
+                        }
+                        status_tx
+                            .send(PlayerStatus::Volume(current_volume as f32 / 100.0))
+                            .ok();
+                        status_tx.send(PlayerStatus::Muted(muted)).ok();
                     }
                     PlayerCommand::Stop => {
                         info!("停止播放");
-                        return Ok(());
+                        break 'main;
                     }
                 }
             }
@@ -413,29 +434,34 @@ impl Player {
                                     while let Ok(frame) = dec.receive_frame() {
                                         if let Frame::Audio(af) = &frame {
                                             let nb = af.nb_samples as u64;
+                                            let chunk_pts_us = (audio_cum_samples as f64
+                                                / audio_sample_rate as f64
+                                                * 1_000_000.0)
+                                                as i64;
                                             // 跳过阶段: 只累计不发送 (避免播放错位音频)
                                             if seek_skip_until.is_some() {
                                                 audio_cum_samples += nb;
                                                 continue;
                                             }
                                             if let Some(out) = &audio_sender {
-                                                let pts_us = (audio_cum_samples as f64
-                                                    / audio_sample_rate as f64
-                                                    * 1_000_000.0)
-                                                    as i64;
                                                 let mut samples = extract_f32_samples(af);
-                                                let effective_volume = if muted {
-                                                    0.0f32
-                                                } else {
-                                                    current_volume as f32 / 100.0
+                                                let chunk = AudioChunk {
+                                                    samples,
+                                                    pts_us: chunk_pts_us,
                                                 };
-                                                for s in &mut samples {
-                                                    *s *= effective_volume;
-                                                }
-                                                let chunk = AudioChunk { samples, pts_us };
                                                 if out.send(chunk).is_err() {
-                                                    return Ok(());
+                                                    break 'main;
                                                 }
+                                            }
+                                            // 仅音频流 seek: 首个音频块即可确认 seek 完成.
+                                            if seek_flush_pending && video_stream.is_none() {
+                                                status_tx.send(PlayerStatus::Seeked).ok();
+                                                clock.confirm_seek();
+                                                seek_flush_pending = false;
+                                                info!(
+                                                    "[Seek] 首个音频块已发送, 确认时钟: PTS={:.3}s",
+                                                    chunk_pts_us as f64 / 1_000_000.0
+                                                );
                                             }
                                             audio_cum_samples += nb;
                                         }
@@ -487,7 +513,7 @@ impl Player {
                                             }
                                             // bounded channel: 队满时阻塞, 自动背压
                                             if frame_tx.send(display_frame).is_err() {
-                                                return Ok(());
+                                                break 'main;
                                             }
                                             frames_sent += 1;
                                         }
@@ -497,7 +523,7 @@ impl Player {
                         }
                     }
                     Err(TaoError::Eof) => {
-                        if seek_flush_pending && !seek_eof_retried {
+                        if seek_flush_pending && !seek_eof_retried && video_stream.is_some() {
                             // seek 到末尾后立即 EOF 且未解码出帧:
                             // 可能 idx1 keyframe 标记不准确, 从较近位置回退重试
                             seek_eof_retried = true;
@@ -557,16 +583,26 @@ impl Player {
                 clock.update_audio_pts(elapsed_us);
             }
 
-            // 仅音频播放: EOF 后等待音频缓冲区播完
+            // 仅音频播放: demux 可能提前到 EOF, 需等时钟接近总时长再结束.
             if video_stream.is_none() && eof {
-                std::thread::sleep(Duration::from_millis(2000));
-                break;
+                if total_duration_sec > 0.0 {
+                    let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
+                    let remain_sec = (total_duration_sec - current_sec).max(0.0);
+                    if remain_sec > 0.2 {
+                        std::thread::sleep(Duration::from_millis(16));
+                        continue;
+                    }
+                } else {
+                    std::thread::sleep(Duration::from_millis(16));
+                    continue;
+                }
             }
 
             if eof {
                 // seek 后无帧可解码就 EOF: 补发 Seeked 保持 GUI 状态一致
                 if seek_flush_pending {
                     status_tx.send(PlayerStatus::Seeked).ok();
+                    clock.confirm_seek();
                     seek_flush_pending = false;
                 }
                 // 跟踪 GUI 侧暂停状态 (进入 EOF 前 clock 状态即 GUI 已知状态)
@@ -589,13 +625,18 @@ impl Player {
                     match command_rx.recv_timeout(Duration::from_millis(50)) {
                         Ok(PlayerCommand::Stop) => {
                             info!("停止播放");
-                            return Ok(());
+                            break 'main;
                         }
                         Ok(PlayerCommand::Seek(offset)) => {
                             seek_eof_retried = false;
                             seek_skip_until = None;
-                            // 以总时长为基准 (时钟在 EOF 时不准确)
-                            let base_sec = total_duration_sec;
+                            // EOF 后以当前时钟为基准, 再进行总时长约束.
+                            let base_sec = if total_duration_sec > 0.0 {
+                                (clock.current_time_us() as f64 / 1_000_000.0)
+                                    .clamp(0.0, total_duration_sec)
+                            } else {
+                                (clock.current_time_us() as f64 / 1_000_000.0).max(0.0)
+                            };
                             let target_sec = if total_duration_sec > 0.0 {
                                 (base_sec + offset).clamp(0.0, max_seekable_sec)
                             } else {

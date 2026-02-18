@@ -5,7 +5,7 @@
 
 use log::{debug, info, warn};
 use sdl2::audio::{AudioCallback, AudioDevice, AudioSpecDesired};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use tao_core::{ChannelLayout, SampleFormat};
@@ -40,6 +40,10 @@ struct SdlAudioPlayer {
     playing: Arc<Mutex<bool>>,
     /// Seek 时由 player 线程置 true, 回调中排空缓冲后重置
     flush_flag: Arc<AtomicBool>,
+    /// 音量百分比 (0-100), 由 player 线程实时更新
+    volume_percent: Arc<AtomicU32>,
+    /// 静音标记, 由 player 线程实时更新
+    muted: Arc<AtomicBool>,
 }
 
 impl AudioCallback for SdlAudioPlayer {
@@ -102,6 +106,17 @@ impl AudioCallback for SdlAudioPlayer {
             self.buffer.drain(..available);
         }
 
+        // 实时音量/静音控制: 在回调输出阶段应用, 避免队列缓存导致延迟.
+        let is_muted = self.muted.load(Ordering::Relaxed);
+        let volume = if is_muted {
+            0.0f32
+        } else {
+            (self.volume_percent.load(Ordering::Relaxed).min(100) as f32) / 100.0
+        };
+        for sample in out.iter_mut() {
+            *sample *= volume;
+        }
+
         // ── 更新音频时钟 (对齐 ffplay sdl_audio_callback) ──
         //
         // ffplay: set_clock_at(&audclk,
@@ -134,6 +149,8 @@ pub struct AudioOutput {
 pub struct AudioSender {
     sender: mpsc::Sender<AudioChunk>,
     flush_flag: Arc<AtomicBool>,
+    volume_percent: Arc<AtomicU32>,
+    muted: Arc<AtomicBool>,
 }
 
 impl AudioOutput {
@@ -159,10 +176,14 @@ impl AudioOutput {
         let receiver = Arc::new(Mutex::new(receiver));
         let playing = Arc::new(Mutex::new(true));
         let flush_flag = Arc::new(AtomicBool::new(false));
+        let volume_percent = Arc::new(AtomicU32::new(100));
+        let muted = Arc::new(AtomicBool::new(false));
 
         let playing_clone = playing.clone();
         let receiver_clone = receiver.clone();
         let flush_flag_clone = flush_flag.clone();
+        let volume_percent_clone = volume_percent.clone();
+        let muted_clone = muted.clone();
 
         let device = audio_subsystem.open_playback(None, &desired_spec, |spec| {
             let output_sample_rate = spec.freq as u32;
@@ -192,6 +213,8 @@ impl AudioOutput {
                 output_channels,
                 playing: playing_clone,
                 flush_flag: flush_flag_clone,
+                volume_percent: volume_percent_clone,
+                muted: muted_clone,
             }
         })?;
 
@@ -202,7 +225,15 @@ impl AudioOutput {
             sample_rate, channels, buf_size
         );
 
-        Ok((Self { _device: device }, AudioSender { sender, flush_flag }))
+        Ok((
+            Self { _device: device },
+            AudioSender {
+                sender,
+                flush_flag,
+                volume_percent,
+                muted,
+            },
+        ))
     }
 }
 
@@ -220,6 +251,17 @@ impl AudioSender {
     /// Seek 时清空音频缓冲 (通知回调线程排空旧数据)
     pub fn flush(&self) {
         self.flush_flag.store(true, Ordering::Release);
+    }
+
+    /// 设置实时音量 (0.0-1.0)
+    pub fn set_volume(&self, volume: f32) {
+        let percent = (volume.clamp(0.0, 1.0) * 100.0).round() as u32;
+        self.volume_percent.store(percent, Ordering::Relaxed);
+    }
+
+    /// 设置静音状态
+    pub fn set_muted(&self, muted: bool) {
+        self.muted.store(muted, Ordering::Relaxed);
     }
 }
 

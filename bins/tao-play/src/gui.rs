@@ -4,7 +4,8 @@
 //! 使用 SDL2 YUV 纹理进行硬件加速渲染, GPU 做色彩空间转换.
 
 use sdl2::event::Event;
-use sdl2::keyboard::Keycode;
+use sdl2::keyboard::{Keycode, Mod};
+use sdl2::pixels::Color;
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::rect::Rect;
 use sdl2::render::{Canvas, Texture, TextureAccess, TextureCreator};
@@ -63,10 +64,20 @@ struct VideoDisplayState<'a> {
     is_fullscreen: bool,
     /// Seek 后等待新帧显示 (暂停状态下)
     seek_frame_pending: bool,
+    /// 当前播放时间 (秒)
+    current_time_sec: f64,
+    /// 总时长 (秒)
+    total_time_sec: f64,
+    /// 当前音量 (0.0-1.0)
+    volume_level: f32,
+    /// 当前是否静音
+    muted: bool,
+    /// 是否显示屏幕文字 (当前: 时间 HUD)
+    show_hud_text: bool,
 }
 
 impl<'a> VideoDisplayState<'a> {
-    fn new() -> Self {
+    fn new(initial_volume: f32) -> Self {
         Self {
             frame_timer: 0.0,
             frame_queue: VecDeque::with_capacity(8),
@@ -79,6 +90,11 @@ impl<'a> VideoDisplayState<'a> {
             tex_height: 0,
             is_fullscreen: false,
             seek_frame_pending: false,
+            current_time_sec: 0.0,
+            total_time_sec: 0.0,
+            volume_level: initial_volume.clamp(0.0, 1.0),
+            muted: false,
+            show_hud_text: true,
         }
     }
 }
@@ -278,11 +294,148 @@ fn upload_front_frame<'a>(
 
 /// 渲染已上传纹理到 canvas (保持宽高比)
 fn render_current_texture(state: &VideoDisplayState, canvas: &mut Canvas<Window>) {
+    canvas.set_draw_color(Color::RGB(0, 0, 0));
+    canvas.clear();
+
     if let Some(tex) = state.texture.as_ref() {
-        canvas.clear();
         let dst = calculate_display_rect(canvas, state.tex_width, state.tex_height);
         let _ = canvas.copy(tex, None, Some(dst));
-        canvas.present();
+    }
+    if state.show_hud_text {
+        draw_time_overlay(
+            canvas,
+            state.current_time_sec,
+            state.total_time_sec,
+            state.volume_level,
+            state.muted,
+        );
+    }
+    canvas.present();
+}
+
+fn is_shift(mod_state: Mod) -> bool {
+    mod_state.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD)
+}
+
+fn is_ctrl(mod_state: Mod) -> bool {
+    mod_state.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD)
+}
+
+/// 格式化秒数为 "HH:MM:SS.mmm"
+fn format_hms_millis(sec: f64) -> String {
+    let clamped = sec.max(0.0);
+    let total_ms = (clamped * 1000.0) as u64;
+    let ms = total_ms % 1000;
+    let total_sec = total_ms / 1000;
+    let s = total_sec % 60;
+    let total_min = total_sec / 60;
+    let m = total_min % 60;
+    let h = total_min / 60;
+    format!("{:02}:{:02}:{:02}.{:03}", h, m, s, ms)
+}
+
+/// 构建进度字符串: "00:00:00.000/11:11:11.111"
+fn format_progress_text(current_sec: f64, total_sec: f64) -> String {
+    let current = format_hms_millis(current_sec);
+    let total = if total_sec > 0.0 {
+        format_hms_millis(total_sec)
+    } else {
+        "--:--:--.---".to_string()
+    };
+    format!("{current}/{total}")
+}
+
+/// 构建音量字符串: "VOL 75%" 或 "MUTE"
+fn format_volume_text(volume_level: f32, muted: bool) -> String {
+    if muted {
+        "MUTE".to_string()
+    } else {
+        let vol = (volume_level.clamp(0.0, 1.0) * 100.0).round() as u32;
+        format!("VOL {vol}%")
+    }
+}
+
+/// 获取 3x5 点阵字形
+fn glyph_rows(ch: char) -> Option<[u8; 5]> {
+    let rows = match ch {
+        '0' => [0b111, 0b101, 0b101, 0b101, 0b111],
+        '1' => [0b010, 0b110, 0b010, 0b010, 0b111],
+        '2' => [0b111, 0b001, 0b111, 0b100, 0b111],
+        '3' => [0b111, 0b001, 0b111, 0b001, 0b111],
+        '4' => [0b101, 0b101, 0b111, 0b001, 0b001],
+        '5' => [0b111, 0b100, 0b111, 0b001, 0b111],
+        '6' => [0b111, 0b100, 0b111, 0b101, 0b111],
+        '7' => [0b111, 0b001, 0b001, 0b001, 0b001],
+        '8' => [0b111, 0b101, 0b111, 0b101, 0b111],
+        '9' => [0b111, 0b101, 0b111, 0b001, 0b111],
+        ':' => [0b000, 0b010, 0b000, 0b010, 0b000],
+        '.' => [0b000, 0b000, 0b000, 0b000, 0b010],
+        '/' => [0b001, 0b001, 0b010, 0b100, 0b100],
+        '-' => [0b000, 0b000, 0b111, 0b000, 0b000],
+        '%' => [0b101, 0b001, 0b010, 0b100, 0b101],
+        'V' => [0b101, 0b101, 0b101, 0b101, 0b010],
+        'O' => [0b111, 0b101, 0b101, 0b101, 0b111],
+        'L' => [0b100, 0b100, 0b100, 0b100, 0b111],
+        'M' => [0b101, 0b111, 0b111, 0b101, 0b101],
+        'U' => [0b101, 0b101, 0b101, 0b101, 0b111],
+        'T' => [0b111, 0b010, 0b010, 0b010, 0b010],
+        'E' => [0b111, 0b100, 0b111, 0b100, 0b111],
+        ' ' => [0b000, 0b000, 0b000, 0b000, 0b000],
+        _ => return None,
+    };
+    Some(rows)
+}
+
+/// 绘制进度 HUD (左上角)
+fn draw_time_overlay(
+    canvas: &mut Canvas<Window>,
+    current_sec: f64,
+    total_sec: f64,
+    volume: f32,
+    muted: bool,
+) {
+    let line1 = format_progress_text(current_sec, total_sec);
+    let line2 = format_volume_text(volume, muted);
+    let scale: i32 = 3;
+    let glyph_w: i32 = 3 * scale;
+    let glyph_h: i32 = 5 * scale;
+    let spacing: i32 = scale;
+    let padding: i32 = 6;
+    let line_gap: i32 = scale * 2;
+    let x0: i32 = 10;
+    let y0: i32 = 10;
+
+    let line1_w = (glyph_w + spacing) * line1.chars().count() as i32 - spacing;
+    let line2_w = (glyph_w + spacing) * line2.chars().count() as i32 - spacing;
+    let text_w = line1_w.max(line2_w);
+    let text_h = glyph_h * 2 + line_gap;
+    let bg = Rect::new(
+        x0 - padding,
+        y0 - padding,
+        (text_w + padding * 2) as u32,
+        (text_h + padding * 2) as u32,
+    );
+
+    canvas.set_draw_color(Color::RGBA(0, 0, 0, 200));
+    let _ = canvas.fill_rect(bg);
+
+    canvas.set_draw_color(Color::RGB(235, 235, 235));
+    for (line_idx, line) in [line1, line2].iter().enumerate() {
+        let base_y = y0 + line_idx as i32 * (glyph_h + line_gap);
+        for (idx, ch) in line.chars().enumerate() {
+            if let Some(rows) = glyph_rows(ch) {
+                let char_x = x0 + idx as i32 * (glyph_w + spacing);
+                for (row_idx, row) in rows.iter().enumerate() {
+                    for col in 0..3 {
+                        if (row & (1 << (2 - col))) != 0 {
+                            let px = char_x + col * scale;
+                            let py = base_y + row_idx as i32 * scale;
+                            let _ = canvas.fill_rect(Rect::new(px, py, scale as u32, scale as u32));
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -346,9 +499,12 @@ pub fn run_event_loop(
     command_tx: std::sync::mpsc::Sender<PlayerCommand>,
     clock: MediaClock,
     hold: bool,
+    has_video: bool,
+    initial_volume: f32,
 ) -> Result<(), String> {
+    canvas.set_blend_mode(sdl2::render::BlendMode::Blend);
     let texture_creator = canvas.texture_creator();
-    let mut state = VideoDisplayState::new();
+    let mut state = VideoDisplayState::new(initial_volume);
     let mut paused = false;
     let mut eof = false;
     // EOF 后是否已进入 hold 停留状态
@@ -366,7 +522,9 @@ pub fn run_event_loop(
                     break 'running;
                 }
                 Event::KeyDown {
-                    keycode: Some(key), ..
+                    keycode: Some(key),
+                    keymod,
+                    ..
                 } => match key {
                     Keycode::Escape | Keycode::Q => {
                         let _ = command_tx.send(PlayerCommand::Stop);
@@ -387,54 +545,72 @@ pub fn run_event_loop(
                     }
                     Keycode::S => {
                         let mode = play_mode_str(paused, state.step);
-                        log::info!(
-                            "[按键] S (单步), 当前={}, 帧队列={}, 最近PTS={}",
-                            mode,
-                            state.frame_queue.len(),
-                            fmt_pts(state.last_pts)
-                        );
-                        state.step = true;
-                        let _ = command_tx.send(PlayerCommand::StepFrame);
+                        if has_video {
+                            log::info!(
+                                "[按键] S (单步), 当前={}, 帧队列={}, 最近PTS={}",
+                                mode,
+                                state.frame_queue.len(),
+                                fmt_pts(state.last_pts)
+                            );
+                            state.step = true;
+                            let _ = command_tx.send(PlayerCommand::StepFrame);
+                        } else {
+                            log::info!("[按键] S (单步) 仅视频支持, 当前={}", mode);
+                        }
                     }
                     Keycode::Right => {
                         let mode = play_mode_str(paused, state.step);
+                        let step_sec = if is_ctrl(keymod) {
+                            30.0
+                        } else if is_shift(keymod) {
+                            10.0
+                        } else {
+                            5.0
+                        };
                         log::info!(
-                            "[按键] Right (+10s), 当前={}, 帧队列={}, 最近PTS={}",
+                            "[按键] Right (+{:.0}s), 当前={}, 帧队列={}, 最近PTS={}",
+                            step_sec,
                             mode,
                             state.frame_queue.len(),
                             fmt_pts(state.last_pts)
                         );
-                        let _ = command_tx.send(PlayerCommand::Seek(10.0));
+                        let _ = command_tx.send(PlayerCommand::Seek(step_sec));
                     }
                     Keycode::Left => {
                         let mode = play_mode_str(paused, state.step);
+                        let step_sec = if is_ctrl(keymod) {
+                            30.0
+                        } else if is_shift(keymod) {
+                            10.0
+                        } else {
+                            5.0
+                        };
                         log::info!(
-                            "[按键] Left (-10s), 当前={}, 帧队列={}, 最近PTS={}",
+                            "[按键] Left (-{:.0}s), 当前={}, 帧队列={}, 最近PTS={}",
+                            step_sec,
                             mode,
                             state.frame_queue.len(),
                             fmt_pts(state.last_pts)
                         );
-                        let _ = command_tx.send(PlayerCommand::Seek(-10.0));
+                        let _ = command_tx.send(PlayerCommand::Seek(-step_sec));
                     }
                     Keycode::Up => {
-                        let mode = play_mode_str(paused, state.step);
-                        log::info!(
-                            "[按键] Up (+60s), 当前={}, 帧队列={}, 最近PTS={}",
-                            mode,
-                            state.frame_queue.len(),
-                            fmt_pts(state.last_pts)
-                        );
-                        let _ = command_tx.send(PlayerCommand::Seek(60.0));
+                        let _ = command_tx.send(PlayerCommand::VolumeUp);
                     }
                     Keycode::Down => {
-                        let mode = play_mode_str(paused, state.step);
+                        let _ = command_tx.send(PlayerCommand::VolumeDown);
+                    }
+                    Keycode::Tab => {
+                        state.show_hud_text = !state.show_hud_text;
+                        state.force_refresh = true;
                         log::info!(
-                            "[按键] Down (-60s), 当前={}, 帧队列={}, 最近PTS={}",
-                            mode,
-                            state.frame_queue.len(),
-                            fmt_pts(state.last_pts)
+                            "[按键] Tab (屏幕文字显示): {}",
+                            if state.show_hud_text {
+                                "开启"
+                            } else {
+                                "关闭"
+                            }
                         );
-                        let _ = command_tx.send(PlayerCommand::Seek(-60.0));
                     }
                     Keycode::Num9 | Keycode::KpDivide => {
                         let _ = command_tx.send(PlayerCommand::VolumeDown);
@@ -476,6 +652,19 @@ pub fn run_event_loop(
                     log::info!("收到播放结束信号，等待帧队列排空");
                 }
                 PlayerStatus::Paused(p) => paused = p,
+                PlayerStatus::Time(current, total) => {
+                    state.current_time_sec = current;
+                    state.total_time_sec = total;
+                    state.force_refresh = true;
+                }
+                PlayerStatus::Volume(v) => {
+                    state.volume_level = v.clamp(0.0, 1.0);
+                    state.force_refresh = true;
+                }
+                PlayerStatus::Muted(m) => {
+                    state.muted = m;
+                    state.force_refresh = true;
+                }
                 PlayerStatus::Seeked => {
                     let old_queue_len = state.frame_queue.len();
                     // Seek 完成: 清空帧队列和重置 frame_timer

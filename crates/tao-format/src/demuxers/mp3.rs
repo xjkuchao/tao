@@ -381,6 +381,48 @@ impl Mp3Demuxer {
 
         Ok((None, 0, 0))
     }
+
+    /// 从第一帧开始按帧跳转到目标帧.
+    ///
+    /// MP3 没有统一强制索引结构, 这里采用顺序扫描方式确保正确性.
+    /// 对于中小文件和常规交互 seek 足够稳定.
+    fn seek_to_frame(&mut self, io: &mut IoContext, target_frame: u64) -> TaoResult<()> {
+        io.seek(std::io::SeekFrom::Start(self.first_frame_offset))?;
+
+        if target_frame == 0 {
+            self.current_pts = 0;
+            self.frames_read = 0;
+            return Ok(());
+        }
+
+        let mut pos = self.first_frame_offset;
+        let mut frame_idx = 0u64;
+        let mut header_buf = [0u8; 4];
+
+        while frame_idx < target_frame {
+            io.seek(std::io::SeekFrom::Start(pos))?;
+            match io.read_exact(&mut header_buf) {
+                Ok(()) => {}
+                Err(TaoError::Eof) => break,
+                Err(e) => return Err(e),
+            }
+
+            let header = u32::from_be_bytes(header_buf);
+            if let Some(fh) = parse_frame_header(header) {
+                pos = pos.saturating_add(fh.frame_size as u64);
+                frame_idx += 1;
+                continue;
+            }
+
+            // 头部异常时向前滑动 1 字节重同步, 避免 seek 后落在脏数据区.
+            pos = pos.saturating_add(1);
+        }
+
+        io.seek(std::io::SeekFrom::Start(pos))?;
+        self.frames_read = frame_idx;
+        self.current_pts = (frame_idx.saturating_mul(self.samples_per_frame as u64)) as i64;
+        Ok(())
+    }
 }
 
 impl Demuxer for Mp3Demuxer {
@@ -543,12 +585,34 @@ impl Demuxer for Mp3Demuxer {
 
     fn seek(
         &mut self,
-        _io: &mut IoContext,
-        _stream_index: usize,
-        _timestamp: i64,
-        _flags: SeekFlags,
+        io: &mut IoContext,
+        stream_index: usize,
+        timestamp: i64,
+        flags: SeekFlags,
     ) -> TaoResult<()> {
-        Err(TaoError::NotImplemented("MP3 seek 尚未实现".into()))
+        if stream_index != 0 || self.streams.is_empty() {
+            return Err(TaoError::InvalidData(format!(
+                "MP3 seek 流索引无效: stream_index={stream_index}"
+            )));
+        }
+
+        if flags.byte {
+            return Err(TaoError::NotImplemented("MP3 字节级 seek 尚未实现".into()));
+        }
+
+        let target_samples = timestamp.max(0) as u64;
+        let mut target_frame = target_samples / self.samples_per_frame.max(1) as u64;
+        if self.total_frames > 0 {
+            target_frame = target_frame.min(self.total_frames.saturating_sub(1));
+        }
+
+        self.seek_to_frame(io, target_frame)?;
+
+        debug!(
+            "MP3 seek: timestamp={}, target_frame={}, pts={}",
+            timestamp, target_frame, self.current_pts
+        );
+        Ok(())
     }
 
     fn duration(&self) -> Option<f64> {
@@ -790,5 +854,31 @@ mod tests {
         } else {
             panic!("应该是音频流参数");
         }
+    }
+
+    #[test]
+    fn test_seek_按时间戳定位后读取() {
+        let frame = build_mp3_frame(9, 0, false); // MPEG1-L3, 1152 样本/帧
+        let mut data = Vec::new();
+        for _ in 0..8 {
+            data.extend_from_slice(&frame);
+        }
+
+        let backend = MemoryBackend::from_data(data);
+        let mut io = IoContext::new(Box::new(backend));
+        let mut demuxer = Mp3Demuxer::create().unwrap();
+        demuxer.open(&mut io).unwrap();
+
+        let spf = match &demuxer.streams()[0].params {
+            StreamParams::Audio(a) => i64::from(a.frame_size),
+            _ => panic!("应该是音频流"),
+        };
+
+        // 跳转到第 2 帧 (0-based), 读取到的第一个包 PTS 应为 2*spf.
+        demuxer
+            .seek(&mut io, 0, 2 * spf, SeekFlags::default())
+            .unwrap();
+        let pkt = demuxer.read_packet(&mut io).unwrap();
+        assert_eq!(pkt.pts, 2 * spf, "seek 后首包 PTS 不正确");
     }
 }

@@ -173,5 +173,14 @@ fn main() -> Result<(), String> {
     );
 
     // ── 主线程: SDL2 事件循环 + video_refresh 状态机 ──
-    gui::run_event_loop(canvas, frame_rx, status_rx, command_tx, clock, args.hold)
+    gui::run_event_loop(
+        canvas,
+        frame_rx,
+        status_rx,
+        command_tx,
+        clock,
+        args.hold,
+        video_size.is_some(),
+        initial_volume,
+    )
 }
