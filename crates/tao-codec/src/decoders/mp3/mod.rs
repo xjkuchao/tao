@@ -5,6 +5,7 @@ mod bitreader;
 mod data;
 mod header;
 mod huffman;
+mod huffman_explicit_tables;
 mod imdct;
 mod reorder;
 mod requantize;
@@ -21,17 +22,6 @@ use crate::decoder::Decoder;
 use crate::frame::{AudioFrame, Frame};
 use crate::packet::Packet;
 use std::collections::VecDeque;
-#[cfg(feature = "symphonia-backend")]
-use symphonia_bundle_mp3::MpaDecoder as SymMpaDecoder;
-#[cfg(feature = "symphonia-backend")]
-use symphonia_core::audio::SampleBuffer;
-#[cfg(feature = "symphonia-backend")]
-use symphonia_core::codecs::{
-    CODEC_TYPE_MP3, CodecParameters as SymCodecParameters, Decoder as SymDecoderTrait,
-    DecoderOptions as SymDecoderOptions,
-};
-#[cfg(feature = "symphonia-backend")]
-use symphonia_core::formats::Packet as SymPacket;
 use tao_core::{ChannelLayout, Rational, SampleFormat, TaoError, TaoResult};
 
 use self::bitreader::BitReader;
@@ -66,9 +56,18 @@ pub struct Mp3Decoder {
     next_pts: i64,
     /// 已解码帧计数
     frame_count: u32,
-    /// symphonia MP3 解码器 (用于可靠解码路径, 仅在非 mp3-native 时使用)
-    #[cfg(feature = "symphonia-backend")]
-    sym_decoder: Option<SymMpaDecoder>,
+    /// Encoder delay (来自 LAME gapless 头, 单位: 样本/每通道)
+    /// 在开始输出时需跳过的前置样本数
+    encoder_delay: u32,
+    /// Encoder padding (来自 LAME gapless 头, 单位: 样本/每通道)
+    /// 在结束时需裁剪的后置样本数
+    encoder_padding: u32,
+    /// 已从输出中跳过的 encoder delay 样本数 (每通道)
+    delay_skipped: u32,
+    /// 总解码样本数 (每通道, 用于计算结尾裁剪)
+    total_decoded_samples: u64,
+    /// 总有效样本数 (每通道, 计算自 total_frames * spf - delay - padding)
+    valid_samples_total: u64,
 }
 
 impl Mp3Decoder {
@@ -85,8 +84,11 @@ impl Mp3Decoder {
             channel_layout: ChannelLayout::from_channels(2),
             next_pts: 0,
             frame_count: 0,
-            #[cfg(feature = "symphonia-backend")]
-            sym_decoder: None,
+            encoder_delay: 0,
+            encoder_padding: 0,
+            delay_skipped: 0,
+            total_decoded_samples: 0,
+            valid_samples_total: 0,
         }))
     }
 
@@ -140,47 +142,6 @@ impl Mp3Decoder {
 
         let frame_data = &self.buffer[..header.frame_size];
 
-        #[cfg(all(feature = "symphonia-backend", not(feature = "mp3-native")))]
-        if let Some(decoder) = self.sym_decoder.as_mut() {
-            let spf = if header.version == MpegVersion::Mpeg1 {
-                1152
-            } else {
-                576
-            };
-            let sym_pkt =
-                SymPacket::new_from_slice(0, self.next_pts as u64, spf as u64, frame_data);
-            match decoder.decode(&sym_pkt) {
-                Ok(decoded) => {
-                    let spec = *decoded.spec();
-                    let mut sample_buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
-                    sample_buf.copy_interleaved_ref(decoded);
-                    let samples = sample_buf.samples();
-                    let nch = spec.channels.count() as u32;
-                    let nb_samples = samples.len() / nch as usize;
-
-                    let mut frame = AudioFrame::new(
-                        nb_samples as u32,
-                        spec.rate,
-                        SampleFormat::F32,
-                        ChannelLayout::from_channels(nch),
-                    );
-                    let pcm_bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
-                    frame.data = vec![pcm_bytes];
-                    frame.pts = self.next_pts;
-                    frame.time_base = Rational::new(1, spec.rate as i32);
-                    frame.duration = nb_samples as i64;
-
-                    self.next_pts += nb_samples as i64;
-                    self.sample_rate = spec.rate;
-                    self.channels = nch;
-                    self.channel_layout = ChannelLayout::from_channels(nch);
-
-                    return Ok((header.frame_size, Some(Frame::Audio(frame))));
-                }
-                Err(_) => return Ok((header.frame_size, None)),
-            }
-        }
-
         // 4. 解析 Side Information
         let side_info_start = 4 + if header.has_crc { 2 } else { 0 };
         let side_info_end = side_info_start + header.side_info_size;
@@ -195,40 +156,30 @@ impl Mp3Decoder {
             Err(_) => return Ok((1, None)),
         };
 
-        // 5. Bit Reservoir 管理
-        if (self.main_data.len() as u32) < side_info.main_data_begin {
-            // 数据不足, 将 Main Data 放入储备库但不解码
-            let main_data_slice = &frame_data[side_info_end..];
-            self.main_data.extend(main_data_slice);
-
-            let spf = if header.version == MpegVersion::Mpeg1 {
-                1152
-            } else {
-                576
-            };
-            self.next_pts += spf;
-            return Ok((header.frame_size, None));
-        }
-
-        // 6. 将 Main Data 放入 Bit Reservoir
+        // 5. 组装本帧 Main Data 视图:
+        // [前序复用字节(main_data_begin)] + [当前帧 main_data]
         let main_data_slice = &frame_data[side_info_end..];
-        self.main_data.extend(main_data_slice);
+        let main_data_begin = side_info.main_data_begin as usize;
+        const MAX_MAIN_DATA_BYTES: usize = 2048;
 
-        // 计算 Main Data 的起始位置
-        let current_main_data_len = main_data_slice.len();
-        let total_len = self.main_data.len();
-        let current_start_index = total_len - current_main_data_len;
-
-        if (side_info.main_data_begin as usize) > current_start_index {
+        if main_data_begin > self.main_data.len() {
+            // 数据不足: 仅缓存当前数据, 等后续帧补齐
+            self.main_data.extend(main_data_slice);
+            if self.main_data.len() > MAX_MAIN_DATA_BYTES {
+                let remove_cnt = self.main_data.len() - MAX_MAIN_DATA_BYTES;
+                self.main_data.drain(0..remove_cnt);
+            }
             return Ok((header.frame_size, None));
         }
 
-        let bit_reservoir_start = current_start_index - side_info.main_data_begin as usize;
+        let reservoir: Vec<u8> = self.main_data.iter().copied().collect();
+        let reuse_start = reservoir.len() - main_data_begin;
 
-        self.main_data.make_contiguous();
-        let (slice, _) = self.main_data.as_slices();
+        let mut frame_main_data = Vec::with_capacity(main_data_begin + main_data_slice.len());
+        frame_main_data.extend_from_slice(&reservoir[reuse_start..]);
+        frame_main_data.extend_from_slice(main_data_slice);
 
-        let mut br = BitReader::new(&slice[bit_reservoir_start..]);
+        let mut br = BitReader::new(&frame_main_data);
 
         let huffman = huffman::HuffmanDecoder::new();
 
@@ -274,7 +225,6 @@ impl Mp3Decoder {
                     (0, 0)
                 };
 
-                let mut _part2_bits = 0;
                 if is_mpeg1 && granule.block_type == 2 && granule.mixed_block_flag {
                     // Mixed blocks: 简化处理
                     // 8 个长块 scalefactors (slen1)
@@ -283,7 +233,6 @@ impl Mp3Decoder {
                         if len > 0 {
                             if let Some(val) = br.read_bits(len as u8) {
                                 *sf = val as u8;
-                                _part2_bits += len;
                             }
                         } else {
                             *sf = 0;
@@ -296,7 +245,6 @@ impl Mp3Decoder {
                             for win in 0..3 {
                                 if let Some(val) = br.read_bits(len as u8) {
                                     scalefac[8 + (band - 3) * 3 + win] = val as u8;
-                                    _part2_bits += len;
                                 }
                             }
                         } else {
@@ -313,7 +261,6 @@ impl Mp3Decoder {
                             for win in 0..3 {
                                 if let Some(val) = br.read_bits(len as u8) {
                                     scalefac[band * 3 + win] = val as u8;
-                                    _part2_bits += len;
                                 }
                             }
                         } else {
@@ -338,7 +285,6 @@ impl Mp3Decoder {
                             } else if len > 0 {
                                 if let Some(val) = br.read_bits(len as u8) {
                                     scalefac[band] = val as u8;
-                                    _part2_bits += len;
                                 }
                             } else {
                                 scalefac[band] = 0;
@@ -365,7 +311,7 @@ impl Mp3Decoder {
 
                 let end_bit = start_bit + part2_3_length;
 
-                // Huffman big_values 区域 (带位预算检查, 与 symphonia 一致)
+                // Huffman big_values 区域 (带位预算检查)
                 let mut i = 0usize;
                 while i < big_values.min(576) {
                     if br.bit_offset() >= end_bit {
@@ -493,7 +439,13 @@ impl Mp3Decoder {
 
                 // 1. IMDCT (使用每通道共享的 overlap 缓冲区)
                 let mut imdct_out = [0.0; 576];
-                imdct::imdct(granule, &ctx.xr, &mut self.overlap[ch], &mut imdct_out);
+                imdct::imdct(
+                    granule,
+                    &ctx.xr,
+                    ctx.rzero,
+                    &mut self.overlap[ch],
+                    &mut imdct_out,
+                );
 
                 // 2. Frequency Inversion
                 synthesis::frequency_inversion(&mut imdct_out);
@@ -522,15 +474,66 @@ impl Mp3Decoder {
             }
         }
 
-        // 8. 创建音频帧
-        let nb_samples = pcm_buffer.len() / nch;
+        // 8. Gapless 裁剪: 跳过 encoder delay 前缀
+        // pcm_buffer 以交错格式存储, 每帧 nb_interleaved = samples_per_ch * nch
+        let raw_samples_per_ch = pcm_buffer.len() / nch;
+
+        // 8a. 跳过前置 encoder delay 样本
+        let skip_front_per_ch = if self.encoder_delay > 0 && self.delay_skipped < self.encoder_delay
+        {
+            let remaining_delay = self.encoder_delay - self.delay_skipped;
+            remaining_delay.min(raw_samples_per_ch as u32) as usize
+        } else {
+            0
+        };
+        self.delay_skipped += skip_front_per_ch as u32;
+
+        // 8b. 累积总解码样本数 (裁剪前置 delay 后的有效部分)
+        let usable_per_ch = raw_samples_per_ch - skip_front_per_ch;
+        self.total_decoded_samples += usable_per_ch as u64;
+
+        // 8c. 裁剪后置 padding: 若知道 valid_samples_total, 截断超出部分
+        let keep_per_ch = if self.encoder_padding > 0 && self.valid_samples_total > 0 {
+            let already_output = self.total_decoded_samples - usable_per_ch as u64;
+            let can_output = self.valid_samples_total.saturating_sub(already_output) as usize;
+            usable_per_ch.min(can_output)
+        } else {
+            usable_per_ch
+        };
+
+        // 构造裁剪后的 PCM (交错)
+        let front_interleaved = skip_front_per_ch * nch;
+        let keep_interleaved = keep_per_ch * nch;
+        let trimmed_pcm = &pcm_buffer[front_interleaved..front_interleaved + keep_interleaved];
+
+        // 若裁剪后无有效样本, 继续下一帧 (不输出空帧)
+        if keep_per_ch == 0 {
+            // Bit Reservoir 管理 (仍需执行)
+            let used_bits = br.bit_offset();
+            let used_bytes = used_bits.div_ceil(8);
+            let keep_start = used_bytes.min(frame_main_data.len());
+            self.main_data.clear();
+            self.main_data
+                .extend(frame_main_data.iter().skip(keep_start).copied());
+            if self.main_data.len() > MAX_MAIN_DATA_BYTES {
+                let remove_cnt = self.main_data.len() - MAX_MAIN_DATA_BYTES;
+                self.main_data.drain(0..remove_cnt);
+            }
+            self.sample_rate = header.samplerate;
+            self.channels = nch as u32;
+            self.channel_layout = ChannelLayout::from_channels(nch as u32);
+            self.frame_count += 1;
+            return Ok((header.frame_size, None));
+        }
+
+        let nb_samples = keep_per_ch;
         let mut frame = AudioFrame::new(
             nb_samples as u32,
             header.samplerate,
             SampleFormat::F32,
             ChannelLayout::from_channels(nch as u32),
         );
-        let pcm_bytes: Vec<u8> = pcm_buffer.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let pcm_bytes: Vec<u8> = trimmed_pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
         frame.data = vec![pcm_bytes];
         frame.pts = self.next_pts;
         frame.time_base = Rational::new(1, header.samplerate as i32);
@@ -542,10 +545,17 @@ impl Mp3Decoder {
         self.channel_layout = ChannelLayout::from_channels(nch as u32);
         self.frame_count += 1;
 
-        // Bit Reservoir 管理: 保留最近 512 字节
-        let keep_len = 512;
-        if self.main_data.len() > keep_len {
-            let remove_cnt = self.main_data.len() - keep_len;
+        // Bit Reservoir 管理: 仅保留"未消费"的 main_data 字节。
+        let used_bits = br.bit_offset();
+        let used_bytes = used_bits.div_ceil(8);
+        let keep_start = used_bytes.min(frame_main_data.len());
+
+        self.main_data.clear();
+        self.main_data
+            .extend(frame_main_data.iter().skip(keep_start).copied());
+
+        if self.main_data.len() > MAX_MAIN_DATA_BYTES {
+            let remove_cnt = self.main_data.len() - MAX_MAIN_DATA_BYTES;
             self.main_data.drain(0..remove_cnt);
         }
 
@@ -562,22 +572,31 @@ impl Decoder for Mp3Decoder {
         "mp3"
     }
 
-    fn open(&mut self, _params: &CodecParameters) -> TaoResult<()> {
-        #[cfg(feature = "symphonia-backend")]
-        {
-            let sym_params = SymCodecParameters {
-                codec: CODEC_TYPE_MP3,
-                ..Default::default()
-            };
-            self.sym_decoder = Some(
-                SymMpaDecoder::try_new(&sym_params, &SymDecoderOptions::default())
-                    .map_err(|e| TaoError::Codec(format!("symphonia mp3 init failed: {e}")))?,
-            );
-        }
+    fn open(&mut self, params: &CodecParameters) -> TaoResult<()> {
         self.opened = true;
         self.buffer.clear();
         self.main_data.clear();
         self.next_pts = 0;
+        self.delay_skipped = 0;
+        self.total_decoded_samples = 0;
+
+        // 从 extra_data 读取 gapless 信息 (由 MP3 demuxer 从 LAME/Lavc 头写入)
+        // 格式: [front_skip_le_u32][padding_le_u32][valid_total_le_u64] 共 16 字节
+        // front_skip = encoder_delay (LAME字段) + MP3_DECODER_LATENCY (529)
+        // valid_total = total_frames * spf - encoder_delay - encoder_padding (纯 LAME 公式)
+        if params.extra_data.len() >= 16 {
+            self.encoder_delay =
+                u32::from_le_bytes(params.extra_data[0..4].try_into().unwrap_or([0; 4]));
+            self.encoder_padding =
+                u32::from_le_bytes(params.extra_data[4..8].try_into().unwrap_or([0; 4]));
+            self.valid_samples_total =
+                u64::from_le_bytes(params.extra_data[8..16].try_into().unwrap_or([0; 8]));
+        } else {
+            self.encoder_delay = 0;
+            self.encoder_padding = 0;
+            self.valid_samples_total = 0;
+        }
+
         // 重置 overlap 和 synth 状态
         self.overlap = [[[0.0; 18]; 32]; 2];
         self.synth_ctx = Default::default();
@@ -613,10 +632,8 @@ impl Decoder for Mp3Decoder {
         self.buffer.clear();
         self.main_data.clear();
         self.next_pts = 0;
-        #[cfg(feature = "symphonia-backend")]
-        if let Some(decoder) = self.sym_decoder.as_mut() {
-            decoder.reset();
-        }
+        self.delay_skipped = 0;
+        self.total_decoded_samples = 0;
         self.overlap = [[[0.0; 18]; 32]; 2];
         self.synth_ctx = Default::default();
     }

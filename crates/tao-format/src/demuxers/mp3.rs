@@ -202,6 +202,10 @@ pub struct Mp3Demuxer {
     total_frames: u64,
     /// 已读取的帧数
     frames_read: u64,
+    /// Encoder delay (来自 LAME/iTunSMPB gapless 信息, 单位: 样本)
+    encoder_delay: u32,
+    /// Trailing padding (来自 LAME/iTunSMPB gapless 信息, 单位: 样本)
+    encoder_padding: u32,
 }
 
 impl Mp3Demuxer {
@@ -214,6 +218,8 @@ impl Mp3Demuxer {
             samples_per_frame: 1152,
             total_frames: 0,
             frames_read: 0,
+            encoder_delay: 0,
+            encoder_padding: 0,
         }))
     }
 
@@ -280,11 +286,12 @@ impl Mp3Demuxer {
     }
 
     /// 尝试解析 Xing/Info 或 VBRI 头
+    /// 返回 (total_frames, encoder_delay, encoder_padding)
     fn parse_vbr_header(
         io: &mut IoContext,
         frame_offset: u64,
         fh: &FrameHeader,
-    ) -> TaoResult<Option<u64>> {
+    ) -> TaoResult<(Option<u64>, u32, u32)> {
         // Xing/Info 头部偏移取决于版本和声道
         let xing_offset = match (fh.version, fh.channel_mode) {
             (MpegVersion::V1, 3) => 17, // 单声道
@@ -297,18 +304,66 @@ impl Mp3Demuxer {
         io.seek(std::io::SeekFrom::Start(abs_offset))?;
         let mut tag = [0u8; 4];
         if io.read_exact(&mut tag).is_err() {
-            return Ok(None);
+            return Ok((None, 0, 0));
         }
 
         if &tag == b"Xing" || &tag == b"Info" {
             let flags = io.read_u32_be()?;
-            let total_frames = if (flags & 1) != 0 {
+
+            // 可选字段: frames, bytes, toc, quality (每个 4/4/100/4 字节)
+            let total_frames = if (flags & 0x1) != 0 {
                 Some(u64::from(io.read_u32_be()?))
             } else {
                 None
             };
-            debug!("MP3: 发现 Xing 头, frames={total_frames:?}");
-            return Ok(total_frames);
+            if (flags & 0x2) != 0 {
+                // 跳过 total_bytes
+                let _ = io.read_u32_be();
+            }
+            if (flags & 0x4) != 0 {
+                // 跳过 TOC (100 字节)
+                let mut toc = [0u8; 100];
+                let _ = io.read_exact(&mut toc);
+            }
+            if (flags & 0x8) != 0 {
+                // 跳过 quality
+                let _ = io.read_u32_be();
+            }
+
+            // 读取 LAME/Lavc 扩展头: 9 字节版本字符串 + gapless 信息
+            // LAME tag 布局 (从 Xing tag 可选字段之后):
+            //   [0..8]   = 编码器版本字符串, 9 字节 (如 "LAME3.99r" 或 "Lavc62.11")
+            //   [9]      = 信息标签版本(高4位) + VBR方法(低4位)
+            //   [10]     = 低通滤波器频率
+            //   [11..14] = Peak Signal Amplitude (4字节)
+            //   [15..18] = Radio Replay Gain (4字节)
+            //   [19]     = 编码标志 + ATH类型
+            //   [20]     = 比特率
+            //   [21..23] = encoder delay/padding (3字节)  ← 正确偏移
+            //     encoder_delay = (buf[0] << 4) | (buf[1] >> 4)   [12 bit]
+            //     encoder_padding = ((buf[1] & 0xF) << 8) | buf[2] [12 bit]
+            // 注意: FFmpeg (libavcodec) 编码的文件以 "Lavc" 开头, 但仍遵循相同布局
+            let mut lame_buf = [0u8; 24];
+            if io.read_exact(&mut lame_buf).is_ok() {
+                let d = &lame_buf[21..24];
+                let encoder_delay = ((d[0] as u32) << 4) | ((d[1] as u32) >> 4);
+                let encoder_padding = (((d[1] as u32) & 0xF) << 8) | (d[2] as u32);
+                // 仅当延迟/填充值在合理范围内才接受 (encoder_delay <= 2880, padding <= 2880)
+                if encoder_delay <= 2880
+                    && encoder_padding <= 2880
+                    && (encoder_delay > 0 || encoder_padding > 0)
+                {
+                    let encoder_tag = &lame_buf[0..4];
+                    debug!(
+                        "MP3: 发现编码器扩展头 ({:?}), delay={encoder_delay}, padding={encoder_padding}, frames={total_frames:?}",
+                        std::str::from_utf8(encoder_tag).unwrap_or("?")
+                    );
+                    return Ok((total_frames, encoder_delay, encoder_padding));
+                }
+            }
+
+            debug!("MP3: 发现 Xing 头 (无有效 gapless 扩展), frames={total_frames:?}");
+            return Ok((total_frames, 0, 0));
         }
 
         // 检查 VBRI 头 (固定在帧头+36 字节处)
@@ -321,10 +376,10 @@ impl Mp3Demuxer {
             let _total_bytes = io.read_u32_be()?;
             let total_frames = u64::from(io.read_u32_be()?);
             debug!("MP3: 发现 VBRI 头, frames={total_frames}");
-            return Ok(Some(total_frames));
+            return Ok((Some(total_frames), 0, 0));
         }
 
-        Ok(None)
+        Ok((None, 0, 0))
     }
 }
 
@@ -346,10 +401,14 @@ impl Demuxer for Mp3Demuxer {
         self.first_frame_offset = frame_offset;
         self.samples_per_frame = fh.samples_per_frame;
 
-        // 3) 尝试解析 VBR 头
-        if let Ok(Some(frames)) = Self::parse_vbr_header(io, frame_offset, &fh) {
-            self.total_frames = frames;
-            // Xing 帧本身不算数据帧, 跳过它
+        // 3) 尝试解析 VBR 头 (含 LAME gapless 信息)
+        if let Ok((frames_opt, delay, padding)) = Self::parse_vbr_header(io, frame_offset, &fh) {
+            if let Some(frames) = frames_opt {
+                self.total_frames = frames;
+            }
+            self.encoder_delay = delay;
+            self.encoder_padding = padding;
+            // Xing/Info 帧本身不算数据帧, 跳过它
             self.first_frame_offset = frame_offset + u64::from(fh.frame_size);
         }
 
@@ -368,6 +427,37 @@ impl Demuxer for Mp3Demuxer {
             -1
         };
 
+        // 将 gapless 信息编码到 extra_data:
+        //   [0..4]  front_skip (le u32, 每通道, = encoder_delay + decoder_latency)
+        //   [4..8]  encoder_padding (le u32, 保留供参考)
+        //   [8..16] valid_samples_total (le u64, 每通道)
+        //
+        // 解码器跳过 front_skip 个样本, 共输出 valid_samples_total 个样本 (每通道).
+        // valid_samples_total = total_frames * spf - encoder_delay - encoder_padding
+        //   (纯 LAME 公式, 不考虑 decoder_latency, 因为 front_skip 已包含 decoder_latency)
+        //
+        // MP3 解码器固有延迟 (decoder_latency) = 529 样本 (MPEG1 Layer3 标准)
+        // 此值由 FFmpeg 规范确认: skip_samples = encoder_delay + 529
+        const MP3_DECODER_LATENCY: u32 = 529;
+        let extra_data = if self.encoder_delay > 0 || self.encoder_padding > 0 {
+            let front_skip = self.encoder_delay + MP3_DECODER_LATENCY;
+            let valid_total = if self.total_frames > 0 {
+                let total_spf = self.total_frames * fh.samples_per_frame as u64;
+                total_spf
+                    .saturating_sub(self.encoder_delay as u64)
+                    .saturating_sub(self.encoder_padding as u64)
+            } else {
+                0u64
+            };
+            let mut buf = [0u8; 16];
+            buf[0..4].copy_from_slice(&front_skip.to_le_bytes());
+            buf[4..8].copy_from_slice(&self.encoder_padding.to_le_bytes());
+            buf[8..16].copy_from_slice(&valid_total.to_le_bytes());
+            buf.to_vec()
+        } else {
+            Vec::new()
+        };
+
         let stream = Stream {
             index: 0,
             media_type: MediaType::Audio,
@@ -376,7 +466,7 @@ impl Demuxer for Mp3Demuxer {
             duration,
             start_time: 0,
             nb_frames: self.total_frames,
-            extra_data: Vec::new(),
+            extra_data,
             params: StreamParams::Audio(AudioStreamParams {
                 sample_rate: fh.sample_rate,
                 channel_layout: ChannelLayout::from_channels(channels),

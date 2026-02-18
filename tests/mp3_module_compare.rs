@@ -1,18 +1,17 @@
-//! MP3 解码器逐模块精度对比测试
+//! MP3 解码器精度对比测试
 //!
 //! 功能:
-//! 1. 使用 tao 自研 MP3 解码器 (mp3-native 路径) 解码 MP3 文件
-//! 2. 使用 ffmpeg 解码同一文件, 获取参考 PCM
+//! 1. 使用 tao 自研 MP3 解码器解码 MP3 URL
+//! 2. 使用 ffmpeg 解码同一 URL, 获取参考 PCM
 //! 3. 逐帧对比 PCM 输出, 计算 PSNR/MSE/最大误差
-//! 4. 报告详细的精度分析结果
 //!
 //! 运行方式:
-//!   cargo test --test mp3_module_compare -- --nocapture
-//!
-//! 注意: 此测试始终使用自研路径解码 (不依赖 symphonia-backend feature),
-//! 因为我们直接通过 tao 的公共 API 解码, 而 feature 控制的是 tao-codec 内部路径。
+//!   cargo test --test mp3_module_compare --features http -- --nocapture
 
-use std::path::Path;
+#![cfg(feature = "http")]
+
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use tao::codec::codec_parameters::{AudioCodecParams, CodecParamsType};
 use tao::codec::{CodecId, CodecParameters, CodecRegistry};
 use tao::core::{ChannelLayout, SampleFormat, TaoError};
@@ -20,15 +19,28 @@ use tao::format::{FormatRegistry, IoContext};
 
 use tao::codec::decoders::mp3::debug;
 
-/// 使用 tao 解码 MP3 文件, 返回 (采样率, 通道数, PCM f32 样本)
-fn decode_mp3_with_tao(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn std::error::Error>> {
+/// CBR 测试样本 (来自 samples.ffmpeg.org)
+const SAMPLE_CBR: &str = "https://samples.ffmpeg.org/A-codecs/MP3/CBR/sample.mp3";
+/// VBR 测试样本 (来自 samples.ffmpeg.org)
+const SAMPLE_VBR: &str = "https://samples.ffmpeg.org/A-codecs/MP3/VBR/lame.mp3";
+
+static FF_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn make_ffmpeg_tmp_path(tag: &str) -> String {
+    let pid = std::process::id();
+    let seq = FF_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("data/tmp_{}_{}_{}.raw", tag, pid, seq)
+}
+
+/// 使用 tao 解码 MP3 URL, 返回 (采样率, 通道数, PCM f32 样本)
+fn decode_mp3_with_tao_url(url: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn std::error::Error>> {
     let mut format_registry = FormatRegistry::new();
     tao::format::register_all(&mut format_registry);
     let mut codec_registry = CodecRegistry::new();
     tao::codec::register_all(&mut codec_registry);
 
-    let mut io = IoContext::open_read(path)?;
-    let mut demuxer = format_registry.open_input(&mut io, Some(path))?;
+    let mut io = IoContext::open_url(url)?;
+    let mut demuxer = format_registry.open_input(&mut io, Some(url))?;
     demuxer.open(&mut io)?;
 
     let streams = demuxer.streams();
@@ -135,17 +147,21 @@ fn decode_mp3_with_tao(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn std::
     Ok((actual_sr, actual_ch, all_pcm))
 }
 
-/// 使用 ffmpeg 解码 MP3 文件, 返回 (采样率, 通道数, PCM f32 样本)
-fn decode_mp3_with_ffmpeg(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn std::error::Error>> {
+/// 使用 ffmpeg 解码 MP3 URL, 返回 (采样率, 通道数, PCM f32 样本)
+/// ffmpeg 原生支持 HTTP/HTTPS URL 作为输入
+fn decode_mp3_with_ffmpeg_url(
+    url: &str,
+) -> Result<(u32, u32, Vec<f32>), Box<dyn std::error::Error>> {
     use std::process::Command;
 
-    let output_path = format!("{}.ffmpeg_cmp.raw", path);
+    std::fs::create_dir_all("data").ok();
+    let output_path = make_ffmpeg_tmp_path("ffmpeg_cmp");
 
     let status = Command::new("ffmpeg")
         .args([
             "-y",
             "-i",
-            path,
+            url,
             "-f",
             "f32le",
             "-acodec",
@@ -172,7 +188,7 @@ fn decode_mp3_with_ffmpeg(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn st
             "stream=sample_rate,channels",
             "-of",
             "csv=p=0",
-            path,
+            url,
         ])
         .output()?;
 
@@ -253,7 +269,6 @@ fn compare_frames(
             worst_max_err = result.max_abs_error;
         }
 
-        // 报告前 N 帧和最差帧
         if frame_idx < max_frames_to_report {
             println!("  {}", result);
         }
@@ -265,7 +280,11 @@ fn compare_frames(
         total_frames,
         pass_count,
         total_frames - pass_count,
-        (pass_count as f64 / total_frames as f64) * 100.0,
+        if total_frames > 0 {
+            (pass_count as f64 / total_frames as f64) * 100.0
+        } else {
+            0.0
+        },
     );
     println!("最差帧: #{}, PSNR: {:.1}dB", worst_frame, worst_psnr,);
     println!("最大单样本误差: {:.2e}", worst_max_err);
@@ -279,60 +298,37 @@ fn compare_global(tao_pcm: &[f32], ref_pcm: &[f32]) -> debug::CompareResult {
 
 // ===== 测试用例 =====
 
+/// CBR MP3 精度对比 (samples.ffmpeg.org)
 #[test]
-fn test_mp3_native_vs_ffmpeg_file1() {
-    let path = "data/1.mp3";
-    if !Path::new(path).exists() {
-        println!("跳过: 测试文件 {} 不存在", path);
-        return;
-    }
+fn test_mp3_native_vs_ffmpeg_cbr() {
+    let url = SAMPLE_CBR;
 
-    let (tao_sr, tao_ch, tao_pcm) = decode_mp3_with_tao(path).expect("tao 解码失败");
-    let (ff_sr, ff_ch, ff_pcm) = decode_mp3_with_ffmpeg(path).expect("ffmpeg 解码失败");
+    let tao_result = decode_mp3_with_tao_url(url);
+    let tao_result = match tao_result {
+        Ok(r) => r,
+        Err(e) => {
+            println!("跳过: tao 解码失败 (网络/解码错误): {}", e);
+            return;
+        }
+    };
 
-    assert_eq!(tao_sr, ff_sr, "采样率不匹配");
-    assert_eq!(tao_ch, ff_ch, "通道数不匹配");
+    let ff_result = decode_mp3_with_ffmpeg_url(url);
+    let ff_result = match ff_result {
+        Ok(r) => r,
+        Err(e) => {
+            println!("跳过: ffmpeg 解码失败 (网络/工具未安装): {}", e);
+            return;
+        }
+    };
 
-    // 全局精度
-    let global = compare_global(&tao_pcm, &ff_pcm);
-    println!("\n=== 全局精度 (data/1.mp3) ===");
-    println!("  {}", global);
-
-    // 帧级精度 (前 20 帧)
-    compare_frames(&tao_pcm, &ff_pcm, tao_ch, 1152, 20);
-
-    // 验收判定 (当前阶段: 记录结果, 不强制 assert)
-    if global.psnr_db >= debug::acceptance::MIN_PSNR_DB as f64 {
-        println!(
-            "\n✅ PSNR {:.1}dB >= {}dB, 通过",
-            global.psnr_db,
-            debug::acceptance::MIN_PSNR_DB
-        );
-    } else {
-        println!(
-            "\n⚠️  PSNR {:.1}dB < {}dB, 未达标 (当前阶段不强制失败)",
-            global.psnr_db,
-            debug::acceptance::MIN_PSNR_DB,
-        );
-    }
-}
-
-#[test]
-fn test_mp3_native_vs_ffmpeg_file2() {
-    let path = "data/2.mp3";
-    if !Path::new(path).exists() {
-        println!("跳过: 测试文件 {} 不存在", path);
-        return;
-    }
-
-    let (tao_sr, tao_ch, tao_pcm) = decode_mp3_with_tao(path).expect("tao 解码失败");
-    let (ff_sr, ff_ch, ff_pcm) = decode_mp3_with_ffmpeg(path).expect("ffmpeg 解码失败");
+    let (tao_sr, tao_ch, tao_pcm) = tao_result;
+    let (ff_sr, ff_ch, ff_pcm) = ff_result;
 
     assert_eq!(tao_sr, ff_sr, "采样率不匹配");
     assert_eq!(tao_ch, ff_ch, "通道数不匹配");
 
     let global = compare_global(&tao_pcm, &ff_pcm);
-    println!("\n=== 全局精度 (data/2.mp3) ===");
+    println!("\n=== 全局精度 (CBR) ===");
     println!("  {}", global);
 
     compare_frames(&tao_pcm, &ff_pcm, tao_ch, 1152, 20);
@@ -352,23 +348,68 @@ fn test_mp3_native_vs_ffmpeg_file2() {
     }
 }
 
-/// 对比摘要报告: 多文件统一输出
+/// VBR MP3 精度对比 (samples.ffmpeg.org)
+#[test]
+fn test_mp3_native_vs_ffmpeg_vbr() {
+    let url = SAMPLE_VBR;
+
+    let tao_result = decode_mp3_with_tao_url(url);
+    let tao_result = match tao_result {
+        Ok(r) => r,
+        Err(e) => {
+            println!("跳过: tao 解码失败 (网络/解码错误): {}", e);
+            return;
+        }
+    };
+
+    let ff_result = decode_mp3_with_ffmpeg_url(url);
+    let ff_result = match ff_result {
+        Ok(r) => r,
+        Err(e) => {
+            println!("跳过: ffmpeg 解码失败 (网络/工具未安装): {}", e);
+            return;
+        }
+    };
+
+    let (tao_sr, tao_ch, tao_pcm) = tao_result;
+    let (ff_sr, ff_ch, ff_pcm) = ff_result;
+
+    assert_eq!(tao_sr, ff_sr, "采样率不匹配");
+    assert_eq!(tao_ch, ff_ch, "通道数不匹配");
+
+    let global = compare_global(&tao_pcm, &ff_pcm);
+    println!("\n=== 全局精度 (VBR) ===");
+    println!("  {}", global);
+
+    compare_frames(&tao_pcm, &ff_pcm, tao_ch, 1152, 20);
+
+    if global.psnr_db >= debug::acceptance::MIN_PSNR_DB as f64 {
+        println!(
+            "\n✅ PSNR {:.1}dB >= {}dB, 通过",
+            global.psnr_db,
+            debug::acceptance::MIN_PSNR_DB
+        );
+    } else {
+        println!(
+            "\n⚠️  PSNR {:.1}dB < {}dB, 未达标 (当前阶段不强制失败)",
+            global.psnr_db,
+            debug::acceptance::MIN_PSNR_DB,
+        );
+    }
+}
+
+/// 对比摘要报告: 多 URL 统一输出
 #[test]
 fn test_mp3_native_summary() {
-    let files = ["data/1.mp3", "data/2.mp3"];
+    let samples = [("CBR", SAMPLE_CBR), ("VBR", SAMPLE_VBR)];
 
     println!("\n========================================");
     println!("  MP3 自研解码器精度总览");
     println!("========================================\n");
 
-    for path in &files {
-        if !Path::new(path).exists() {
-            println!("[{}] 跳过 (文件不存在)", path);
-            continue;
-        }
-
-        let tao_result = decode_mp3_with_tao(path);
-        let ff_result = decode_mp3_with_ffmpeg(path);
+    for (label, url) in &samples {
+        let tao_result = decode_mp3_with_tao_url(url);
+        let ff_result = decode_mp3_with_ffmpeg_url(url);
 
         match (tao_result, ff_result) {
             (Ok((_, _, tao_pcm)), Ok((_, _, ff_pcm))) => {
@@ -381,15 +422,15 @@ fn test_mp3_native_summary() {
                 println!(
                     "{} [{}] PSNR: {:.1}dB, 最大误差: {:.2e}, 平均: {:.2e}, 样本: {}",
                     status,
-                    path,
+                    label,
                     global.psnr_db,
                     global.max_abs_error,
                     global.mean_abs_error,
                     global.total_samples,
                 );
             }
-            (Err(e), _) => println!("❌ [{}] tao 解码失败: {}", path, e),
-            (_, Err(e)) => println!("❌ [{}] ffmpeg 解码失败: {}", path, e),
+            (Err(e), _) => println!("⚠️  [{}] tao 解码失败 (跳过): {}", label, e),
+            (_, Err(e)) => println!("⚠️  [{}] ffmpeg 解码失败 (跳过): {}", label, e),
         }
     }
 

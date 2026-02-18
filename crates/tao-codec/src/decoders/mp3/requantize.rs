@@ -303,3 +303,282 @@ fn requantize_mixed(
         *sample = 0.0;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn next_u32(seed: &mut u32) -> u32 {
+        *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        *seed
+    }
+
+    fn gen_i32(seed: &mut u32, min: i32, max: i32) -> i32 {
+        let r = next_u32(seed) as i32 & 0x7fff_ffff;
+        min + (r % (max - min + 1))
+    }
+
+    fn gen_u8(seed: &mut u32, max: u8) -> u8 {
+        (next_u32(seed) % (max as u32 + 1)) as u8
+    }
+
+    fn build_short_bounds(widths: &[usize; 13]) -> [usize; 40] {
+        let mut out = [0usize; 40];
+        let mut idx = 0usize;
+        let mut acc = 0usize;
+        out[idx] = acc;
+        idx += 1;
+        for &w in widths {
+            for _ in 0..3 {
+                acc += w;
+                out[idx] = acc;
+                idx += 1;
+            }
+        }
+        out
+    }
+
+    fn build_mixed_bounds(long_widths: &[usize; 22], short_widths: &[usize; 13]) -> Vec<usize> {
+        // MPEG-1 44.1/48/32kHz 的 mixed 切分点都是前 8 个长带.
+        let mut out = Vec::with_capacity(39);
+        let mut acc = 0usize;
+        out.push(acc);
+
+        for &w in long_widths.iter().take(8) {
+            acc += w;
+            out.push(acc);
+        }
+
+        for &w in short_widths.iter().skip(3) {
+            for _ in 0..3 {
+                acc += w;
+                out.push(acc);
+            }
+        }
+
+        out
+    }
+
+    fn reference_requantize_mpeg1(
+        granule: &Granule,
+        ctx: &GranuleContext,
+        sample_rate: u32,
+    ) -> [f32; 576] {
+        let sr_idx = samplerate_index(sample_rate);
+        let long_widths = &SFB_WIDTH_LONG[sr_idx];
+        let short_widths = &SFB_WIDTH_SHORT[sr_idx];
+        let long_bounds = super::super::tables::build_sfb_long_bounds(sample_rate);
+        let short_bounds = build_short_bounds(short_widths);
+        let mixed_bounds = build_mixed_bounds(long_widths, short_widths);
+
+        let mut out = [0.0f32; 576];
+        let gain = granule.global_gain as i32 - 210;
+        let sf_shift = if granule.scalefac_scale { 2 } else { 1 };
+        let pre = if granule.preflag { PRETAB } else { [0u8; 22] };
+
+        let mut base = [0.0f32; 576];
+        let pow43_table = get_pow43_table();
+        for (i, b) in base.iter_mut().enumerate() {
+            let v = ctx.is[i];
+            if v != 0 {
+                let p = if v > 0 {
+                    pow43(v, pow43_table)
+                } else {
+                    -pow43(v, pow43_table)
+                };
+                *b = p;
+            }
+        }
+
+        let is_short = granule.windows_switching_flag && granule.block_type == 2;
+        if !is_short {
+            for sfb in 0..22 {
+                let start = long_bounds[sfb];
+                let end = long_bounds[sfb + 1];
+                let b = ((ctx.scalefac[sfb] + pre[sfb]) as i32) << sf_shift;
+                let mul = 2.0f64.powf(0.25 * (gain - b) as f64) as f32;
+                for i in start..end {
+                    out[i] = base[i] * mul;
+                }
+            }
+            return out;
+        }
+
+        if granule.mixed_block_flag {
+            // long part: bands 0..8
+            for sfb in 0..8 {
+                let start = mixed_bounds[sfb];
+                let end = mixed_bounds[sfb + 1];
+                let b = ((ctx.scalefac[sfb] + pre[sfb]) as i32) << sf_shift;
+                let mul = 2.0f64.powf(0.25 * (gain - b) as f64) as f32;
+                for i in start..end {
+                    out[i] = base[i] * mul;
+                }
+            }
+
+            // short part: mixed_bounds[8..]
+            let a = [
+                gain - 8 * granule.subblock_gain[0] as i32,
+                gain - 8 * granule.subblock_gain[1] as i32,
+                gain - 8 * granule.subblock_gain[2] as i32,
+            ];
+            for seg in 8..(mixed_bounds.len() - 1) {
+                let start = mixed_bounds[seg];
+                let end = mixed_bounds[seg + 1];
+
+                // mixed 的短块段从 seg=8 开始, 需要先减去 long 段数量后再映射 window.
+                let short_seg = seg - 8;
+                let window = short_seg % 3;
+                let short_sfb = 3 + short_seg / 3;
+                let b = if short_sfb < 12 {
+                    (ctx.scalefac[8 + (short_sfb - 3) * 3 + window] as i32) << sf_shift
+                } else {
+                    0
+                };
+                let mul = 2.0f64.powf(0.25 * (a[window] - b) as f64) as f32;
+                for i in start..end {
+                    out[i] = base[i] * mul;
+                }
+            }
+            return out;
+        }
+
+        let a = [
+            gain - 8 * granule.subblock_gain[0] as i32,
+            gain - 8 * granule.subblock_gain[1] as i32,
+            gain - 8 * granule.subblock_gain[2] as i32,
+        ];
+        for sfb in 0..39 {
+            let start = short_bounds[sfb];
+            let end = short_bounds[sfb + 1];
+            let b = (ctx.scalefac[sfb] as i32) << sf_shift;
+            let mul = 2.0f64.powf(0.25 * (a[sfb % 3] - b) as f64) as f32;
+            for i in start..end {
+                out[i] = base[i] * mul;
+            }
+        }
+
+        out
+    }
+
+    #[test]
+    fn test_requantize_mixed_short_index_mapping() {
+        // mixed block 的短块部分: sfb=3..11, 每个 sfb 有 3 个 window, 共 27 段.
+        // scalefac 索引应从 8 开始连续递增: 8..34.
+        let mut wrong_window_count = 0usize;
+
+        for seg in 0..27usize {
+            let sfb = 3 + seg / 3;
+            let window = seg % 3;
+
+            let expected_sf_index = 8 + seg;
+            let impl_sf_index = 8 + (sfb - 3) * 3 + window;
+
+            assert_eq!(
+                impl_sf_index, expected_sf_index,
+                "mixed short scalefac 索引错误: seg={}, sfb={}, window={}",
+                seg, sfb, window
+            );
+
+            // 错误写法示例: 直接对全局索引取模(例如 idx%3 或 sfb_global%3),
+            // 会导致 window 映射整体错位.
+            let wrong_window = expected_sf_index % 3;
+            if wrong_window != window {
+                wrong_window_count += 1;
+            }
+        }
+
+        assert_eq!(wrong_window_count, 27, "专项测试未覆盖到 window 错位风险");
+    }
+
+    #[test]
+    fn test_requantize_matches_reference_long_short_mixed() {
+        let mut seed = 0x1234_5678u32;
+        for case in 0..120 {
+            let mut granule = Granule::default();
+            granule.scalefac_scale = (next_u32(&mut seed) & 1) != 0;
+            granule.preflag = (next_u32(&mut seed) & 1) != 0;
+            granule.global_gain = gen_u8(&mut seed, 255) as u32;
+
+            match case % 3 {
+                0 => {
+                    granule.windows_switching_flag = false;
+                    granule.block_type = 0;
+                    granule.mixed_block_flag = false;
+                }
+                1 => {
+                    granule.windows_switching_flag = true;
+                    granule.block_type = 2;
+                    granule.mixed_block_flag = false;
+                    granule.subblock_gain = [
+                        gen_u8(&mut seed, 7),
+                        gen_u8(&mut seed, 7),
+                        gen_u8(&mut seed, 7),
+                    ];
+                }
+                _ => {
+                    granule.windows_switching_flag = true;
+                    granule.block_type = 2;
+                    granule.mixed_block_flag = true;
+                    granule.subblock_gain = [
+                        gen_u8(&mut seed, 7),
+                        gen_u8(&mut seed, 7),
+                        gen_u8(&mut seed, 7),
+                    ];
+                }
+            }
+
+            let mut ctx = GranuleContext::default();
+            for sf in &mut ctx.scalefac {
+                *sf = gen_u8(&mut seed, 15);
+            }
+            if granule.block_type == 2 {
+                if granule.mixed_block_flag {
+                    for sf in ctx.scalefac.iter_mut().skip(35) {
+                        *sf = 0;
+                    }
+                } else {
+                    for sf in ctx.scalefac.iter_mut().skip(36) {
+                        *sf = 0;
+                    }
+                }
+            }
+
+            for v in &mut ctx.is {
+                let r = next_u32(&mut seed) % 100;
+                *v = if r < 45 {
+                    0
+                } else {
+                    gen_i32(&mut seed, -200, 200)
+                };
+            }
+
+            let mut actual = ctx.clone();
+            requantize(&granule, &mut actual, MpegVersion::Mpeg1, 44100).unwrap();
+            let expected = reference_requantize_mpeg1(&granule, &ctx, 44100);
+
+            let mut max_err = 0.0f32;
+            let mut max_idx = 0usize;
+            for (i, (a, e)) in actual.xr.iter().zip(expected.iter()).enumerate() {
+                let err = (a - e).abs();
+                if err > max_err {
+                    max_err = err;
+                    max_idx = i;
+                }
+            }
+
+            assert!(
+                max_err < 1e-5,
+                "case={} 反量化与参考不一致: max_err={:.6e} @{}, block_type={}, mixed={}, gg={}, sf_scale={}, sbg={:?}",
+                case,
+                max_err,
+                max_idx,
+                granule.block_type,
+                granule.mixed_block_flag,
+                granule.global_gain,
+                granule.scalefac_scale,
+                granule.subblock_gain
+            );
+        }
+    }
+}

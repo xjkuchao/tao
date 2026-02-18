@@ -5,6 +5,7 @@
 //! Count1 表使用专用的直接查表.
 
 use super::bitreader::BitReader;
+use super::huffman_explicit_tables as explicit;
 use super::tables::{MPA_HUFF_LENS, MPA_HUFF_OFFSET, MPA_HUFF_SYMS};
 use std::sync::OnceLock;
 use tao_core::{TaoError, TaoResult};
@@ -50,6 +51,77 @@ fn get_big_value_tables() -> &'static Vec<BigValueTable> {
     })
 }
 
+/// 从显式 (code, len) 表构建 Big Values 查找表.
+/// symbol 使用 MP3 规范展开顺序: symbol = ((i / wrap) << 4) | (i % wrap).
+fn build_big_value_table_explicit(codes: &[u32], lens: &[u8], wrap: usize) -> BigValueTable {
+    let mut max_len = 0u8;
+    let mut entries = Vec::with_capacity(codes.len());
+
+    for i in 0..codes.len() {
+        let len = lens[i];
+        if len == 0 {
+            continue;
+        }
+        let symbol = (((i / wrap) as u8) << 4) | (i % wrap) as u8;
+        entries.push((codes[i], len, symbol));
+        if len > max_len {
+            max_len = len;
+        }
+    }
+
+    build_big_value_table_from_entries(entries, max_len)
+}
+
+fn explicit_codebook(table_id: u8) -> Option<(&'static [u32], &'static [u8], usize)> {
+    match table_id {
+        1 => Some((&explicit::MPEG_CODES_1, &explicit::MPEG_BITS_1, 2)),
+        2 => Some((&explicit::MPEG_CODES_2, &explicit::MPEG_BITS_2, 3)),
+        3 => Some((&explicit::MPEG_CODES_3, &explicit::MPEG_BITS_3, 3)),
+        5 => Some((&explicit::MPEG_CODES_5, &explicit::MPEG_BITS_5, 4)),
+        6 => Some((&explicit::MPEG_CODES_6, &explicit::MPEG_BITS_6, 4)),
+        7 => Some((&explicit::MPEG_CODES_7, &explicit::MPEG_BITS_7, 6)),
+        8 => Some((&explicit::MPEG_CODES_8, &explicit::MPEG_BITS_8, 6)),
+        9 => Some((&explicit::MPEG_CODES_9, &explicit::MPEG_BITS_9, 6)),
+        10 => Some((&explicit::MPEG_CODES_10, &explicit::MPEG_BITS_10, 8)),
+        11 => Some((&explicit::MPEG_CODES_11, &explicit::MPEG_BITS_11, 8)),
+        12 => Some((&explicit::MPEG_CODES_12, &explicit::MPEG_BITS_12, 8)),
+        13 => Some((&explicit::MPEG_CODES_13, &explicit::MPEG_BITS_13, 16)),
+        15 => Some((&explicit::MPEG_CODES_15, &explicit::MPEG_BITS_15, 16)),
+        16..=23 => Some((&explicit::MPEG_CODES_16, &explicit::MPEG_BITS_16, 16)),
+        24..=31 => Some((&explicit::MPEG_CODES_24, &explicit::MPEG_BITS_24, 16)),
+        _ => None,
+    }
+}
+
+/// 从 (code, len, symbol) 条目构建 LUT 与 overflow.
+fn build_big_value_table_from_entries(entries: Vec<(u32, u8, u8)>, max_len: u8) -> BigValueTable {
+    let mut lut = vec![LutEntry::default(); PEEK_SIZE];
+    let mut overflow = Vec::new();
+
+    for &(code_val, len, symbol) in &entries {
+        if (len as usize) <= PEEK_BITS {
+            let pad_bits = PEEK_BITS - len as usize;
+            let base_idx = (code_val as usize) << pad_bits;
+            let fill_count = 1 << pad_bits;
+            if base_idx + fill_count <= PEEK_SIZE {
+                for j in 0..fill_count {
+                    lut[base_idx | j] = LutEntry { symbol, bits: len };
+                }
+            } else {
+                overflow.push((code_val, len, symbol));
+            }
+        } else {
+            overflow.push((code_val, len, symbol));
+        }
+    }
+
+    BigValueTable {
+        lut,
+        overflow,
+        max_len,
+    }
+}
+
 /// 构建单张 Big Values 查找表
 ///
 /// 使用 FFmpeg 风格的 MSB 对齐 canonical 码字生成算法.
@@ -58,6 +130,11 @@ fn get_big_value_tables() -> &'static Vec<BigValueTable> {
 fn build_big_value_table(table_id: u8) -> BigValueTable {
     if table_id == 0 || table_id == 4 || table_id == 14 {
         return BigValueTable::default();
+    }
+
+    // 对所有有效 big-values 表使用显式 code+bits, 消除 LENS/SYMS 推导歧义.
+    if let Some((codes, lens, wrap)) = explicit_codebook(table_id) {
+        return build_big_value_table_explicit(codes, lens, wrap);
     }
 
     let offset = MPA_HUFF_OFFSET[table_id as usize];
@@ -102,34 +179,7 @@ fn build_big_value_table(table_id: u8) -> BigValueTable {
         }
     }
 
-    // 4. 构建 PEEK_BITS 位直接查找表
-    let mut lut = vec![LutEntry::default(); PEEK_SIZE];
-    let mut overflow = Vec::new();
-
-    for &(code_val, len, symbol) in &entries {
-        if (len as usize) <= PEEK_BITS {
-            let pad_bits = PEEK_BITS - len as usize;
-            let base_idx = (code_val as usize) << pad_bits;
-            let fill_count = 1 << pad_bits;
-            // 安全检查: 确保不越界
-            if base_idx + fill_count <= PEEK_SIZE {
-                for j in 0..fill_count {
-                    lut[base_idx | j] = LutEntry { symbol, bits: len };
-                }
-            } else {
-                // Canonical code 溢出, 放入 overflow
-                overflow.push((code_val, len, symbol));
-            }
-        } else {
-            overflow.push((code_val, len, symbol));
-        }
-    }
-
-    BigValueTable {
-        lut,
-        overflow,
-        max_len,
-    }
+    build_big_value_table_from_entries(entries, max_len)
 }
 
 // ============================================================================
@@ -223,20 +273,36 @@ impl HuffmanDecoder {
 
     /// 快速 VLC 解码 (Big Values)
     fn decode_big_value_vlc(&self, br: &mut BitReader, table: &BigValueTable) -> TaoResult<u8> {
-        let peek_val = br.peek_bits(PEEK_BITS as u8).unwrap_or(0);
-        let entry = table.lut[peek_val as usize];
+        let bits_left = br.bits_left();
 
-        if entry.bits > 0 {
-            br.skip_bits(entry.bits as usize);
-            return Ok(entry.symbol);
+        // 快速路径: 剩余位数足够时直接 peek 固定窗口.
+        if bits_left >= PEEK_BITS {
+            let peek_val = br.peek_bits(PEEK_BITS as u8).ok_or(TaoError::Eof)?;
+            let entry = table.lut[peek_val as usize];
+            if entry.bits > 0 {
+                br.skip_bits(entry.bits as usize);
+                return Ok(entry.symbol);
+            }
+        } else if bits_left > 0 {
+            // 尾部路径: 剩余位不足 PEEK_BITS 时使用左对齐索引.
+            let peek_val = br.peek_bits(bits_left as u8).ok_or(TaoError::Eof)? as usize;
+            let idx = peek_val << (PEEK_BITS - bits_left);
+            let entry = table.lut[idx];
+            if entry.bits > 0 && (entry.bits as usize) <= bits_left {
+                br.skip_bits(entry.bits as usize);
+                return Ok(entry.symbol);
+            }
         }
 
-        // 尝试溢出表 (长码)
-        if !table.overflow.is_empty() {
-            let full_peek = br.peek_bits(table.max_len).unwrap_or(0);
-            for &(code, len, symbol) in &table.overflow {
-                let shift = table.max_len - len;
-                if (full_peek >> shift) == code {
+        // 尝试溢出表 (长码)。
+        // 不能一次性 peek max_len 位后统一右移比较:
+        // 当剩余位数不足 max_len 时, 某些合法短码会被误判为失败.
+        for len in (PEEK_BITS as u8 + 1)..=table.max_len {
+            let Some(bits) = br.peek_bits(len) else {
+                break;
+            };
+            for &(code, code_len, symbol) in &table.overflow {
+                if code_len == len && bits == code {
                     br.skip_bits(len as usize);
                     return Ok(symbol);
                 }
@@ -262,9 +328,22 @@ impl HuffmanDecoder {
         } else {
             // Table A (变长, 最大 7 位): 使用查找表
             let lut = get_count1a_lut();
-            let peek = br.peek_bits(COUNT1A_PEEK_BITS as u8).unwrap_or(0);
-            let entry = lut[peek as usize];
+            let bits_left = br.bits_left();
+            if bits_left == 0 {
+                return Err(TaoError::Eof);
+            }
+            let probe_bits = bits_left.min(COUNT1A_PEEK_BITS);
+            let peek = br.peek_bits(probe_bits as u8).ok_or(TaoError::Eof)? as usize;
+            let idx = if probe_bits < COUNT1A_PEEK_BITS {
+                peek << (COUNT1A_PEEK_BITS - probe_bits)
+            } else {
+                peek
+            };
+            let entry = lut[idx];
             if entry.bits > 0 {
+                if (entry.bits as usize) > bits_left {
+                    return Err(TaoError::Eof);
+                }
                 br.skip_bits(entry.bits as usize);
                 entry.symbol
             } else {
@@ -316,6 +395,19 @@ impl HuffmanDecoder {
 mod tests {
     use super::*;
 
+    fn build_explicit_entries(codes: &[u32], lens: &[u8], wrap: usize) -> Vec<(u32, u8, u8)> {
+        let mut entries = Vec::with_capacity(codes.len());
+        for i in 0..codes.len() {
+            let len = lens[i];
+            if len == 0 {
+                continue;
+            }
+            let symbol = (((i / wrap) as u8) << 4) | (i % wrap) as u8;
+            entries.push((codes[i], len, symbol));
+        }
+        entries
+    }
+
     /// 验证 Table 1 的 LUT 正确性
     /// ISO 11172-3 Table B.7:
     /// (0,0): code=1,   len=1
@@ -357,7 +449,8 @@ mod tests {
         // LUT 应该有 1024 个条目
         assert_eq!(t.lut.len(), 1024);
 
-        // 所有 LUT 条目应该有 bits > 0 (Table 24 所有码长 <= 12, 其中 <= 10 的都在 LUT 中)
+        // Table 24 存在 >10bit 的码字, 因此 LUT 允许出现 bits=0 入口,
+        // 这些入口会通过 overflow 长码分支解码.
         let mut zero_bits = 0;
         let mut sym_count = [0u32; 256];
         for entry in &t.lut {
@@ -367,19 +460,11 @@ mod tests {
                 sym_count[entry.symbol as usize] += 1;
             }
         }
-        assert_eq!(zero_bits, 0, "Table 24 LUT 不应存在 bits=0 条目");
+        assert!(zero_bits > 0, "Table 24 预期存在 overflow 入口");
+        assert!(!t.overflow.is_empty(), "Table 24 overflow 不应为空");
 
-        // 检查是否有过多的同一符号
-        let mut max_sym = 0u8;
-        let mut max_count = 0u32;
-        for (sym, &count) in sym_count.iter().enumerate() {
-            if count > max_count {
-                max_count = count;
-                max_sym = sym as u8;
-            }
-        }
-        // 0xFF (15,15) 应该是最短码 (4位), 覆盖 64 个 LUT 条目
-        assert_eq!(sym_count[0xFF], 64, "0xFF 应覆盖 64 个 LUT 条目 (4位码)");
+        // table24 显式码表中 0x00 (0,0) 是 4 位最短码, 覆盖 64 个 LUT 条目
+        assert_eq!(sym_count[0x00], 64, "0x00 应覆盖 64 个 LUT 条目 (4位码)");
 
         // 检查不同符号的数量 - 应该 > 100 (256个符号中大部分在LUT中)
         let distinct_syms = sym_count.iter().filter(|&&c| c > 0).count();
@@ -397,7 +482,6 @@ mod tests {
                 continue;
             }
 
-            let offset = MPA_HUFF_OFFSET[table_id as usize];
             let count = match table_id {
                 1 => 4,
                 2..=3 => 9,
@@ -409,22 +493,29 @@ mod tests {
                 _ => 0,
             };
 
-            let lens = &MPA_HUFF_LENS[offset..offset + count];
-            let syms = &MPA_HUFF_SYMS[offset..offset + count];
             let table = &tables[table_id as usize];
 
-            // 重新生成 canonical codes (与 build_big_value_table 相同的算法)
-            let mut code: u64 = 0;
-            let mut entries: Vec<(u32, u8, u8)> = Vec::new();
+            let entries: Vec<(u32, u8, u8)> =
+                if let Some((codes, lens, wrap)) = explicit_codebook(table_id) {
+                    build_explicit_entries(codes, lens, wrap)
+                } else {
+                    let offset = MPA_HUFF_OFFSET[table_id as usize];
+                    let lens = &MPA_HUFF_LENS[offset..offset + count];
+                    let syms = &MPA_HUFF_SYMS[offset..offset + count];
 
-            for i in 0..count {
-                let len = lens[i];
-                if len > 0 {
-                    let code_val = (code >> (32 - len as u64)) as u32;
-                    entries.push((code_val, len, syms[i]));
-                    code += 1u64 << (32 - len as u64);
-                }
-            }
+                    // 重新生成 canonical codes (与 build_big_value_table 相同的算法)
+                    let mut code: u64 = 0;
+                    let mut entries: Vec<(u32, u8, u8)> = Vec::new();
+                    for i in 0..count {
+                        let len = lens[i];
+                        if len > 0 {
+                            let code_val = (code >> (32 - len as u64)) as u32;
+                            entries.push((code_val, len, syms[i]));
+                            code += 1u64 << (32 - len as u64);
+                        }
+                    }
+                    entries
+                };
 
             // 对每个 entry 编码到 bitstream, 再用 LUT 解码
             let mut errors = 0;
@@ -450,7 +541,7 @@ mod tests {
                     (code_val << pad) as usize
                 } else {
                     // 溢出情况, 需要通过 BitReader 测试
-                    let mut br = BitReader::new(&buf);
+                    let br = BitReader::new(&buf);
                     let peek = br.peek_bits(PEEK_BITS as u8).unwrap_or(0);
                     peek as usize
                 };
@@ -515,5 +606,32 @@ mod tests {
 
         let (x, y) = decoder.decode_big_values(&mut br, 1, 0).unwrap();
         assert_eq!((x, y), (1, 1), "第4对应为 (+1,+1)");
+    }
+
+    /// 与 symphonia/FFmpeg 显式码表对照的最小样例:
+    /// table24 的若干短码映射.
+    #[test]
+    fn test_table24_known_codes() {
+        let decoder = HuffmanDecoder::new();
+        let tables = get_big_value_tables();
+        let table24 = &tables[24];
+
+        // table24: value=0x00 -> code=1111 (len=4)
+        let data = [0b1111_0000u8];
+        let mut br = BitReader::new(&data);
+        let sym = decoder.decode_big_value_vlc(&mut br, table24).unwrap();
+        assert_eq!(sym, 0x00, "table24 code 1111 应映射到 0x00");
+
+        // table24: value=0x01 -> code=1101 (len=4)
+        let data = [0b1101_0000u8];
+        let mut br = BitReader::new(&data);
+        let sym = decoder.decode_big_value_vlc(&mut br, table24).unwrap();
+        assert_eq!(sym, 0x01, "table24 code 1101 应映射到 0x01");
+
+        // table24: value=0x10 -> code=1110 (len=4)
+        let data = [0b1110_0000u8];
+        let mut br = BitReader::new(&data);
+        let sym = decoder.decode_big_value_vlc(&mut br, table24).unwrap();
+        assert_eq!(sym, 0x10, "table24 code 1110 应映射到 0x10");
     }
 }
