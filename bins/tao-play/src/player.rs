@@ -444,7 +444,7 @@ impl Player {
                                                 continue;
                                             }
                                             if let Some(out) = &audio_sender {
-                                                let mut samples = extract_f32_samples(af);
+                                                let samples = extract_f32_samples(af);
                                                 let chunk = AudioChunk {
                                                     samples,
                                                     pts_us: chunk_pts_us,
