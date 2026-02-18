@@ -71,6 +71,7 @@
 - [x] 去除 residue 分区解码热路径中的重复临时分配, 改为向量缓冲复用。
 - [x] floor1 邻点搜索改为严格不等关系(`<`/`>`), 避免相等点参与预测。
 - [x] 窗函数改为解码器侧缓存复用, 避免每音频包重复构建 IMDCT 窗数组。
+- [x] 接入 flush 阶段尾样本排空逻辑(基于 granule 与 next_pts 对账)。
 - [ ] 窗口、IMDCT、重叠相加。
 - [ ] floor1 恢复、residue 解码、耦合反变换。
 - [ ] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。

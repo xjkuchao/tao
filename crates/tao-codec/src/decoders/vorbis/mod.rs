@@ -31,7 +31,7 @@ use self::bitreader::{LsbBitReader, ilog};
 use self::codebook::CodebookHuffman;
 use self::floor::{build_floor_context, decode_floor_curves};
 use self::headers::{VorbisHeaders, parse_comment_header, parse_identification_header};
-use self::imdct::{build_vorbis_window, imdct_from_residue, overlap_add};
+use self::imdct::{TimeDomainBlock, build_vorbis_window, imdct_from_residue, overlap_add};
 use self::residue::{apply_coupling_inverse, decode_residue_approx};
 use self::setup::{FloorConfig, ParsedSetup, parse_setup_packet};
 use self::synthesis::synthesize_frame;
@@ -525,6 +525,48 @@ impl VorbisDecoder {
         Ok(())
     }
 
+    fn enqueue_tail_on_flush(&mut self) {
+        if self.overlap.is_empty() || self.sample_rate == 0 {
+            return;
+        }
+        if self.prev_packet_granule == tao_core::timestamp::NOPTS_VALUE {
+            return;
+        }
+        let remaining = self.prev_packet_granule.saturating_sub(self.next_pts);
+        if remaining <= 0 {
+            return;
+        }
+
+        let channels = self.channel_layout.channels as usize;
+        if channels == 0 {
+            return;
+        }
+        let tail = remaining as usize;
+        let mut td_channels = vec![vec![0.0f32; tail]; channels];
+        for (ch, dst) in td_channels.iter_mut().enumerate().take(channels) {
+            if let Some(src) = self.overlap.get(ch) {
+                let n = tail.min(src.len());
+                dst[..n].copy_from_slice(&src[..n]);
+            }
+        }
+        if td_channels.iter().all(|c| c.iter().all(|&v| v == 0.0)) {
+            return;
+        }
+
+        let td = TimeDomainBlock {
+            channels: td_channels,
+        };
+        let frame = synthesize_frame(
+            &td,
+            self.sample_rate,
+            self.channel_layout,
+            self.next_pts,
+            remaining,
+        );
+        self.next_pts = self.next_pts.saturating_add(remaining);
+        self.pending_frames.push_back(Frame::Audio(frame));
+    }
+
     fn get_or_build_window(
         &mut self,
         n: usize,
@@ -608,6 +650,7 @@ impl Decoder for VorbisDecoder {
         }
 
         if packet.is_empty() {
+            self.enqueue_tail_on_flush();
             self.flushing = true;
             return Ok(());
         }
