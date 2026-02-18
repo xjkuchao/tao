@@ -13,18 +13,24 @@ mod stereo;
 mod synthesis;
 mod tables;
 
+pub mod debug;
+
 use crate::codec_id::CodecId;
 use crate::codec_parameters::CodecParameters;
 use crate::decoder::Decoder;
 use crate::frame::{AudioFrame, Frame};
 use crate::packet::Packet;
 use std::collections::VecDeque;
+#[cfg(feature = "symphonia-backend")]
 use symphonia_bundle_mp3::MpaDecoder as SymMpaDecoder;
+#[cfg(feature = "symphonia-backend")]
 use symphonia_core::audio::SampleBuffer;
+#[cfg(feature = "symphonia-backend")]
 use symphonia_core::codecs::{
     CODEC_TYPE_MP3, CodecParameters as SymCodecParameters, Decoder as SymDecoderTrait,
     DecoderOptions as SymDecoderOptions,
 };
+#[cfg(feature = "symphonia-backend")]
 use symphonia_core::formats::Packet as SymPacket;
 use tao_core::{ChannelLayout, Rational, SampleFormat, TaoError, TaoResult};
 
@@ -58,7 +64,10 @@ pub struct Mp3Decoder {
     channel_layout: ChannelLayout,
     /// 累计 PTS
     next_pts: i64,
-    /// symphonia MP3 解码器 (用于可靠解码路径)
+    /// 已解码帧计数
+    frame_count: u32,
+    /// symphonia MP3 解码器 (用于可靠解码路径, 仅在非 mp3-native 时使用)
+    #[cfg(feature = "symphonia-backend")]
     sym_decoder: Option<SymMpaDecoder>,
 }
 
@@ -75,6 +84,8 @@ impl Mp3Decoder {
             channels: 2,
             channel_layout: ChannelLayout::from_channels(2),
             next_pts: 0,
+            frame_count: 0,
+            #[cfg(feature = "symphonia-backend")]
             sym_decoder: None,
         }))
     }
@@ -129,6 +140,7 @@ impl Mp3Decoder {
 
         let frame_data = &self.buffer[..header.frame_size];
 
+        #[cfg(all(feature = "symphonia-backend", not(feature = "mp3-native")))]
         if let Some(decoder) = self.sym_decoder.as_mut() {
             let spf = if header.version == MpegVersion::Mpeg1 {
                 1152
@@ -528,6 +540,7 @@ impl Mp3Decoder {
         self.sample_rate = header.samplerate;
         self.channels = nch as u32;
         self.channel_layout = ChannelLayout::from_channels(nch as u32);
+        self.frame_count += 1;
 
         // Bit Reservoir 管理: 保留最近 512 字节
         let keep_len = 512;
@@ -550,14 +563,17 @@ impl Decoder for Mp3Decoder {
     }
 
     fn open(&mut self, _params: &CodecParameters) -> TaoResult<()> {
-        let sym_params = SymCodecParameters {
-            codec: CODEC_TYPE_MP3,
-            ..Default::default()
-        };
-        self.sym_decoder = Some(
-            SymMpaDecoder::try_new(&sym_params, &SymDecoderOptions::default())
-                .map_err(|e| TaoError::Codec(format!("symphonia mp3 init failed: {e}")))?,
-        );
+        #[cfg(feature = "symphonia-backend")]
+        {
+            let sym_params = SymCodecParameters {
+                codec: CODEC_TYPE_MP3,
+                ..Default::default()
+            };
+            self.sym_decoder = Some(
+                SymMpaDecoder::try_new(&sym_params, &SymDecoderOptions::default())
+                    .map_err(|e| TaoError::Codec(format!("symphonia mp3 init failed: {e}")))?,
+            );
+        }
         self.opened = true;
         self.buffer.clear();
         self.main_data.clear();
@@ -597,6 +613,7 @@ impl Decoder for Mp3Decoder {
         self.buffer.clear();
         self.main_data.clear();
         self.next_pts = 0;
+        #[cfg(feature = "symphonia-backend")]
         if let Some(decoder) = self.sym_decoder.as_mut() {
             decoder.reset();
         }

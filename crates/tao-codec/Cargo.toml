@@ -6,10 +6,17 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = ["symphonia-backend"]
+mp3-native = []                                                        # 启用自研 MP3 解码路径, 不使用 symphonia
+symphonia-backend = ["dep:symphonia-core", "dep:symphonia-bundle-mp3"]
+
 [dependencies]
 tao-core.workspace = true
 thiserror.workspace = true
 log.workspace = true
 bytes.workspace = true
-symphonia-core = "0.5.5"
-symphonia-bundle-mp3 = { version = "0.5.5", features = ["mp3"] }
+symphonia-core = { version = "0.5.5", optional = true }
+symphonia-bundle-mp3 = { version = "0.5.5", features = [
+    "mp3",
+], optional = true }

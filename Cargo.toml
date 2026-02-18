@@ -118,6 +118,7 @@ minimp3 = "0.6"
 [features]
 default = []
 http = ["tao-format/http"]
+mp3-native = ["tao-codec/mp3-native"]
 
 [[bench]]
 name = "codec_bench"
