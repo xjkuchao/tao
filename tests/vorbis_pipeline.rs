@@ -2,14 +2,15 @@
 //!
 //! 当前用于验证:
 //! - data/1.ogg 和 data/2.ogg 的 Vorbis 头包与 setup 解析能通过
-//! - 解码器在进入音频包后返回 P3 阶段未实现错误
+//! - 音频包可产出基础音频帧 (当前为占位静音输出)
 
 use tao::codec::codec_parameters::{AudioCodecParams, CodecParamsType};
+use tao::codec::frame::Frame;
 use tao::codec::{CodecId, CodecParameters, CodecRegistry};
 use tao::core::{ChannelLayout, SampleFormat, TaoError};
 use tao::format::{FormatRegistry, IoContext};
 
-fn run_vorbis_until_audio_packet(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn run_vorbis_until_output_frames(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut format_registry = FormatRegistry::new();
     tao::format::register_all(&mut format_registry);
     let mut codec_registry = CodecRegistry::new();
@@ -46,6 +47,9 @@ fn run_vorbis_until_audio_packet(path: &str) -> Result<(), Box<dyn std::error::E
     let mut decoder = codec_registry.create_decoder(CodecId::Vorbis)?;
     decoder.open(&params)?;
 
+    let mut frame_count = 0usize;
+    let mut saw_strict_setup = false;
+
     loop {
         let pkt = demuxer.read_packet(&mut io)?;
         if pkt.stream_index != stream.index {
@@ -54,26 +58,36 @@ fn run_vorbis_until_audio_packet(path: &str) -> Result<(), Box<dyn std::error::E
 
         match decoder.send_packet(&pkt) {
             Ok(()) => {}
-            Err(TaoError::NotImplemented(msg)) => {
-                assert!(msg.contains("P3"), "期望进入 P3 未实现阶段, 实际: {}", msg);
-                assert!(
-                    msg.contains("setup 严格解析通过"),
-                    "期望 setup 严格解析通过, 实际: {}",
-                    msg
-                );
-                return Ok(());
-            }
             Err(e) => return Err(format!("Vorbis 解码阶段失败: {}", e).into()),
+        }
+
+        loop {
+            match decoder.receive_frame() {
+                Ok(Frame::Audio(af)) => {
+                    frame_count += 1;
+                    if af.sample_rate > 0 && af.nb_samples > 0 {
+                        saw_strict_setup = true;
+                    }
+                    if frame_count >= 3 {
+                        assert!(saw_strict_setup, "未观察到有效音频帧");
+                        return Ok(());
+                    }
+                }
+                Ok(_) => {}
+                Err(TaoError::NeedMoreData) => break,
+                Err(TaoError::Eof) => break,
+                Err(e) => return Err(format!("Vorbis receive_frame 失败: {}", e).into()),
+            }
         }
     }
 }
 
 #[test]
 fn test_vorbis_data1_头包与setup解析通过() {
-    run_vorbis_until_audio_packet("data/1.ogg").expect("data/1.ogg 解析失败");
+    run_vorbis_until_output_frames("data/1.ogg").expect("data/1.ogg 解析失败");
 }
 
 #[test]
 fn test_vorbis_data2_头包与setup解析通过() {
-    run_vorbis_until_audio_packet("data/2.ogg").expect("data/2.ogg 解析失败");
+    run_vorbis_until_output_frames("data/2.ogg").expect("data/2.ogg 解析失败");
 }

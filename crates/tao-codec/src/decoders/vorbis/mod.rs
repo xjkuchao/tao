@@ -13,12 +13,13 @@ mod headers;
 mod setup;
 
 use log::warn;
+use std::collections::VecDeque;
 use tao_core::{ChannelLayout, TaoError, TaoResult};
 
 use crate::codec_id::CodecId;
 use crate::codec_parameters::{AudioCodecParams, CodecParameters, CodecParamsType};
 use crate::decoder::Decoder;
-use crate::frame::Frame;
+use crate::frame::{AudioFrame, Frame};
 use crate::packet::Packet;
 
 use self::bitreader::{LsbBitReader, ilog};
@@ -44,6 +45,10 @@ pub struct VorbisDecoder {
     channel_layout: ChannelLayout,
     setup_degraded: bool,
     setup_degraded_reason: Option<String>,
+    pending_frames: VecDeque<Frame>,
+    first_audio_packet: bool,
+    prev_blocksize: u16,
+    next_pts: i64,
 }
 
 impl VorbisDecoder {
@@ -59,6 +64,10 @@ impl VorbisDecoder {
             channel_layout: ChannelLayout::STEREO,
             setup_degraded: false,
             setup_degraded_reason: None,
+            pending_frames: VecDeque::new(),
+            first_audio_packet: true,
+            prev_blocksize: 0,
+            next_pts: 0,
         }))
     }
 
@@ -110,7 +119,7 @@ impl VorbisDecoder {
         Ok(())
     }
 
-    fn handle_audio_packet(&mut self, packet: &[u8]) -> TaoResult<()> {
+    fn handle_audio_packet(&mut self, packet: &[u8], packet_pts: i64) -> TaoResult<()> {
         let headers = self
             .headers
             .as_ref()
@@ -134,21 +143,48 @@ impl VorbisDecoder {
             )));
         }
 
-        let _blocksize = if self.mode_block_flags[mode_number] {
+        let blocksize = if self.mode_block_flags[mode_number] {
             headers.blocksize1
         } else {
             headers.blocksize0
         };
 
-        let msg = if self.setup_degraded {
-            format!(
-                "Vorbis 音频解码主链路尚未实现 (P3 阶段, setup 为降级路径: {})",
-                self.setup_degraded_reason.as_deref().unwrap_or("未知原因")
-            )
+        if self.first_audio_packet {
+            self.first_audio_packet = false;
+            self.prev_blocksize = blocksize;
+            if packet_pts != tao_core::timestamp::NOPTS_VALUE {
+                self.next_pts = packet_pts;
+            }
+            return Ok(());
+        }
+
+        let out_samples = ((usize::from(self.prev_blocksize) + usize::from(blocksize)) / 4) as u32;
+        self.prev_blocksize = blocksize;
+        if out_samples == 0 {
+            return Ok(());
+        }
+
+        let channels = self.channel_layout.channels as usize;
+        let mut frame = AudioFrame::new(
+            out_samples,
+            self.sample_rate,
+            tao_core::SampleFormat::F32,
+            self.channel_layout,
+        );
+        frame.pts = if packet_pts != tao_core::timestamp::NOPTS_VALUE {
+            packet_pts
         } else {
-            "Vorbis 音频解码主链路尚未实现 (P3 阶段, setup 严格解析通过)".to_string()
+            self.next_pts
         };
-        Err(TaoError::NotImplemented(msg))
+        frame.time_base = tao_core::Rational::new(1, self.sample_rate as i32);
+        frame.duration = out_samples as i64;
+
+        // TODO: P3 后续将此静音占位替换为真实 Vorbis 频谱反变换输出。
+        frame.data[0] = vec![0u8; out_samples as usize * channels * std::mem::size_of::<f32>()];
+
+        self.next_pts = frame.pts.saturating_add(frame.duration);
+        self.pending_frames.push_back(Frame::Audio(frame));
+        Ok(())
     }
 }
 
@@ -169,6 +205,10 @@ impl Decoder for VorbisDecoder {
         self.mode_block_flags.clear();
         self.setup_degraded = false;
         self.setup_degraded_reason = None;
+        self.pending_frames.clear();
+        self.first_audio_packet = true;
+        self.prev_blocksize = 0;
+        self.next_pts = 0;
 
         if let CodecParamsType::Audio(AudioCodecParams {
             sample_rate,
@@ -204,11 +244,14 @@ impl Decoder for VorbisDecoder {
             HeaderStage::Identification => self.parse_identification_header(data),
             HeaderStage::Comment => self.parse_comment_header(data),
             HeaderStage::Setup => self.parse_setup_header(data),
-            HeaderStage::Audio => self.handle_audio_packet(data),
+            HeaderStage::Audio => self.handle_audio_packet(data, packet.pts),
         }
     }
 
     fn receive_frame(&mut self) -> TaoResult<Frame> {
+        if let Some(frame) = self.pending_frames.pop_front() {
+            return Ok(frame);
+        }
         if self.flushing {
             return Err(TaoError::Eof);
         }
@@ -217,5 +260,8 @@ impl Decoder for VorbisDecoder {
 
     fn flush(&mut self) {
         self.flushing = false;
+        self.pending_frames.clear();
+        self.first_audio_packet = true;
+        self.prev_blocksize = 0;
     }
 }
