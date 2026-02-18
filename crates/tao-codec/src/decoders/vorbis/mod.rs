@@ -51,6 +51,7 @@ pub struct VorbisDecoder {
     stage: HeaderStage,
     headers: Option<VorbisHeaders>,
     parsed_setup: Option<ParsedSetup>,
+    codebook_huffmans: Option<Vec<CodebookHuffman>>,
     sample_rate: u32,
     channel_layout: ChannelLayout,
     setup_degraded: bool,
@@ -73,6 +74,7 @@ impl VorbisDecoder {
             stage: HeaderStage::Identification,
             headers: None,
             parsed_setup: None,
+            codebook_huffmans: None,
             sample_rate: 0,
             channel_layout: ChannelLayout::STEREO,
             setup_degraded: false,
@@ -108,7 +110,7 @@ impl VorbisDecoder {
             .as_ref()
             .ok_or_else(|| TaoError::InvalidData("Vorbis setup 前缺少 identification 头".into()))?;
 
-        self.parsed_setup = Some(match parse_setup_packet(packet, headers.channels) {
+        let parsed_setup = match parse_setup_packet(packet, headers.channels) {
             Ok(parsed) if !parsed.mode_block_flags.is_empty() => {
                 self.setup_degraded = false;
                 self.setup_degraded_reason = None;
@@ -179,7 +181,14 @@ impl VorbisDecoder {
                     mapping_count: 1,
                 }
             }
-        });
+        };
+        let codebook_huffmans = parsed_setup
+            .codebooks
+            .iter()
+            .map(|cb| CodebookHuffman::from_lengths(&cb.lengths))
+            .collect::<TaoResult<Vec<_>>>()?;
+        self.codebook_huffmans = Some(codebook_huffmans);
+        self.parsed_setup = Some(parsed_setup);
 
         self.stage = HeaderStage::Audio;
         Ok(())
@@ -307,16 +316,15 @@ impl VorbisDecoder {
         let out_samples = out_samples_i64 as u32;
 
         let floor_ctx = build_floor_context(parsed_setup, mapping, channels)?;
-        let huffmans = parsed_setup
-            .codebooks
-            .iter()
-            .map(|cb| CodebookHuffman::from_lengths(&cb.lengths))
-            .collect::<TaoResult<Vec<_>>>()?;
+        let huffmans = self
+            .codebook_huffmans
+            .as_ref()
+            .ok_or_else(|| TaoError::Codec("Vorbis Huffman 表未就绪".into()))?;
         let floor_curves = decode_floor_curves(
             &mut br,
             parsed_setup,
             &floor_ctx,
-            &huffmans,
+            huffmans,
             blocksize as usize / 2,
         )?;
         let mut residue = decode_residue_approx(
@@ -324,7 +332,7 @@ impl VorbisDecoder {
             parsed_setup,
             mapping,
             &floor_curves,
-            &huffmans,
+            huffmans,
             channels,
             blocksize as usize,
         )?;
@@ -528,6 +536,7 @@ impl Decoder for VorbisDecoder {
         self.stage = HeaderStage::Identification;
         self.headers = None;
         self.parsed_setup = None;
+        self.codebook_huffmans = None;
         self.setup_degraded = false;
         self.setup_degraded_reason = None;
         self.pending_frames.clear();
@@ -537,6 +546,7 @@ impl Decoder for VorbisDecoder {
         self.prev_packet_granule = tao_core::timestamp::NOPTS_VALUE;
         self.samples_since_last_granule = 0;
         self.overlap.clear();
+        self.codebook_huffmans = None;
 
         if let CodecParamsType::Audio(AudioCodecParams {
             sample_rate,
