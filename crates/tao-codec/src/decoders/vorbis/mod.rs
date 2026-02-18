@@ -29,7 +29,7 @@ use crate::packet::Packet;
 use self::bitreader::{LsbBitReader, ilog};
 use self::floor::build_floor_context;
 use self::headers::{VorbisHeaders, parse_comment_header, parse_identification_header};
-use self::imdct::imdct_placeholder;
+use self::imdct::{imdct_placeholder, overlap_add_placeholder};
 use self::residue::decode_residue_placeholder;
 use self::setup::{ParsedSetup, parse_setup_packet};
 use self::synthesis::synthesize_frame;
@@ -57,6 +57,7 @@ pub struct VorbisDecoder {
     first_audio_packet: bool,
     prev_blocksize: u16,
     next_pts: i64,
+    overlap: Vec<Vec<f32>>,
 }
 
 impl VorbisDecoder {
@@ -76,6 +77,7 @@ impl VorbisDecoder {
             first_audio_packet: true,
             prev_blocksize: 0,
             next_pts: 0,
+            overlap: Vec::new(),
         }))
     }
 
@@ -207,7 +209,11 @@ impl VorbisDecoder {
         if floor_ctx.channel_count != residue.channels.len() {
             return Err(TaoError::Internal("Vorbis 阶段上下文声道数不一致".into()));
         }
+        if self.overlap.len() != channels {
+            self.overlap = vec![Vec::new(); channels];
+        }
         let td = imdct_placeholder(channels, out_samples as usize);
+        let td = overlap_add_placeholder(&td, &mut self.overlap, out_samples as usize);
         let frame = synthesize_frame(
             &td,
             self.sample_rate,
@@ -243,6 +249,7 @@ impl Decoder for VorbisDecoder {
         self.first_audio_packet = true;
         self.prev_blocksize = 0;
         self.next_pts = 0;
+        self.overlap.clear();
 
         if let CodecParamsType::Audio(AudioCodecParams {
             sample_rate,
@@ -297,5 +304,6 @@ impl Decoder for VorbisDecoder {
         self.pending_frames.clear();
         self.first_audio_packet = true;
         self.prev_blocksize = 0;
+        self.overlap.clear();
     }
 }
