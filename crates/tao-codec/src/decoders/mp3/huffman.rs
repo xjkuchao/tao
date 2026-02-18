@@ -351,22 +351,15 @@ impl HuffmanDecoder {
             }
         };
 
-        // symbol 的 4 位对应 (v,w,x,y), 但符号位读取顺序与位展开顺序相反:
-        // 先处理 bit0(y), 再 bit1(x), bit2(w), bit3(v).
+        // symbol 的 4 位对应 (v,w,x,y),
+        // 符号位按 v->w->x->y 顺序读取.
         let mut v = 0i32;
         let mut w = 0i32;
         let mut x = 0i32;
         let mut y = 0i32;
 
-        if (symbol & 0x1) != 0 {
-            y = if br.read_bool().ok_or(TaoError::Eof)? {
-                -1
-            } else {
-                1
-            };
-        }
-        if (symbol & 0x2) != 0 {
-            x = if br.read_bool().ok_or(TaoError::Eof)? {
+        if (symbol & 0x8) != 0 {
+            v = if br.read_bool().ok_or(TaoError::Eof)? {
                 -1
             } else {
                 1
@@ -379,8 +372,15 @@ impl HuffmanDecoder {
                 1
             };
         }
-        if (symbol & 0x8) != 0 {
-            v = if br.read_bool().ok_or(TaoError::Eof)? {
+        if (symbol & 0x2) != 0 {
+            x = if br.read_bool().ok_or(TaoError::Eof)? {
+                -1
+            } else {
+                1
+            };
+        }
+        if (symbol & 0x1) != 0 {
+            y = if br.read_bool().ok_or(TaoError::Eof)? {
                 -1
             } else {
                 1

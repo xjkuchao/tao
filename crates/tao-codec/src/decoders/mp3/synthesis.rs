@@ -222,7 +222,7 @@ pub fn synthesis_filter(ctx: &mut SynthContext, new_samples: &[f32; 32], pcm_out
     }
 
     for (o, s) in pcm_out.iter_mut().zip(&o_vec) {
-        *o = s.clamp(-1.0, 1.0);
+        *o = *s;
     }
 
     // 向后移动 1 槽, 使下一次写入覆盖最旧槽.

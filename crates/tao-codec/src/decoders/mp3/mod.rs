@@ -226,19 +226,27 @@ impl Mp3Decoder {
                 };
 
                 if is_mpeg1 && granule.block_type == 2 && granule.mixed_block_flag {
-                    // Mixed blocks: 简化处理
-                    // 8 个长块 scalefactors (slen1)
-                    for sf in scalefac.iter_mut().take(8) {
+                    // Mixed blocks:
+                    // 长块部分 (sfb 0..7) 需遵循 scfsi 复用规则, 仅在 gr=1 生效.
+                    let scfsi = &side_info.scfsi[ch];
+                    for band in 0..8 {
+                        let use_prev = if band < 6 { scfsi[0] } else { scfsi[1] } == 1;
+                        if gr == 1 && use_prev {
+                            scalefac[band] = prev_scalefac[band];
+                            continue;
+                        }
+
                         let len = slen1;
                         if len > 0 {
                             if let Some(val) = br.read_bits(len as u8) {
-                                *sf = val as u8;
+                                scalefac[band] = val as u8;
                             }
                         } else {
-                            *sf = 0;
+                            scalefac[band] = 0;
                         }
                     }
-                    // 短块 scalefactors
+
+                    // 短块 scalefactors (sfb 3..11, 3 个窗口)
                     for band in 3..12 {
                         let len = if band < 6 { slen1 } else { slen2 };
                         if len > 0 {
@@ -508,13 +516,8 @@ impl Mp3Decoder {
 
         // 若裁剪后无有效样本, 继续下一帧 (不输出空帧)
         if keep_per_ch == 0 {
-            // Bit Reservoir 管理 (仍需执行)
-            let used_bits = br.bit_offset();
-            let used_bytes = used_bits.div_ceil(8);
-            let keep_start = used_bytes.min(frame_main_data.len());
-            self.main_data.clear();
-            self.main_data
-                .extend(frame_main_data.iter().skip(keep_start).copied());
+            // Bit Reservoir 管理: 追加当前帧 main_data, 保留最近窗口
+            self.main_data.extend(main_data_slice);
             if self.main_data.len() > MAX_MAIN_DATA_BYTES {
                 let remove_cnt = self.main_data.len() - MAX_MAIN_DATA_BYTES;
                 self.main_data.drain(0..remove_cnt);
@@ -545,15 +548,8 @@ impl Mp3Decoder {
         self.channel_layout = ChannelLayout::from_channels(nch as u32);
         self.frame_count += 1;
 
-        // Bit Reservoir 管理: 仅保留"未消费"的 main_data 字节。
-        let used_bits = br.bit_offset();
-        let used_bytes = used_bits.div_ceil(8);
-        let keep_start = used_bytes.min(frame_main_data.len());
-
-        self.main_data.clear();
-        self.main_data
-            .extend(frame_main_data.iter().skip(keep_start).copied());
-
+        // Bit Reservoir 管理: 追加当前帧 main_data, 保留最近窗口
+        self.main_data.extend(main_data_slice);
         if self.main_data.len() > MAX_MAIN_DATA_BYTES {
             let remove_cnt = self.main_data.len() - MAX_MAIN_DATA_BYTES;
             self.main_data.drain(0..remove_cnt);
