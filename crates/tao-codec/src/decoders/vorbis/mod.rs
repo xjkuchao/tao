@@ -29,7 +29,7 @@ use crate::packet::Packet;
 
 use self::bitreader::{LsbBitReader, ilog};
 use self::codebook::CodebookHuffman;
-use self::floor::build_floor_context;
+use self::floor::{build_floor_context, decode_floor_curves};
 use self::headers::{VorbisHeaders, parse_comment_header, parse_identification_header};
 use self::imdct::{imdct_from_residue, overlap_add};
 use self::residue::{apply_coupling_inverse, decode_residue_placeholder};
@@ -304,7 +304,36 @@ impl VorbisDecoder {
         let out_samples = out_samples_i64 as u32;
 
         let floor_ctx = build_floor_context(parsed_setup, mapping, channels)?;
+        let huffmans = parsed_setup
+            .codebooks
+            .iter()
+            .map(|cb| CodebookHuffman::from_lengths(&cb.lengths))
+            .collect::<TaoResult<Vec<_>>>()?;
+        let floor_curves = decode_floor_curves(
+            &mut br,
+            parsed_setup,
+            &floor_ctx,
+            &huffmans,
+            blocksize as usize / 2,
+        )?;
         let mut residue = decode_residue_placeholder(parsed_setup, channels, blocksize as usize)?;
+        for ch in 0..channels {
+            if !floor_curves.nonzero.get(ch).copied().unwrap_or(false) {
+                if let Some(sp) = residue.channels.get_mut(ch) {
+                    sp.fill(0.0);
+                }
+                continue;
+            }
+            if let (Some(sp), Some(curve)) = (
+                residue.channels.get_mut(ch),
+                floor_curves.channel_curves.get(ch),
+            ) {
+                let len = sp.len().min(curve.len());
+                for i in 0..len {
+                    sp[i] *= curve[i];
+                }
+            }
+        }
         apply_coupling_inverse(&mut residue, &mapping.coupling_steps)?;
         if floor_ctx.channel_count != residue.channels.len() {
             return Err(TaoError::Internal("Vorbis 阶段上下文声道数不一致".into()));
