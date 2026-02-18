@@ -1,0 +1,81 @@
+# tao-codec Vorbis 解码器开发计划
+
+## 1. 背景与目标
+- 当前 Vorbis 仍未完成音频主链路解码。
+- 必须遵守项目规则: 纯自研实现, 不依赖外部多媒体算法库。
+- 目标: 对 `data/1.ogg` 与 `data/2.ogg` 完成可播放解码与逐帧对标 FFmpeg。
+
+## 2. 模块化决策(按新规则)
+- 判定: Vorbis 完整实现复杂度高(头包解析、codebook/floor/residue/mapping、IMDCT、overlap、耦合反变换), 不适合单文件。
+- 决策: 采用独立子目录实现。
+- 目录规划:
+  - `crates/tao-codec/src/decoders/vorbis/mod.rs`: 解码器状态机与对外接口
+  - `crates/tao-codec/src/decoders/vorbis/headers.rs`: identification/comment 头包解析
+  - `crates/tao-codec/src/decoders/vorbis/setup.rs`: setup 语法解析与结构校验
+  - `crates/tao-codec/src/decoders/vorbis/bitreader.rs`: Vorbis LSB 比特读取器
+  - 后续按需要新增 `imdct.rs` `floor.rs` `residue.rs` `mapping.rs` `synthesis.rs`
+
+## 3. 里程碑与执行顺序
+
+### 执行与提交规则(强制)
+- 每完成一个关键变更(如: 头包解析修正、setup 严格解析修正、IMDCT 接入、floor/residue 完成、对比测试落地), 必须立即执行:
+  1. `cargo fmt --check`
+  2. `cargo clippy -- -D warnings`
+  3. `cargo check`
+  4. `cargo test`
+- 四项通过后, 立即提交该关键变更代码, 提交信息使用中文并准确描述本次关键点。
+- 禁止将多个关键变更长期堆积后一次性提交, 以确保可回滚、可审计、可断点续做。
+- 若某关键变更阶段无法通过四项门禁, 不进入下一关键变更, 先修复到通过再提交。
+
+### P0 基线与计划
+- [x] 明确禁用外部多媒体库。
+- [x] 输出可续执行计划。
+
+### P1 结构重构与状态机
+- [x] `vorbis` 从单文件迁移到子目录模块。
+- [x] `send_packet/receive_frame/flush` 状态机可工作。
+- [x] 三头包入口接通 (`identification/comment/setup`)。
+- 验收: 可推进到音频包阶段。
+
+### P2 setup 解析基础设施
+- [x] 实现 codebook/floor/residue/mapping/mode 解析框架。
+- [x] 样本 `data/1.ogg` `data/2.ogg` 可通过 setup 阶段并进入音频包。
+- [ ] 收敛 setup 解析中的降级路径, 完成严格解析闭环。
+- 当前状态: 两个样本仍触发降级路径, 失败点为 `floors` 阶段 `floor_type=2080` (bit=29434), 需继续修正 codebook/floor 位对齐实现。
+- 验收: 去除降级后仍稳定通过样本。
+
+### P3 音频包解码主链路(进行中)
+- [ ] 模式切换、窗口、IMDCT、重叠相加。
+- [ ] floor1 恢复、residue 解码、耦合反变换。
+- [ ] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。
+- 验收: `tao-play` 可播放 `data/1.ogg` `data/2.ogg`。
+
+### P4 逐帧对标测试
+- [ ] 新增 `tests/vorbis_module_compare.rs`。
+- [ ] 与 FFmpeg 逐帧比较 MSE/PSNR/最大误差。
+- [ ] 建立并满足误差阈值。
+- 验收: 两个样本对比测试通过。
+
+### P5 质量门禁与交付
+- [x] `cargo fmt --check`
+- [x] `cargo clippy -- -D warnings`
+- [x] `cargo check`
+- [x] `cargo test`
+- [ ] 总结偏差与剩余事项。
+
+## 4. 前置条件
+- 输入样本: `data/1.ogg`, `data/2.ogg`。
+- 本地工具: `ffmpeg`, `ffprobe` (仅用于对比, 不参与解码实现)。
+
+## 5. 验收标准
+- Vorbis 全链路为 Tao 自研实现。
+- 两个样本可稳定解码并逐帧对标 FFmpeg。
+- 四项门禁全部通过。
+
+## 6. 进度标记
+- [x] P0
+- [x] P1
+- [ ] P2
+- [ ] P3
+- [ ] P4
+- [x] P5
