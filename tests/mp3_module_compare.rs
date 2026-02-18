@@ -19,10 +19,17 @@ use tao::format::{FormatRegistry, IoContext};
 
 use tao::codec::decoders::mp3::debug;
 
-/// CBR 测试样本 (来自 samples.ffmpeg.org)
-const SAMPLE_CBR: &str = "https://samples.ffmpeg.org/A-codecs/MP3/CBR/sample.mp3";
-/// VBR 测试样本 (来自 samples.ffmpeg.org)
-const SAMPLE_VBR: &str = "https://samples.ffmpeg.org/A-codecs/MP3/VBR/lame.mp3";
+/// MP3 测试样本集合 (来自 samples.ffmpeg.org)
+const MP3_SAMPLES: &[(&str, &str)] = &[
+    ("ascii", "https://samples.ffmpeg.org/A-codecs/MP3/ascii.mp3"),
+    ("Enrique", "https://samples.ffmpeg.org/A-codecs/MP3/Enrique.mp3"),
+    ("Silent_Light", "https://samples.ffmpeg.org/A-codecs/MP3/Silent_Light.mp3"),
+    ("44khz128kbps", "https://samples.ffmpeg.org/A-codecs/suite/MP3/44khz128kbps.mp3"),
+    ("44khz64kbps", "https://samples.ffmpeg.org/A-codecs/suite/MP3/44khz64kbps.mp3"),
+    ("44khz32kbps", "https://samples.ffmpeg.org/A-codecs/suite/MP3/44khz32kbps.mp3"),
+    ("piano", "https://samples.ffmpeg.org/A-codecs/suite/MP3/piano.mp3"),
+    ("mp3pro_scooter", "https://samples.ffmpeg.org/A-codecs/MP3-pro/scooter-wicked-02-imraving.mp3"),
+];
 
 static FF_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -301,7 +308,7 @@ fn compare_global(tao_pcm: &[f32], ref_pcm: &[f32]) -> debug::CompareResult {
 /// CBR MP3 精度对比 (samples.ffmpeg.org)
 #[test]
 fn test_mp3_native_vs_ffmpeg_cbr() {
-    let url = SAMPLE_CBR;
+    let url = MP3_SAMPLES[0].1;  // ascii.mp3
 
     let tao_result = decode_mp3_with_tao_url(url);
     let tao_result = match tao_result {
@@ -351,7 +358,7 @@ fn test_mp3_native_vs_ffmpeg_cbr() {
 /// VBR MP3 精度对比 (samples.ffmpeg.org)
 #[test]
 fn test_mp3_native_vs_ffmpeg_vbr() {
-    let url = SAMPLE_VBR;
+    let url = MP3_SAMPLES[1].1;  // Enrique.mp3
 
     let tao_result = decode_mp3_with_tao_url(url);
     let tao_result = match tao_result {
@@ -401,13 +408,14 @@ fn test_mp3_native_vs_ffmpeg_vbr() {
 /// 对比摘要报告: 多 URL 统一输出
 #[test]
 fn test_mp3_native_summary() {
-    let samples = [("CBR", SAMPLE_CBR), ("VBR", SAMPLE_VBR)];
-
     println!("\n========================================");
-    println!("  MP3 自研解码器精度总览");
+    println!("  MP3 自研解码器精度测试 - 完整样本集");
     println!("========================================\n");
 
-    for (label, url) in &samples {
+    let mut passed = 0;
+    let mut skipped = 0;
+
+    for (label, url) in MP3_SAMPLES {
         let tao_result = decode_mp3_with_tao_url(url);
         let ff_result = decode_mp3_with_ffmpeg_url(url);
 
@@ -419,6 +427,9 @@ fn test_mp3_native_summary() {
                 } else {
                     "⚠️ "
                 };
+                if global.psnr_db >= debug::acceptance::MIN_PSNR_DB as f64 {
+                    passed += 1;
+                }
                 println!(
                     "{} [{}] PSNR: {:.1}dB, 最大误差: {:.2e}, 平均: {:.2e}, 样本: {}",
                     status,
@@ -429,10 +440,20 @@ fn test_mp3_native_summary() {
                     global.total_samples,
                 );
             }
-            (Err(e), _) => println!("⚠️  [{}] tao 解码失败 (跳过): {}", label, e),
-            (_, Err(e)) => println!("⚠️  [{}] ffmpeg 解码失败 (跳过): {}", label, e),
+            (Err(e), _) => {
+                println!("⚠️  [{}] tao 解码失败 (跳过): {}", label, e);
+                skipped += 1;
+            }
+            (_, Err(e)) => {
+                println!("⚠️  [{}] ffmpeg 解码失败 (跳过): {}", label, e);
+                skipped += 1;
+            }
         }
     }
 
-    println!("\n========================================\n");
+    println!("\n========================================");
+    println!("测试结果摘要:");
+    println!("  ✅ 通过: {}/{}", passed, MP3_SAMPLES.len());
+    println!("  ⏭️  跳过: {}", skipped);
+    println!("========================================\n");
 }
