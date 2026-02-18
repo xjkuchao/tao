@@ -68,6 +68,7 @@
 - [x] 重构 residue2 扁平索引推进逻辑(`flat_idx`), 清理跨向量边界的样本偏移风险。
 - [x] 将 codebook Huffman 构建前移到 setup 阶段并缓存复用, 移除每音频包重复构建。
 - [x] 对 residue 向量增益进行样本扫描调优, 将 `RESIDUE_VECTOR_GAIN` 收敛到 `0.00024`。
+- [x] 去除 residue 分区解码热路径中的重复临时分配, 改为向量缓冲复用。
 - [ ] 窗口、IMDCT、重叠相加。
 - [ ] floor1 恢复、residue 解码、耦合反变换。
 - [ ] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。

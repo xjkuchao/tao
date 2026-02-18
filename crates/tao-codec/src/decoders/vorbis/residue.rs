@@ -140,6 +140,7 @@ fn decode_one_residue(
     let class_dimensions = usize::from(classbook.dimensions.max(1));
     let class_count = residue.classifications.max(1) as usize;
 
+    let mut vec_buf = Vec::<f32>::new();
     if residue.residue_type == 2 {
         let mut class_vec = vec![0usize; partitions];
         let mut p = 0usize;
@@ -191,6 +192,7 @@ fn decode_one_residue(
                     begin + part * psize,
                     psize,
                     n2,
+                    &mut vec_buf,
                 )?;
             }
         }
@@ -248,6 +250,7 @@ fn decode_one_residue(
                     begin + part * psize,
                     psize,
                     n2,
+                    &mut vec_buf,
                 )?;
             }
         }
@@ -267,16 +270,19 @@ fn apply_partition_residue(
     base: usize,
     psize: usize,
     n2: usize,
+    vec_buf: &mut Vec<f32>,
 ) -> TaoResult<()> {
     let dims = usize::from(book.dimensions.max(1));
-    let mut vec_buf = vec![0.0f32; dims];
+    if vec_buf.len() < dims {
+        vec_buf.resize(dims, 0.0);
+    }
 
     match residue.residue_type {
         0 => {
             let step = (psize / dims).max(1);
             let mut j = 0usize;
             while j < step {
-                let got = match decode_codebook_vector(br, book, huffman, &mut vec_buf) {
+                let got = match decode_codebook_vector(br, book, huffman, vec_buf) {
                     Ok(v) => v,
                     Err(TaoError::Eof) => break,
                     Err(e) => return Err(e),
@@ -295,7 +301,7 @@ fn apply_partition_residue(
         1 => {
             let mut pos = 0usize;
             while pos < psize {
-                let got = match decode_codebook_vector(br, book, huffman, &mut vec_buf) {
+                let got = match decode_codebook_vector(br, book, huffman, vec_buf) {
                     Ok(v) => v,
                     Err(TaoError::Eof) => break,
                     Err(e) => return Err(e),
@@ -316,7 +322,7 @@ fn apply_partition_residue(
             let total = psize.saturating_mul(ch_count);
             let mut flat_idx = 0usize;
             while flat_idx < total {
-                let got = match decode_codebook_vector(br, book, huffman, &mut vec_buf) {
+                let got = match decode_codebook_vector(br, book, huffman, vec_buf) {
                     Ok(v) => v,
                     Err(TaoError::Eof) => break,
                     Err(e) => return Err(e),
