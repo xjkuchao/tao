@@ -140,6 +140,63 @@ fn decode_one_residue(
     let class_dimensions = usize::from(classbook.dimensions.max(1));
     let class_count = residue.classifications.max(1) as usize;
 
+    if residue.residue_type == 2 {
+        let mut class_vec = vec![0usize; partitions];
+        let mut p = 0usize;
+        while p < partitions {
+            let sym = match decode_codebook_scalar(br, classbook, classbook_huffman) {
+                Ok(v) => v,
+                Err(TaoError::Eof) => return Ok(()),
+                Err(e) => return Err(e),
+            };
+            let mut tmp = sym as usize;
+            let fill = class_dimensions.min(partitions - p);
+            for i in 0..fill {
+                class_vec[p + i] = tmp % class_count;
+                tmp /= class_count;
+            }
+            p += fill;
+        }
+
+        for pass in 0..8usize {
+            for (part, class_id_ref) in class_vec.iter().enumerate().take(partitions) {
+                let class_id = *class_id_ref;
+                let cascade = residue.cascades.get(class_id).copied().unwrap_or(0);
+                if (cascade & (1 << pass)) == 0 {
+                    continue;
+                }
+                let book_idx = residue
+                    .books
+                    .get(class_id)
+                    .and_then(|a| a.get(pass))
+                    .copied()
+                    .flatten();
+                let Some(book_idx) = book_idx else {
+                    continue;
+                };
+                let book = setup.codebooks.get(book_idx as usize).ok_or_else(|| {
+                    TaoError::InvalidData("Vorbis residue second-stage book 越界".into())
+                })?;
+                let huffman = huffmans.get(book_idx as usize).ok_or_else(|| {
+                    TaoError::InvalidData("Vorbis residue second-stage Huffman 越界".into())
+                })?;
+                apply_partition_residue(
+                    br,
+                    residue,
+                    book,
+                    huffman,
+                    channels[0],
+                    channels,
+                    spectrum,
+                    begin + part * psize,
+                    psize,
+                    n2,
+                )?;
+            }
+        }
+        return Ok(());
+    }
+
     for &ch in channels {
         let mut class_vec = vec![0usize; partitions];
         let mut p = 0usize;
