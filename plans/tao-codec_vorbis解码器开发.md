@@ -74,6 +74,7 @@
 - [x] 接入 flush 阶段尾样本排空逻辑(基于 granule 与 next_pts 对账)。
 - [x] 复用 residue 分类向量缓冲(`class_vec`), 减少每声道重复分配。
 - [x] 对齐 FFmpeg/lewton: residue classword 分类拆分改为反向填充顺序。
+- [x] 对齐 FFmpeg/lewton: 在 residue 前加入 no_residue 反向传播, 并修正 type2 子映射声道集合语义。
 - [ ] 窗口、IMDCT、重叠相加。
 - [ ] floor1 恢复、residue 解码、耦合反变换。
 - [ ] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。
@@ -84,8 +85,8 @@
 - [x] 与 FFmpeg 比较 MSE/PSNR/最大误差并输出报告。
 - [ ] 建立并满足误差阈值。
 - 当前基线:
-  - `data/1.ogg`: PSNR 约 `19.21dB`, max_err 约 `0.945703`
-  - `data/2.ogg`: PSNR 约 `13.53dB`, max_err 约 `1.011152`
+  - `data/1.ogg`: PSNR 约 `19.30dB`, max_err 约 `0.945575`
+  - `data/2.ogg`: PSNR 约 `13.53dB`, max_err 约 `1.026243`
   - 样本长度: `data/1.ogg` Tao=FFmpeg=`881996`; `data/2.ogg` Tao=`2645998`, FFmpeg=`2646000`
 - 验收: 两个样本对比测试通过。
 

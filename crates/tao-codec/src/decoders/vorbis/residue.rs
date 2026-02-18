@@ -2,7 +2,6 @@ use tao_core::{TaoError, TaoResult};
 
 use super::bitreader::LsbBitReader;
 use super::codebook::{CodebookHuffman, decode_codebook_scalar, decode_codebook_vector};
-use super::floor::FloorCurves;
 use super::setup::{CouplingStep, MappingConfig, ParsedSetup, ResidueConfig};
 
 const RESIDUE_VECTOR_GAIN: f32 = 0.00024;
@@ -20,8 +19,8 @@ pub(crate) fn decode_residue_approx(
     br: &mut LsbBitReader<'_>,
     setup: &ParsedSetup,
     mapping: &MappingConfig,
-    floor: &FloorCurves,
     huffmans: &[CodebookHuffman],
+    do_not_decode: &[bool],
     channel_count: usize,
     blocksize: usize,
 ) -> TaoResult<ResidueSpectrum> {
@@ -43,13 +42,16 @@ pub(crate) fn decode_residue_approx(
             .get(residue_idx)
             .ok_or_else(|| TaoError::InvalidData("Vorbis residue 索引越界".into()))?;
 
-        let active_channels: Vec<usize> = (0..channel_count)
-            .filter(|&ch| {
-                mapping.channel_mux.get(ch).copied().unwrap_or(0) as usize == submap
-                    && floor.nonzero.get(ch).copied().unwrap_or(false)
-            })
+        let submap_channels: Vec<usize> = (0..channel_count)
+            .filter(|&ch| mapping.channel_mux.get(ch).copied().unwrap_or(0) as usize == submap)
             .collect();
-        if active_channels.is_empty() {
+        if submap_channels.is_empty() {
+            continue;
+        }
+        let any_decode = submap_channels
+            .iter()
+            .any(|&ch| !do_not_decode.get(ch).copied().unwrap_or(true));
+        if !any_decode {
             continue;
         }
 
@@ -58,7 +60,8 @@ pub(crate) fn decode_residue_approx(
             setup,
             residue,
             huffmans,
-            &active_channels,
+            &submap_channels,
+            do_not_decode,
             &mut out.channels,
             n2,
         )?;
@@ -107,12 +110,14 @@ pub(crate) fn apply_coupling_inverse(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decode_one_residue(
     br: &mut LsbBitReader<'_>,
     setup: &ParsedSetup,
     residue: &ResidueConfig,
     huffmans: &[CodebookHuffman],
     channels: &[usize],
+    do_not_decode: &[bool],
     spectrum: &mut [Vec<f32>],
     n2: usize,
 ) -> TaoResult<()> {
@@ -201,6 +206,9 @@ fn decode_one_residue(
     }
 
     for &ch in channels {
+        if do_not_decode.get(ch).copied().unwrap_or(true) {
+            continue;
+        }
         class_vec.fill(0);
         let mut p = 0usize;
         while p < partitions {

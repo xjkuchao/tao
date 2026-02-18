@@ -329,12 +329,24 @@ impl VorbisDecoder {
             huffmans,
             blocksize as usize / 2,
         )?;
+        let mut do_not_decode: Vec<bool> = floor_curves.nonzero.iter().map(|&v| !v).collect();
+        for step in mapping.coupling_steps.iter().rev() {
+            let m = usize::from(step.magnitude);
+            let a = usize::from(step.angle);
+            if m < do_not_decode.len()
+                && a < do_not_decode.len()
+                && !(do_not_decode[m] && do_not_decode[a])
+            {
+                do_not_decode[m] = false;
+                do_not_decode[a] = false;
+            }
+        }
         let mut residue = decode_residue_approx(
             &mut br,
             parsed_setup,
             mapping,
-            &floor_curves,
             huffmans,
+            &do_not_decode,
             channels,
             blocksize as usize,
         )?;
