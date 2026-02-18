@@ -243,15 +243,15 @@ fn decode_codebook_scalar(
 fn find_neighbors(x_list: &[u16], i: usize) -> (usize, usize) {
     let xi = x_list[i];
     let mut low_idx = 0usize;
-    let mut high_idx = 1usize;
+    let mut high_idx = 0usize;
     let mut low_x = 0u16;
     let mut high_x = u16::MAX;
     for (j, &xj) in x_list.iter().enumerate().take(i) {
-        if xj <= xi && xj >= low_x {
+        if xj < xi && xj >= low_x {
             low_x = xj;
             low_idx = j;
         }
-        if xj >= xi && xj <= high_x {
+        if xj > xi && xj <= high_x {
             high_x = xj;
             high_idx = j;
         }

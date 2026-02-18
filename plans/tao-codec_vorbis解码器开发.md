@@ -69,6 +69,7 @@
 - [x] 将 codebook Huffman 构建前移到 setup 阶段并缓存复用, 移除每音频包重复构建。
 - [x] 对 residue 向量增益进行样本扫描调优, 将 `RESIDUE_VECTOR_GAIN` 收敛到 `0.00024`。
 - [x] 去除 residue 分区解码热路径中的重复临时分配, 改为向量缓冲复用。
+- [x] floor1 邻点搜索改为严格不等关系(`<`/`>`), 避免相等点参与预测。
 - [ ] 窗口、IMDCT、重叠相加。
 - [ ] floor1 恢复、residue 解码、耦合反变换。
 - [ ] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。
