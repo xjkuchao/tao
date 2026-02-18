@@ -9,8 +9,12 @@
 //! - 尚未实现音频包到 PCM 的完整解码链路 (P3 阶段实现)
 
 mod bitreader;
+mod floor;
 mod headers;
+mod imdct;
+mod residue;
 mod setup;
+mod synthesis;
 
 use log::warn;
 use std::collections::VecDeque;
@@ -19,12 +23,16 @@ use tao_core::{ChannelLayout, TaoError, TaoResult};
 use crate::codec_id::CodecId;
 use crate::codec_parameters::{AudioCodecParams, CodecParameters, CodecParamsType};
 use crate::decoder::Decoder;
-use crate::frame::{AudioFrame, Frame};
+use crate::frame::Frame;
 use crate::packet::Packet;
 
 use self::bitreader::{LsbBitReader, ilog};
+use self::floor::build_floor_context;
 use self::headers::{VorbisHeaders, parse_comment_header, parse_identification_header};
+use self::imdct::imdct_placeholder;
+use self::residue::decode_residue_placeholder;
 use self::setup::{ParsedSetup, parse_setup_packet};
+use self::synthesis::synthesize_frame;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HeaderStage {
@@ -188,22 +196,25 @@ impl VorbisDecoder {
         }
 
         let channels = self.channel_layout.channels as usize;
-        let mut frame = AudioFrame::new(
-            out_samples,
-            self.sample_rate,
-            tao_core::SampleFormat::F32,
-            self.channel_layout,
-        );
-        frame.pts = if packet_pts != tao_core::timestamp::NOPTS_VALUE {
+        let pts = if packet_pts != tao_core::timestamp::NOPTS_VALUE {
             packet_pts
         } else {
             self.next_pts
         };
-        frame.time_base = tao_core::Rational::new(1, self.sample_rate as i32);
-        frame.duration = out_samples as i64;
 
-        // TODO: P3 后续将此静音占位替换为真实 Vorbis 频谱反变换输出。
-        frame.data[0] = vec![0u8; out_samples as usize * channels * std::mem::size_of::<f32>()];
+        let floor_ctx = build_floor_context(parsed_setup, channels)?;
+        let residue = decode_residue_placeholder(parsed_setup, channels, blocksize as usize)?;
+        if floor_ctx.channel_count != residue.channels.len() {
+            return Err(TaoError::Internal("Vorbis 阶段上下文声道数不一致".into()));
+        }
+        let td = imdct_placeholder(channels, out_samples as usize);
+        let frame = synthesize_frame(
+            &td,
+            self.sample_rate,
+            self.channel_layout,
+            pts,
+            out_samples as i64,
+        );
 
         self.next_pts = frame.pts.saturating_add(frame.duration);
         self.pending_frames.push_back(Frame::Audio(frame));
