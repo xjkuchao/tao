@@ -9,6 +9,7 @@
 //! - 尚未实现音频包到 PCM 的完整解码链路 (P3 阶段实现)
 
 mod bitreader;
+mod codebook;
 mod floor;
 mod headers;
 mod imdct;
@@ -27,6 +28,7 @@ use crate::frame::Frame;
 use crate::packet::Packet;
 
 use self::bitreader::{LsbBitReader, ilog};
+use self::codebook::CodebookHuffman;
 use self::floor::build_floor_context;
 use self::headers::{VorbisHeaders, parse_comment_header, parse_identification_header};
 use self::imdct::{imdct_from_residue, overlap_add};
@@ -329,6 +331,8 @@ impl VorbisDecoder {
     }
 
     fn validate_setup_runtime(&self, setup: &ParsedSetup) -> TaoResult<()> {
+        let _decode_fn: fn(&CodebookHuffman, &mut LsbBitReader<'_>) -> TaoResult<u32> =
+            CodebookHuffman::decode_symbol;
         for cb in &setup.codebooks {
             if cb.dimensions == 0 || cb.entries == 0 {
                 return Err(TaoError::InvalidData("Vorbis codebook 参数非法".into()));
@@ -341,6 +345,7 @@ impl VorbisDecoder {
                     "Vorbis codebook lookup_type 非法".into(),
                 ));
             }
+            let _ = CodebookHuffman::from_lengths(&cb.lengths)?;
         }
 
         for floor in &setup.floors {
