@@ -77,6 +77,7 @@
 - [x] 对齐 FFmpeg/lewton: 在 residue 前加入 no_residue 反向传播, 并修正 type2 子映射声道集合语义。
 - [x] 基于新语义重新扫描 residue 增益并收敛到 `RESIDUE_VECTOR_GAIN=0.00018`。
 - [x] 对齐 FFmpeg: 首个长块按 `prev_window_flag` 初始化 `previous_window` 对应块长。
+- [x] 对齐 lewton: 包输出样本数改为 `right_win_start-left_win_start` 公式, 替换 `(prev+curr)/4` 近似。
 - [ ] 窗口、IMDCT、重叠相加。
 - [ ] floor1 恢复、residue 解码、耦合反变换。
 - [ ] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。

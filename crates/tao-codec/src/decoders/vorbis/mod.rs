@@ -303,7 +303,13 @@ impl VorbisDecoder {
             return Ok(());
         }
 
-        let nominal_out = ((usize::from(self.prev_blocksize) + usize::from(blocksize)) / 4) as i64;
+        let nominal_out = compute_packet_output_samples(
+            blocksize as usize,
+            headers.blocksize0 as usize,
+            is_long_block,
+            prev_window_flag,
+            next_window_flag,
+        ) as i64;
         self.prev_blocksize = blocksize;
         if nominal_out <= 0 {
             return Ok(());
@@ -615,6 +621,28 @@ impl VorbisDecoder {
             })
             .as_slice()
     }
+}
+
+fn compute_packet_output_samples(
+    blocksize: usize,
+    short_blocksize: usize,
+    is_long_block: bool,
+    prev_window_flag: bool,
+    next_window_flag: bool,
+) -> usize {
+    let n = blocksize;
+    let window_center = n >> 1;
+    let left_start = if !is_long_block || prev_window_flag {
+        0
+    } else {
+        (n.saturating_sub(short_blocksize)) >> 2
+    };
+    let right_start = if !is_long_block || next_window_flag {
+        window_center
+    } else {
+        (n.saturating_mul(3).saturating_sub(short_blocksize)) >> 2
+    };
+    right_start.saturating_sub(left_start)
 }
 
 impl Decoder for VorbisDecoder {
