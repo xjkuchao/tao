@@ -59,6 +59,8 @@
 - [x] 修正 long-window 包头标志位消费并接入基于 mapping 的 floor 上下文映射。
 - [x] 接入 floor1 音频包解析与曲线重建(当前幅度映射为近似实现)。
 - [x] 接入 residue 近似解码(按 bitstream/codebook 消费并生成频谱占位增量)。
+- [x] 接入 codebook lookup 参数解析与向量恢复接口(含 Vorbis float32 unpack)。
+- [x] 接入 residue type0/1/2 的向量写入主流程(当前仍需继续做精确对齐与幅度收敛)。
 - [ ] 窗口、IMDCT、重叠相加。
 - [ ] floor1 恢复、residue 解码、耦合反变换。
 - [ ] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。
@@ -69,8 +71,8 @@
 - [x] 与 FFmpeg 比较 MSE/PSNR/最大误差并输出报告。
 - [ ] 建立并满足误差阈值。
 - 当前基线:
-  - `data/1.ogg`: PSNR 约 `19.47dB`, max_err 约 `0.945844`
-  - `data/2.ogg`: PSNR 约 `13.54dB`, max_err 约 `0.992089`
+  - `data/1.ogg`: PSNR 约 `-41.00dB`, max_err 约 `2519.653320`
+  - `data/2.ogg`: PSNR 约 `-35.14dB`, max_err 约 `3419.615234`
   - 样本长度: `data/1.ogg` Tao=FFmpeg=`881996`; `data/2.ogg` Tao=`2645998`, FFmpeg=`2646000`
 - 验收: 两个样本对比测试通过。
 

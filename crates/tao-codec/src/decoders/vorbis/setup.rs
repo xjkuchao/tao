@@ -21,6 +21,17 @@ pub(crate) struct CodebookConfig {
     pub(crate) entries: u32,
     pub(crate) lengths: Vec<u8>,
     pub(crate) lookup_type: u8,
+    pub(crate) lookup: Option<CodebookLookupConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CodebookLookupConfig {
+    pub(crate) minimum_value: f32,
+    pub(crate) delta_value: f32,
+    pub(crate) value_bits: u8,
+    pub(crate) sequence_p: bool,
+    pub(crate) lookup_values: u32,
+    pub(crate) multiplicands: Vec<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -212,29 +223,41 @@ fn parse_codebooks(br: &mut LsbBitReader<'_>) -> TaoResult<Vec<CodebookConfig>> 
                 lookup_type,
             )));
         }
-        if lookup_type == 1 || lookup_type == 2 {
-            let _minimum = br.read_bits(32)?;
-            let _maximum = br.read_bits(32)?;
-            let value_bits = br.read_bits(4)? + 1;
-            let _sequence_p = br.read_flag()?;
+        let lookup = if lookup_type == 1 || lookup_type == 2 {
+            let minimum_raw = br.read_bits(32)?;
+            let maximum_raw = br.read_bits(32)?;
+            let value_bits = (br.read_bits(4)? + 1) as u8;
+            let sequence_p = br.read_flag()?;
 
-            let quant_values = if lookup_type == 1 {
+            let lookup_values = if lookup_type == 1 {
                 lookup1_values(entries, dimensions as u32)
             } else {
                 entries
                     .checked_mul(dimensions as u32)
                     .ok_or_else(|| TaoError::InvalidData("Vorbis quant_values 溢出".into()))?
             };
-            for _ in 0..quant_values {
-                let _ = br.read_bits(value_bits as u8)?;
+            let mut multiplicands = Vec::with_capacity(lookup_values as usize);
+            for _ in 0..lookup_values {
+                multiplicands.push(br.read_bits(value_bits)?);
             }
-        }
+            Some(CodebookLookupConfig {
+                minimum_value: vorbis_float32_unpack(minimum_raw),
+                delta_value: vorbis_float32_unpack(maximum_raw),
+                value_bits,
+                sequence_p,
+                lookup_values,
+                multiplicands,
+            })
+        } else {
+            None
+        };
 
         codebooks.push(CodebookConfig {
             dimensions,
             entries,
             lengths,
             lookup_type,
+            lookup,
         });
     }
     Ok(codebooks)
@@ -563,4 +586,12 @@ fn pow_le_entries(base: u32, exp: u32, entries: u32) -> bool {
         }
     }
     true
+}
+
+fn vorbis_float32_unpack(v: u32) -> f32 {
+    let sign = (v >> 31) & 0x01;
+    let exponent = ((v >> 21) & 0x03ff) as i32;
+    let mantissa = (v & 0x001f_ffff) as i32;
+    let signed_mantissa = if sign != 0 { -mantissa } else { mantissa };
+    (signed_mantissa as f32) * 2.0f32.powi(exponent - 788)
 }

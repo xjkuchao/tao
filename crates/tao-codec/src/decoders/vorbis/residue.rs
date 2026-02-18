@@ -1,7 +1,7 @@
 use tao_core::{TaoError, TaoResult};
 
 use super::bitreader::LsbBitReader;
-use super::codebook::CodebookHuffman;
+use super::codebook::{CodebookHuffman, decode_codebook_scalar, decode_codebook_vector};
 use super::floor::FloorCurves;
 use super::setup::{CouplingStep, MappingConfig, ParsedSetup, ResidueConfig};
 
@@ -132,6 +132,9 @@ fn decode_one_residue(
         .codebooks
         .get(classbook_idx)
         .ok_or_else(|| TaoError::InvalidData("Vorbis residue classbook 越界".into()))?;
+    let classbook_huffman = huffmans
+        .get(classbook_idx)
+        .ok_or_else(|| TaoError::InvalidData("Vorbis residue classbook Huffman 越界".into()))?;
     let class_dimensions = usize::from(classbook.dimensions.max(1));
     let class_count = residue.classifications.max(1) as usize;
 
@@ -139,7 +142,11 @@ fn decode_one_residue(
         let mut class_vec = vec![0usize; partitions];
         let mut p = 0usize;
         while p < partitions {
-            let sym = decode_codebook_scalar(br, setup, huffmans, classbook_idx)?;
+            let sym = match decode_codebook_scalar(br, classbook, classbook_huffman) {
+                Ok(v) => v,
+                Err(TaoError::Eof) => return Ok(()),
+                Err(e) => return Err(e),
+            };
             let mut tmp = sym as usize;
             let fill = class_dimensions.min(partitions - p);
             for i in 0..fill {
@@ -165,43 +172,115 @@ fn decode_one_residue(
                 let Some(book_idx) = book_idx else {
                     continue;
                 };
-                let sym = decode_codebook_scalar(br, setup, huffmans, book_idx as usize)?;
                 let book = setup.codebooks.get(book_idx as usize).ok_or_else(|| {
                     TaoError::InvalidData("Vorbis residue second-stage book 越界".into())
                 })?;
-                let entries = book.entries.max(1);
-                let amp = (sym as f32 / entries as f32) * 2.0 - 1.0;
-                let base = begin + part * psize;
-                let end_i = (base + psize).min(n2);
-                if let Some(dst) = spectrum.get_mut(ch) {
-                    for v in dst.iter_mut().take(end_i).skip(base) {
-                        *v += amp * 0.0005;
-                    }
-                }
+                let huffman = huffmans.get(book_idx as usize).ok_or_else(|| {
+                    TaoError::InvalidData("Vorbis residue second-stage Huffman 越界".into())
+                })?;
+                apply_partition_residue(
+                    br,
+                    residue,
+                    book,
+                    huffman,
+                    ch,
+                    channels,
+                    spectrum,
+                    begin + part * psize,
+                    psize,
+                    n2,
+                )?;
             }
         }
     }
     Ok(())
 }
 
-fn decode_codebook_scalar(
+#[allow(clippy::too_many_arguments)]
+fn apply_partition_residue(
     br: &mut LsbBitReader<'_>,
-    setup: &ParsedSetup,
-    huffmans: &[CodebookHuffman],
-    book_idx: usize,
-) -> TaoResult<u32> {
-    let book = setup
-        .codebooks
-        .get(book_idx)
-        .ok_or_else(|| TaoError::InvalidData("Vorbis codebook 索引越界".into()))?;
-    let h = huffmans
-        .get(book_idx)
-        .ok_or_else(|| TaoError::InvalidData("Vorbis Huffman 表索引越界".into()))?;
-    let sym = h.decode_symbol(br)?;
-    if sym >= book.entries {
-        return Err(TaoError::InvalidData(
-            "Vorbis codebook 符号超出 entries".into(),
-        ));
+    residue: &ResidueConfig,
+    book: &super::setup::CodebookConfig,
+    huffman: &CodebookHuffman,
+    channel: usize,
+    active_channels: &[usize],
+    spectrum: &mut [Vec<f32>],
+    base: usize,
+    psize: usize,
+    n2: usize,
+) -> TaoResult<()> {
+    let dims = usize::from(book.dimensions.max(1));
+    let mut vec_buf = vec![0.0f32; dims];
+
+    match residue.residue_type {
+        0 => {
+            let step = (psize / dims).max(1);
+            let mut j = 0usize;
+            while j < step {
+                let got = match decode_codebook_vector(br, book, huffman, &mut vec_buf) {
+                    Ok(v) => v,
+                    Err(TaoError::Eof) => break,
+                    Err(e) => return Err(e),
+                };
+                if let Some(dst) = spectrum.get_mut(channel) {
+                    for (k, val) in vec_buf.iter().copied().enumerate().take(got) {
+                        let idx = base + j + k * step;
+                        if idx < n2 && idx < dst.len() {
+                            dst[idx] += val;
+                        }
+                    }
+                }
+                j += 1;
+            }
+        }
+        1 => {
+            let mut pos = 0usize;
+            while pos < psize {
+                let got = match decode_codebook_vector(br, book, huffman, &mut vec_buf) {
+                    Ok(v) => v,
+                    Err(TaoError::Eof) => break,
+                    Err(e) => return Err(e),
+                };
+                if let Some(dst) = spectrum.get_mut(channel) {
+                    for (k, val) in vec_buf.iter().copied().enumerate().take(got) {
+                        let idx = base + pos + k;
+                        if idx < n2 && idx < dst.len() {
+                            dst[idx] += val;
+                        }
+                    }
+                }
+                pos = pos.saturating_add(got.max(1));
+            }
+        }
+        2 => {
+            let ch_count = active_channels.len().max(1);
+            let mut pos = 0usize;
+            let mut flat = 0usize;
+            while pos < psize {
+                let got = match decode_codebook_vector(br, book, huffman, &mut vec_buf) {
+                    Ok(v) => v,
+                    Err(TaoError::Eof) => break,
+                    Err(e) => return Err(e),
+                };
+                for val in vec_buf.iter().copied().take(got) {
+                    let ch_off = flat % ch_count;
+                    let sample_off = pos + flat / ch_count;
+                    let dst_ch = active_channels[ch_off];
+                    if let Some(dst) = spectrum.get_mut(dst_ch) {
+                        let idx = base + sample_off;
+                        if idx < n2 && idx < dst.len() {
+                            dst[idx] += val;
+                        }
+                    }
+                    flat = flat.saturating_add(1);
+                }
+                pos = pos.saturating_add(flat / ch_count);
+                flat %= ch_count;
+            }
+        }
+        _ => {
+            return Err(TaoError::InvalidData("Vorbis residue_type 非法".into()));
+        }
     }
-    Ok(sym)
+    Ok(())
 }

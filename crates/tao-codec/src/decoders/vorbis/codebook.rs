@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use tao_core::{TaoError, TaoResult};
 
 use super::bitreader::LsbBitReader;
+use super::setup::{CodebookConfig, CodebookLookupConfig};
 
 #[derive(Debug, Clone)]
 pub(crate) struct CodebookHuffman {
@@ -54,6 +55,95 @@ impl CodebookHuffman {
             "Vorbis codebook Huffman 解码失败".into(),
         ))
     }
+}
+
+pub(crate) fn decode_codebook_scalar(
+    br: &mut LsbBitReader<'_>,
+    book: &CodebookConfig,
+    huffman: &CodebookHuffman,
+) -> TaoResult<u32> {
+    let sym = huffman.decode_symbol(br)?;
+    if sym >= book.entries {
+        return Err(TaoError::InvalidData(
+            "Vorbis codebook 符号超出 entries".into(),
+        ));
+    }
+    Ok(sym)
+}
+
+pub(crate) fn decode_codebook_vector(
+    br: &mut LsbBitReader<'_>,
+    book: &CodebookConfig,
+    huffman: &CodebookHuffman,
+    out: &mut [f32],
+) -> TaoResult<usize> {
+    let dims = usize::from(book.dimensions);
+    if dims == 0 || out.is_empty() {
+        return Ok(0);
+    }
+    let fill_dims = dims.min(out.len());
+    if book.lookup_type == 0 {
+        out[..fill_dims].fill(0.0);
+        let _ = decode_codebook_scalar(br, book, huffman)?;
+        return Ok(fill_dims);
+    }
+
+    let sym = decode_codebook_scalar(br, book, huffman)? as usize;
+    let lookup = book
+        .lookup
+        .as_ref()
+        .ok_or_else(|| TaoError::InvalidData("Vorbis codebook lookup 缺失".into()))?;
+    decode_vector_from_lookup(sym, dims, book.lookup_type, lookup, out)?;
+    Ok(fill_dims)
+}
+
+fn decode_vector_from_lookup(
+    sym: usize,
+    dims: usize,
+    lookup_type: u8,
+    lookup: &CodebookLookupConfig,
+    out: &mut [f32],
+) -> TaoResult<()> {
+    if lookup.lookup_values == 0 || lookup.multiplicands.is_empty() {
+        return Err(TaoError::InvalidData(
+            "Vorbis codebook multiplicands 非法".into(),
+        ));
+    }
+
+    let fill_dims = dims.min(out.len());
+    let mut last = 0.0f32;
+    let mut index_divisor = 1usize;
+    for (i, slot) in out.iter_mut().enumerate().take(fill_dims) {
+        let m_idx = if lookup_type == 1 {
+            (sym / index_divisor) % lookup.lookup_values as usize
+        } else if lookup_type == 2 {
+            sym.checked_mul(dims)
+                .and_then(|base| base.checked_add(i))
+                .ok_or_else(|| TaoError::InvalidData("Vorbis codebook 索引溢出".into()))?
+        } else {
+            return Err(TaoError::InvalidData(
+                "Vorbis codebook lookup_type 不支持".into(),
+            ));
+        };
+        let mul = lookup
+            .multiplicands
+            .get(m_idx)
+            .copied()
+            .ok_or_else(|| TaoError::InvalidData("Vorbis codebook multiplicand 越界".into()))?;
+        let mut v = lookup.minimum_value + lookup.delta_value * mul as f32 + last;
+        if !lookup.sequence_p {
+            v = lookup.minimum_value + lookup.delta_value * mul as f32;
+        } else {
+            last = v;
+        }
+        *slot = v;
+        if lookup_type == 1 {
+            index_divisor = index_divisor
+                .checked_mul(lookup.lookup_values as usize)
+                .ok_or_else(|| TaoError::InvalidData("Vorbis codebook divisor 溢出".into()))?;
+        }
+    }
+    Ok(())
 }
 
 fn reverse_bits(mut v: u32, n: u8) -> u32 {

@@ -390,6 +390,31 @@ impl VorbisDecoder {
                     "Vorbis codebook lookup_type 非法".into(),
                 ));
             }
+            if cb.lookup_type == 0 && cb.lookup.is_some() {
+                return Err(TaoError::InvalidData(
+                    "Vorbis codebook lookup_type=0 不应包含 lookup".into(),
+                ));
+            }
+            if cb.lookup_type > 0 {
+                let lookup = cb.lookup.as_ref().ok_or_else(|| {
+                    TaoError::InvalidData("Vorbis codebook lookup 配置缺失".into())
+                })?;
+                if lookup.value_bits == 0 || lookup.value_bits > 32 {
+                    return Err(TaoError::InvalidData(
+                        "Vorbis codebook value_bits 非法".into(),
+                    ));
+                }
+                if lookup.lookup_values == 0 {
+                    return Err(TaoError::InvalidData(
+                        "Vorbis codebook lookup_values 非法".into(),
+                    ));
+                }
+                if lookup.multiplicands.len() != lookup.lookup_values as usize {
+                    return Err(TaoError::InvalidData(
+                        "Vorbis codebook multiplicands 长度非法".into(),
+                    ));
+                }
+            }
             let _ = CodebookHuffman::from_lengths(&cb.lengths)?;
         }
 
