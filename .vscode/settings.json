@@ -12,6 +12,47 @@
                 "copilot/gpt-5.2-codex",
                 "copilot/gpt-5.3-codex"
             ]
+        },
+        "tao/.vscode/mcp.json: ripgrep": {
+            "allowedModels": [
+                "copilot/gpt-5-mini",
+                "copilot/auto",
+                "copilot/claude-haiku-4.5",
+                "copilot/claude-opus-4.5",
+                "copilot/claude-opus-4.6",
+                "copilot/claude-sonnet-4",
+                "copilot/claude-sonnet-4.5",
+                "copilot/gpt-5.2-codex",
+                "copilot/gpt-5.3-codex"
+            ]
+        },
+        "tao/.vscode/mcp.json: context7": {
+            "allowedModels": [
+                "copilot/gpt-5-mini",
+                "copilot/auto",
+                "copilot/claude-haiku-4.5",
+                "copilot/claude-opus-4.5",
+                "copilot/claude-opus-4.6",
+                "copilot/claude-sonnet-4",
+                "copilot/claude-sonnet-4.5",
+                "copilot/gpt-5.2-codex",
+                "copilot/gpt-5.3-codex"
+            ]
+        },
+        "tao/.vscode/mcp.json: rust-analyzer-mcp": {
+            "allowedModels": [
+                "copilot/auto",
+                "copilot/claude-haiku-4.5",
+                "copilot/claude-opus-4.5",
+                "copilot/claude-opus-4.6",
+                "copilot/claude-sonnet-4.5",
+                "copilot/claude-sonnet-4.6",
+                "copilot/gemini-3-flash-preview",
+                "copilot/gemini-3-pro-preview",
+                "copilot/gpt-5-mini",
+                "copilot/gpt-5.2-codex",
+                "copilot/gpt-5.3-codex"
+            ]
         }
     }
 }
