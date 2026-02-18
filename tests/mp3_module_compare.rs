@@ -99,7 +99,12 @@ fn decode_mp3_with_tao(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn std::
                     }
                 }
                 Ok(_) => {}
-                Err(TaoError::NeedMoreData) => break,
+                Err(TaoError::NeedMoreData) => {
+                    if demux_eof {
+                        return Ok((actual_sr, actual_ch, out));
+                    }
+                    break;
+                }
                 Err(TaoError::Eof) => return Ok((actual_sr, actual_ch, out)),
                 Err(e) => return Err(format!("取帧失败: {}", e).into()),
             }
