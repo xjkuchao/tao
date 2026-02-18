@@ -61,6 +61,7 @@
 - [x] 接入 residue 近似解码(按 bitstream/codebook 消费并生成频谱占位增量)。
 - [x] 接入 codebook lookup 参数解析与向量恢复接口(含 Vorbis float32 unpack)。
 - [x] 接入 residue type0/1/2 的向量写入主流程(当前仍需继续做精确对齐与幅度收敛)。
+- [x] 为 residue 向量注入增加临时增益归一化, 避免当前阶段幅度失真导致对比不可用。
 - [ ] 窗口、IMDCT、重叠相加。
 - [ ] floor1 恢复、residue 解码、耦合反变换。
 - [ ] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。
@@ -71,8 +72,8 @@
 - [x] 与 FFmpeg 比较 MSE/PSNR/最大误差并输出报告。
 - [ ] 建立并满足误差阈值。
 - 当前基线:
-  - `data/1.ogg`: PSNR 约 `-41.00dB`, max_err 约 `2519.653320`
-  - `data/2.ogg`: PSNR 约 `-35.14dB`, max_err 约 `3419.615234`
+  - `data/1.ogg`: PSNR 约 `18.40dB`, max_err 约 `1.300521`
+  - `data/2.ogg`: PSNR 约 `13.46dB`, max_err 约 `1.814068`
   - 样本长度: `data/1.ogg` Tao=FFmpeg=`881996`; `data/2.ogg` Tao=`2645998`, FFmpeg=`2646000`
 - 验收: 两个样本对比测试通过。
 

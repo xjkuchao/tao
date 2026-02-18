@@ -5,6 +5,8 @@ use super::codebook::{CodebookHuffman, decode_codebook_scalar, decode_codebook_v
 use super::floor::FloorCurves;
 use super::setup::{CouplingStep, MappingConfig, ParsedSetup, ResidueConfig};
 
+const RESIDUE_VECTOR_GAIN: f32 = 0.0005;
+
 /// residue 解码阶段输出的频谱占位数据.
 #[derive(Debug, Clone)]
 pub(crate) struct ResidueSpectrum {
@@ -226,7 +228,7 @@ fn apply_partition_residue(
                     for (k, val) in vec_buf.iter().copied().enumerate().take(got) {
                         let idx = base + j + k * step;
                         if idx < n2 && idx < dst.len() {
-                            dst[idx] += val;
+                            dst[idx] += val * RESIDUE_VECTOR_GAIN;
                         }
                     }
                 }
@@ -245,7 +247,7 @@ fn apply_partition_residue(
                     for (k, val) in vec_buf.iter().copied().enumerate().take(got) {
                         let idx = base + pos + k;
                         if idx < n2 && idx < dst.len() {
-                            dst[idx] += val;
+                            dst[idx] += val * RESIDUE_VECTOR_GAIN;
                         }
                     }
                 }
@@ -269,7 +271,7 @@ fn apply_partition_residue(
                     if let Some(dst) = spectrum.get_mut(dst_ch) {
                         let idx = base + sample_off;
                         if idx < n2 && idx < dst.len() {
-                            dst[idx] += val;
+                            dst[idx] += val * RESIDUE_VECTOR_GAIN;
                         }
                     }
                     flat = flat.saturating_add(1);
