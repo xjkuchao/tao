@@ -57,6 +57,8 @@ pub struct VorbisDecoder {
     first_audio_packet: bool,
     prev_blocksize: u16,
     next_pts: i64,
+    prev_packet_granule: i64,
+    samples_since_last_granule: i64,
     overlap: Vec<Vec<f32>>,
 }
 
@@ -77,6 +79,8 @@ impl VorbisDecoder {
             first_audio_packet: true,
             prev_blocksize: 0,
             next_pts: 0,
+            prev_packet_granule: tao_core::timestamp::NOPTS_VALUE,
+            samples_since_last_granule: 0,
             overlap: Vec::new(),
         }))
     }
@@ -185,24 +189,36 @@ impl VorbisDecoder {
         if self.first_audio_packet {
             self.first_audio_packet = false;
             self.prev_blocksize = blocksize;
-            if packet_pts != tao_core::timestamp::NOPTS_VALUE {
+            if packet_pts != tao_core::timestamp::NOPTS_VALUE && packet_pts >= 0 {
+                self.prev_packet_granule = packet_pts;
                 self.next_pts = packet_pts;
+                self.samples_since_last_granule = 0;
             }
             return Ok(());
         }
 
-        let out_samples = ((usize::from(self.prev_blocksize) + usize::from(blocksize)) / 4) as u32;
+        let nominal_out = ((usize::from(self.prev_blocksize) + usize::from(blocksize)) / 4) as i64;
         self.prev_blocksize = blocksize;
-        if out_samples == 0 {
+        if nominal_out <= 0 {
             return Ok(());
         }
 
         let channels = self.channel_layout.channels as usize;
-        let pts = if packet_pts != tao_core::timestamp::NOPTS_VALUE {
-            packet_pts
-        } else {
-            self.next_pts
-        };
+        let mut out_samples_i64 = nominal_out;
+        let pts = self.next_pts;
+        if packet_pts != tao_core::timestamp::NOPTS_VALUE
+            && packet_pts >= 0
+            && self.prev_packet_granule != tao_core::timestamp::NOPTS_VALUE
+            && packet_pts >= self.prev_packet_granule
+        {
+            let delta_total = packet_pts.saturating_sub(self.prev_packet_granule);
+            let corrected = delta_total.saturating_sub(self.samples_since_last_granule);
+            let max_reasonable = nominal_out.saturating_mul(4);
+            if corrected > 0 && corrected <= max_reasonable {
+                out_samples_i64 = corrected;
+            }
+        }
+        let out_samples = out_samples_i64 as u32;
 
         let floor_ctx = build_floor_context(parsed_setup, channels)?;
         let residue = decode_residue_placeholder(parsed_setup, channels, blocksize as usize)?;
@@ -223,6 +239,14 @@ impl VorbisDecoder {
         );
 
         self.next_pts = frame.pts.saturating_add(frame.duration);
+        if packet_pts != tao_core::timestamp::NOPTS_VALUE && packet_pts >= 0 {
+            self.prev_packet_granule = packet_pts;
+            self.samples_since_last_granule = 0;
+        } else {
+            self.samples_since_last_granule = self
+                .samples_since_last_granule
+                .saturating_add(frame.duration);
+        }
         self.pending_frames.push_back(Frame::Audio(frame));
         Ok(())
     }
@@ -249,6 +273,8 @@ impl Decoder for VorbisDecoder {
         self.first_audio_packet = true;
         self.prev_blocksize = 0;
         self.next_pts = 0;
+        self.prev_packet_granule = tao_core::timestamp::NOPTS_VALUE;
+        self.samples_since_last_granule = 0;
         self.overlap.clear();
 
         if let CodecParamsType::Audio(AudioCodecParams {
@@ -304,6 +330,9 @@ impl Decoder for VorbisDecoder {
         self.pending_frames.clear();
         self.first_audio_packet = true;
         self.prev_blocksize = 0;
+        self.next_pts = 0;
+        self.prev_packet_granule = tao_core::timestamp::NOPTS_VALUE;
+        self.samples_since_last_granule = 0;
         self.overlap.clear();
     }
 }

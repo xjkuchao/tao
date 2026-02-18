@@ -478,6 +478,7 @@ impl OggDemuxer {
         }
 
         let packets = page.extract_packets();
+        let last_complete_idx = packets.iter().rposition(|(_, _, complete)| *complete);
 
         for (i, &(offset, length, complete)) in packets.iter().enumerate() {
             let chunk = &page.data[offset..offset + length];
@@ -502,7 +503,12 @@ impl OggDemuxer {
                     let data = std::mem::take(&mut self.logical_streams[ls_idx].partial_packet);
                     self.logical_streams[ls_idx].discarding_orphan_continued = false;
                     let stream_idx = self.logical_streams[ls_idx].stream_index;
-                    self.emit_packet(stream_idx, page.granule_position, data);
+                    let granule = if Some(i) == last_complete_idx {
+                        page.granule_position
+                    } else {
+                        tao_core::timestamp::NOPTS_VALUE
+                    };
+                    self.emit_packet(stream_idx, granule, data);
                 }
             } else if complete {
                 if self.logical_streams[ls_idx].discarding_orphan_continued {
@@ -515,7 +521,12 @@ impl OggDemuxer {
                     continue;
                 }
                 let stream_idx = self.logical_streams[ls_idx].stream_index;
-                self.emit_packet(stream_idx, page.granule_position, chunk.to_vec());
+                let granule = if Some(i) == last_complete_idx {
+                    page.granule_position
+                } else {
+                    tao_core::timestamp::NOPTS_VALUE
+                };
+                self.emit_packet(stream_idx, granule, chunk.to_vec());
             } else {
                 if self.logical_streams[ls_idx].discarding_orphan_continued {
                     continue;
