@@ -77,8 +77,6 @@ ureq = "3"
 # 临时目录
 tempfile = "3"
 
-# Vorbis 参考解码器(仅测试)
-lewton = "0.10"
 
 [package]
 name = "tao"
@@ -114,7 +112,6 @@ serde.workspace = true
 bytes.workspace = true
 criterion.workspace = true
 tempfile.workspace = true
-lewton.workspace = true
 tao-format = { workspace = true, features = ["http"] }
 
 [features]

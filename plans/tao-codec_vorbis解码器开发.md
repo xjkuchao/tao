@@ -93,12 +93,11 @@
 ### P4 逐帧对标测试
 - [x] 新增 `tests/vorbis_module_compare.rs`。
 - [x] 与 FFmpeg 比较 MSE/PSNR/最大误差并输出报告。
-- [x] 接入 Lewton 对比并输出精度百分比。
+- [x] 移除 Lewton 对比, 仅保留 FFmpeg 基准。
 - [ ] 建立并满足误差阈值。
 - 当前基线:
   - `data/1.ogg`: PSNR 约 `18.97dB`, max_err 约 `1.160806`, 精度 约 `47.10%`
   - `data/2.ogg`: PSNR 约 `13.19dB`, max_err 约 `6.657622`, 精度 约 `47.97%`
-  - Lewton/FFmpeg: PSNR 约 `95.08dB`, max_err 约 `0.000031`, 精度 约 `100.00%`
   - 样本长度: `data/1.ogg` Tao=FFmpeg=`881996`; `data/2.ogg` Tao=FFmpeg=`2646000`
 - 验收: 两个样本对比测试通过。
 

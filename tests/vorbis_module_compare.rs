@@ -5,7 +5,6 @@
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use lewton::inside_ogg::OggStreamReader;
 use tao::codec::codec_parameters::{AudioCodecParams, CodecParamsType};
 use tao::codec::frame::Frame;
 use tao::codec::packet::Packet;
@@ -162,27 +161,6 @@ fn decode_vorbis_with_ffmpeg(
     Ok((sr, ch, pcm))
 }
 
-fn decode_vorbis_with_lewton(
-    path: &str,
-) -> Result<(u32, u32, Vec<f32>), Box<dyn std::error::Error>> {
-    let file = std::fs::File::open(path)?;
-    let mut reader = OggStreamReader::new(file)?;
-    let sr = reader.ident_hdr.audio_sample_rate;
-    let ch = reader.ident_hdr.audio_channels as u32;
-
-    let mut out = Vec::<f32>::new();
-    loop {
-        match reader.read_dec_packet_itl()? {
-            Some(pkt) => {
-                out.extend(pkt.into_iter().map(|v| v as f32 / 32768.0));
-            }
-            None => break,
-        }
-    }
-
-    Ok((sr, ch, out))
-}
-
 struct CompareStats {
     n: usize,
     max_err: f64,
@@ -248,35 +226,23 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     init_test_tracing();
     let (tao_sr, tao_ch, tao_pcm) = decode_vorbis_with_tao(path)?;
     let (ff_sr, ff_ch, ff_pcm) = decode_vorbis_with_ffmpeg(path)?;
-    let (lewton_sr, lewton_ch, lewton_pcm) = decode_vorbis_with_lewton(path)?;
 
     assert_eq!(tao_sr, ff_sr, "采样率不匹配");
     assert_eq!(tao_ch, ff_ch, "通道数不匹配");
-    assert_eq!(lewton_sr, ff_sr, "Lewton 采样率不匹配");
-    assert_eq!(lewton_ch, ff_ch, "Lewton 通道数不匹配");
 
     let stats_tao = compare_pcm(&ff_pcm, &tao_pcm);
-    let stats_lewton = compare_pcm(&ff_pcm, &lewton_pcm);
     info!(
-        "[{}] Tao对比样本={}, Lewton对比样本={}, Tao={}, FFmpeg={}, Lewton={}, \
-Tao/FFmpeg: max_err={:.6}, psnr={:.2}dB, 精度={:.2}%, \
-Lewton/FFmpeg: max_err={:.6}, psnr={:.2}dB, 精度={:.2}%, FFmpeg=100%",
+        "[{}] Tao对比样本={}, Tao={}, FFmpeg={}, Tao/FFmpeg: max_err={:.6}, psnr={:.2}dB, 精度={:.2}%, FFmpeg=100%",
         path,
         stats_tao.n,
-        stats_lewton.n,
         tao_pcm.len(),
         ff_pcm.len(),
-        lewton_pcm.len(),
         stats_tao.max_err,
         stats_tao.psnr,
-        stats_tao.precision_pct,
-        stats_lewton.max_err,
-        stats_lewton.psnr,
-        stats_lewton.precision_pct
+        stats_tao.precision_pct
     );
 
     assert!(stats_tao.n > 0, "无可比较样本");
-    assert!(stats_lewton.n > 0, "Lewton 无可比较样本");
     Ok(())
 }
 
