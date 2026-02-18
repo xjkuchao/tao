@@ -119,6 +119,7 @@ fn get_imdct12_half_cos() -> &'static [[f32; 6]; 6] {
 pub fn imdct(
     granule: &Granule,
     xr: &[f32; 576],
+    rzero: usize,
     overlap: &mut [[f32; 18]; 32],
     output: &mut [f32; 576],
 ) {
@@ -132,60 +133,42 @@ pub fn imdct(
         0
     };
 
-    for sb in 0..32 {
+    let sb_limit = rzero.div_ceil(18).min(32);
+    let sb_split = if granule.windows_switching_flag && granule.block_type == 2 {
+        if granule.mixed_block_flag { 2 } else { 0 }
+    } else {
+        32
+    };
+
+    let sb_long_end = sb_split.min(sb_limit);
+    for sb in 0..sb_long_end {
         let sb_idx = sb * 18;
         let input_chunk = &xr[sb_idx..sb_idx + 18];
 
         let mut raw_out = [0.0f32; 36];
+        // 长块: 18 点 IMDCT
+        imdct18_fast(input_chunk, &mut raw_out, cos18);
 
-        // 判断当前子带是否为短块
-        let is_short = granule.windows_switching_flag
+        // 窗口加权
+        let mut win_idx = if granule.windows_switching_flag
             && granule.block_type == 2
-            && (!granule.mixed_block_flag || sb >= 2);
-
-        if is_short {
-            // 短块: 与 symphonia 的 imdct12_win 一致的 3 窗口重叠放置.
-            for w in 0..3 {
-                for i in 0..3 {
-                    let yl = (input_chunk[w] * cos12[i][0])
-                        + (input_chunk[3 + w] * cos12[i][1])
-                        + (input_chunk[6 + w] * cos12[i][2])
-                        + (input_chunk[9 + w] * cos12[i][3])
-                        + (input_chunk[12 + w] * cos12[i][4])
-                        + (input_chunk[15 + w] * cos12[i][5]);
-
-                    let yr = (input_chunk[w] * cos12[i + 3][0])
-                        + (input_chunk[3 + w] * cos12[i + 3][1])
-                        + (input_chunk[6 + w] * cos12[i + 3][2])
-                        + (input_chunk[9 + w] * cos12[i + 3][3])
-                        + (input_chunk[12 + w] * cos12[i + 3][4])
-                        + (input_chunk[15 + w] * cos12[i + 3][5]);
-
-                    raw_out[6 + 6 * w + 3 - i - 1] += -yl * short_win[3 - i - 1];
-                    raw_out[6 + 6 * w + i + 3] += yl * short_win[i + 3];
-                    raw_out[6 + 6 * w + i + 6] += yr * short_win[i + 6];
-                    raw_out[6 + 6 * w + 12 - i - 1] += yr * short_win[12 - i - 1];
-                }
-            }
+            && granule.mixed_block_flag
+            && sb < 2
+        {
+            0 // 混合块的长块部分使用 Normal 窗口
         } else {
-            // 长块: 18 点 IMDCT
-            imdct18_fast(input_chunk, &mut raw_out, cos18);
+            block_type as usize
+        };
 
-            // 窗口加权
-            let win_idx = if granule.windows_switching_flag
-                && granule.block_type == 2
-                && granule.mixed_block_flag
-                && sb < 2
-            {
-                0 // 混合块的长块部分使用 Normal 窗口
-            } else {
-                block_type as usize
-            };
+        if std::env::var("TAO_MP3_FORCE_NORMAL_TRANSITION_WIN").is_ok_and(|v| v == "1")
+            && (win_idx == 1 || win_idx == 3)
+        {
+            win_idx = 0;
+        }
 
-            let win = &windows[win_idx];
-            for (sample, &win_val) in raw_out.iter_mut().zip(win.iter()) {
-                *sample *= win_val;
-            }
+        let win = &windows[win_idx];
+        for (sample, &win_val) in raw_out.iter_mut().zip(win.iter()) {
+            *sample *= win_val;
         }
 
         // Overlap-Add
@@ -195,6 +178,48 @@ pub fn imdct(
             output[sb * 18 + i] = raw_out[i] + overlap[sb][i];
             overlap[sb][i] = raw_out[18 + i];
         }
+    }
+
+    let sb_short_begin = sb_split.min(sb_limit);
+    for sb in sb_short_begin..sb_limit {
+        let sb_idx = sb * 18;
+        let input_chunk = &xr[sb_idx..sb_idx + 18];
+        let mut raw_out = [0.0f32; 36];
+
+        // 短块: 与 symphonia 的 imdct12_win 一致的 3 窗口重叠放置.
+        for w in 0..3 {
+            for i in 0..3 {
+                let yl = (input_chunk[w] * cos12[i][0])
+                    + (input_chunk[3 + w] * cos12[i][1])
+                    + (input_chunk[6 + w] * cos12[i][2])
+                    + (input_chunk[9 + w] * cos12[i][3])
+                    + (input_chunk[12 + w] * cos12[i][4])
+                    + (input_chunk[15 + w] * cos12[i][5]);
+
+                let yr = (input_chunk[w] * cos12[i + 3][0])
+                    + (input_chunk[3 + w] * cos12[i + 3][1])
+                    + (input_chunk[6 + w] * cos12[i + 3][2])
+                    + (input_chunk[9 + w] * cos12[i + 3][3])
+                    + (input_chunk[12 + w] * cos12[i + 3][4])
+                    + (input_chunk[15 + w] * cos12[i + 3][5]);
+
+                raw_out[6 + 6 * w + 3 - i - 1] += -yl * short_win[3 - i - 1];
+                raw_out[6 + 6 * w + i + 3] += yl * short_win[i + 3];
+                raw_out[6 + 6 * w + i + 6] += yr * short_win[i + 6];
+                raw_out[6 + 6 * w + 12 - i - 1] += yr * short_win[12 - i - 1];
+            }
+        }
+
+        for i in 0..18 {
+            output[sb * 18 + i] = raw_out[i] + overlap[sb][i];
+            overlap[sb][i] = raw_out[18 + i];
+        }
+    }
+
+    for (sb, overlap_sb) in overlap.iter_mut().enumerate().skip(sb_limit) {
+        let base = sb * 18;
+        output[base..base + 18].copy_from_slice(overlap_sb);
+        overlap_sb.fill(0.0);
     }
 }
 
@@ -318,7 +343,7 @@ mod tests {
         let mut output = [0.0f32; 576];
 
         // 第一次调用
-        imdct(&granule, &xr, &mut overlap, &mut output);
+        imdct(&granule, &xr, 576, &mut overlap, &mut output);
 
         // 参考: 长块 IMDCT + Normal 窗口
         let input18: [f32; 18] = core::array::from_fn(|k| (k as f32 + 1.0) * 0.1);
@@ -372,13 +397,15 @@ mod tests {
         let mut overlap = [[0.0f32; 18]; 32];
         let mut output = [0.0f32; 576];
 
-        imdct(&granule, &xr, &mut overlap, &mut output);
+        imdct(&granule, &xr, 576, &mut overlap, &mut output);
 
         // 参考计算
         let short_win = get_short_window();
-        let win0: [f32; 6] = core::array::from_fn(|i| xr[i]);
-        let win1: [f32; 6] = core::array::from_fn(|i| xr[6 + i]);
-        let win2: [f32; 6] = core::array::from_fn(|i| xr[12 + i]);
+        // 短块在进入 IMDCT 前已完成重排序:
+        // [w0s0, w1s0, w2s0, w0s1, w1s1, w2s1, ...]
+        let win0: [f32; 6] = core::array::from_fn(|i| xr[3 * i]);
+        let win1: [f32; 6] = core::array::from_fn(|i| xr[3 * i + 1]);
+        let win2: [f32; 6] = core::array::from_fn(|i| xr[3 * i + 2]);
 
         let y0 = imdct6_reference(&win0);
         let y1 = imdct6_reference(&win1);
