@@ -313,17 +313,20 @@ fn apply_partition_residue(
         }
         2 => {
             let ch_count = active_channels.len().max(1);
-            let mut pos = 0usize;
-            let mut flat = 0usize;
-            while pos < psize {
+            let total = psize.saturating_mul(ch_count);
+            let mut flat_idx = 0usize;
+            while flat_idx < total {
                 let got = match decode_codebook_vector(br, book, huffman, &mut vec_buf) {
                     Ok(v) => v,
                     Err(TaoError::Eof) => break,
                     Err(e) => return Err(e),
                 };
                 for val in vec_buf.iter().copied().take(got) {
-                    let ch_off = flat % ch_count;
-                    let sample_off = pos + flat / ch_count;
+                    if flat_idx >= total {
+                        break;
+                    }
+                    let ch_off = flat_idx % ch_count;
+                    let sample_off = flat_idx / ch_count;
                     let dst_ch = active_channels[ch_off];
                     if let Some(dst) = spectrum.get_mut(dst_ch) {
                         let idx = base + sample_off;
@@ -331,10 +334,8 @@ fn apply_partition_residue(
                             dst[idx] += val * RESIDUE_VECTOR_GAIN;
                         }
                     }
-                    flat = flat.saturating_add(1);
+                    flat_idx = flat_idx.saturating_add(1);
                 }
-                pos = pos.saturating_add(flat / ch_count);
-                flat %= ch_count;
             }
         }
         _ => {

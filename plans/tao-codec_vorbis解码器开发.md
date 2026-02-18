@@ -65,6 +65,7 @@
 - [x] 修复 residue type2 误按声道重复解码问题, 改为按声道组单次解码避免位流错位。
 - [x] 修正 IMDCT 角度公式分母错误(`N/2 -> N`), 收敛频域到时域变换比例。
 - [x] 接入 long-block 在 short 邻接场景的 Vorbis 窗形选择逻辑(使用 prev/next window flag)。
+- [x] 重构 residue2 扁平索引推进逻辑(`flat_idx`), 清理跨向量边界的样本偏移风险。
 - [ ] 窗口、IMDCT、重叠相加。
 - [ ] floor1 恢复、residue 解码、耦合反变换。
 - [ ] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。
