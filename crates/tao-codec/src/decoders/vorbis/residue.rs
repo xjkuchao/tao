@@ -153,7 +153,7 @@ fn decode_one_residue(
             };
             let mut tmp = sym as usize;
             let fill = class_dimensions.min(partitions - p);
-            for i in 0..fill {
+            for i in (0..fill).rev() {
                 class_vec[p + i] = tmp % class_count;
                 tmp /= class_count;
             }
@@ -211,7 +211,7 @@ fn decode_one_residue(
             };
             let mut tmp = sym as usize;
             let fill = class_dimensions.min(partitions - p);
-            for i in 0..fill {
+            for i in (0..fill).rev() {
                 class_vec[p + i] = tmp % class_count;
                 tmp /= class_count;
             }

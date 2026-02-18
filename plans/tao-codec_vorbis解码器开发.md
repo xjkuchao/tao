@@ -73,6 +73,7 @@
 - [x] 窗函数改为解码器侧缓存复用, 避免每音频包重复构建 IMDCT 窗数组。
 - [x] 接入 flush 阶段尾样本排空逻辑(基于 granule 与 next_pts 对账)。
 - [x] 复用 residue 分类向量缓冲(`class_vec`), 减少每声道重复分配。
+- [x] 对齐 FFmpeg/lewton: residue classword 分类拆分改为反向填充顺序。
 - [ ] 窗口、IMDCT、重叠相加。
 - [ ] floor1 恢复、residue 解码、耦合反变换。
 - [ ] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。
@@ -83,8 +84,8 @@
 - [x] 与 FFmpeg 比较 MSE/PSNR/最大误差并输出报告。
 - [ ] 建立并满足误差阈值。
 - 当前基线:
-  - `data/1.ogg`: PSNR 约 `19.21dB`, max_err 约 `0.946385`
-  - `data/2.ogg`: PSNR 约 `13.53dB`, max_err 约 `1.019693`
+  - `data/1.ogg`: PSNR 约 `19.21dB`, max_err 约 `0.945703`
+  - `data/2.ogg`: PSNR 约 `13.53dB`, max_err 约 `1.011152`
   - 样本长度: `data/1.ogg` Tao=FFmpeg=`881996`; `data/2.ogg` Tao=`2645998`, FFmpeg=`2646000`
 - 验收: 两个样本对比测试通过。
 
