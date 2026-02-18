@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use tao::codec::codec_parameters::{AudioCodecParams, CodecParamsType};
 use tao::codec::frame::Frame;
+use tao::codec::packet::Packet;
 use tao::codec::{CodecId, CodecParameters, CodecRegistry};
 use tao::core::{ChannelLayout, SampleFormat, TaoError};
 use tao::format::{FormatRegistry, IoContext};
@@ -60,19 +61,22 @@ fn decode_vorbis_with_tao(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn st
     let mut actual_sr = sample_rate;
     let mut actual_ch = channel_layout.channels;
 
+    let mut demux_eof = false;
     loop {
-        match demuxer.read_packet(&mut io) {
-            Ok(pkt) => {
-                if pkt.stream_index != stream.index {
-                    continue;
+        if !demux_eof {
+            match demuxer.read_packet(&mut io) {
+                Ok(pkt) => {
+                    if pkt.stream_index != stream.index {
+                        continue;
+                    }
+                    decoder.send_packet(&pkt)?;
                 }
-                decoder.send_packet(&pkt)?;
+                Err(TaoError::Eof) => {
+                    decoder.send_packet(&Packet::empty())?;
+                    demux_eof = true;
+                }
+                Err(e) => return Err(format!("读取包失败: {}", e).into()),
             }
-            Err(TaoError::Eof) => {
-                decoder.flush();
-                break;
-            }
-            Err(e) => return Err(format!("读取包失败: {}", e).into()),
         }
 
         loop {
@@ -90,13 +94,11 @@ fn decode_vorbis_with_tao(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn st
                 }
                 Ok(_) => {}
                 Err(TaoError::NeedMoreData) => break,
-                Err(TaoError::Eof) => break,
+                Err(TaoError::Eof) => return Ok((actual_sr, actual_ch, out)),
                 Err(e) => return Err(format!("取帧失败: {}", e).into()),
             }
         }
     }
-
-    Ok((actual_sr, actual_ch, out))
 }
 
 fn decode_vorbis_with_ffmpeg(

@@ -4,7 +4,7 @@ use super::bitreader::LsbBitReader;
 use super::codebook::{CodebookHuffman, decode_codebook_scalar, decode_codebook_vector};
 use super::setup::{CouplingStep, MappingConfig, ParsedSetup, ResidueConfig};
 
-const RESIDUE_VECTOR_GAIN: f32 = 0.00018;
+const RESIDUE_VECTOR_GAIN: f32 = 0.00014;
 
 /// residue 解码阶段输出的频谱占位数据.
 #[derive(Debug, Clone)]

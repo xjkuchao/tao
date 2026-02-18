@@ -4,7 +4,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use tao_codec::codec_parameters::{CodecParameters, CodecParamsType, VideoCodecParams};
-use tao_codec::decoder::Decoder;
 use tao_core::{MediaType, TaoError};
 use tao_format::{FormatRegistry, IoContext, stream::StreamParams};
 

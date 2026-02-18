@@ -284,7 +284,8 @@ impl VorbisDecoder {
             next_window_flag = br.read_flag()?;
         }
 
-        if self.first_audio_packet {
+        let is_first_packet = self.first_audio_packet;
+        if is_first_packet {
             self.first_audio_packet = false;
             self.prev_blocksize = if is_long_block {
                 if prev_window_flag {
@@ -300,7 +301,6 @@ impl VorbisDecoder {
                 self.next_pts = packet_pts;
                 self.samples_since_last_granule = 0;
             }
-            return Ok(());
         }
 
         let nominal_out = compute_packet_output_samples(
@@ -311,13 +311,14 @@ impl VorbisDecoder {
             next_window_flag,
         ) as i64;
         self.prev_blocksize = blocksize;
-        if nominal_out <= 0 {
+        if nominal_out <= 0 && !is_first_packet {
             return Ok(());
         }
 
-        let mut out_samples_i64 = nominal_out;
+        let mut out_samples_i64 = if is_first_packet { 0 } else { nominal_out };
         let pts = self.next_pts;
-        if packet_pts != tao_core::timestamp::NOPTS_VALUE
+        if !is_first_packet
+            && packet_pts != tao_core::timestamp::NOPTS_VALUE
             && packet_pts >= 0
             && self.prev_packet_granule != tao_core::timestamp::NOPTS_VALUE
             && packet_pts >= self.prev_packet_granule
@@ -403,24 +404,25 @@ impl VorbisDecoder {
             ),
         );
         let td = overlap_add(&td, &mut self.overlap, out_samples as usize);
-        let frame = synthesize_frame(
-            &td,
-            self.sample_rate,
-            self.channel_layout,
-            pts,
-            out_samples as i64,
-        );
-
-        self.next_pts = frame.pts.saturating_add(frame.duration);
+        if out_samples > 0 {
+            let frame = synthesize_frame(
+                &td,
+                self.sample_rate,
+                self.channel_layout,
+                pts,
+                out_samples as i64,
+            );
+            self.next_pts = frame.pts.saturating_add(frame.duration);
+            self.pending_frames.push_back(Frame::Audio(frame));
+        }
         if packet_pts != tao_core::timestamp::NOPTS_VALUE && packet_pts >= 0 {
             self.prev_packet_granule = packet_pts;
             self.samples_since_last_granule = 0;
         } else {
             self.samples_since_last_granule = self
                 .samples_since_last_granule
-                .saturating_add(frame.duration);
+                .saturating_add(out_samples_i64);
         }
-        self.pending_frames.push_back(Frame::Audio(frame));
         Ok(())
     }
 
@@ -575,7 +577,12 @@ impl VorbisDecoder {
                 dst[..n].copy_from_slice(&src[..n]);
             }
         }
-        if td_channels.iter().all(|c| c.iter().all(|&v| v == 0.0)) {
+        const TAIL_ENERGY_EPS: f32 = 1.0e-6;
+        let tail_max = td_channels
+            .iter()
+            .flat_map(|c| c.iter())
+            .fold(0.0f32, |m, &v| m.max(v.abs()));
+        if tail_max <= TAIL_ENERGY_EPS {
             return;
         }
 

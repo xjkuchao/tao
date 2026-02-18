@@ -78,6 +78,11 @@
 - [x] 基于新语义重新扫描 residue 增益并收敛到 `RESIDUE_VECTOR_GAIN=0.00018`。
 - [x] 对齐 FFmpeg: 首个长块按 `prev_window_flag` 初始化 `previous_window` 对应块长。
 - [x] 对齐 lewton: 包输出样本数改为 `right_win_start-left_win_start` 公式, 替换 `(prev+curr)/4` 近似。
+- [x] 对齐 lewton/FFmpeg: floor1 曲线改为 `render_line + inverse_db_table` 方案并保留完整查表精度。
+- [x] 修正首包解码语义: 首包参与解码但不输出, 仅初始化 overlap 状态。
+- [x] 对比测试驱动改为 EOF 送空包 + drain, 避免遗漏尾帧。
+- [x] 收敛 residue 临时增益为 `RESIDUE_VECTOR_GAIN=0.00014`。
+- [x] flush 尾样本输出加入能量阈值, 避免极小尾噪声被当作有效帧。
 - [ ] 窗口、IMDCT、重叠相加。
 - [ ] floor1 恢复、residue 解码、耦合反变换。
 - [ ] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。
@@ -88,9 +93,9 @@
 - [x] 与 FFmpeg 比较 MSE/PSNR/最大误差并输出报告。
 - [ ] 建立并满足误差阈值。
 - 当前基线:
-  - `data/1.ogg`: PSNR 约 `19.37dB`, max_err 约 `0.945642`
-  - `data/2.ogg`: PSNR 约 `13.53dB`, max_err 约 `0.993102`
-  - 样本长度: `data/1.ogg` Tao=FFmpeg=`881996`; `data/2.ogg` Tao=`2645998`, FFmpeg=`2646000`
+  - `data/1.ogg`: PSNR 约 `19.31dB`, max_err 约 `0.946096`
+  - `data/2.ogg`: PSNR 约 `13.52dB`, max_err 约 `1.058469`
+  - 样本长度: `data/1.ogg` Tao=FFmpeg=`881996`; `data/2.ogg` Tao=FFmpeg=`2646000`
 - 验收: 两个样本对比测试通过。
 
 ### P5 质量门禁与交付
