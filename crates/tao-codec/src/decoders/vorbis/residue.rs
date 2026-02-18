@@ -175,7 +175,7 @@ fn decode_one_residue(
                 let end_i = (base + psize).min(n2);
                 if let Some(dst) = spectrum.get_mut(ch) {
                     for v in dst.iter_mut().take(end_i).skip(base) {
-                        *v += amp * 0.05;
+                        *v += amp * 0.0005;
                     }
                 }
             }
