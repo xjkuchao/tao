@@ -114,7 +114,7 @@ tempfile.workspace = true
 tao-format = { workspace = true, features = ["http"] }
 
 [features]
-default = []
+default = ["http"]
 http = ["tao-format/http"]
 
 [[bench]]
