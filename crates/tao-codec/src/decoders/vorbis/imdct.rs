@@ -30,7 +30,7 @@ pub(crate) fn imdct_from_residue(residue: &ResidueSpectrum, blocksize: usize) ->
             let mut acc = 0.0f32;
             for k in 0..n2 {
                 let x = spectrum.get(k).copied().unwrap_or(0.0);
-                let angle = pi / n2 as f32 * (m as f32 + 0.5 + n2 as f32 / 2.0) * (k as f32 + 0.5);
+                let angle = pi / n as f32 * (m as f32 + 0.5 + n2 as f32 / 2.0) * (k as f32 + 0.5);
                 acc += x * angle.cos();
             }
             *out = acc;
