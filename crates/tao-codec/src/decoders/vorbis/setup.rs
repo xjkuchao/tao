@@ -5,9 +5,25 @@ use super::bitreader::{LsbBitReader, ilog};
 #[derive(Debug, Clone)]
 pub(crate) struct ParsedSetup {
     pub(crate) mode_block_flags: Vec<bool>,
+    pub(crate) mode_mappings: Vec<u8>,
+    pub(crate) mappings: Vec<MappingConfig>,
     pub(crate) floor_count: u32,
     pub(crate) residue_count: u32,
     pub(crate) mapping_count: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MappingConfig {
+    pub(crate) coupling_steps: Vec<CouplingStep>,
+    pub(crate) channel_mux: Vec<u8>,
+    pub(crate) submap_floor: Vec<u8>,
+    pub(crate) submap_residue: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CouplingStep {
+    pub(crate) magnitude: u8,
+    pub(crate) angle: u8,
 }
 
 pub(crate) fn parse_setup_packet(packet: &[u8], channels: u8) -> TaoResult<ParsedSetup> {
@@ -47,21 +63,21 @@ pub(crate) fn parse_setup_packet(packet: &[u8], channels: u8) -> TaoResult<Parse
             e
         ))
     })?;
-    let mapping_count =
-        parse_mappings(&mut br, channels, floor_count, residue_count).map_err(|e| {
-            TaoError::InvalidData(format!(
-                "Vorbis setup mappings 解析失败(bit={}): {}",
-                br.bit_position(),
-                e
-            ))
-        })?;
-    let modes = parse_modes(&mut br, mapping_count).map_err(|e| {
+    let mappings = parse_mappings(&mut br, channels, floor_count, residue_count).map_err(|e| {
         TaoError::InvalidData(format!(
-            "Vorbis setup modes 解析失败(bit={}): {}",
+            "Vorbis setup mappings 解析失败(bit={}): {}",
             br.bit_position(),
             e
         ))
     })?;
+    let (mode_block_flags, mode_mappings) =
+        parse_modes(&mut br, mappings.len() as u32).map_err(|e| {
+            TaoError::InvalidData(format!(
+                "Vorbis setup modes 解析失败(bit={}): {}",
+                br.bit_position(),
+                e
+            ))
+        })?;
 
     let framing_flag = br.read_flag()?;
     if !framing_flag {
@@ -71,10 +87,12 @@ pub(crate) fn parse_setup_packet(packet: &[u8], channels: u8) -> TaoResult<Parse
     }
 
     Ok(ParsedSetup {
-        mode_block_flags: modes,
+        mode_block_flags,
+        mode_mappings,
+        mapping_count: mappings.len() as u32,
+        mappings,
         floor_count,
         residue_count,
-        mapping_count,
     })
 }
 
@@ -306,8 +324,9 @@ fn parse_mappings(
     channels: u8,
     floor_count: u32,
     residue_count: u32,
-) -> TaoResult<u32> {
+) -> TaoResult<Vec<MappingConfig>> {
     let mapping_count = br.read_bits(6)? + 1;
+    let mut mappings = Vec::with_capacity(mapping_count as usize);
     for _ in 0..mapping_count {
         let mapping_type = br.read_bits(16)?;
         if mapping_type != 0 {
@@ -323,6 +342,7 @@ fn parse_mappings(
             1
         };
 
+        let mut coupling_steps_v = Vec::new();
         if br.read_flag()? {
             let coupling_steps = br.read_bits(8)? + 1;
             let ch_bits = ilog(u32::from(channels) - 1);
@@ -335,6 +355,10 @@ fn parse_mappings(
                 {
                     return Err(TaoError::InvalidData("Vorbis coupling 参数非法".into()));
                 }
+                coupling_steps_v.push(CouplingStep {
+                    magnitude: magnitude as u8,
+                    angle: angle as u8,
+                });
             }
         }
 
@@ -345,15 +369,19 @@ fn parse_mappings(
             ));
         }
 
+        let mut channel_mux = vec![0u8; channels as usize];
         if submaps > 1 {
-            for _ in 0..channels {
+            for ch in 0..channels {
                 let mux = br.read_bits(4)?;
                 if mux >= submaps {
                     return Err(TaoError::InvalidData("Vorbis mapping mux 值越界".into()));
                 }
+                channel_mux[ch as usize] = mux as u8;
             }
         }
 
+        let mut submap_floor = Vec::with_capacity(submaps as usize);
+        let mut submap_residue = Vec::with_capacity(submaps as usize);
         for _ in 0..submaps {
             let _time_submap = br.read_bits(8)?;
             let floor = br.read_bits(8)?;
@@ -363,14 +391,24 @@ fn parse_mappings(
                     "Vorbis mapping floor/residue 索引越界".into(),
                 ));
             }
+            submap_floor.push(floor as u8);
+            submap_residue.push(residue as u8);
         }
+
+        mappings.push(MappingConfig {
+            coupling_steps: coupling_steps_v,
+            channel_mux,
+            submap_floor,
+            submap_residue,
+        });
     }
-    Ok(mapping_count)
+    Ok(mappings)
 }
 
-fn parse_modes(br: &mut LsbBitReader<'_>, mapping_count: u32) -> TaoResult<Vec<bool>> {
+fn parse_modes(br: &mut LsbBitReader<'_>, mapping_count: u32) -> TaoResult<(Vec<bool>, Vec<u8>)> {
     let mode_count = br.read_bits(6)? + 1;
     let mut mode_flags = Vec::with_capacity(mode_count as usize);
+    let mut mode_mappings = Vec::with_capacity(mode_count as usize);
     for _ in 0..mode_count {
         let block_flag = br.read_flag()?;
         let window_type = br.read_bits(16)?;
@@ -387,8 +425,9 @@ fn parse_modes(br: &mut LsbBitReader<'_>, mapping_count: u32) -> TaoResult<Vec<b
         }
 
         mode_flags.push(block_flag);
+        mode_mappings.push(mapping as u8);
     }
-    Ok(mode_flags)
+    Ok((mode_flags, mode_mappings))
 }
 
 fn lookup1_values(entries: u32, dimensions: u32) -> u32 {

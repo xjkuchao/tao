@@ -117,6 +117,13 @@ impl VorbisDecoder {
                 self.setup_degraded_reason = None;
                 ParsedSetup {
                     mode_block_flags: vec![false],
+                    mode_mappings: vec![0],
+                    mappings: vec![self::setup::MappingConfig {
+                        coupling_steps: Vec::new(),
+                        channel_mux: vec![0; headers.channels as usize],
+                        submap_floor: vec![0],
+                        submap_residue: vec![0],
+                    }],
                     floor_count: 1,
                     residue_count: 1,
                     mapping_count: 1,
@@ -131,8 +138,16 @@ impl VorbisDecoder {
                 } else {
                     vec![false, true]
                 };
+                let mode_count = mode_block_flags.len();
                 ParsedSetup {
                     mode_block_flags,
+                    mode_mappings: vec![0; mode_count],
+                    mappings: vec![self::setup::MappingConfig {
+                        coupling_steps: Vec::new(),
+                        channel_mux: vec![0; headers.channels as usize],
+                        submap_floor: vec![0],
+                        submap_residue: vec![0],
+                    }],
                     floor_count: 1,
                     residue_count: 1,
                     mapping_count: 1,
@@ -156,6 +171,11 @@ impl VorbisDecoder {
         if parsed_setup.mode_block_flags.is_empty() {
             return Err(TaoError::Codec("Vorbis mode 表为空".into()));
         }
+        if parsed_setup.mode_mappings.len() != parsed_setup.mode_block_flags.len() {
+            return Err(TaoError::InvalidData(
+                "Vorbis mode block_flag 与 mapping 表长度不一致".into(),
+            ));
+        }
         if parsed_setup.floor_count == 0
             || parsed_setup.residue_count == 0
             || parsed_setup.mapping_count == 0
@@ -166,6 +186,7 @@ impl VorbisDecoder {
         }
 
         let mut br = LsbBitReader::new(packet);
+        let channels = self.channel_layout.channels as usize;
         let packet_type = br.read_flag()?;
         if packet_type {
             return Err(TaoError::InvalidData("Vorbis 音频包首位必须为 0".into()));
@@ -178,6 +199,38 @@ impl VorbisDecoder {
                 "Vorbis mode 索引越界: {}",
                 mode_number,
             )));
+        }
+        let mapping_number = parsed_setup.mode_mappings[mode_number] as usize;
+        if mapping_number >= parsed_setup.mappings.len() {
+            return Err(TaoError::InvalidData(format!(
+                "Vorbis mode->mapping 越界: mode={}, mapping={}",
+                mode_number, mapping_number
+            )));
+        }
+        let mapping = &parsed_setup.mappings[mapping_number];
+        if !mapping.channel_mux.is_empty() && mapping.channel_mux.len() != channels {
+            return Err(TaoError::InvalidData(
+                "Vorbis mapping mux 声道数与流信息不一致".into(),
+            ));
+        }
+        for &mux in &mapping.channel_mux {
+            if usize::from(mux) >= mapping.submap_floor.len()
+                || usize::from(mux) >= mapping.submap_residue.len()
+            {
+                return Err(TaoError::InvalidData(
+                    "Vorbis mapping mux 子映射索引越界".into(),
+                ));
+            }
+        }
+        for step in &mapping.coupling_steps {
+            if usize::from(step.magnitude) >= channels || usize::from(step.angle) >= channels {
+                return Err(TaoError::InvalidData("Vorbis coupling 声道索引越界".into()));
+            }
+            if step.magnitude == step.angle {
+                return Err(TaoError::InvalidData(
+                    "Vorbis coupling magnitude/angle 不能相同".into(),
+                ));
+            }
         }
 
         let blocksize = if parsed_setup.mode_block_flags[mode_number] {
@@ -203,7 +256,6 @@ impl VorbisDecoder {
             return Ok(());
         }
 
-        let channels = self.channel_layout.channels as usize;
         let mut out_samples_i64 = nominal_out;
         let pts = self.next_pts;
         if packet_pts != tao_core::timestamp::NOPTS_VALUE

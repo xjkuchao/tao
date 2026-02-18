@@ -39,6 +39,7 @@
 
 ### P2 setup 解析基础设施
 - [x] 实现 codebook/floor/residue/mapping/mode 解析框架。
+- [x] setup 保留结构化 mode->mapping/mux/coupling 信息, 为后续 floor/residue 真正解码做准备。
 - [x] 样本 `data/1.ogg` `data/2.ogg` 可通过 setup 阶段并进入音频包。
 - [x] 收敛 setup 解析中的降级路径, 完成严格解析闭环。
 - 验收: 去除降级后仍稳定通过样本。
