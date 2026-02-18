@@ -7,7 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-default = []
+default = ["http"]
 http = ["dep:ureq"]
 
 [dependencies]
