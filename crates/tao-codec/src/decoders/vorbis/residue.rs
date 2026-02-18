@@ -4,8 +4,6 @@ use super::bitreader::LsbBitReader;
 use super::codebook::{CodebookHuffman, decode_codebook_scalar, decode_codebook_vector};
 use super::setup::{CouplingStep, MappingConfig, ParsedSetup, ResidueConfig};
 
-const RESIDUE_VECTOR_GAIN: f32 = 0.00014;
-
 /// residue 解码阶段输出的频谱占位数据.
 #[derive(Debug, Clone)]
 pub(crate) struct ResidueSpectrum {
@@ -121,8 +119,8 @@ fn decode_one_residue(
     spectrum: &mut [Vec<f32>],
     n2: usize,
 ) -> TaoResult<()> {
-    let begin = (residue.begin as usize).min(n2);
-    let end = (residue.end as usize).min(n2);
+    let mut begin = (residue.begin as usize).min(n2);
+    let mut end = (residue.end as usize).min(n2);
     if end <= begin {
         return Ok(());
     }
@@ -130,7 +128,7 @@ fn decode_one_residue(
     if psize == 0 {
         return Ok(());
     }
-    let partitions = (end - begin) / psize;
+    let mut partitions = (end - begin) / psize;
     if partitions == 0 {
         return Ok(());
     }
@@ -144,126 +142,195 @@ fn decode_one_residue(
         .ok_or_else(|| TaoError::InvalidData("Vorbis residue classbook Huffman 越界".into()))?;
     let class_dimensions = usize::from(classbook.dimensions.max(1));
     let class_count = residue.classifications.max(1) as usize;
+    if class_dimensions == 0 {
+        return Err(TaoError::InvalidData(
+            "Vorbis residue classbook dimensions 为 0".into(),
+        ));
+    }
+
+    let maxpass = residue
+        .cascades
+        .iter()
+        .copied()
+        .flat_map(|v| (0..8).filter(move |b| (v & (1 << b)) != 0))
+        .max()
+        .unwrap_or(0);
 
     let mut vec_buf = Vec::<f32>::new();
-    let mut class_vec = vec![0usize; partitions];
+    let mut classifs: Vec<usize>;
+
     if residue.residue_type == 2 {
-        class_vec.fill(0);
-        let mut p = 0usize;
-        while p < partitions {
-            let sym = match decode_codebook_scalar(br, classbook, classbook_huffman) {
-                Ok(v) => v,
-                Err(TaoError::Eof) => return Ok(()),
-                Err(e) => return Err(e),
-            };
-            let mut tmp = sym as usize;
-            let fill = class_dimensions.min(partitions - p);
-            for i in (0..fill).rev() {
-                class_vec[p + i] = tmp % class_count;
-                tmp /= class_count;
-            }
-            p += fill;
+        let ch_count = channels.len().max(1);
+        let any_decode = channels
+            .iter()
+            .any(|&ch| !do_not_decode.get(ch).copied().unwrap_or(true));
+        if !any_decode {
+            return Ok(());
         }
 
-        for pass in 0..8usize {
-            for (part, class_id_ref) in class_vec.iter().enumerate().take(partitions) {
-                let class_id = *class_id_ref;
-                let cascade = residue.cascades.get(class_id).copied().unwrap_or(0);
-                if (cascade & (1 << pass)) == 0 {
-                    continue;
+        let interleaved_n2 = n2.saturating_mul(ch_count);
+        begin = (residue.begin as usize).min(interleaved_n2);
+        end = (residue.end as usize).min(interleaved_n2);
+        if end <= begin {
+            return Ok(());
+        }
+        partitions = (end - begin) / psize;
+        if partitions == 0 {
+            return Ok(());
+        }
+
+        let cl_stride = partitions + class_dimensions;
+        classifs = vec![0usize; cl_stride];
+        let mut interleaved = vec![0.0f32; interleaved_n2];
+
+        for pass in 0..=maxpass {
+            let mut partition_count = 0usize;
+            let mut voffset = begin;
+            while partition_count < partitions {
+                if pass == 0 {
+                    let sym = match decode_codebook_scalar(br, classbook, classbook_huffman) {
+                        Ok(v) => v,
+                        Err(TaoError::Eof) => return Ok(()),
+                        Err(e) => return Err(e),
+                    };
+                    let mut tmp = sym as usize;
+                    for i in (0..class_dimensions).rev() {
+                        if partition_count + i < partitions {
+                            classifs[partition_count + i] = tmp % class_count;
+                        }
+                        tmp /= class_count;
+                    }
                 }
-                let book_idx = residue
-                    .books
-                    .get(class_id)
-                    .and_then(|a| a.get(pass))
-                    .copied()
-                    .flatten();
-                let Some(book_idx) = book_idx else {
-                    continue;
-                };
-                let book = setup.codebooks.get(book_idx as usize).ok_or_else(|| {
-                    TaoError::InvalidData("Vorbis residue second-stage book 越界".into())
-                })?;
-                let huffman = huffmans.get(book_idx as usize).ok_or_else(|| {
-                    TaoError::InvalidData("Vorbis residue second-stage Huffman 越界".into())
-                })?;
-                apply_partition_residue(
-                    br,
-                    residue,
-                    book,
-                    huffman,
-                    channels[0],
-                    channels,
-                    spectrum,
-                    begin + part * psize,
-                    psize,
-                    n2,
-                    &mut vec_buf,
-                )?;
+                for _ in 0..class_dimensions {
+                    if partition_count >= partitions {
+                        break;
+                    }
+                    let class_id = classifs[partition_count];
+                    let cascade = residue.cascades.get(class_id).copied().unwrap_or(0);
+                    if (cascade & (1 << pass)) != 0 {
+                        let book_idx = residue
+                            .books
+                            .get(class_id)
+                            .and_then(|a| a.get(pass))
+                            .copied()
+                            .flatten();
+                        if let Some(book_idx) = book_idx {
+                            let book = setup.codebooks.get(book_idx as usize).ok_or_else(|| {
+                                TaoError::InvalidData(
+                                    "Vorbis residue second-stage book 越界".into(),
+                                )
+                            })?;
+                            let huffman = huffmans.get(book_idx as usize).ok_or_else(|| {
+                                TaoError::InvalidData(
+                                    "Vorbis residue second-stage Huffman 越界".into(),
+                                )
+                            })?;
+                            apply_partition_residue_type2(
+                                br,
+                                residue,
+                                book,
+                                huffman,
+                                &mut interleaved,
+                                voffset,
+                                psize,
+                                interleaved_n2,
+                                &mut vec_buf,
+                            )?;
+                        }
+                    }
+                    partition_count += 1;
+                    voffset = voffset.saturating_add(psize);
+                }
+            }
+        }
+
+        for (ch_pos, &ch_idx) in channels.iter().enumerate() {
+            if let Some(dst) = spectrum.get_mut(ch_idx) {
+                for s in 0..n2 {
+                    let idx = s * ch_count + ch_pos;
+                    if idx < interleaved.len() && s < dst.len() {
+                        dst[s] += interleaved[idx];
+                    }
+                }
             }
         }
         return Ok(());
     }
 
-    for &ch in channels {
-        if do_not_decode.get(ch).copied().unwrap_or(true) {
-            continue;
-        }
-        class_vec.fill(0);
-        let mut p = 0usize;
-        while p < partitions {
-            let sym = match decode_codebook_scalar(br, classbook, classbook_huffman) {
-                Ok(v) => v,
-                Err(TaoError::Eof) => return Ok(()),
-                Err(e) => return Err(e),
-            };
-            let mut tmp = sym as usize;
-            let fill = class_dimensions.min(partitions - p);
-            for i in (0..fill).rev() {
-                class_vec[p + i] = tmp % class_count;
-                tmp /= class_count;
-            }
-            p += fill;
-        }
+    let ch_count = channels.len();
+    let cl_stride = partitions + class_dimensions;
+    classifs = vec![0usize; ch_count * cl_stride];
 
-        for pass in 0..8usize {
-            for (part, class_id_ref) in class_vec.iter().enumerate().take(partitions) {
-                let class_id = *class_id_ref;
-                let cascade = residue.cascades.get(class_id).copied().unwrap_or(0);
-                if (cascade & (1 << pass)) == 0 {
-                    continue;
+    for pass in 0..=maxpass {
+        let mut partition_count = 0usize;
+        let mut voffset = begin;
+        while partition_count < partitions {
+            if pass == 0 {
+                for (j, &ch_idx) in channels.iter().enumerate() {
+                    if do_not_decode.get(ch_idx).copied().unwrap_or(true) {
+                        continue;
+                    }
+                    let sym = match decode_codebook_scalar(br, classbook, classbook_huffman) {
+                        Ok(v) => v,
+                        Err(TaoError::Eof) => return Ok(()),
+                        Err(e) => return Err(e),
+                    };
+                    let mut tmp = sym as usize;
+                    for i in (0..class_dimensions).rev() {
+                        if partition_count + i < partitions {
+                            classifs[j * cl_stride + partition_count + i] = tmp % class_count;
+                        }
+                        tmp /= class_count;
+                    }
                 }
-                let book_idx = residue
-                    .books
-                    .get(class_id)
-                    .and_then(|a| a.get(pass))
-                    .copied()
-                    .flatten();
-                let Some(book_idx) = book_idx else {
-                    continue;
-                };
-                let book = setup.codebooks.get(book_idx as usize).ok_or_else(|| {
-                    TaoError::InvalidData("Vorbis residue second-stage book 越界".into())
-                })?;
-                let huffman = huffmans.get(book_idx as usize).ok_or_else(|| {
-                    TaoError::InvalidData("Vorbis residue second-stage Huffman 越界".into())
-                })?;
-                apply_partition_residue(
-                    br,
-                    residue,
-                    book,
-                    huffman,
-                    ch,
-                    channels,
-                    spectrum,
-                    begin + part * psize,
-                    psize,
-                    n2,
-                    &mut vec_buf,
-                )?;
+            }
+
+            for _ in 0..class_dimensions {
+                if partition_count >= partitions {
+                    break;
+                }
+                for (j, &ch_idx) in channels.iter().enumerate() {
+                    if do_not_decode.get(ch_idx).copied().unwrap_or(true) {
+                        continue;
+                    }
+                    let class_id = classifs[j * cl_stride + partition_count];
+                    let cascade = residue.cascades.get(class_id).copied().unwrap_or(0);
+                    if (cascade & (1 << pass)) == 0 {
+                        continue;
+                    }
+                    let book_idx = residue
+                        .books
+                        .get(class_id)
+                        .and_then(|a| a.get(pass))
+                        .copied()
+                        .flatten();
+                    if let Some(book_idx) = book_idx {
+                        let book = setup.codebooks.get(book_idx as usize).ok_or_else(|| {
+                            TaoError::InvalidData("Vorbis residue second-stage book 越界".into())
+                        })?;
+                        let huffman = huffmans.get(book_idx as usize).ok_or_else(|| {
+                            TaoError::InvalidData("Vorbis residue second-stage Huffman 越界".into())
+                        })?;
+                        apply_partition_residue(
+                            br,
+                            residue,
+                            book,
+                            huffman,
+                            ch_idx,
+                            spectrum,
+                            voffset,
+                            psize,
+                            n2,
+                            &mut vec_buf,
+                        )?;
+                    }
+                }
+                partition_count += 1;
+                voffset = voffset.saturating_add(psize);
             }
         }
     }
+
     Ok(())
 }
 
@@ -274,7 +341,6 @@ fn apply_partition_residue(
     book: &super::setup::CodebookConfig,
     huffman: &CodebookHuffman,
     channel: usize,
-    active_channels: &[usize],
     spectrum: &mut [Vec<f32>],
     base: usize,
     psize: usize,
@@ -284,6 +350,11 @@ fn apply_partition_residue(
     let dims = usize::from(book.dimensions.max(1));
     if vec_buf.len() < dims {
         vec_buf.resize(dims, 0.0);
+    }
+    if book.lookup_type == 0 {
+        return Err(TaoError::InvalidData(
+            "Vorbis residue codebook lookup_type=0 不支持".into(),
+        ));
     }
 
     match residue.residue_type {
@@ -300,7 +371,7 @@ fn apply_partition_residue(
                     for (k, val) in vec_buf.iter().copied().enumerate().take(got) {
                         let idx = base + j + k * step;
                         if idx < n2 && idx < dst.len() {
-                            dst[idx] += val * RESIDUE_VECTOR_GAIN;
+                            dst[idx] += val;
                         }
                     }
                 }
@@ -319,43 +390,60 @@ fn apply_partition_residue(
                     for (k, val) in vec_buf.iter().copied().enumerate().take(got) {
                         let idx = base + pos + k;
                         if idx < n2 && idx < dst.len() {
-                            dst[idx] += val * RESIDUE_VECTOR_GAIN;
+                            dst[idx] += val;
                         }
                     }
                 }
                 pos = pos.saturating_add(got.max(1));
             }
         }
-        2 => {
-            let ch_count = active_channels.len().max(1);
-            let total = psize.saturating_mul(ch_count);
-            let mut flat_idx = 0usize;
-            while flat_idx < total {
-                let got = match decode_codebook_vector(br, book, huffman, vec_buf) {
-                    Ok(v) => v,
-                    Err(TaoError::Eof) => break,
-                    Err(e) => return Err(e),
-                };
-                for val in vec_buf.iter().copied().take(got) {
-                    if flat_idx >= total {
-                        break;
-                    }
-                    let ch_off = flat_idx % ch_count;
-                    let sample_off = flat_idx / ch_count;
-                    let dst_ch = active_channels[ch_off];
-                    if let Some(dst) = spectrum.get_mut(dst_ch) {
-                        let idx = base + sample_off;
-                        if idx < n2 && idx < dst.len() {
-                            dst[idx] += val * RESIDUE_VECTOR_GAIN;
-                        }
-                    }
-                    flat_idx = flat_idx.saturating_add(1);
-                }
-            }
-        }
+        2 => {}
         _ => {
             return Err(TaoError::InvalidData("Vorbis residue_type 非法".into()));
         }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_partition_residue_type2(
+    br: &mut LsbBitReader<'_>,
+    residue: &ResidueConfig,
+    book: &super::setup::CodebookConfig,
+    huffman: &CodebookHuffman,
+    interleaved: &mut [f32],
+    base: usize,
+    psize: usize,
+    n2: usize,
+    vec_buf: &mut Vec<f32>,
+) -> TaoResult<()> {
+    let dims = usize::from(book.dimensions.max(1));
+    if vec_buf.len() < dims {
+        vec_buf.resize(dims, 0.0);
+    }
+    if book.lookup_type == 0 {
+        return Err(TaoError::InvalidData(
+            "Vorbis residue codebook lookup_type=0 不支持".into(),
+        ));
+    }
+    if residue.residue_type == 0 {
+        return Ok(());
+    }
+
+    let mut pos = 0usize;
+    while pos < psize {
+        let got = match decode_codebook_vector(br, book, huffman, vec_buf) {
+            Ok(v) => v,
+            Err(TaoError::Eof) => break,
+            Err(e) => return Err(e),
+        };
+        for (k, val) in vec_buf.iter().copied().enumerate().take(got) {
+            let idx = base + pos + k;
+            if idx < n2 && idx < interleaved.len() {
+                interleaved[idx] += val;
+            }
+        }
+        pos = pos.saturating_add(got.max(1));
     }
     Ok(())
 }

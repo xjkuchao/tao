@@ -284,6 +284,14 @@ impl VorbisDecoder {
             next_window_flag = br.read_flag()?;
         }
 
+        let (left_start, right_start, right_end) = compute_window_points(
+            blocksize as usize,
+            headers.blocksize0 as usize,
+            is_long_block,
+            prev_window_flag,
+            next_window_flag,
+        );
+        let nominal_out = right_start.saturating_sub(left_start) as i64;
         let is_first_packet = self.first_audio_packet;
         if is_first_packet {
             self.first_audio_packet = false;
@@ -298,18 +306,12 @@ impl VorbisDecoder {
             };
             if packet_pts != tao_core::timestamp::NOPTS_VALUE && packet_pts >= 0 {
                 self.prev_packet_granule = packet_pts;
-                self.next_pts = packet_pts;
+                if packet_pts >= nominal_out && nominal_out > 0 {
+                    self.next_pts = packet_pts.saturating_sub(nominal_out);
+                }
                 self.samples_since_last_granule = 0;
             }
         }
-
-        let nominal_out = compute_packet_output_samples(
-            blocksize as usize,
-            headers.blocksize0 as usize,
-            is_long_block,
-            prev_window_flag,
-            next_window_flag,
-        ) as i64;
         self.prev_blocksize = blocksize;
         if nominal_out <= 0 && !is_first_packet {
             return Ok(());
@@ -403,7 +405,14 @@ impl VorbisDecoder {
                 next_window_flag,
             ),
         );
-        let td = overlap_add(&td, &mut self.overlap, out_samples as usize);
+        let mut td = overlap_add(&td, &mut self.overlap, left_start, right_start, right_end);
+        if out_samples as usize > 0 {
+            for ch in td.channels.iter_mut() {
+                if ch.len() > out_samples as usize {
+                    ch.truncate(out_samples as usize);
+                }
+            }
+        }
         if out_samples > 0 {
             let frame = synthesize_frame(
                 &td,
@@ -577,18 +586,22 @@ impl VorbisDecoder {
                 dst[..n].copy_from_slice(&src[..n]);
             }
         }
-        const TAIL_ENERGY_EPS: f32 = 1.0e-6;
-        let tail_max = td_channels
-            .iter()
-            .flat_map(|c| c.iter())
-            .fold(0.0f32, |m, &v| m.max(v.abs()));
-        if tail_max <= TAIL_ENERGY_EPS {
+        if td_channels.iter().all(|c| c.is_empty()) {
             return;
         }
 
         let td = TimeDomainBlock {
             channels: td_channels,
         };
+        const TAIL_ENERGY_EPS: f32 = 1.0e-7;
+        let tail_max = td
+            .channels
+            .iter()
+            .flat_map(|c| c.iter())
+            .fold(0.0f32, |m, &v| m.max(v.abs()));
+        if tail_max <= TAIL_ENERGY_EPS {
+            return;
+        }
         let frame = synthesize_frame(
             &td,
             self.sample_rate,
@@ -630,13 +643,13 @@ impl VorbisDecoder {
     }
 }
 
-fn compute_packet_output_samples(
+fn compute_window_points(
     blocksize: usize,
     short_blocksize: usize,
     is_long_block: bool,
     prev_window_flag: bool,
     next_window_flag: bool,
-) -> usize {
+) -> (usize, usize, usize) {
     let n = blocksize;
     let window_center = n >> 1;
     let left_start = if !is_long_block || prev_window_flag {
@@ -649,7 +662,12 @@ fn compute_packet_output_samples(
     } else {
         (n.saturating_mul(3).saturating_sub(short_blocksize)) >> 2
     };
-    right_start.saturating_sub(left_start)
+    let right_end = if !is_long_block || next_window_flag {
+        n
+    } else {
+        (n.saturating_mul(3).saturating_add(short_blocksize)) >> 2
+    };
+    (left_start, right_start, right_end)
 }
 
 impl Decoder for VorbisDecoder {

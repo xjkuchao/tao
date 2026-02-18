@@ -427,7 +427,7 @@ fn test_mp3_native_vs_ffmpeg_vbr() {
 }
 
 /// 对比摘要报告: 多 URL 统一输出
-/// 
+///
 /// 注意: 此测试耗时约 65 秒，仅在手动执行时运行
 /// 手动执行: cargo test --test mp3_module_compare test_mp3_native_summary -- --nocapture --ignored
 #[test]
@@ -449,7 +449,7 @@ fn test_mp3_native_summary() {
             (Ok((_, _, tao_pcm)), Ok((_, _, ff_pcm))) => {
                 let global = compare_global(&tao_pcm, &ff_pcm);
                 psnr_values.push(global.psnr_db);
-                
+
                 let status = if global.psnr_db >= debug::acceptance::MIN_PSNR_DB as f64 {
                     "✅"
                 } else {
@@ -484,22 +484,30 @@ fn test_mp3_native_summary() {
     println!("测试结果摘要:");
     println!("  ✅ 通过: {}/{}", passed, MP3_SAMPLES.len());
     println!("  ⏭️  跳过: {}", skipped);
-    
+
     if !psnr_values.is_empty() {
-        let max_psnr = psnr_values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let max_psnr = psnr_values
+            .iter()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
         let min_psnr = psnr_values.iter().cloned().fold(f64::INFINITY, f64::min);
         let avg_psnr = psnr_values.iter().sum::<f64>() / psnr_values.len() as f64;
-        
+
         let ratio_avg = (avg_psnr / max_psnr) * 100.0;
         let good_count = psnr_values.iter().filter(|&&p| p >= max_psnr * 0.9).count();
         let good_ratio = (good_count as f64 / psnr_values.len() as f64) * 100.0;
-        
+
         println!("\n精度分析:");
         println!("  最佳期望值 (max): {:.1}dB = 100%", max_psnr);
         println!("  当前平均精度: {:.1}dB = {:.1}%", avg_psnr, ratio_avg);
         println!("  PSNR范围: {:.1}dB ~ {:.1}dB", min_psnr, max_psnr);
-        println!("  接近期望 (>=90%): {}/{} ({:.1}%)", good_count, psnr_values.len(), good_ratio);
+        println!(
+            "  接近期望 (>=90%): {}/{} ({:.1}%)",
+            good_count,
+            psnr_values.len(),
+            good_ratio
+        );
     }
-    
+
     println!("========================================\n");
 }

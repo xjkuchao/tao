@@ -30,6 +30,7 @@ pub(crate) fn imdct_from_residue(
         }
 
         let mut td = vec![0.0f32; n];
+        let scale = 1.0f32 / n as f32;
         for (m, out) in td.iter_mut().enumerate() {
             let mut acc = 0.0f32;
             for k in 0..n2 {
@@ -37,7 +38,7 @@ pub(crate) fn imdct_from_residue(
                 let angle = pi / n as f32 * (m as f32 + 0.5 + n2 as f32 / 2.0) * (k as f32 + 0.5);
                 acc += x * angle.cos();
             }
-            *out = acc;
+            *out = acc * scale;
         }
 
         for (m, out) in td.iter_mut().enumerate() {
@@ -123,26 +124,35 @@ fn fill_window_segment(window: &mut [f32], start: usize, end: usize, len: usize)
 pub(crate) fn overlap_add(
     td: &TimeDomainBlock,
     overlap: &mut [Vec<f32>],
-    out_samples: usize,
+    left_start: usize,
+    right_start: usize,
+    right_end: usize,
 ) -> TimeDomainBlock {
     let mut out = vec![Vec::<f32>::new(); td.channels.len()];
     for (ch, src) in td.channels.iter().enumerate() {
         let mut mixed = src.clone();
         if let Some(prev) = overlap.get(ch) {
-            let n = prev.len().min(mixed.len());
+            let n = prev.len().min(mixed.len().saturating_sub(left_start));
             for i in 0..n {
-                mixed[i] += prev[i];
+                mixed[left_start + i] += prev[i];
             }
         }
 
-        let produced = out_samples.min(mixed.len());
-        out[ch].extend_from_slice(&mixed[..produced]);
-
         if let Some(slot) = overlap.get_mut(ch) {
             slot.clear();
-            let start = mixed.len() / 2;
-            slot.extend_from_slice(&mixed[start..]);
+            let start = right_start.min(mixed.len());
+            let end = right_end.min(mixed.len());
+            if start < end {
+                slot.extend_from_slice(&mixed[start..end]);
+            }
         }
+
+        let produced = right_start.saturating_sub(left_start);
+        if produced == 0 || left_start >= mixed.len() {
+            continue;
+        }
+        let end = (left_start + produced).min(mixed.len());
+        out[ch].extend_from_slice(&mixed[left_start..end]);
     }
     TimeDomainBlock { channels: out }
 }
