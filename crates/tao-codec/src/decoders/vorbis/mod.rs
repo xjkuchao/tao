@@ -265,6 +265,10 @@ impl VorbisDecoder {
         } else {
             headers.blocksize0
         };
+        if parsed_setup.mode_block_flags[mode_number] {
+            let _prev_window_flag = br.read_flag()?;
+            let _next_window_flag = br.read_flag()?;
+        }
 
         if self.first_audio_packet {
             self.first_audio_packet = false;
@@ -299,11 +303,14 @@ impl VorbisDecoder {
         }
         let out_samples = out_samples_i64 as u32;
 
-        let floor_ctx = build_floor_context(parsed_setup, channels)?;
+        let floor_ctx = build_floor_context(parsed_setup, mapping, channels)?;
         let mut residue = decode_residue_placeholder(parsed_setup, channels, blocksize as usize)?;
         apply_coupling_inverse(&mut residue, &mapping.coupling_steps)?;
         if floor_ctx.channel_count != residue.channels.len() {
             return Err(TaoError::Internal("Vorbis 阶段上下文声道数不一致".into()));
+        }
+        if floor_ctx.floor_index_per_channel.len() != channels {
+            return Err(TaoError::Internal("Vorbis floor 上下文声道映射异常".into()));
         }
         if self.overlap.len() != channels {
             self.overlap = vec![Vec::new(); channels];

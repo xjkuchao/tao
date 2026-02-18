@@ -56,6 +56,7 @@
 - [x] overlap 状态与拼接接口接入主流程 (当前为占位实现)。
 - [x] Ogg granule 语义修正与解码端时长对账(仅页尾完整包携带 granule, 其余回退块长推进)。
 - [x] 接入 channel coupling 反变换流程(当前 residue 仍为占位频谱)。
+- [x] 修正 long-window 包头标志位消费并接入基于 mapping 的 floor 上下文映射。
 - [ ] 窗口、IMDCT、重叠相加。
 - [ ] floor1 恢复、residue 解码、耦合反变换。
 - [ ] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。
