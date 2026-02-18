@@ -360,14 +360,14 @@ mod tests {
         // 所有 LUT 条目应该有 bits > 0 (Table 24 所有码长 <= 12, 其中 <= 10 的都在 LUT 中)
         let mut zero_bits = 0;
         let mut sym_count = [0u32; 256];
-        for (i, entry) in t.lut.iter().enumerate() {
+        for entry in &t.lut {
             if entry.bits == 0 {
                 zero_bits += 1;
-                eprintln!("[WARN] LUT[{}] bits=0 (应该都有有效值)", i);
             } else {
                 sym_count[entry.symbol as usize] += 1;
             }
         }
+        assert_eq!(zero_bits, 0, "Table 24 LUT 不应存在 bits=0 条目");
 
         // 检查是否有过多的同一符号
         let mut max_sym = 0u8;
@@ -378,22 +378,11 @@ mod tests {
                 max_sym = sym as u8;
             }
         }
-        eprintln!(
-            "Table 24: zero_bits={}, max_sym=0x{:02X}({},{}), max_count={}, overflow={}",
-            zero_bits,
-            max_sym,
-            max_sym >> 4,
-            max_sym & 0xF,
-            max_count,
-            t.overflow.len()
-        );
-
         // 0xFF (15,15) 应该是最短码 (4位), 覆盖 64 个 LUT 条目
         assert_eq!(sym_count[0xFF], 64, "0xFF 应覆盖 64 个 LUT 条目 (4位码)");
 
         // 检查不同符号的数量 - 应该 > 100 (256个符号中大部分在LUT中)
         let distinct_syms = sym_count.iter().filter(|&&c| c > 0).count();
-        eprintln!("distinct symbols in LUT: {}", distinct_syms);
         assert!(distinct_syms > 50, "LUT 应包含多种不同符号");
     }
 
@@ -469,20 +458,6 @@ mod tests {
                 if (len as usize) <= PEEK_BITS {
                     let entry = table.lut[peek_val];
                     if entry.symbol != expected_sym || entry.bits != len {
-                        eprintln!(
-                            "Table {}: 符号不匹配! code_val={:0width$b} len={} expected_sym=0x{:02X}({},{}) got_sym=0x{:02X}({},{}) got_bits={}",
-                            table_id,
-                            code_val,
-                            len,
-                            expected_sym,
-                            expected_sym >> 4,
-                            expected_sym & 0xF,
-                            entry.symbol,
-                            entry.symbol >> 4,
-                            entry.symbol & 0xF,
-                            entry.bits,
-                            width = len as usize,
-                        );
                         errors += 1;
                     }
                 } else {
@@ -492,18 +467,10 @@ mod tests {
                     match decoder.decode_big_value_vlc(&mut br, table) {
                         Ok(decoded_sym) => {
                             if decoded_sym != expected_sym {
-                                eprintln!(
-                                    "Table {}: overflow 符号不匹配! len={} expected=0x{:02X} got=0x{:02X}",
-                                    table_id, len, expected_sym, decoded_sym,
-                                );
                                 errors += 1;
                             }
                         }
-                        Err(e) => {
-                            eprintln!(
-                                "Table {}: overflow 解码错误! len={} sym=0x{:02X} err={}",
-                                table_id, len, expected_sym, e
-                            );
+                        Err(_) => {
                             errors += 1;
                         }
                     }
@@ -514,7 +481,6 @@ mod tests {
                 panic!("Table {}: {} 个符号解码错误!", table_id, errors);
             }
         }
-        eprintln!("所有 Big Value 表往返测试通过!");
     }
 
     /// 端到端测试: 编码已知值, 解码验证

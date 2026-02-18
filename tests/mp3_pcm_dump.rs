@@ -22,6 +22,18 @@ use symphonia::core::probe::Hint;
 
 use minimp3::{Decoder as MiniDecoder, Error as MiniError};
 
+fn mp3_test_log_enabled() -> bool {
+    std::env::var("TAO_MP3_TEST_LOG").is_ok_and(|v| v == "1")
+}
+
+macro_rules! mp3_test_log {
+    ($($arg:tt)*) => {
+        if mp3_test_log_enabled() {
+            println!($($arg)*);
+        }
+    };
+}
+
 /// 使用 tao 解码 MP3 文件, 返回 (采样率, 通道数, PCM f32 样本)
 fn decode_mp3_with_tao(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn std::error::Error>> {
     // 初始化注册表
@@ -86,7 +98,7 @@ fn decode_mp3_with_tao(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn std::
                 break;
             }
             Err(e) => {
-                eprintln!("读包错误: {}", e);
+                mp3_test_log!("读包错误: {}", e);
                 break;
             }
         }
@@ -116,7 +128,7 @@ fn decode_mp3_with_tao(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn std::
                 Err(TaoError::NeedMoreData) => break,
                 Err(TaoError::Eof) => break,
                 Err(e) => {
-                    eprintln!("解码错误 (帧 {}): {}", frames_decoded, e);
+                    mp3_test_log!("解码错误 (帧 {}): {}", frames_decoded, e);
                     break;
                 }
             }
@@ -145,7 +157,7 @@ fn decode_mp3_with_tao(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn std::
         }
     }
 
-    eprintln!(
+    mp3_test_log!(
         "tao 解码完成: {} 帧, {} 样本, {}Hz {}ch",
         frames_decoded,
         all_pcm.len(),
@@ -220,7 +232,7 @@ fn decode_mp3_with_ffmpeg(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn st
     // 清理临时文件
     let _ = std::fs::remove_file(&output_path);
 
-    eprintln!(
+    mp3_test_log!(
         "ffmpeg 解码完成: {} 样本, {}Hz {}ch",
         samples.len(),
         sample_rate,
@@ -270,7 +282,7 @@ fn compare_pcm(
         if frame_max_err < threshold {
             matched += 1;
         } else if frame < 10 || frame % 100 == 0 {
-            eprintln!(
+            mp3_test_log!(
                 "帧 {}: 最大误差 {:.6}, 首差异位置 {}",
                 frame,
                 frame_max_err,
@@ -343,7 +355,7 @@ fn decode_mp3_with_symphonia(
         }
     }
 
-    eprintln!(
+    mp3_test_log!(
         "symphonia 解码完成: {} 样本, {}Hz {}ch",
         all_pcm.len(),
         sample_rate,
@@ -373,7 +385,7 @@ fn decode_mp3_with_minimp3(path: &str) -> Result<Vec<f32>, Box<dyn std::error::E
         }
     }
 
-    eprintln!("minimp3 解码完成: {} 帧, {} 样本", frames, all_pcm.len());
+    mp3_test_log!("minimp3 解码完成: {} 帧, {} 样本", frames, all_pcm.len());
     Ok(all_pcm)
 }
 
@@ -387,14 +399,14 @@ fn save_pcm_raw(pcm: &[f32], path: &str) -> std::io::Result<()> {
 fn test_mp3_decode_file1() {
     let path = "data/1.mp3";
     if !Path::new(path).exists() {
-        eprintln!("跳过: {} 不存在", path);
+        mp3_test_log!("跳过: {} 不存在", path);
         return;
     }
 
     let result = decode_mp3_with_tao(path);
     match result {
         Ok((sr, ch, pcm)) => {
-            eprintln!("成功解码 {}: {}Hz {}ch {} 样本", path, sr, ch, pcm.len());
+            mp3_test_log!("成功解码 {}: {}Hz {}ch {} 样本", path, sr, ch, pcm.len());
             assert!(!pcm.is_empty(), "PCM 输出不应为空");
             assert!(sr > 0, "采样率应大于 0");
 
@@ -403,7 +415,7 @@ fn test_mp3_decode_file1() {
 
             // 检查 PCM 数据不是全零
             let non_zero = pcm.iter().filter(|&&s| s != 0.0).count();
-            eprintln!(
+            mp3_test_log!(
                 "非零样本: {} / {} ({:.1}%)",
                 non_zero,
                 pcm.len(),
@@ -427,21 +439,21 @@ fn test_mp3_decode_file1() {
 fn test_mp3_decode_file2() {
     let path = "data/2.mp3";
     if !Path::new(path).exists() {
-        eprintln!("跳过: {} 不存在", path);
+        mp3_test_log!("跳过: {} 不存在", path);
         return;
     }
 
     let result = decode_mp3_with_tao(path);
     match result {
         Ok((sr, ch, pcm)) => {
-            eprintln!("成功解码 {}: {}Hz {}ch {} 样本", path, sr, ch, pcm.len());
+            mp3_test_log!("成功解码 {}: {}Hz {}ch {} 样本", path, sr, ch, pcm.len());
             assert!(!pcm.is_empty(), "PCM 输出不应为空");
             assert!(sr > 0, "采样率应大于 0");
 
             let _ = save_pcm_raw(&pcm, "data/2.mp3.tao.raw");
 
             let non_zero = pcm.iter().filter(|&&s| s != 0.0).count();
-            eprintln!(
+            mp3_test_log!(
                 "非零样本: {} / {} ({:.1}%)",
                 non_zero,
                 pcm.len(),
@@ -463,7 +475,7 @@ fn test_mp3_decode_file2() {
 fn test_mp3_compare_ffmpeg_file1() {
     let path = "data/1.mp3";
     if !Path::new(path).exists() {
-        eprintln!("跳过: {} 不存在", path);
+        mp3_test_log!("跳过: {} 不存在", path);
         return;
     }
 
@@ -475,15 +487,15 @@ fn test_mp3_compare_ffmpeg_file1() {
         .status()
         .is_err()
     {
-        eprintln!("跳过: ffmpeg 不可用");
+        mp3_test_log!("跳过: ffmpeg 不可用");
         return;
     }
 
     let (tao_sr, tao_ch, tao_pcm) = decode_mp3_with_tao(path).expect("tao 解码失败");
     let (ff_sr, ff_ch, ff_pcm) = decode_mp3_with_ffmpeg(path).expect("ffmpeg 解码失败");
 
-    eprintln!("tao:    {}Hz {}ch {} 样本", tao_sr, tao_ch, tao_pcm.len());
-    eprintln!("ffmpeg: {}Hz {}ch {} 样本", ff_sr, ff_ch, ff_pcm.len());
+    mp3_test_log!("tao:    {}Hz {}ch {} 样本", tao_sr, tao_ch, tao_pcm.len());
+    mp3_test_log!("ffmpeg: {}Hz {}ch {} 样本", ff_sr, ff_ch, ff_pcm.len());
 
     // 基本参数应一致
     assert_eq!(tao_sr, ff_sr, "采样率不匹配");
@@ -536,9 +548,10 @@ fn test_mp3_compare_ffmpeg_file1() {
             }
         }
     }
-    eprintln!(
+    mp3_test_log!(
         "\n最佳对齐 (交织): tao 偏移 {} 样本, 平均误差: {:.6}",
-        best_offset, best_err
+        best_offset,
+        best_err
     );
 
     // 分声道对齐搜索: 只看 L 声道 (偶数样本)
@@ -619,17 +632,20 @@ fn test_mp3_compare_ffmpeg_file1() {
         }
     }
 
-    eprintln!(
+    mp3_test_log!(
         "L声道对齐: offset={}, avg_err={:.6}",
-        best_l_offset, best_l_err
+        best_l_offset,
+        best_l_err
     );
-    eprintln!(
+    mp3_test_log!(
         "R声道对齐: offset={}, avg_err={:.6}",
-        best_r_offset, best_r_err
+        best_r_offset,
+        best_r_err
     );
-    eprintln!(
+    mp3_test_log!(
         "tao_L vs ff_R: offset={}, avg_err={:.6}",
-        best_lr_offset, best_lr_err
+        best_lr_offset,
+        best_lr_err
     );
 
     // 计算 Pearson 相关系数 (在最佳偏移处)
@@ -665,9 +681,12 @@ fn test_mp3_compare_ffmpeg_file1() {
     let corr_r = compute_corr(&tao_r, &ff_r, best_r_offset);
     let corr_lr = compute_corr(&tao_l, &ff_r, best_lr_offset);
     let corr_rl = compute_corr(&tao_r, &ff_l, best_l_offset);
-    eprintln!(
+    mp3_test_log!(
         "Pearson 相关系数: L={:.4}, R={:.4}, tao_L/ff_R={:.4}, tao_R/ff_L={:.4}",
-        corr_l, corr_r, corr_lr, corr_rl
+        corr_l,
+        corr_r,
+        corr_lr,
+        corr_rl
     );
 
     // 用最佳偏移进行帧级对比
@@ -680,7 +699,7 @@ fn test_mp3_compare_ffmpeg_file1() {
 
     let (matched, total, max_err, avg_err) = compare_pcm(&tao_shifted, &ff_pcm, tao_ch, 1152);
 
-    eprintln!(
+    mp3_test_log!(
         "\n对比结果 (对齐后): {}/{} 帧匹配 ({:.1}%), 最大误差: {:.6}, 平均误差: {:.6}",
         matched,
         total,
@@ -698,7 +717,7 @@ fn test_mp3_compare_ffmpeg_file1() {
 fn test_mp3_compare_ffmpeg_file2() {
     let path = "data/2.mp3";
     if !Path::new(path).exists() {
-        eprintln!("跳过: {} 不存在", path);
+        mp3_test_log!("跳过: {} 不存在", path);
         return;
     }
 
@@ -709,22 +728,22 @@ fn test_mp3_compare_ffmpeg_file2() {
         .status()
         .is_err()
     {
-        eprintln!("跳过: ffmpeg 不可用");
+        mp3_test_log!("跳过: ffmpeg 不可用");
         return;
     }
 
     let (tao_sr, tao_ch, tao_pcm) = decode_mp3_with_tao(path).expect("tao 解码失败");
     let (ff_sr, ff_ch, ff_pcm) = decode_mp3_with_ffmpeg(path).expect("ffmpeg 解码失败");
 
-    eprintln!("tao:    {}Hz {}ch {} 样本", tao_sr, tao_ch, tao_pcm.len());
-    eprintln!("ffmpeg: {}Hz {}ch {} 样本", ff_sr, ff_ch, ff_pcm.len());
+    mp3_test_log!("tao:    {}Hz {}ch {} 样本", tao_sr, tao_ch, tao_pcm.len());
+    mp3_test_log!("ffmpeg: {}Hz {}ch {} 样本", ff_sr, ff_ch, ff_pcm.len());
 
     assert_eq!(tao_sr, ff_sr, "采样率不匹配");
     assert_eq!(tao_ch, ff_ch, "通道数不匹配");
 
     let (matched, total, max_err, avg_err) = compare_pcm(&tao_pcm, &ff_pcm, tao_ch, 1152);
 
-    eprintln!(
+    mp3_test_log!(
         "对比结果: {}/{} 帧匹配 ({:.1}%), 最大误差: {:.6}, 平均误差: {:.6}",
         matched,
         total,
@@ -741,20 +760,20 @@ fn test_mp3_compare_ffmpeg_file2() {
 fn test_mp3_compare_symphonia_file1() {
     let path = "data/1.mp3";
     if !Path::new(path).exists() {
-        eprintln!("跳过: {} 不存在", path);
+        mp3_test_log!("跳过: {} 不存在", path);
         return;
     }
 
     let (tao_sr, tao_ch, tao_pcm) = decode_mp3_with_tao(path).expect("tao 解码失败");
     let (sym_sr, sym_ch, sym_pcm) = decode_mp3_with_symphonia(path).expect("symphonia 解码失败");
 
-    eprintln!(
+    mp3_test_log!(
         "tao:       {}Hz {}ch {} 样本",
         tao_sr,
         tao_ch,
         tao_pcm.len()
     );
-    eprintln!(
+    mp3_test_log!(
         "symphonia: {}Hz {}ch {} 样本",
         sym_sr,
         sym_ch,
@@ -791,16 +810,17 @@ fn test_mp3_compare_symphonia_file1() {
         }
     }
 
-    eprintln!(
+    mp3_test_log!(
         "\ntao vs symphonia 最佳对齐: offset={}, avg_err={:.6}",
-        best_offset, best_err
+        best_offset,
+        best_err
     );
 
     // 直接从头对比 (两个都没有编码器延迟补偿, offset 应该是 0)
-    eprintln!("\n--- offset=0 前 40 个样本 (两个解码器) ---");
+    mp3_test_log!("\n--- offset=0 前 40 个样本 (两个解码器) ---");
     for i in 0..40.min(tao_pcm.len()).min(sym_pcm.len()) {
         let ch = if i % 2 == 0 { "L" } else { "R" };
-        eprintln!(
+        mp3_test_log!(
             "  [{:4}] {} tao={:12.6}  sym={:12.6}  ratio={:8.3}",
             i,
             ch,
@@ -816,12 +836,12 @@ fn test_mp3_compare_symphonia_file1() {
 
     // 从帧3开始对比 (跳过初始transient帧)
     let frame3_start = 2304 * 2; // 帧3开始位置 (每帧2304交织样本)
-    eprintln!("\n--- 帧3 (offset=0) 前 20 个样本 ---");
+    mp3_test_log!("\n--- 帧3 (offset=0) 前 20 个样本 ---");
     for i in 0..20 {
         let idx = frame3_start + i;
         if idx < tao_pcm.len() && idx < sym_pcm.len() {
             let ch = if i % 2 == 0 { "L" } else { "R" };
-            eprintln!(
+            mp3_test_log!(
                 "  [{:5}] {} tao={:12.6}  sym={:12.6}  ratio={:8.3}",
                 idx,
                 ch,
@@ -862,10 +882,10 @@ fn test_mp3_compare_symphonia_file1() {
     let num = nf * sum_ab - sum_a * sum_b;
     let den = ((nf * sum_a2 - sum_a * sum_a) * (nf * sum_b2 - sum_b * sum_b)).sqrt();
     let corr = if den > 1e-10 { num / den } else { 0.0 };
-    eprintln!("Pearson 相关系数 (tao vs symphonia): {:.6}", corr);
+    mp3_test_log!("Pearson 相关系数 (tao vs symphonia): {:.6}", corr);
 
     // 打印对齐后前 20 个样本
-    eprintln!(
+    mp3_test_log!(
         "\n--- tao vs symphonia 对齐后样本 (mid, offset={}) ---",
         best_offset
     );
@@ -873,7 +893,7 @@ fn test_mp3_compare_symphonia_file1() {
         let ref_idx = mid + i;
         let tao_idx = (ref_idx as i64 + best_offset) as usize;
         if ref_idx < sym_pcm.len() && tao_idx < tao_pcm.len() {
-            eprintln!(
+            mp3_test_log!(
                 "  [{:5}] tao={:12.6}  sym={:12.6}  diff={:12.6}",
                 ref_idx,
                 tao_pcm[tao_idx],
@@ -891,7 +911,7 @@ fn test_mp3_compare_symphonia_file1() {
         [pad, tao_pcm.clone()].concat()
     };
     let (matched, total, max_err, avg_err) = compare_pcm(&tao_shifted, &sym_pcm, tao_ch, 1152);
-    eprintln!(
+    mp3_test_log!(
         "\ntao vs symphonia: {}/{} 帧匹配 ({:.1}%), 最大误差: {:.6}, 平均误差: {:.6}",
         matched,
         total,
@@ -904,7 +924,7 @@ fn test_mp3_compare_symphonia_file1() {
     let frame_size = 1152 * tao_ch as usize;
     // 多区间 RMS 分析
     let total_frames = tao_pcm.len().min(sym_pcm.len()) / frame_size;
-    eprintln!("\n--- 逐帧 RMS 分析 (前 10 帧 + 帧 50/100/200/300) ---");
+    mp3_test_log!("\n--- 逐帧 RMS 分析 (前 10 帧 + 帧 50/100/200/300) ---");
     let check_frames: Vec<usize> = (0..10).chain([50, 100, 200, 300].iter().copied()).collect();
     for &frame in check_frames.iter().filter(|&&f| f < total_frames) {
         let start = frame * frame_size;
@@ -929,22 +949,25 @@ fn test_mp3_compare_symphonia_file1() {
         } else {
             f64::NAN
         };
-        eprintln!(
+        mp3_test_log!(
             "  帧{:3}: tao_rms={:.6}  sym_rms={:.6}  ratio={:.4}",
-            frame, tao_rms, sym_rms, ratio
+            frame,
+            tao_rms,
+            sym_rms,
+            ratio
         );
     }
 
     // --- 诊断: 帧 2 的 32 个 PCM 样本详细分析 (一个完整 time slot) ---
     let frame2_start = 2 * frame_size;
-    eprintln!("\n--- 帧 2, time slot 0, 全部 32 个 PCM 样本 (L 声道) ---");
+    mp3_test_log!("\n--- 帧 2, time slot 0, 全部 32 个 PCM 样本 (L 声道) ---");
     for j in 0..32 {
         let idx = frame2_start + j * 2; // L 声道
         if idx < tao_pcm.len() && idx < sym_pcm.len() {
             let t = tao_pcm[idx];
             let s = sym_pcm[idx];
             let ratio = if s.abs() > 1e-6 { t / s } else { f32::NAN };
-            eprintln!(
+            mp3_test_log!(
                 "  pcm[{:2}] tao={:12.6}  sym={:12.6}  diff={:12.6}  ratio={:8.3}",
                 j,
                 t,
@@ -969,7 +992,7 @@ fn test_mp3_compare_symphonia_file1() {
                 let sym_rms: f32 = (sym_pcm[gr_start..gr_end].iter().map(|x| x * x).sum::<f32>()
                     / gr0_len as f32)
                     .sqrt();
-                eprintln!(
+                mp3_test_log!(
                     "Frame1 gr={}: tao_rms={:.6} sym_rms={:.6} ratio={:.3}",
                     gr,
                     tao_rms,
@@ -984,14 +1007,14 @@ fn test_mp3_compare_symphonia_file1() {
         }
 
         // 每 2 个 time slot 采样一个 PCM (L channel)
-        eprintln!("\n--- Frame 1 各 time slot L 通道第一个样本 ---");
+        mp3_test_log!("\n--- Frame 1 各 time slot L 通道第一个样本 ---");
         for ts in 0..36 {
             let gr = ts / 18;
             let ts_in_gr = ts % 18;
             let idx = frame1_start + gr * gr0_len + ts_in_gr * 64; // 32 stereo pairs = 64 values per time slot
             if idx < tao_pcm.len() && idx < sym_pcm.len() {
                 let diff = tao_pcm[idx] - sym_pcm[idx];
-                eprintln!(
+                mp3_test_log!(
                     "  gr={} ts={:2}: tao={:12.6}  sym={:12.6}  diff={:+12.6}  ratio={:10.3}",
                     gr,
                     ts_in_gr,
@@ -1009,14 +1032,14 @@ fn test_mp3_compare_symphonia_file1() {
 
         // Frame 2 也做同样分析
         let frame2_start = 2 * frame_size;
-        eprintln!("\n--- Frame 2 各 time slot L 通道第一个样本 ---");
+        mp3_test_log!("\n--- Frame 2 各 time slot L 通道第一个样本 ---");
         for ts in 0..36 {
             let gr = ts / 18;
             let ts_in_gr = ts % 18;
             let idx = frame2_start + gr * gr0_len + ts_in_gr * 64;
             if idx < tao_pcm.len() && idx < sym_pcm.len() {
                 let diff = tao_pcm[idx] - sym_pcm[idx];
-                eprintln!(
+                mp3_test_log!(
                     "  gr={} ts={:2}: tao={:12.6}  sym={:12.6}  diff={:+12.6}  ratio={:10.3}",
                     gr,
                     ts_in_gr,
@@ -1035,7 +1058,7 @@ fn test_mp3_compare_symphonia_file1() {
 
     // --- 三方对比: minimp3 ---
     if let Ok(mini_pcm) = decode_mp3_with_minimp3(path) {
-        eprintln!("\n--- 三方 RMS 对比 (前 10 帧) ---");
+        mp3_test_log!("\n--- 三方 RMS 对比 (前 10 帧) ---");
         let frame_size_ch = 1152; // 每通道每帧样本数
         let frame_size_interleaved = frame_size_ch * tao_ch as usize;
         for frame in 0..10 {
@@ -1051,7 +1074,7 @@ fn test_mp3_compare_symphonia_file1() {
             let t = rms(&tao_pcm[start..end]);
             let s = rms(&sym_pcm[start..end]);
             let m = rms(&mini_pcm[start..end]);
-            eprintln!(
+            mp3_test_log!(
                 "  帧{:3}: tao={:.6}  sym={:.6}  mini={:.6}  tao/sym={:.4}  tao/mini={:.4}  sym/mini={:.4}",
                 frame,
                 t,
@@ -1064,19 +1087,23 @@ fn test_mp3_compare_symphonia_file1() {
         }
         // 首帧有数据的详细样本对比
         let f1_start = frame_size_interleaved; // Frame 1
-        eprintln!("\n--- Frame 1, 前 20 样本 三方对比 ---");
+        mp3_test_log!("\n--- Frame 1, 前 20 样本 三方对比 ---");
         for i in 0..20 {
             let idx = f1_start + i;
             if idx < tao_pcm.len() && idx < sym_pcm.len() && idx < mini_pcm.len() {
                 let ch = if i % 2 == 0 { "L" } else { "R" };
-                eprintln!(
+                mp3_test_log!(
                     "  [{:5}] {} tao={:10.6}  sym={:10.6}  mini={:10.6}",
-                    idx, ch, tao_pcm[idx], sym_pcm[idx], mini_pcm[idx],
+                    idx,
+                    ch,
+                    tao_pcm[idx],
+                    sym_pcm[idx],
+                    mini_pcm[idx],
                 );
             }
         }
     } else {
-        eprintln!("minimp3 解码失败, 跳过三方对比");
+        mp3_test_log!("minimp3 解码失败, 跳过三方对比");
     }
 
     // --- 诊断: Frame 5 L 通道 per-time-slot ratio 分析 ---
@@ -1084,10 +1111,10 @@ fn test_mp3_compare_symphonia_file1() {
     {
         let frame5_start = 5 * frame_size;
         let gr0_interleaved = 1152; // 576 stereo pairs
-        eprintln!("\n--- Frame 5 L 通道 per-time-slot ratio (gr=0, gr=1) ---");
+        mp3_test_log!("\n--- Frame 5 L 通道 per-time-slot ratio (gr=0, gr=1) ---");
         for gr in 0..2 {
             let gr_start = frame5_start + gr * gr0_interleaved;
-            eprintln!("  gr={}:", gr);
+            mp3_test_log!("  gr={}:", gr);
             for ts in 0..18 {
                 let mut sum_tao_sq = 0.0f64;
                 let mut sum_sym_sq = 0.0f64;
@@ -1116,9 +1143,12 @@ fn test_mp3_compare_symphonia_file1() {
                 } else {
                     f64::NAN
                 };
-                eprintln!(
+                mp3_test_log!(
                     "    ts={:2}: rms_ratio={:.4}  avg_sample_ratio={:.4}  (N={})",
-                    ts, rms_ratio, avg_ratio, ratio_count
+                    ts,
+                    rms_ratio,
+                    avg_ratio,
+                    ratio_count
                 );
             }
         }
@@ -1128,16 +1158,19 @@ fn test_mp3_compare_symphonia_file1() {
     // 如果 ratio 在不同 subband 间变化很大, 说明是频率域问题
     {
         let frame5_start = 5 * frame_size;
-        eprintln!("\n--- Frame 5 gr=0 ts=0 全部 32 PCM 样本 (L 声道) ---");
+        mp3_test_log!("\n--- Frame 5 gr=0 ts=0 全部 32 PCM 样本 (L 声道) ---");
         for j in 0..32 {
             let idx = frame5_start + j * 2; // L 声道
             if idx < tao_pcm.len() && idx < sym_pcm.len() {
                 let t = tao_pcm[idx];
                 let s = sym_pcm[idx];
                 let ratio = if s.abs() > 1e-6 { t / s } else { f32::NAN };
-                eprintln!(
+                mp3_test_log!(
                     "    pcm[{:2}] tao={:12.6}  sym={:12.6}  ratio={:8.4}",
-                    j, t, s, ratio
+                    j,
+                    t,
+                    s,
+                    ratio
                 );
             }
         }

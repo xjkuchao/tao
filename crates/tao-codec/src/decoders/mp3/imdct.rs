@@ -278,9 +278,6 @@ mod tests {
             }
         }
 
-        eprintln!("=== 18 点 IMDCT 精度测试 ===");
-        eprintln!("最大误差: {:.10}", max_err);
-
         assert!(max_err < 1e-4, "IMDCT18 误差过大: {:.6}", max_err);
     }
 
@@ -300,9 +297,6 @@ mod tests {
                 max_err = err;
             }
         }
-
-        eprintln!("=== 6 点 IMDCT 精度测试 ===");
-        eprintln!("最大误差: {:.10}", max_err);
 
         assert!(max_err < 1e-4, "IMDCT6 误差过大: {:.6}", max_err);
     }
@@ -344,9 +338,6 @@ mod tests {
             }
         }
 
-        eprintln!("=== IMDCT 完整长块测试 ===");
-        eprintln!("最大误差 (output): {:.10}", max_err);
-
         // 验证 overlap
         let mut max_ovl_err = 0.0f64;
         for i in 0..18 {
@@ -356,8 +347,6 @@ mod tests {
                 max_ovl_err = err;
             }
         }
-        eprintln!("最大误差 (overlap): {:.10}", max_ovl_err);
-
         assert!(max_err < 1e-4, "IMDCT 长块输出误差过大: {:.6}", max_err);
         assert!(
             max_ovl_err < 1e-4,
@@ -428,18 +417,6 @@ mod tests {
             if err > max_err {
                 max_err = err;
             }
-        }
-
-        eprintln!("=== IMDCT 短块测试 ===");
-        eprintln!("最大误差 (output): {:.10}", max_err);
-        for i in 0..18 {
-            eprintln!(
-                "  out[{:2}] tao={:12.8}  ref={:12.8}  diff={:+.8}",
-                i,
-                output[i],
-                ref_raw[i],
-                output[i] as f64 - ref_raw[i]
-            );
         }
 
         assert!(max_err < 1e-4, "IMDCT 短块输出误差过大: {:.6}", max_err);

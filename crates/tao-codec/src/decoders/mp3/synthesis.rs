@@ -704,18 +704,6 @@ mod tests {
             }
         }
 
-        eprintln!("=== 合成滤波器单元测试: 子带0脉冲 ===");
-        eprintln!("最大误差: {:.10}", max_err);
-        for i in 0..32 {
-            eprintln!(
-                "  pcm[{:2}] tao={:12.8}  ref={:12.8}  diff={:12.8}",
-                i,
-                pcm_out[i],
-                ref_pcm[i],
-                pcm_out[i] as f64 - ref_pcm[i]
-            );
-        }
-
         assert!(max_err < 1e-4, "合成滤波器误差过大: {:.6}", max_err);
     }
 
@@ -738,18 +726,6 @@ mod tests {
             if err > max_err {
                 max_err = err;
             }
-        }
-
-        eprintln!("=== 合成滤波器单元测试: 全1输入 ===");
-        eprintln!("最大误差: {:.10}", max_err);
-        for i in 0..8 {
-            eprintln!(
-                "  pcm[{:2}] tao={:12.8}  ref={:12.8}  diff={:12.8}",
-                i,
-                pcm_out[i],
-                ref_pcm[i],
-                pcm_out[i] as f64 - ref_pcm[i]
-            );
         }
 
         assert!(max_err < 1e-4, "合成滤波器误差过大: {:.6}", max_err);
@@ -787,8 +763,6 @@ mod tests {
             },
         ];
 
-        eprintln!("=== 合成滤波器单元测试: 多帧 V 缓冲区 ===");
-
         for (frame, input) in inputs.iter().enumerate() {
             let mut pcm_out = [0.0f32; 32];
             synthesis_filter(&mut ctx, input, &mut pcm_out);
@@ -810,8 +784,6 @@ mod tests {
                     max_err = err;
                 }
             }
-
-            eprintln!("  Frame {}: 最大误差 = {:.10}", frame, max_err);
 
             assert!(
                 max_err < 1e-3,
