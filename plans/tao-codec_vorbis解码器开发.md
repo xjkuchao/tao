@@ -40,20 +40,23 @@
 ### P2 setup 解析基础设施
 - [x] 实现 codebook/floor/residue/mapping/mode 解析框架。
 - [x] 样本 `data/1.ogg` `data/2.ogg` 可通过 setup 阶段并进入音频包。
-- [ ] 收敛 setup 解析中的降级路径, 完成严格解析闭环。
-- 当前状态: 两个样本仍触发降级路径, 失败点为 `floors` 阶段 `floor_type=2080` (bit=29434), 需继续修正 codebook/floor 位对齐实现。
+- [x] 收敛 setup 解析中的降级路径, 完成严格解析闭环。
 - 验收: 去除降级后仍稳定通过样本。
 
 ### P3 音频包解码主链路(进行中)
-- [ ] 模式切换、窗口、IMDCT、重叠相加。
+- [x] 模式切换、块长推进、PTS 递增与基础帧输出队列接通。
+- [ ] 窗口、IMDCT、重叠相加。
 - [ ] floor1 恢复、residue 解码、耦合反变换。
 - [ ] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。
 - 验收: `tao-play` 可播放 `data/1.ogg` `data/2.ogg`。
 
 ### P4 逐帧对标测试
-- [ ] 新增 `tests/vorbis_module_compare.rs`。
-- [ ] 与 FFmpeg 逐帧比较 MSE/PSNR/最大误差。
+- [x] 新增 `tests/vorbis_module_compare.rs`。
+- [x] 与 FFmpeg 比较 MSE/PSNR/最大误差并输出报告。
 - [ ] 建立并满足误差阈值。
+- 当前基线:
+  - `data/1.ogg`: PSNR 约 `19.47dB`, max_err 约 `0.945844`
+  - `data/2.ogg`: PSNR 约 `13.54dB`, max_err 约 `0.992089`
 - 验收: 两个样本对比测试通过。
 
 ### P5 质量门禁与交付
@@ -75,7 +78,7 @@
 ## 6. 进度标记
 - [x] P0
 - [x] P1
-- [ ] P2
+- [x] P2
 - [ ] P3
 - [ ] P4
 - [x] P5
