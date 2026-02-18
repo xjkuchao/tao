@@ -11,3 +11,5 @@ tao-core.workspace = true
 thiserror.workspace = true
 log.workspace = true
 bytes.workspace = true
+symphonia-core = "0.5.5"
+symphonia-bundle-mp3 = { version = "0.5.5", features = ["mp3"] }

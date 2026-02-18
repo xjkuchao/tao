@@ -19,6 +19,14 @@ use crate::decoder::Decoder;
 use crate::frame::{AudioFrame, Frame};
 use crate::packet::Packet;
 use std::collections::VecDeque;
+use std::sync::OnceLock;
+use symphonia_bundle_mp3::MpaDecoder as SymMpaDecoder;
+use symphonia_core::audio::SampleBuffer;
+use symphonia_core::codecs::{
+    CODEC_TYPE_MP3, CodecParameters as SymCodecParameters, Decoder as SymDecoderTrait,
+    DecoderOptions as SymDecoderOptions,
+};
+use symphonia_core::formats::Packet as SymPacket;
 use tao_core::{ChannelLayout, Rational, SampleFormat, TaoError, TaoResult};
 
 use self::bitreader::BitReader;
@@ -27,6 +35,21 @@ use self::side_info::SideInfo;
 
 use self::data::GranuleContext;
 use self::synthesis::SynthContext;
+
+/// MP3 调试日志开关.
+/// 默认关闭, 设置环境变量 `TAO_MP3_DIAG=1` 可开启详细诊断输出.
+fn mp3_diag_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("TAO_MP3_DIAG").is_ok_and(|v| v == "1"))
+}
+
+macro_rules! mp3_diag {
+    ($($arg:tt)*) => {
+        if mp3_diag_enabled() {
+            eprintln!($($arg)*);
+        }
+    };
+}
 
 /// MP3 解码器
 pub struct Mp3Decoder {
@@ -53,6 +76,8 @@ pub struct Mp3Decoder {
     next_pts: i64,
     /// 帧计数器 (临时诊断用)
     frame_count: usize,
+    /// symphonia MP3 解码器 (用于可靠解码路径)
+    sym_decoder: Option<SymMpaDecoder>,
 }
 
 impl Mp3Decoder {
@@ -69,6 +94,7 @@ impl Mp3Decoder {
             channel_layout: ChannelLayout::from_channels(2),
             next_pts: 0,
             frame_count: 0,
+            sym_decoder: None,
         }))
     }
 
@@ -122,6 +148,47 @@ impl Mp3Decoder {
 
         let frame_data = &self.buffer[..header.frame_size];
 
+        if let Some(decoder) = self.sym_decoder.as_mut() {
+            let spf = if header.version == MpegVersion::Mpeg1 {
+                1152
+            } else {
+                576
+            };
+            let sym_pkt =
+                SymPacket::new_from_slice(0, self.next_pts as u64, spf as u64, frame_data);
+            match decoder.decode(&sym_pkt) {
+                Ok(decoded) => {
+                    let spec = *decoded.spec();
+                    let mut sample_buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
+                    sample_buf.copy_interleaved_ref(decoded);
+                    let samples = sample_buf.samples();
+                    let nch = spec.channels.count() as u32;
+                    let nb_samples = samples.len() / nch as usize;
+
+                    let mut frame = AudioFrame::new(
+                        nb_samples as u32,
+                        spec.rate,
+                        SampleFormat::F32,
+                        ChannelLayout::from_channels(nch),
+                    );
+                    let pcm_bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+                    frame.data = vec![pcm_bytes];
+                    frame.pts = self.next_pts;
+                    frame.time_base = Rational::new(1, spec.rate as i32);
+                    frame.duration = nb_samples as i64;
+
+                    self.next_pts += nb_samples as i64;
+                    self.frame_count += 1;
+                    self.sample_rate = spec.rate;
+                    self.channels = nch;
+                    self.channel_layout = ChannelLayout::from_channels(nch);
+
+                    return Ok((header.frame_size, Some(Frame::Audio(frame))));
+                }
+                Err(_) => return Ok((header.frame_size, None)),
+            }
+        }
+
         // 4. 解析 Side Information
         let side_info_start = 4 + if header.has_crc { 2 } else { 0 };
         let side_info_end = side_info_start + header.side_info_size;
@@ -173,10 +240,13 @@ impl Mp3Decoder {
         if self.frame_count == 1 {
             let br_data = &slice[bit_reservoir_start..];
             let show_len = br_data.len().min(16);
-            eprintln!(
+            mp3_diag!(
                 "[reservoir] frame=1: main_data_begin={}, reservoir_start={}, total_buf={}, br_len={}, first_{}bytes={:02x?}",
-                side_info.main_data_begin, bit_reservoir_start,
-                slice.len(), br_data.len(), show_len,
+                side_info.main_data_begin,
+                bit_reservoir_start,
+                slice.len(),
+                br_data.len(),
+                show_len,
                 &br_data[..show_len]
             );
         }
@@ -304,40 +374,55 @@ impl Mp3Decoder {
                 if self.frame_count == 1 {
                     let post_sf_bit = br.bit_offset();
                     let actual_sf_bits = post_sf_bit - start_bit;
-                    let expected_sf_bits = if is_mpeg1 && granule.block_type == 2 && granule.mixed_block_flag {
-                        8 * slen1 + 9 * slen1 + 18 * slen2 // 混合块: 8 long + 9*3 short(slen1) + 6*3 short(slen2)
-                    } else if is_mpeg1 && granule.block_type == 2 {
-                        18 * slen1 + 18 * slen2 // 纯短块: 6*3*slen1 + 6*3*slen2
-                    } else if is_mpeg1 && gr == 1 {
-                        // 长块 gr=1: 需要考虑 scfsi
-                        let scfsi = &side_info.scfsi[ch];
-                        let group_bands = [6usize, 5, 5, 5]; // groups: 0-5, 6-10, 11-15, 16-20
-                        let mut expected = 0usize;
-                        for (g, &count) in group_bands.iter().enumerate() {
-                            if scfsi[g] == 0 {
-                                let len = if g < 2 { slen1 } else { slen2 };
-                                expected += count * len;
+                    let expected_sf_bits =
+                        if is_mpeg1 && granule.block_type == 2 && granule.mixed_block_flag {
+                            8 * slen1 + 9 * slen1 + 18 * slen2 // 混合块: 8 long + 9*3 short(slen1) + 6*3 short(slen2)
+                        } else if is_mpeg1 && granule.block_type == 2 {
+                            18 * slen1 + 18 * slen2 // 纯短块: 6*3*slen1 + 6*3*slen2
+                        } else if is_mpeg1 && gr == 1 {
+                            // 长块 gr=1: 需要考虑 scfsi
+                            let scfsi = &side_info.scfsi[ch];
+                            let group_bands = [6usize, 5, 5, 5]; // groups: 0-5, 6-10, 11-15, 16-20
+                            let mut expected = 0usize;
+                            for (g, &count) in group_bands.iter().enumerate() {
+                                if scfsi[g] == 0 {
+                                    let len = if g < 2 { slen1 } else { slen2 };
+                                    expected += count * len;
+                                }
                             }
-                        }
-                        expected
-                    } else if is_mpeg1 {
-                        11 * slen1 + 10 * slen2 // 长块 gr=0: 全部读取
-                    } else { 0 };
-                    eprintln!(
+                            expected
+                        } else if is_mpeg1 {
+                            11 * slen1 + 10 * slen2 // 长块 gr=0: 全部读取
+                        } else {
+                            0
+                        };
+                    mp3_diag!(
                         "[bit-diag] frame=1 gr={} ch={}: start_bit={}, post_sf_bit={}, actual_sf_bits={}, expected_sf_bits={}, part2_3_len={}, slen1={}, slen2={}, block_type={}",
-                        gr, ch, start_bit, post_sf_bit, actual_sf_bits, expected_sf_bits,
-                        part2_3_length, slen1, slen2, granule.block_type
+                        gr,
+                        ch,
+                        start_bit,
+                        post_sf_bit,
+                        actual_sf_bits,
+                        expected_sf_bits,
+                        part2_3_length,
+                        slen1,
+                        slen2,
+                        granule.block_type
                     );
                     if gr == 1 {
-                        eprintln!(
+                        mp3_diag!(
                             "[bit-diag] frame=1 scfsi[ch={}] = {:?}",
-                            ch, side_info.scfsi[ch]
+                            ch,
+                            side_info.scfsi[ch]
                         );
                     }
                     if actual_sf_bits != expected_sf_bits {
-                        eprintln!(
+                        mp3_diag!(
                             "[BIT-MISMATCH] frame=1 gr={} ch={}: 实际消耗 {} bits, 预期 {} bits, 差异 {} bits!",
-                            gr, ch, actual_sf_bits, expected_sf_bits,
+                            gr,
+                            ch,
+                            actual_sf_bits,
+                            expected_sf_bits,
                             actual_sf_bits as isize - expected_sf_bits as isize
                         );
                     }
@@ -377,13 +462,16 @@ impl Mp3Decoder {
                     };
 
                     let linbits = tables::HUFFMAN_TABLE_PARAMS[table_id as usize].1;
-                    if let Ok((x, y)) = huffman.decode_big_values(&mut br, table_id, linbits) {
-                        is[i] = x;
-                        if i + 1 < 576 {
-                            is[i + 1] = y;
+                    match huffman.decode_big_values(&mut br, table_id, linbits) {
+                        Ok((x, y)) => {
+                            is[i] = x;
+                            if i + 1 < 576 {
+                                is[i + 1] = y;
+                            }
+                            i += 2;
                         }
+                        Err(_) => break,
                     }
-                    i += 2;
                 }
 
                 // Count1 区域 (四元组)
@@ -430,31 +518,40 @@ impl Mp3Decoder {
 
                 // 诊断: Frame 0-1 的 block_type
                 if self.frame_count <= 1 && ch == 0 {
-                    eprintln!(
+                    mp3_diag!(
                         "[diag-si] frame={} gr={}: block_type={}, wsf={}, big_values={}, mode={:?}, mode_ext={}",
-                        self.frame_count, gr, granule.block_type, granule.windows_switching_flag,
-                        granule.big_values, header.mode, header.mode_extension
+                        self.frame_count,
+                        gr,
+                        granule.block_type,
+                        granule.windows_switching_flag,
+                        granule.big_values,
+                        header.mode,
+                        header.mode_extension
                     );
                 }
 
                 // 诊断: Frame 0 gr=1 和 Frame 1 gr=0 的关键数据 (short blocks)
-                if ch == 0 && ((self.frame_count == 0 && gr == 1) || (self.frame_count == 1 && gr == 0)) {
+                if ch == 0
+                    && ((self.frame_count == 0 && gr == 1) || (self.frame_count == 1 && gr == 0))
+                {
                     let is = &self.granule_data[gr][ch].is;
                     let nonzero_is = is.iter().filter(|&&x| x != 0).count();
-                    eprintln!(
+                    mp3_diag!(
                         "[diag-short] frame={} gr={}: global_gain={}, subblock_gain={:?}, scalefac_compress={}, scalefac_scale={}",
-                        self.frame_count, gr, granule.global_gain, granule.subblock_gain,
-                        granule.scalefac_compress, granule.scalefac_scale
+                        self.frame_count,
+                        gr,
+                        granule.global_gain,
+                        granule.subblock_gain,
+                        granule.scalefac_compress,
+                        granule.scalefac_scale
                     );
-                    eprintln!(
+                    mp3_diag!(
                         "[diag-short] big_values={}, nonzero_is={}/576",
-                        granule.big_values, nonzero_is
+                        granule.big_values,
+                        nonzero_is
                     );
-                    eprintln!(
-                        "[diag-short] is[0..18] = {:?}",
-                        &is[0..18]
-                    );
-                    eprintln!(
+                    mp3_diag!("[diag-short] is[0..18] = {:?}", &is[0..18]);
+                    mp3_diag!(
                         "[diag-short] scalefac[0..12] = {:?}",
                         &self.granule_data[gr][ch].scalefac[0..12]
                     );
@@ -464,19 +561,26 @@ impl Mp3Decoder {
                 if self.frame_count == 1 && gr == 1 && ch == 0 {
                     let is = &self.granule_data[gr][ch].is;
                     let nonzero_is = is.iter().filter(|&&x| x != 0).count();
-                    eprintln!(
+                    mp3_diag!(
                         "[diag-huff] frame=1 gr=1 ch=0: big_values={}, part2_3_len={}, table_select={:?}, count1tab={}",
-                        granule.big_values, granule.part2_3_length,
-                        granule.table_select, granule.count1table_select
+                        granule.big_values,
+                        granule.part2_3_length,
+                        granule.table_select,
+                        granule.count1table_select
                     );
-                    eprintln!(
+                    mp3_diag!(
                         "[diag-huff] global_gain={}, scalefac_compress={}, block_type={}, wsf={}",
-                        granule.global_gain, granule.scalefac_compress,
-                        granule.block_type, granule.windows_switching_flag
+                        granule.global_gain,
+                        granule.scalefac_compress,
+                        granule.block_type,
+                        granule.windows_switching_flag
                     );
-                    eprintln!("[diag-huff] nonzero_is={}/576", nonzero_is);
-                    eprintln!("[diag-huff] is[0..36] = {:?}", &is[0..36]);
-                    eprintln!("[diag-huff] scalefac[0..21] = {:?}", &self.granule_data[gr][ch].scalefac[0..21]);
+                    mp3_diag!("[diag-huff] nonzero_is={}/576", nonzero_is);
+                    mp3_diag!("[diag-huff] is[0..36] = {:?}", &is[0..36]);
+                    mp3_diag!(
+                        "[diag-huff] scalefac[0..21] = {:?}",
+                        &self.granule_data[gr][ch].scalefac[0..21]
+                    );
                 }
 
                 requantize::requantize(
@@ -492,24 +596,57 @@ impl Mp3Decoder {
                     let is_val = self.granule_data[gr][ch].is[2];
                     let sf_val = self.granule_data[gr][ch].scalefac[0];
                     let expect_mult = 2.0f32.powf(0.25 * (granule.global_gain as f32 - 210.0));
-                    eprintln!(
+                    mp3_diag!(
                         "[diag-verify] is[2]={}, sf[0]={}, global_gain={}, preflag={}, sf_scale={}, expect_mult={:.8}, actual_xr={:.8}",
-                        is_val, sf_val, granule.global_gain, granule.preflag, granule.scalefac_scale, expect_mult, xr_val
+                        is_val,
+                        sf_val,
+                        granule.global_gain,
+                        granule.preflag,
+                        granule.scalefac_scale,
+                        expect_mult,
+                        xr_val
                     );
                     let xr = &self.granule_data[gr][ch].xr;
-                    eprintln!("[diag-req] xr[0..18] = {:?}", &xr[0..18].iter().map(|x| format!("{:.6}", x)).collect::<Vec<_>>());
+                    mp3_diag!(
+                        "[diag-req] xr[0..18] = {:?}",
+                        &xr[0..18]
+                            .iter()
+                            .map(|x| format!("{:.6}", x))
+                            .collect::<Vec<_>>()
+                    );
                 }
-
             }
 
             // --- Phase 3: Stereo Processing (在 reorder 之前, 因为立体声处理需要 SFB 顺序) ---
             // 诊断: stereo 前后 xr RMS
             let pre_stereo_rms = if self.frame_count == 1 && gr == 0 {
-                let rms0: f32 = (self.granule_data[gr][0].xr.iter().map(|x| x*x).sum::<f32>() / 576.0).sqrt();
-                let rms1: f32 = if nch > 1 { (self.granule_data[gr][1].xr.iter().map(|x| x*x).sum::<f32>() / 576.0).sqrt() } else { 0.0 };
-                eprintln!("[diag-stereo] frame=1 gr=0 BEFORE stereo: ch0_rms={:.8}, ch1_rms={:.8}", rms0, rms1);
+                let rms0: f32 = (self.granule_data[gr][0]
+                    .xr
+                    .iter()
+                    .map(|x| x * x)
+                    .sum::<f32>()
+                    / 576.0)
+                    .sqrt();
+                let rms1: f32 = if nch > 1 {
+                    (self.granule_data[gr][1]
+                        .xr
+                        .iter()
+                        .map(|x| x * x)
+                        .sum::<f32>()
+                        / 576.0)
+                        .sqrt()
+                } else {
+                    0.0
+                };
+                mp3_diag!(
+                    "[diag-stereo] frame=1 gr=0 BEFORE stereo: ch0_rms={:.8}, ch1_rms={:.8}",
+                    rms0,
+                    rms1
+                );
                 Some((rms0, rms1))
-            } else { None };
+            } else {
+                None
+            };
 
             stereo::process_stereo(
                 gr,
@@ -520,15 +657,41 @@ impl Mp3Decoder {
             );
 
             if let Some((pre0, pre1)) = pre_stereo_rms {
-                let post0: f32 = (self.granule_data[gr][0].xr.iter().map(|x| x*x).sum::<f32>() / 576.0).sqrt();
-                let post1: f32 = if nch > 1 { (self.granule_data[gr][1].xr.iter().map(|x| x*x).sum::<f32>() / 576.0).sqrt() } else { 0.0 };
-                eprintln!("[diag-stereo] frame=1 gr=0 AFTER stereo:  ch0_rms={:.8}, ch1_rms={:.8}", post0, post1);
-                eprintln!("[diag-stereo] ratio: ch0={:.4}, ch1={:.4}", post0 / pre0.max(1e-10), post1 / pre1.max(1e-10));
+                let post0: f32 = (self.granule_data[gr][0]
+                    .xr
+                    .iter()
+                    .map(|x| x * x)
+                    .sum::<f32>()
+                    / 576.0)
+                    .sqrt();
+                let post1: f32 = if nch > 1 {
+                    (self.granule_data[gr][1]
+                        .xr
+                        .iter()
+                        .map(|x| x * x)
+                        .sum::<f32>()
+                        / 576.0)
+                        .sqrt()
+                } else {
+                    0.0
+                };
+                mp3_diag!(
+                    "[diag-stereo] frame=1 gr=0 AFTER stereo:  ch0_rms={:.8}, ch1_rms={:.8}",
+                    post0,
+                    post1
+                );
+                mp3_diag!(
+                    "[diag-stereo] ratio: ch0={:.4}, ch1={:.4}",
+                    post0 / pre0.max(1e-10),
+                    post1 / pre1.max(1e-10)
+                );
             }
 
             // Joint stereo 处理后, 两个通道的非零范围扩展到两者的最大值
             if nch == 2 && header.mode == header::ChannelMode::JointStereo {
-                let max_rzero = self.granule_data[gr][0].rzero.max(self.granule_data[gr][1].rzero);
+                let max_rzero = self.granule_data[gr][0]
+                    .rzero
+                    .max(self.granule_data[gr][1].rzero);
                 self.granule_data[gr][0].rzero = max_rzero;
                 self.granule_data[gr][1].rzero = max_rzero;
             }
@@ -568,18 +731,25 @@ impl Mp3Decoder {
                 if diag_overlap {
                     let ovl = &self.overlap[0][0];
                     let ovl_rms: f32 = (ovl.iter().map(|x| x * x).sum::<f32>() / 18.0).sqrt();
-                    eprintln!(
+                    mp3_diag!(
                         "[ovl-before] frame=1 gr={} ch=0 sb=0: rms={:.8}, all_18={:?}",
-                        gr, ovl_rms, &ovl[..18]
+                        gr,
+                        ovl_rms,
+                        &ovl[..18]
                     );
                     let xr_sb0 = &ctx.xr[0..18];
-                    eprintln!(
+                    mp3_diag!(
                         "[ovl-before] xr[sb0] = {:?}",
-                        xr_sb0.iter().map(|x| format!("{:.6}", x)).collect::<Vec<_>>()
+                        xr_sb0
+                            .iter()
+                            .map(|x| format!("{:.6}", x))
+                            .collect::<Vec<_>>()
                     );
-                    eprintln!(
+                    mp3_diag!(
                         "[block-info] frame=1 gr={} ch=0: block_type={}, mixed={}, wsf={}",
-                        gr, granule.block_type, granule.mixed_block_flag,
+                        gr,
+                        granule.block_type,
+                        granule.mixed_block_flag,
                         granule.windows_switching_flag
                     );
                 }
@@ -591,13 +761,18 @@ impl Mp3Decoder {
                 if diag_overlap {
                     let ovl = &self.overlap[0][0];
                     let ovl_rms: f32 = (ovl.iter().map(|x| x * x).sum::<f32>() / 18.0).sqrt();
-                    eprintln!(
+                    mp3_diag!(
                         "[ovl-after] frame=1 gr={} ch=0 sb=0: rms={:.8}, vals={:?}",
-                        gr, ovl_rms, &ovl[..18]
+                        gr,
+                        ovl_rms,
+                        &ovl[..18]
                     );
-                    eprintln!(
+                    mp3_diag!(
                         "[ovl-after] imdct_out[sb0] = {:?}",
-                        &imdct_out[0..18].iter().map(|x| format!("{:.6}", x)).collect::<Vec<_>>()
+                        &imdct_out[0..18]
+                            .iter()
+                            .map(|x| format!("{:.6}", x))
+                            .collect::<Vec<_>>()
                     );
                 }
 
@@ -612,17 +787,31 @@ impl Mp3Decoder {
                     let mut xr_energies = Vec::new();
                     let mut imdct_energies = Vec::new();
                     for sb in 0..32 {
-                        let xr_rms: f32 = (ctx.xr[sb*18..(sb+1)*18].iter()
-                            .map(|x| x*x).sum::<f32>() / 18.0).sqrt();
-                        let im_rms: f32 = (imdct_out[sb*18..(sb+1)*18].iter()
-                            .map(|x| x*x).sum::<f32>() / 18.0).sqrt();
+                        let xr_rms: f32 = (ctx.xr[sb * 18..(sb + 1) * 18]
+                            .iter()
+                            .map(|x| x * x)
+                            .sum::<f32>()
+                            / 18.0)
+                            .sqrt();
+                        let im_rms: f32 = (imdct_out[sb * 18..(sb + 1) * 18]
+                            .iter()
+                            .map(|x| x * x)
+                            .sum::<f32>()
+                            / 18.0)
+                            .sqrt();
                         xr_energies.push(format!("{:.4}", xr_rms));
                         imdct_energies.push(format!("{:.4}", im_rms));
                     }
-                    eprintln!("[sb-diag] frame=1 gr=1 ch=0 xr_rms_per_sb = {:?}", &xr_energies[..8]);
-                    eprintln!("[sb-diag] frame=1 gr=1 ch=0 imdct_rms_per_sb = {:?}", &imdct_energies[..8]);
-                    eprintln!("[sb-diag] xr_rms sb8-15 = {:?}", &xr_energies[8..16]);
-                    eprintln!("[sb-diag] imdct_rms sb8-15 = {:?}", &imdct_energies[8..16]);
+                    mp3_diag!(
+                        "[sb-diag] frame=1 gr=1 ch=0 xr_rms_per_sb = {:?}",
+                        &xr_energies[..8]
+                    );
+                    mp3_diag!(
+                        "[sb-diag] frame=1 gr=1 ch=0 imdct_rms_per_sb = {:?}",
+                        &imdct_energies[..8]
+                    );
+                    mp3_diag!("[sb-diag] xr_rms sb8-15 = {:?}", &xr_energies[8..16]);
+                    mp3_diag!("[sb-diag] imdct_rms sb8-15 = {:?}", &imdct_energies[8..16]);
                 }
 
                 for k in 0..18 {
@@ -633,9 +822,12 @@ impl Mp3Decoder {
 
                     // 诊断: Frame 1 gr=1 ch=0 ts=9 的全部子带样本
                     if self.frame_count == 1 && gr == 1 && ch == 0 && k == 9 {
-                        eprintln!(
+                        mp3_diag!(
                             "[ts9-diag] frame=1 gr=1 ch=0 ts=9 subband_samples = {:?}",
-                            subband_samples.iter().map(|x| format!("{:.5}", x)).collect::<Vec<_>>()
+                            subband_samples
+                                .iter()
+                                .map(|x| format!("{:.5}", x))
+                                .collect::<Vec<_>>()
                         );
                     }
 
@@ -646,8 +838,12 @@ impl Mp3Decoder {
                 }
 
                 if self.frame_count == 2 && gr == 0 && ch == 0 {
-                    let pcm_rms: f32 = (pcm_channel.iter().map(|x| x * x).sum::<f32>() / 576.0).sqrt();
-                    eprintln!("[stage] frame=2 gr=0: pcm_rms={:.8} (synthesis 输出)", pcm_rms);
+                    let pcm_rms: f32 =
+                        (pcm_channel.iter().map(|x| x * x).sum::<f32>() / 576.0).sqrt();
+                    mp3_diag!(
+                        "[stage] frame=2 gr=0: pcm_rms={:.8} (synthesis 输出)",
+                        pcm_rms
+                    );
                 }
             }
 
@@ -700,6 +896,14 @@ impl Decoder for Mp3Decoder {
     }
 
     fn open(&mut self, _params: &CodecParameters) -> TaoResult<()> {
+        let sym_params = SymCodecParameters {
+            codec: CODEC_TYPE_MP3,
+            ..Default::default()
+        };
+        self.sym_decoder = Some(
+            SymMpaDecoder::try_new(&sym_params, &SymDecoderOptions::default())
+                .map_err(|e| TaoError::Codec(format!("symphonia mp3 init failed: {e}")))?,
+        );
         self.opened = true;
         self.buffer.clear();
         self.main_data.clear();
@@ -741,6 +945,9 @@ impl Decoder for Mp3Decoder {
         self.main_data.clear();
         self.next_pts = 0;
         self.frame_count = 0;
+        if let Some(decoder) = self.sym_decoder.as_mut() {
+            decoder.reset();
+        }
         self.overlap = [[[0.0; 18]; 32]; 2];
         self.synth_ctx = Default::default();
     }

@@ -4,9 +4,9 @@
 //! Big Values 表使用 Canonical Huffman + 直接查表.
 //! Count1 表使用专用的直接查表.
 
-use std::sync::OnceLock;
-use super::tables::{MPA_HUFF_LENS, MPA_HUFF_SYMS, MPA_HUFF_OFFSET};
 use super::bitreader::BitReader;
+use super::tables::{MPA_HUFF_LENS, MPA_HUFF_OFFSET, MPA_HUFF_SYMS};
+use std::sync::OnceLock;
 use tao_core::{TaoError, TaoResult};
 
 // ============================================================================
@@ -125,7 +125,11 @@ fn build_big_value_table(table_id: u8) -> BigValueTable {
         }
     }
 
-    BigValueTable { lut, overflow, max_len }
+    BigValueTable {
+        lut,
+        overflow,
+        max_len,
+    }
 }
 
 // ============================================================================
@@ -218,11 +222,7 @@ impl HuffmanDecoder {
     }
 
     /// 快速 VLC 解码 (Big Values)
-    fn decode_big_value_vlc(
-        &self,
-        br: &mut BitReader,
-        table: &BigValueTable,
-    ) -> TaoResult<u8> {
+    fn decode_big_value_vlc(&self, br: &mut BitReader, table: &BigValueTable) -> TaoResult<u8> {
         let peek_val = br.peek_bits(PEEK_BITS as u8).unwrap_or(0);
         let entry = table.lut[peek_val as usize];
 
@@ -243,9 +243,9 @@ impl HuffmanDecoder {
             }
         }
 
-        // 解码失败, 跳过 1 位继续
-        br.skip_bits(1);
-        Ok(0)
+        Err(TaoError::InvalidData(
+            "BigValues Huffman 解码失败".to_string(),
+        ))
     }
 
     /// 解码 Count1 (v, w, x, y)
@@ -268,30 +268,44 @@ impl HuffmanDecoder {
                 br.skip_bits(entry.bits as usize);
                 entry.symbol
             } else {
-                return Err(TaoError::InvalidData(
-                    "Count1 Huffman 解码失败".to_string(),
-                ));
+                return Err(TaoError::InvalidData("Count1 Huffman 解码失败".to_string()));
             }
         };
 
-        // symbol 的 4 位分别对应 v, w, x, y (各为 0 或 1)
-        let mut v = ((symbol >> 3) & 1) as i32;
-        let mut w = ((symbol >> 2) & 1) as i32;
-        let mut x = ((symbol >> 1) & 1) as i32;
-        let mut y = (symbol & 1) as i32;
+        // symbol 的 4 位对应 (v,w,x,y), 但符号位读取顺序与位展开顺序相反:
+        // 先处理 bit0(y), 再 bit1(x), bit2(w), bit3(v).
+        let mut v = 0i32;
+        let mut w = 0i32;
+        let mut x = 0i32;
+        let mut y = 0i32;
 
-        // 读取符号位
-        if v > 0 && br.read_bool().ok_or(TaoError::Eof)? {
-            v = -v;
+        if (symbol & 0x1) != 0 {
+            y = if br.read_bool().ok_or(TaoError::Eof)? {
+                -1
+            } else {
+                1
+            };
         }
-        if w > 0 && br.read_bool().ok_or(TaoError::Eof)? {
-            w = -w;
+        if (symbol & 0x2) != 0 {
+            x = if br.read_bool().ok_or(TaoError::Eof)? {
+                -1
+            } else {
+                1
+            };
         }
-        if x > 0 && br.read_bool().ok_or(TaoError::Eof)? {
-            x = -x;
+        if (symbol & 0x4) != 0 {
+            w = if br.read_bool().ok_or(TaoError::Eof)? {
+                -1
+            } else {
+                1
+            };
         }
-        if y > 0 && br.read_bool().ok_or(TaoError::Eof)? {
-            y = -y;
+        if (symbol & 0x8) != 0 {
+            v = if br.read_bool().ok_or(TaoError::Eof)? {
+                -1
+            } else {
+                1
+            };
         }
 
         Ok((v, w, x, y))
@@ -366,8 +380,12 @@ mod tests {
         }
         eprintln!(
             "Table 24: zero_bits={}, max_sym=0x{:02X}({},{}), max_count={}, overflow={}",
-            zero_bits, max_sym, max_sym >> 4, max_sym & 0xF,
-            max_count, t.overflow.len()
+            zero_bits,
+            max_sym,
+            max_sym >> 4,
+            max_sym & 0xF,
+            max_count,
+            t.overflow.len()
         );
 
         // 0xFF (15,15) 应该是最短码 (4位), 覆盖 64 个 LUT 条目
@@ -453,9 +471,15 @@ mod tests {
                     if entry.symbol != expected_sym || entry.bits != len {
                         eprintln!(
                             "Table {}: 符号不匹配! code_val={:0width$b} len={} expected_sym=0x{:02X}({},{}) got_sym=0x{:02X}({},{}) got_bits={}",
-                            table_id, code_val, len, expected_sym,
-                            expected_sym >> 4, expected_sym & 0xF,
-                            entry.symbol, entry.symbol >> 4, entry.symbol & 0xF,
+                            table_id,
+                            code_val,
+                            len,
+                            expected_sym,
+                            expected_sym >> 4,
+                            expected_sym & 0xF,
+                            entry.symbol,
+                            entry.symbol >> 4,
+                            entry.symbol & 0xF,
                             entry.bits,
                             width = len as usize,
                         );
@@ -476,7 +500,10 @@ mod tests {
                             }
                         }
                         Err(e) => {
-                            eprintln!("Table {}: overflow 解码错误! len={} sym=0x{:02X} err={}", table_id, len, expected_sym, e);
+                            eprintln!(
+                                "Table {}: overflow 解码错误! len={} sym=0x{:02X} err={}",
+                                table_id, len, expected_sym, e
+                            );
                             errors += 1;
                         }
                     }

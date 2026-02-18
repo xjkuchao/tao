@@ -3,11 +3,11 @@
 //! 支持 MS Stereo 和 Intensity Stereo (MPEG-1)
 //! 参考 ISO 11172-3 和 minimp3 实现.
 
-use std::f32::consts::FRAC_1_SQRT_2;
 use super::data::GranuleContext;
 use super::header::{ChannelMode, Mp3Header};
 use super::side_info::Granule;
 use super::tables::{SFB_WIDTH_LONG, SFB_WIDTH_SHORT, samplerate_index};
+use std::f32::consts::FRAC_1_SQRT_2;
 
 /// IS 比率表 (MPEG-1)
 /// 基于 ISO 11172-3: is_ratio = tan(is_pos * PI/12)
@@ -59,14 +59,24 @@ pub fn process_stereo(
     if l_gr.windows_switching_flag && l_gr.block_type == 2 {
         // 短块立体声处理
         process_stereo_short(
-            l_data, r_data, l_gr, r_gr,
-            ms_stereo, intensity_stereo, sr_idx,
+            l_data,
+            r_data,
+            l_gr,
+            r_gr,
+            ms_stereo,
+            intensity_stereo,
+            sr_idx,
         );
     } else {
         // 长块立体声处理
         process_stereo_long(
-            l_data, r_data, l_gr, r_gr,
-            ms_stereo, intensity_stereo, sr_idx,
+            l_data,
+            r_data,
+            l_gr,
+            r_gr,
+            ms_stereo,
+            intensity_stereo,
+            sr_idx,
         );
     }
 }
@@ -130,11 +140,15 @@ fn process_stereo_long(
                         }
                     }
                 } else {
-                    // is_pos == 7: 非法值, L=L, R=L
+                    // is_pos == 7: intensity 无效.
+                    // 若启用 MS, 对该频带执行 MS; 否则保持原值.
                     for i in 0..width {
                         let idx = offset + i;
-                        if idx < 576 {
-                            r_data.xr[idx] = l_data.xr[idx];
+                        if idx < 576 && ms_stereo {
+                            let m = l_data.xr[idx];
+                            let s = r_data.xr[idx];
+                            l_data.xr[idx] = (m + s) * FRAC_1_SQRT_2;
+                            r_data.xr[idx] = (m - s) * FRAC_1_SQRT_2;
                         }
                     }
                 }
@@ -200,8 +214,12 @@ fn process_stereo_short(
                         let val = l_data.xr[idx];
                         l_data.xr[idx] = val * kl;
                         r_data.xr[idx] = val * kr;
-                    } else {
-                        r_data.xr[idx] = l_data.xr[idx];
+                    } else if ms_stereo {
+                        // is_pos == 7: intensity 无效, 回退到 MS.
+                        let m = l_data.xr[idx];
+                        let ss = r_data.xr[idx];
+                        l_data.xr[idx] = (m + ss) * FRAC_1_SQRT_2;
+                        r_data.xr[idx] = (m - ss) * FRAC_1_SQRT_2;
                     }
                 }
             }

@@ -161,131 +161,20 @@ const SYNTH_WINDOW: [f32; 512] = [
      0.000015259,  0.000015259,  0.000015259,  0.000015259,
 ];
 
-/// Lee's fast 32-point DCT (直接翻译自 symphonia, 逐行对应)
-///
-/// 参考: B.G. Lee, "A new algorithm to compute the discrete cosine transform",
-/// IEEE Trans. ASSP, vol. 32, no. 6, pp. 1243-1245, 1984.
-#[allow(clippy::excessive_precision)]
-fn dct32(x: &[f32; 32], y: &mut [f32; 32]) {
-    const COS_16: [f32; 16] = [
-        0.500_602_998_235_196_3, 0.505_470_959_897_543_6,
-        0.515_447_309_922_624_6, 0.531_042_591_089_784_1,
-        0.553_103_896_034_444_5, 0.582_934_968_206_133_9,
-        0.622_504_123_035_664_8, 0.674_808_341_455_005_7,
-        0.744_536_271_002_298_6, 0.839_349_645_415_526_8,
-        0.972_568_237_861_960_8, 1.169_439_933_432_884_7,
-        1.484_164_616_314_166_2, 2.057_781_009_953_410_8,
-        3.407_608_418_468_719_0, 10.190_008_123_548_032_9,
-    ];
-    const COS_8: [f32; 8] = [
-        0.502_419_286_188_155_7, 0.522_498_614_939_688_9,
-        0.566_944_034_816_357_7, 0.646_821_783_359_990_1,
-        0.788_154_623_451_250_2, 1.060_677_685_990_347_1,
-        1.722_447_098_238_334_2, 5.101_148_618_689_155_3,
-    ];
-    const COS_4: [f32; 4] = [
-        0.509_795_579_104_159_2, 0.601_344_886_935_045_3,
-        0.899_976_223_136_415_6, 2.562_915_447_741_505_5,
-    ];
-    const COS_2: [f32; 2] = [0.541_196_100_146_197_0, 1.306_562_964_876_376_4];
-    const COS_1: f32 = 0.707_106_781_186_547_5;
-
-    // 4-point DCT 内联展开 (处理 t[base..base+4])
-    #[inline(always)]
-    fn dct4(t: &mut [f32], base: usize) {
-        let mut s = [
-            t[base] + t[base + 3], t[base + 1] + t[base + 2],
-            (t[base] - t[base + 3]) * COS_2[0],
-            (t[base + 1] - t[base + 2]) * COS_2[1],
-        ];
-        let a0 = s[0] + s[1]; let a1 = (s[0] - s[1]) * COS_1;
-        s[0] = a0; s[1] = a1;
-        let a0 = s[2] + s[3]; let a1 = (s[2] - s[3]) * COS_1;
-        s[2] = a0; s[3] = a1;
-        t[base] = s[0];
-        t[base + 1] = s[2] + s[3];
-        t[base + 2] = s[1];
-        t[base + 3] = s[3];
-    }
-
-    // 8-point DCT 内联展开 (处理 t[base..base+8])
-    #[inline(always)]
-    fn dct8(t: &mut [f32], base: usize) {
-        let mut s = [0.0f32; 8];
-        s[0] = t[base] + t[base + 7]; s[1] = t[base + 1] + t[base + 6];
-        s[2] = t[base + 2] + t[base + 5]; s[3] = t[base + 3] + t[base + 4];
-        s[4] = (t[base] - t[base + 7]) * COS_4[0];
-        s[5] = (t[base + 1] - t[base + 6]) * COS_4[1];
-        s[6] = (t[base + 2] - t[base + 5]) * COS_4[2];
-        s[7] = (t[base + 3] - t[base + 4]) * COS_4[3];
-        // 内层调用需要把 s 放回 t 的位置
-        t[base..base + 8].copy_from_slice(&s);
-        dct4(t, base);
-        dct4(t, base + 4);
-        // 重组
-        let mut buf = [0.0f32; 8];
-        buf.copy_from_slice(&t[base..base + 8]);
-        for i in 0..3 {
-            t[base + (i << 1)] = buf[i];
-            t[base + (i << 1) + 1] = buf[4 + i] + buf[4 + i + 1];
-        }
-        t[base + 6] = buf[3];
-        t[base + 7] = buf[7];
-    }
-
-    // 16-point DCT 内联展开 (处理 t[base..base+16])
-    #[inline(always)]
-    fn dct16(t: &mut [f32], base: usize) {
-        let mut s = [0.0f32; 16];
-        for i in 0..8 {
-            s[i] = t[base + i] + t[base + 15 - i];
-            s[8 + i] = (t[base + i] - t[base + 15 - i]) * COS_8[i];
-        }
-        t[base..base + 16].copy_from_slice(&s);
-        dct8(t, base);
-        dct8(t, base + 8);
-        // 重组
-        let mut buf = [0.0f32; 16];
-        buf[..16].copy_from_slice(&t[base..base + 16]);
-        for i in 0..7 {
-            t[base + (i << 1)] = buf[i];
-            t[base + (i << 1) + 1] = buf[8 + i] + buf[8 + i + 1];
-        }
-        t[base + 14] = buf[7];
-        t[base + 15] = buf[15];
-    }
-
-    // 32-point DCT: 顶层分解
-    let mut t = [0.0f32; 32];
-    for i in 0..16 {
-        t[i] = x[i] + x[31 - i];
-        t[16 + i] = (x[i] - x[31 - i]) * COS_16[i];
-    }
-    dct16(&mut t, 0);
-    dct16(&mut t, 16);
-    // 最终重组
-    for i in 0..15 {
-        y[i << 1] = t[i];
-        y[(i << 1) + 1] = t[16 + i] + t[16 + i + 1];
-    }
-    y[30] = t[15];
-    y[31] = t[31];
-}
-
 /// 合成滤波器状态
 #[derive(Debug, Clone)]
 pub struct SynthContext {
-    /// V 缓冲区 (1024 个样本, 循环缓冲)
-    pub v: [f32; 1024],
-    /// V 缓冲区偏移 (每次减 64, 模 1024)
-    pub v_offset: usize,
+    /// 16 槽 FIFO, 每槽 64 个样本.
+    v_vec: [[f32; 64]; 16],
+    /// FIFO 前端 (将被下一次写入覆盖的槽位).
+    v_front: usize,
 }
 
 impl Default for SynthContext {
     fn default() -> Self {
         Self {
-            v: [0.0; 1024],
-            v_offset: 0,
+            v_vec: [[0.0; 64]; 16],
+            v_front: 0,
         }
     }
 }
@@ -294,63 +183,449 @@ impl Default for SynthContext {
 ///
 /// 输入: 32 个子带样本 (new_samples)
 /// 输出: 32 个 PCM 样本
-pub fn synthesis_filter(
-    ctx: &mut SynthContext,
-    new_samples: &[f32; 32],
-    pcm_out: &mut [f32; 32],
-) {
-    let window = &SYNTH_WINDOW;
+pub fn synthesis_filter(ctx: &mut SynthContext, new_samples: &[f32; 32], pcm_out: &mut [f32; 32]) {
+    let mut d_vec = [0f32; 32];
+    let v_vec = &mut ctx.v_vec[ctx.v_front];
 
-    // 1. 更新 V 缓冲区偏移 (向前移动 64)
-    ctx.v_offset = (ctx.v_offset + 1024 - 64) % 1024;
-
-    // 2. Matrixing: DCT32 + 对称重建 (移植自 symphonia)
-    let mut d_vec = [0.0f32; 32];
     dct32(new_samples, &mut d_vec);
 
-    let v_off = ctx.v_offset;
-    // 对称重建: 从 DCT 输出映射到 64 点 V 缓冲区
-    // v[48-15..48) reversed = -d[1..16]
-    for i in 0..15 {
-        ctx.v[(v_off + 47 - i) % 1024] = -d_vec[1 + i];
+    for (d, s) in v_vec[48 - 15..48].iter_mut().rev().zip(&d_vec[1..16]) {
+        *d = -*s;
     }
-    // v[49..64) = -d[1..16]
-    for i in 0..15 {
-        ctx.v[(v_off + 49 + i) % 1024] = -d_vec[1 + i];
+    for (d, s) in v_vec[49..64].iter_mut().zip(&d_vec[1..16]) {
+        *d = -*s;
     }
-    // v[17..32) reversed = -d[17..32]
-    for i in 0..15 {
-        ctx.v[(v_off + 31 - i) % 1024] = -d_vec[17 + i];
+    for (d, s) in v_vec[17..32].iter_mut().rev().zip(&d_vec[17..32]) {
+        *d = -*s;
     }
-    // v[1..16) = d[17..32]
-    for i in 0..15 {
-        ctx.v[(v_off + 1 + i) % 1024] = d_vec[17 + i];
+    for (d, s) in v_vec[1..16].iter_mut().zip(&d_vec[17..32]) {
+        *d = *s;
     }
-    // 边界值
-    ctx.v[v_off % 1024] = d_vec[16];
-    ctx.v[(v_off + 32) % 1024] = -d_vec[16];
-    ctx.v[(v_off + 48) % 1024] = -d_vec[0];
-    ctx.v[(v_off + 16) % 1024] = 0.0;
 
-    // 3. 构建 U 向量并窗口加权
-    // 使用 V buffer 构建 512 个 U 值, 然后窗口加权并累加
-    let mut u = [0.0f32; 512];
-    for i in 0..8 {
-        for j in 0..32 {
-            u[64 * i + j] = ctx.v[(ctx.v_offset + 128 * i + j) % 1024];
-            u[64 * i + 32 + j] = ctx.v[(ctx.v_offset + 128 * i + 96 + j) % 1024];
+    v_vec[0] = d_vec[16];
+    v_vec[32] = -d_vec[16];
+    v_vec[48] = -d_vec[0];
+    v_vec[16] = 0.0;
+
+    let mut o_vec = [0f32; 32];
+
+    for j in 0..8 {
+        let v_start = ctx.v_front + (j << 1);
+        let v0 = &ctx.v_vec[v_start & 0xf][0..32];
+        let v1 = &ctx.v_vec[(v_start + 1) & 0xf][32..64];
+        let k = j << 6;
+
+        for i in 0..32 {
+            o_vec[i] += v0[i] * SYNTH_WINDOW[k + i];
+            o_vec[i] += v1[i] * SYNTH_WINDOW[k + 32 + i];
         }
     }
 
-    // 窗口加权 + 累加, 并 clamp 到 [-1, 1]
-    for (j, pcm_sample) in pcm_out.iter_mut().enumerate() {
-        let mut sum = 0.0;
-        for i in 0..16 {
-            let idx = j + 32 * i;
-            sum += window[idx] * u[idx];
-        }
-        *pcm_sample = sum;
+    for (o, s) in pcm_out.iter_mut().zip(&o_vec) {
+        *o = s.clamp(-1.0, 1.0);
     }
+
+    // 向后移动 1 槽, 使下一次写入覆盖最旧槽.
+    ctx.v_front = (ctx.v_front + 15) & 0xf;
+}
+
+/// Performs a 32-point Discrete Cosine Transform (DCT) using Byeong Gi Lee's fast algorithm
+/// without inverse square-root 2 scaling.
+#[allow(clippy::excessive_precision)]
+fn dct32(x: &[f32; 32], y: &mut [f32; 32]) {
+    const COS_16: [f32; 16] = [
+        0.500_602_998_235_196_3,
+        0.505_470_959_897_543_6,
+        0.515_447_309_922_624_6,
+        0.531_042_591_089_784_1,
+        0.553_103_896_034_444_5,
+        0.582_934_968_206_133_9,
+        0.622_504_123_035_664_8,
+        0.674_808_341_455_005_7,
+        0.744_536_271_002_298_6,
+        0.839_349_645_415_526_8,
+        0.972_568_237_861_960_8,
+        1.169_439_933_432_884_7,
+        1.484_164_616_314_166_2,
+        2.057_781_009_953_410_8,
+        3.407_608_418_468_719_0,
+        10.190_008_123_548_032_9,
+    ];
+
+    const COS_8: [f32; 8] = [
+        0.502_419_286_188_155_7,
+        0.522_498_614_939_688_9,
+        0.566_944_034_816_357_7,
+        0.646_821_783_359_990_1,
+        0.788_154_623_451_250_2,
+        1.060_677_685_990_347_1,
+        1.722_447_098_238_334_2,
+        5.101_148_618_689_155_3,
+    ];
+
+    const COS_4: [f32; 4] = [
+        0.509_795_579_104_159_2,
+        0.601_344_886_935_045_3,
+        0.899_976_223_136_415_6,
+        2.562_915_447_741_505_5,
+    ];
+
+    const COS_2: [f32; 2] = [0.541_196_100_146_197_0, 1.306_562_964_876_376_4];
+    const COS_1: f32 = 0.707_106_781_186_547_5;
+
+    let mut t0 = [
+        (x[0] + x[31]),
+        (x[1] + x[30]),
+        (x[2] + x[29]),
+        (x[3] + x[28]),
+        (x[4] + x[27]),
+        (x[5] + x[26]),
+        (x[6] + x[25]),
+        (x[7] + x[24]),
+        (x[8] + x[23]),
+        (x[9] + x[22]),
+        (x[10] + x[21]),
+        (x[11] + x[20]),
+        (x[12] + x[19]),
+        (x[13] + x[18]),
+        (x[14] + x[17]),
+        (x[15] + x[16]),
+        (x[0] - x[31]) * COS_16[0],
+        (x[1] - x[30]) * COS_16[1],
+        (x[2] - x[29]) * COS_16[2],
+        (x[3] - x[28]) * COS_16[3],
+        (x[4] - x[27]) * COS_16[4],
+        (x[5] - x[26]) * COS_16[5],
+        (x[6] - x[25]) * COS_16[6],
+        (x[7] - x[24]) * COS_16[7],
+        (x[8] - x[23]) * COS_16[8],
+        (x[9] - x[22]) * COS_16[9],
+        (x[10] - x[21]) * COS_16[10],
+        (x[11] - x[20]) * COS_16[11],
+        (x[12] - x[19]) * COS_16[12],
+        (x[13] - x[18]) * COS_16[13],
+        (x[14] - x[17]) * COS_16[14],
+        (x[15] - x[16]) * COS_16[15],
+    ];
+
+    {
+        let mut t1 = [
+            (t0[0] + t0[15]),
+            (t0[1] + t0[14]),
+            (t0[2] + t0[13]),
+            (t0[3] + t0[12]),
+            (t0[4] + t0[11]),
+            (t0[5] + t0[10]),
+            (t0[6] + t0[9]),
+            (t0[7] + t0[8]),
+            (t0[0] - t0[15]) * COS_8[0],
+            (t0[1] - t0[14]) * COS_8[1],
+            (t0[2] - t0[13]) * COS_8[2],
+            (t0[3] - t0[12]) * COS_8[3],
+            (t0[4] - t0[11]) * COS_8[4],
+            (t0[5] - t0[10]) * COS_8[5],
+            (t0[6] - t0[9]) * COS_8[6],
+            (t0[7] - t0[8]) * COS_8[7],
+        ];
+
+        {
+            let mut t2 = [
+                (t1[0] + t1[7]),
+                (t1[1] + t1[6]),
+                (t1[2] + t1[5]),
+                (t1[3] + t1[4]),
+                (t1[0] - t1[7]) * COS_4[0],
+                (t1[1] - t1[6]) * COS_4[1],
+                (t1[2] - t1[5]) * COS_4[2],
+                (t1[3] - t1[4]) * COS_4[3],
+            ];
+
+            {
+                let mut t3 = [
+                    (t2[0] + t2[3]),
+                    (t2[1] + t2[2]),
+                    (t2[0] - t2[3]) * COS_2[0],
+                    (t2[1] - t2[2]) * COS_2[1],
+                ];
+
+                let t4 = [(t3[0] + t3[1]), (t3[0] - t3[1]) * COS_1];
+                t3[0] = t4[0];
+                t3[1] = t4[1];
+
+                let t4 = [(t3[2] + t3[3]), (t3[2] - t3[3]) * COS_1];
+                t3[2] = t4[0];
+                t3[3] = t4[1];
+
+                t2[0] = t3[0];
+                t2[1] = t3[2] + t3[3];
+                t2[2] = t3[1];
+                t2[3] = t3[3];
+            }
+
+            {
+                let mut t3 = [
+                    (t2[4] + t2[7]),
+                    (t2[5] + t2[6]),
+                    (t2[4] - t2[7]) * COS_2[0],
+                    (t2[5] - t2[6]) * COS_2[1],
+                ];
+
+                let t4 = [(t3[0] + t3[1]), (t3[0] - t3[1]) * COS_1];
+                t3[0] = t4[0];
+                t3[1] = t4[1];
+
+                let t4 = [(t3[2] + t3[3]), (t3[2] - t3[3]) * COS_1];
+                t3[2] = t4[0];
+                t3[3] = t4[1];
+
+                t2[4] = t3[0];
+                t2[5] = t3[2] + t3[3];
+                t2[6] = t3[1];
+                t2[7] = t3[3];
+            }
+
+            for i in 0..3 {
+                t1[i << 1] = t2[i];
+                t1[(i << 1) + 1] = t2[4 + i] + t2[5 + i];
+            }
+            t1[6] = t2[3];
+            t1[7] = t2[7];
+        }
+
+        {
+            let mut t2 = [
+                (t1[8] + t1[15]),
+                (t1[9] + t1[14]),
+                (t1[10] + t1[13]),
+                (t1[11] + t1[12]),
+                (t1[8] - t1[15]) * COS_4[0],
+                (t1[9] - t1[14]) * COS_4[1],
+                (t1[10] - t1[13]) * COS_4[2],
+                (t1[11] - t1[12]) * COS_4[3],
+            ];
+
+            {
+                let mut t3 = [
+                    (t2[0] + t2[3]),
+                    (t2[1] + t2[2]),
+                    (t2[0] - t2[3]) * COS_2[0],
+                    (t2[1] - t2[2]) * COS_2[1],
+                ];
+
+                let t4 = [(t3[0] + t3[1]), (t3[0] - t3[1]) * COS_1];
+                t3[0] = t4[0];
+                t3[1] = t4[1];
+
+                let t4 = [(t3[2] + t3[3]), (t3[2] - t3[3]) * COS_1];
+                t3[2] = t4[0];
+                t3[3] = t4[1];
+
+                t2[0] = t3[0];
+                t2[1] = t3[2] + t3[3];
+                t2[2] = t3[1];
+                t2[3] = t3[3];
+            }
+
+            {
+                let mut t3 = [
+                    (t2[4] + t2[7]),
+                    (t2[5] + t2[6]),
+                    (t2[4] - t2[7]) * COS_2[0],
+                    (t2[5] - t2[6]) * COS_2[1],
+                ];
+
+                let t4 = [(t3[0] + t3[1]), (t3[0] - t3[1]) * COS_1];
+                t3[0] = t4[0];
+                t3[1] = t4[1];
+
+                let t4 = [(t3[2] + t3[3]), (t3[2] - t3[3]) * COS_1];
+                t3[2] = t4[0];
+                t3[3] = t4[1];
+
+                t2[4] = t3[0];
+                t2[5] = t3[2] + t3[3];
+                t2[6] = t3[1];
+                t2[7] = t3[3];
+            }
+
+            for i in 0..3 {
+                t1[8 + (i << 1)] = t2[i];
+                t1[8 + (i << 1) + 1] = t2[4 + i] + t2[5 + i];
+            }
+            t1[14] = t2[3];
+            t1[15] = t2[7];
+        }
+
+        for i in 0..7 {
+            t0[i << 1] = t1[i];
+            t0[(i << 1) + 1] = t1[8 + i] + t1[9 + i];
+        }
+        t0[14] = t1[7];
+        t0[15] = t1[15];
+    }
+
+    {
+        let mut t1 = [
+            (t0[16] + t0[31]),
+            (t0[17] + t0[30]),
+            (t0[18] + t0[29]),
+            (t0[19] + t0[28]),
+            (t0[20] + t0[27]),
+            (t0[21] + t0[26]),
+            (t0[22] + t0[25]),
+            (t0[23] + t0[24]),
+            (t0[16] - t0[31]) * COS_8[0],
+            (t0[17] - t0[30]) * COS_8[1],
+            (t0[18] - t0[29]) * COS_8[2],
+            (t0[19] - t0[28]) * COS_8[3],
+            (t0[20] - t0[27]) * COS_8[4],
+            (t0[21] - t0[26]) * COS_8[5],
+            (t0[22] - t0[25]) * COS_8[6],
+            (t0[23] - t0[24]) * COS_8[7],
+        ];
+
+        {
+            let mut t2 = [
+                (t1[0] + t1[7]),
+                (t1[1] + t1[6]),
+                (t1[2] + t1[5]),
+                (t1[3] + t1[4]),
+                (t1[0] - t1[7]) * COS_4[0],
+                (t1[1] - t1[6]) * COS_4[1],
+                (t1[2] - t1[5]) * COS_4[2],
+                (t1[3] - t1[4]) * COS_4[3],
+            ];
+
+            {
+                let mut t3 = [
+                    (t2[0] + t2[3]),
+                    (t2[1] + t2[2]),
+                    (t2[0] - t2[3]) * COS_2[0],
+                    (t2[1] - t2[2]) * COS_2[1],
+                ];
+
+                let t4 = [(t3[0] + t3[1]), (t3[0] - t3[1]) * COS_1];
+                t3[0] = t4[0];
+                t3[1] = t4[1];
+
+                let t4 = [(t3[2] + t3[3]), (t3[2] - t3[3]) * COS_1];
+                t3[2] = t4[0];
+                t3[3] = t4[1];
+
+                t2[0] = t3[0];
+                t2[1] = t3[2] + t3[3];
+                t2[2] = t3[1];
+                t2[3] = t3[3];
+            }
+
+            {
+                let mut t3 = [
+                    (t2[4] + t2[7]),
+                    (t2[5] + t2[6]),
+                    (t2[4] - t2[7]) * COS_2[0],
+                    (t2[5] - t2[6]) * COS_2[1],
+                ];
+
+                let t4 = [(t3[0] + t3[1]), (t3[0] - t3[1]) * COS_1];
+                t3[0] = t4[0];
+                t3[1] = t4[1];
+
+                let t4 = [(t3[2] + t3[3]), (t3[2] - t3[3]) * COS_1];
+                t3[2] = t4[0];
+                t3[3] = t4[1];
+
+                t2[4] = t3[0];
+                t2[5] = t3[2] + t3[3];
+                t2[6] = t3[1];
+                t2[7] = t3[3];
+            }
+
+            for i in 0..3 {
+                t1[i << 1] = t2[i];
+                t1[(i << 1) + 1] = t2[4 + i] + t2[5 + i];
+            }
+            t1[6] = t2[3];
+            t1[7] = t2[7];
+        }
+
+        {
+            let mut t2 = [
+                (t1[8] + t1[15]),
+                (t1[9] + t1[14]),
+                (t1[10] + t1[13]),
+                (t1[11] + t1[12]),
+                (t1[8] - t1[15]) * COS_4[0],
+                (t1[9] - t1[14]) * COS_4[1],
+                (t1[10] - t1[13]) * COS_4[2],
+                (t1[11] - t1[12]) * COS_4[3],
+            ];
+
+            {
+                let mut t3 = [
+                    (t2[0] + t2[3]),
+                    (t2[1] + t2[2]),
+                    (t2[0] - t2[3]) * COS_2[0],
+                    (t2[1] - t2[2]) * COS_2[1],
+                ];
+
+                let t4 = [(t3[0] + t3[1]), (t3[0] - t3[1]) * COS_1];
+                t3[0] = t4[0];
+                t3[1] = t4[1];
+
+                let t4 = [(t3[2] + t3[3]), (t3[2] - t3[3]) * COS_1];
+                t3[2] = t4[0];
+                t3[3] = t4[1];
+
+                t2[0] = t3[0];
+                t2[1] = t3[2] + t3[3];
+                t2[2] = t3[1];
+                t2[3] = t3[3];
+            }
+
+            {
+                let mut t3 = [
+                    (t2[4] + t2[7]),
+                    (t2[5] + t2[6]),
+                    (t2[4] - t2[7]) * COS_2[0],
+                    (t2[5] - t2[6]) * COS_2[1],
+                ];
+
+                let t4 = [(t3[0] + t3[1]), (t3[0] - t3[1]) * COS_1];
+                t3[0] = t4[0];
+                t3[1] = t4[1];
+
+                let t4 = [(t3[2] + t3[3]), (t3[2] - t3[3]) * COS_1];
+                t3[2] = t4[0];
+                t3[3] = t4[1];
+
+                t2[4] = t3[0];
+                t2[5] = t3[2] + t3[3];
+                t2[6] = t3[1];
+                t2[7] = t3[3];
+            }
+
+            for i in 0..3 {
+                t1[8 + (i << 1)] = t2[i];
+                t1[8 + (i << 1) + 1] = t2[4 + i] + t2[5 + i];
+            }
+            t1[14] = t2[3];
+            t1[15] = t2[7];
+        }
+
+        for i in 0..7 {
+            t0[16 + (i << 1)] = t1[i];
+            t0[16 + (i << 1) + 1] = t1[8 + i] + t1[9 + i];
+        }
+        t0[30] = t1[7];
+        t0[31] = t1[15];
+    }
+
+    for i in 0..15 {
+        y[i << 1] = t0[i];
+        y[(i << 1) + 1] = t0[16 + i] + t0[17 + i];
+    }
+    y[30] = t0[15];
+    y[31] = t0[31];
 }
 
 #[cfg(test)]
@@ -373,10 +648,7 @@ mod tests {
     }
 
     /// 使用 f64 精度计算参考 PCM 输出 (完整的标准算法)
-    fn reference_synthesis(
-        v_history: &[[f64; 64]],
-        window: &[f32; 512],
-    ) -> [f64; 32] {
+    fn reference_synthesis(v_history: &[[f64; 64]], window: &[f32; 512]) -> [f64; 32] {
         // 构建 U 向量
         let mut u = [0.0f64; 512];
         for i in 0..8 {
@@ -421,10 +693,7 @@ mod tests {
 
         // 参考计算
         let ref_v = reference_matrixing(&input);
-        let ref_pcm = reference_synthesis(
-            &[ref_v],
-            &SYNTH_WINDOW,
-        );
+        let ref_pcm = reference_synthesis(&[ref_v], &SYNTH_WINDOW);
 
         // 对比
         let mut max_err = 0.0f64;
@@ -440,15 +709,14 @@ mod tests {
         for i in 0..32 {
             eprintln!(
                 "  pcm[{:2}] tao={:12.8}  ref={:12.8}  diff={:12.8}",
-                i, pcm_out[i], ref_pcm[i], pcm_out[i] as f64 - ref_pcm[i]
+                i,
+                pcm_out[i],
+                ref_pcm[i],
+                pcm_out[i] as f64 - ref_pcm[i]
             );
         }
 
-        assert!(
-            max_err < 1e-4,
-            "合成滤波器误差过大: {:.6}",
-            max_err
-        );
+        assert!(max_err < 1e-4, "合成滤波器误差过大: {:.6}", max_err);
     }
 
     #[test]
@@ -462,10 +730,7 @@ mod tests {
 
         // 参考计算
         let ref_v = reference_matrixing(&input);
-        let ref_pcm = reference_synthesis(
-            &[ref_v],
-            &SYNTH_WINDOW,
-        );
+        let ref_pcm = reference_synthesis(&[ref_v], &SYNTH_WINDOW);
 
         let mut max_err = 0.0f64;
         for i in 0..32 {
@@ -480,15 +745,14 @@ mod tests {
         for i in 0..8 {
             eprintln!(
                 "  pcm[{:2}] tao={:12.8}  ref={:12.8}  diff={:12.8}",
-                i, pcm_out[i], ref_pcm[i], pcm_out[i] as f64 - ref_pcm[i]
+                i,
+                pcm_out[i],
+                ref_pcm[i],
+                pcm_out[i] as f64 - ref_pcm[i]
             );
         }
 
-        assert!(
-            max_err < 1e-4,
-            "合成滤波器误差过大: {:.6}",
-            max_err
-        );
+        assert!(max_err < 1e-4, "合成滤波器误差过大: {:.6}", max_err);
     }
 
     #[test]
@@ -537,10 +801,7 @@ mod tests {
             // v_history[0] = 最新, v_history[1] = 第二新, ...
             // U[64*i + j] = v_history[2*i][j]      (偶数槽, 前 32)
             // U[64*i + 32 + j] = v_history[2*i+1][32+j]  (奇数槽, 后 32)
-            let ref_pcm = reference_synthesis(
-                &v_history,
-                &SYNTH_WINDOW,
-            );
+            let ref_pcm = reference_synthesis(&v_history, &SYNTH_WINDOW);
 
             let mut max_err = 0.0f64;
             for i in 0..32 {
@@ -550,10 +811,7 @@ mod tests {
                 }
             }
 
-            eprintln!(
-                "  Frame {}: 最大误差 = {:.10}",
-                frame, max_err
-            );
+            eprintln!("  Frame {}: 最大误差 = {:.10}", frame, max_err);
 
             assert!(
                 max_err < 1e-3,

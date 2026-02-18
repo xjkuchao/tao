@@ -2,9 +2,9 @@
 //!
 //! 实现 18点 (Long Block) 和 6点 (Short Block) IMDCT, 窗口加权, 重叠相加.
 
+use super::side_info::Granule;
 use std::f64::consts::PI;
 use std::sync::OnceLock;
-use super::side_info::Granule;
 
 /// IMDCT 窗口表 (36 点)
 /// 包含 4 种窗口类型: 0=Normal, 1=Start, 2=Short(占位), 3=Stop
@@ -72,8 +72,7 @@ fn get_imdct18_cos() -> &'static [[f32; 18]; 36] {
         let mut table = [[0.0f32; 18]; 36];
         for (i, row) in table.iter_mut().enumerate() {
             for (k, val) in row.iter_mut().enumerate() {
-                *val = (PI / 72.0 * (2.0 * i as f64 + 19.0) * (2.0 * k as f64 + 1.0)).cos()
-                    as f32;
+                *val = (PI / 72.0 * (2.0 * i as f64 + 19.0) * (2.0 * k as f64 + 1.0)).cos() as f32;
             }
         }
         table
@@ -82,14 +81,30 @@ fn get_imdct18_cos() -> &'static [[f32; 18]; 36] {
 
 /// 6 点 IMDCT 余弦表 (预计算, f64 精度角度)
 /// cos(π/(2*12) * (2i + 1 + 6) * (2k + 1)) = cos(π/24 * (2i + 7) * (2k + 1))
+#[cfg(test)]
 static IMDCT6_COS: OnceLock<[[f32; 6]; 12]> = OnceLock::new();
+#[cfg(test)]
 fn get_imdct6_cos() -> &'static [[f32; 6]; 12] {
     IMDCT6_COS.get_or_init(|| {
         let mut table = [[0.0f32; 6]; 12];
         for (i, row) in table.iter_mut().enumerate() {
             for (k, val) in row.iter_mut().enumerate() {
-                *val = (PI / 24.0 * (2.0 * i as f64 + 7.0) * (2.0 * k as f64 + 1.0)).cos()
-                    as f32;
+                *val = (PI / 24.0 * (2.0 * i as f64 + 7.0) * (2.0 * k as f64 + 1.0)).cos() as f32;
+            }
+        }
+        table
+    })
+}
+
+/// 12 点 IMDCT 半余弦表 (仅 i=3..8 的 6x6 区域)
+static IMDCT12_HALF_COS: OnceLock<[[f32; 6]; 6]> = OnceLock::new();
+fn get_imdct12_half_cos() -> &'static [[f32; 6]; 6] {
+    IMDCT12_HALF_COS.get_or_init(|| {
+        let mut table = [[0.0f32; 6]; 6];
+        for (i, row) in table.iter_mut().enumerate() {
+            for (k, v) in row.iter_mut().enumerate() {
+                let n = (2 * (i + 3) + (12 / 2) + 1) * (2 * k + 1);
+                *v = (PI / 24.0 * n as f64).cos() as f32;
             }
         }
         table
@@ -110,7 +125,7 @@ pub fn imdct(
     let windows = get_imdct_windows();
     let short_win = get_short_window();
     let cos18 = get_imdct18_cos();
-    let cos6 = get_imdct6_cos();
+    let cos12 = get_imdct12_half_cos();
     let block_type = if granule.windows_switching_flag {
         granule.block_type
     } else {
@@ -129,24 +144,28 @@ pub fn imdct(
             && (!granule.mixed_block_flag || sb >= 2);
 
         if is_short {
-            // 短块: 3 个 6 点 IMDCT
-            let mut w_out = [[0.0f32; 12]; 3];
-
+            // 短块: 与 symphonia 的 imdct12_win 一致的 3 窗口重叠放置.
             for w in 0..3 {
-                let win_in = &input_chunk[w * 6..(w + 1) * 6];
-                imdct6_fast(win_in, &mut w_out[w], cos6);
-                // 窗口加权
-                for (sample, &win_val) in w_out[w].iter_mut().zip(short_win.iter()) {
-                    *sample *= win_val;
-                }
-            }
+                for i in 0..3 {
+                    let yl = (input_chunk[w] * cos12[i][0])
+                        + (input_chunk[3 + w] * cos12[i][1])
+                        + (input_chunk[6 + w] * cos12[i][2])
+                        + (input_chunk[9 + w] * cos12[i][3])
+                        + (input_chunk[12 + w] * cos12[i][4])
+                        + (input_chunk[15 + w] * cos12[i][5]);
 
-            // 重叠放置到 36 点缓冲区
-            for i in 0..6 {
-                raw_out[6 + i] += w_out[0][i];
-                raw_out[12 + i] += w_out[0][6 + i] + w_out[1][i];
-                raw_out[18 + i] += w_out[1][6 + i] + w_out[2][i];
-                raw_out[24 + i] += w_out[2][6 + i];
+                    let yr = (input_chunk[w] * cos12[i + 3][0])
+                        + (input_chunk[3 + w] * cos12[i + 3][1])
+                        + (input_chunk[6 + w] * cos12[i + 3][2])
+                        + (input_chunk[9 + w] * cos12[i + 3][3])
+                        + (input_chunk[12 + w] * cos12[i + 3][4])
+                        + (input_chunk[15 + w] * cos12[i + 3][5]);
+
+                    raw_out[6 + 6 * w + 3 - i - 1] += -yl * short_win[3 - i - 1];
+                    raw_out[6 + 6 * w + i + 3] += yl * short_win[i + 3];
+                    raw_out[6 + 6 * w + i + 6] += yr * short_win[i + 6];
+                    raw_out[6 + 6 * w + 12 - i - 1] += yr * short_win[12 - i - 1];
+                }
             }
         } else {
             // 长块: 18 点 IMDCT
@@ -182,6 +201,7 @@ pub fn imdct(
 /// 6 点 IMDCT (使用预计算余弦表, f64 累加)
 /// 输入: 6 个频域样本
 /// 输出: 12 个时域样本
+#[cfg(test)]
 fn imdct6_fast(input: &[f32], output: &mut [f32; 12], cos_table: &[[f32; 6]; 12]) {
     for (out, cos_row) in output.iter_mut().zip(cos_table.iter()) {
         let mut sum = 0.0f64;
@@ -241,8 +261,8 @@ mod tests {
     #[test]
     fn test_imdct18_accuracy() {
         let input: [f32; 18] = [
-            0.5, -0.3, 0.8, -0.1, 0.4, -0.6, 0.2, -0.9, 0.7,
-            -0.4, 0.1, -0.5, 0.3, -0.8, 0.6, -0.2, 0.9, -0.7,
+            0.5, -0.3, 0.8, -0.1, 0.4, -0.6, 0.2, -0.9, 0.7, -0.4, 0.1, -0.5, 0.3, -0.8, 0.6, -0.2,
+            0.9, -0.7,
         ];
         let cos_table = get_imdct18_cos();
         let mut actual = [0.0f32; 36];
@@ -339,7 +359,11 @@ mod tests {
         eprintln!("最大误差 (overlap): {:.10}", max_ovl_err);
 
         assert!(max_err < 1e-4, "IMDCT 长块输出误差过大: {:.6}", max_err);
-        assert!(max_ovl_err < 1e-4, "IMDCT 长块 overlap 误差过大: {:.6}", max_ovl_err);
+        assert!(
+            max_ovl_err < 1e-4,
+            "IMDCT 长块 overlap 误差过大: {:.6}",
+            max_ovl_err
+        );
     }
 
     #[test]
@@ -372,9 +396,21 @@ mod tests {
         let y2 = imdct6_reference(&win2);
 
         // 加窗
-        let y0w: Vec<f64> = y0.iter().enumerate().map(|(i, &v)| v * short_win[i] as f64).collect();
-        let y1w: Vec<f64> = y1.iter().enumerate().map(|(i, &v)| v * short_win[i] as f64).collect();
-        let y2w: Vec<f64> = y2.iter().enumerate().map(|(i, &v)| v * short_win[i] as f64).collect();
+        let y0w: Vec<f64> = y0
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| v * short_win[i] as f64)
+            .collect();
+        let y1w: Vec<f64> = y1
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| v * short_win[i] as f64)
+            .collect();
+        let y2w: Vec<f64> = y2
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| v * short_win[i] as f64)
+            .collect();
 
         // 重叠放置
         let mut ref_raw = [0.0f64; 36];
@@ -399,7 +435,10 @@ mod tests {
         for i in 0..18 {
             eprintln!(
                 "  out[{:2}] tao={:12.8}  ref={:12.8}  diff={:+.8}",
-                i, output[i], ref_raw[i], output[i] as f64 - ref_raw[i]
+                i,
+                output[i],
+                ref_raw[i],
+                output[i] as f64 - ref_raw[i]
             );
         }
 

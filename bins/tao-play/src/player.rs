@@ -455,37 +455,29 @@ impl Player {
                                                 vf.time_base.num,
                                                 vf.time_base.den,
                                             );
-                                            let frame_pts =
-                                                pts_us as f64 / 1_000_000.0;
+                                            let frame_pts = pts_us as f64 / 1_000_000.0;
 
                                             // 跳过阶段: 仅解码构建参考帧, 不入队
-                                            if let Some(threshold) = seek_skip_until
-                                            {
+                                            if let Some(threshold) = seek_skip_until {
                                                 if frame_pts < threshold {
                                                     continue;
                                                 }
                                                 // 到达显示阈值: 重置时钟和音频采样到此位置
                                                 seek_skip_until = None;
-                                                let display_us =
-                                                    (frame_pts * 1_000_000.0)
-                                                        as i64;
+                                                let display_us = (frame_pts * 1_000_000.0) as i64;
                                                 clock.seek_reset(display_us);
-                                                audio_cum_samples = (frame_pts
-                                                    * audio_sample_rate as f64)
-                                                    as u64;
+                                                audio_cum_samples =
+                                                    (frame_pts * audio_sample_rate as f64) as u64;
                                                 info!(
                                                     "[Seek] 跳过完成: 从 PTS={:.3}s 开始显示",
                                                     frame_pts
                                                 );
                                             }
 
-                                            let display_frame =
-                                                build_yuv_frame(vf, pts_us);
+                                            let display_frame = build_yuv_frame(vf, pts_us);
                                             if seek_flush_pending {
                                                 // 通知 GUI 清空旧帧 (此时首帧已就绪)
-                                                status_tx
-                                                    .send(PlayerStatus::Seeked)
-                                                    .ok();
+                                                status_tx.send(PlayerStatus::Seeked).ok();
                                                 info!(
                                                     "[Seek] 首帧已发送: PTS={:.3}s, 确认时钟",
                                                     frame_pts
@@ -494,8 +486,7 @@ impl Player {
                                                 seek_flush_pending = false;
                                             }
                                             // bounded channel: 队满时阻塞, 自动背压
-                                            if frame_tx.send(display_frame).is_err()
-                                            {
+                                            if frame_tx.send(display_frame).is_err() {
                                                 return Ok(());
                                             }
                                             frames_sent += 1;
@@ -516,19 +507,11 @@ impl Player {
                                 let tb = &stream.time_base;
                                 if tb.num > 0 && tb.den > 0 {
                                     // 只显示最后 ~0.3 秒帧, 从显示点前 1 秒开始解码构建参考帧
-                                    let skip_threshold =
-                                        (max_seekable_sec - 0.3).max(0.0);
-                                    let retry_sec =
-                                        (skip_threshold - 1.0).max(0.0);
-                                    let ts =
-                                        (retry_sec * tb.den as f64 / tb.num as f64) as i64;
+                                    let skip_threshold = (max_seekable_sec - 0.3).max(0.0);
+                                    let retry_sec = (skip_threshold - 1.0).max(0.0);
+                                    let ts = (retry_sec * tb.den as f64 / tb.num as f64) as i64;
                                     if demuxer
-                                        .seek(
-                                            &mut io,
-                                            stream.index,
-                                            ts,
-                                            SeekFlags::default(),
-                                        )
+                                        .seek(&mut io, stream.index, ts, SeekFlags::default())
                                         .is_ok()
                                     {
                                         if let Some(d) = &mut video_decoder {
@@ -679,9 +662,7 @@ impl Player {
                         Ok(PlayerCommand::TogglePause) => {
                             // EOF 后切换暂停: 用独立变量跟踪 GUI 状态 (时钟已被强制暂停)
                             eof_gui_paused = !eof_gui_paused;
-                            status_tx
-                                .send(PlayerStatus::Paused(eof_gui_paused))
-                                .ok();
+                            status_tx.send(PlayerStatus::Paused(eof_gui_paused)).ok();
                         }
                         Ok(_) => {}  // 忽略其他命令
                         Err(_) => {} // 超时, 继续等待

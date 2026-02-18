@@ -130,7 +130,6 @@ impl<'a> BitReader<'a> {
         self.byte_pos = bit_offset / 8;
         self.bit_pos = (bit_offset % 8) as u8;
     }
-
 }
 
 #[cfg(test)]
