@@ -6,6 +6,11 @@
 use super::header::MpegVersion;
 use super::side_info::Granule;
 
+#[inline]
+fn mixed_long_subbands(sample_rate: u32) -> usize {
+    if sample_rate == 8000 { 4 } else { 2 }
+}
+
 /// 抗混叠系数 (Butterfly Coefficients)
 /// cs[i] = 1 / sqrt(1 + ci^2)
 /// ca[i] = ci / sqrt(1 + ci^2)
@@ -43,7 +48,7 @@ pub fn alias_reduction(
     xr: &mut [f32; 576],
     rzero: &mut usize,
     _version: MpegVersion,
-    _sample_rate: u32,
+    sample_rate: u32,
 ) {
     // 纯短块不做抗混叠
     if granule.windows_switching_flag && granule.block_type == 2 && !granule.mixed_block_flag {
@@ -51,7 +56,7 @@ pub fn alias_reduction(
     }
 
     let sb_limit = if granule.windows_switching_flag && granule.mixed_block_flag {
-        2
+        mixed_long_subbands(sample_rate)
     } else {
         32
     };

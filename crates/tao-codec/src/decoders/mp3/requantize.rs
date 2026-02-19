@@ -91,6 +91,7 @@ fn requantize_mpeg1(
                 preflag,
                 sfb_width_long,
                 sfb_width_short,
+                sr_idx,
             );
         } else {
             // 纯短块
@@ -237,11 +238,14 @@ fn requantize_mixed(
     preflag: bool,
     sfb_width_long: &[usize; 22],
     sfb_width_short: &[usize; 13],
+    sr_idx: usize,
 ) {
     let preflag = if preflag { 1.0f64 } else { 0.0 };
     let mut idx = 0;
 
-    for sfb in 0..8 {
+    // MPEG-1 mixed block 前 8 个 long SFB, MPEG-2/2.5 前 6 个 long SFB.
+    let long_sfb_count = if sr_idx >= 5 { 8 } else { 6 };
+    for sfb in 0..long_sfb_count {
         let width = sfb_width_long[sfb];
         let sf = scalefac[sfb] as f64;
         let pretab_val = PRETAB[sfb] as f64;

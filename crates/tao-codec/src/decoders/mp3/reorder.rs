@@ -12,6 +12,13 @@ use super::header::MpegVersion;
 use super::side_info::Granule;
 use super::tables::{SFB_WIDTH_SHORT, samplerate_index};
 
+#[inline]
+fn mixed_long_subbands(sample_rate: u32) -> usize {
+    // 对齐 minimp3/FFmpeg:
+    // 8kHz (MPEG-2.5) mixed block 需保留前 4 个长块子带, 其他采样率为 2.
+    if sample_rate == 8000 { 4 } else { 2 }
+}
+
 /// 短块重排序
 pub fn reorder(
     granule: &Granule,
@@ -28,9 +35,10 @@ pub fn reorder(
     let sfb_width = &SFB_WIDTH_SHORT[sr_idx];
 
     if granule.mixed_block_flag {
-        // Mixed blocks: 前 2 个子带 (36 个样本) 是长块, 不重排
-        // 从第 36 个样本开始的短块部分需要重排
-        let end = reorder_short_region(xr, sfb_width, 36, *rzero);
+        let long_sb = mixed_long_subbands(sample_rate);
+        let start = long_sb * 18;
+        // Mixed blocks: 前 long_sb 个子带是长块, 从 start 开始重排短块部分.
+        let end = reorder_short_region(xr, sfb_width, start, *rzero);
         *rzero = (*rzero).max(end);
     } else {
         // 纯短块: 全部重排

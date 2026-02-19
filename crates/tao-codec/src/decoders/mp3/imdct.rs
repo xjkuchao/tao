@@ -6,6 +6,11 @@ use super::side_info::Granule;
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 
+#[inline]
+fn mixed_long_subbands(sample_rate: u32) -> usize {
+    if sample_rate == 8000 { 4 } else { 2 }
+}
+
 /// IMDCT 窗口表 (36 点)
 /// 包含 4 种窗口类型: 0=Normal, 1=Start, 2=Short(占位), 3=Stop
 /// 使用 f64 精度计算角度后转为 f32 存储
@@ -120,6 +125,7 @@ pub fn imdct(
     granule: &Granule,
     xr: &[f32; 576],
     rzero: usize,
+    sample_rate: u32,
     overlap: &mut [[f32; 18]; 32],
     output: &mut [f32; 576],
 ) {
@@ -143,6 +149,12 @@ pub fn imdct(
     } else {
         32
     };
+    let sb_split =
+        if granule.windows_switching_flag && granule.block_type == 2 && granule.mixed_block_flag {
+            mixed_long_subbands(sample_rate)
+        } else {
+            sb_split
+        };
 
     let sb_long_end = sb_split.min(sb_limit);
     for sb in 0..sb_long_end {
@@ -349,7 +361,7 @@ mod tests {
         let mut output = [0.0f32; 576];
 
         // 第一次调用
-        imdct(&granule, &xr, 576, &mut overlap, &mut output);
+        imdct(&granule, &xr, 576, 44100, &mut overlap, &mut output);
 
         // 参考: 长块 IMDCT + Normal 窗口
         let input18: [f32; 18] = core::array::from_fn(|k| (k as f32 + 1.0) * 0.1);
@@ -403,7 +415,7 @@ mod tests {
         let mut overlap = [[0.0f32; 18]; 32];
         let mut output = [0.0f32; 576];
 
-        imdct(&granule, &xr, 576, &mut overlap, &mut output);
+        imdct(&granule, &xr, 576, 44100, &mut overlap, &mut output);
 
         // 参考计算
         let short_win = get_short_window();

@@ -762,6 +762,7 @@ impl Mp3Decoder {
                     granule,
                     &ctx.xr,
                     ctx.rzero,
+                    header.samplerate,
                     &mut self.overlap[ch],
                     &mut imdct_out,
                 );
