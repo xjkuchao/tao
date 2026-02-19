@@ -365,12 +365,7 @@ impl VorbisDecoder {
             channels,
             blocksize as usize,
         )?;
-        let disable_coupling = std::env::var("TAO_VORBIS_DISABLE_COUPLING")
-            .map(|v| v != "0")
-            .unwrap_or(false);
-        if !disable_coupling {
-            apply_coupling_inverse(&mut residue, &mapping.coupling_steps)?;
-        }
+        apply_coupling_inverse(&mut residue, &mapping.coupling_steps)?;
         for ch in 0..channels {
             if !floor_curves.nonzero.get(ch).copied().unwrap_or(false) {
                 if let Some(sp) = residue.channels.get_mut(ch) {
