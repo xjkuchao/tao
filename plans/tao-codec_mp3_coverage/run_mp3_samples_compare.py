@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 import os
 import re
 import subprocess
@@ -13,6 +14,46 @@ SEP_PREFIX = '| --- |'
 LINE_RE = re.compile(
     r'Tao对比样本=(\d+), Tao=(\d+), FFmpeg=(\d+), Tao/FFmpeg: max_err=([0-9.]+), psnr=([0-9.]+)dB, 精度=([0-9.]+)%'
 )
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description='MP3 解码器样本批量对比工具, 从项目根目录运行.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  # 默认断点续测(只处理尚未测试的记录)
+  python plans/tao-codec_mp3_coverage/run_mp3_samples_compare.py
+
+  # 重新测试所有精度不为 100%% 的记录(含失败)
+  python plans/tao-codec_mp3_coverage/run_mp3_samples_compare.py --retest-imprecise
+
+  # 只重新测试失败的记录
+  python plans/tao-codec_mp3_coverage/run_mp3_samples_compare.py --retest-failed
+
+  # 重新测试全部 185 条记录
+  python plans/tao-codec_mp3_coverage/run_mp3_samples_compare.py --retest-all
+
+  # 只测试指定序号(可多个)
+  python plans/tao-codec_mp3_coverage/run_mp3_samples_compare.py --index 3 5 8
+        """,
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--retest-all', action='store_true', help='重新测试所有记录')
+    group.add_argument('--retest-failed', action='store_true', help='重新测试状态为失败的记录')
+    group.add_argument(
+        '--retest-imprecise',
+        action='store_true',
+        help='重新测试精度不为 100%% 的记录(含失败)',
+    )
+    parser.add_argument(
+        '--index',
+        type=int,
+        nargs='+',
+        metavar='N',
+        help='只测试指定序号的记录(可多个, 与上述参数可组合)',
+    )
+    return parser.parse_args()
 
 
 def read_urls():
@@ -112,7 +153,36 @@ def extract_failure_reason(output):
     return ' | '.join(tail)
 
 
+def should_skip(row, col_map, args, idx):
+    """根据命令行参数决定是否跳过该记录."""
+    # 若指定了序号列表, 则过滤掉不在列表内的记录
+    if args.index and idx not in args.index:
+        return True
+
+    status = row[col_map['状态']]
+    precision = row[col_map['精度(%)']]
+
+    if args.retest_all:
+        return False
+
+    if args.retest_failed:
+        # 只重新测试失败的记录, 跳过成功的
+        return status != '失败'
+
+    if args.retest_imprecise:
+        # 重新测试精度不为 100% 的记录(含失败)
+        if status == '失败':
+            return False
+        if status == '成功':
+            return precision == '100.00'
+        return True  # 状态为空时也需要测试
+
+    # 默认断点续测: 跳过已有结果的记录
+    return status in ('成功', '失败')
+
+
 def main():
+    args = parse_args()
     urls = read_urls()
     lines, header_idx, header, sep, rows = load_report()
 
@@ -127,8 +197,7 @@ def main():
         if idx - 1 >= len(rows):
             raise RuntimeError('报告行数不足, 请重新生成报告模板.')
         row = rows[idx - 1]
-        status = row[col_map['状态']]
-        if status in ('成功', '失败'):
+        if should_skip(row, col_map, args, idx):
             continue
 
         print(f'开始处理 {idx}/{total}: {url}')
