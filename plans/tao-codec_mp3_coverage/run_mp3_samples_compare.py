@@ -4,8 +4,8 @@ import re
 import subprocess
 from pathlib import Path
 
-LIST_PATH = Path('plans/tao-codec_mp3_samples_urls.txt')
-REPORT_PATH = Path('plans/tao-codec_mp3_samples_report.md')
+LIST_PATH = Path('plans/tao-codec_mp3_coverage/tao-codec_mp3_samples_urls.txt')
+REPORT_PATH = Path('plans/tao-codec_mp3_coverage/tao-codec_mp3_samples_report.md')
 
 HEADER_PREFIX = '| 序号 |'
 SEP_PREFIX = '| --- |'

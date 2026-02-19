@@ -14,12 +14,12 @@
 ## 3. 计划步骤与预期产出
 
 ### P0 生成 URL 清单
-- 产出文件: `plans/tao-codec_mp3_samples_urls.txt`
+- 产出文件: `plans/tao-codec_mp3_coverage/tao-codec_mp3_samples_urls.txt`
 - 内容: 由 `allsamples.txt` 提取的全部 MP3 完整 URL 列表(共 185 条)。
 - 断点规则: 文件仅需生成一次, 后续复用。
 
 ### P1 建立结果记录表
-- 产出文件: `plans/tao-codec_mp3_samples_report.md`
+- 产出文件: `plans/tao-codec_mp3_coverage/tao-codec_mp3_samples_report.md`
 - 表头字段(建议):
   - `序号`
   - `URL`
@@ -44,7 +44,7 @@
   - 先将 URL 下载到 `data/mp3_samples/`。
   - 然后对本地文件路径执行同样的测试命令。
 - 可选产出:
-  - `scripts/run_mp3_samples_compare.sh` 或 `scripts/run_mp3_samples_compare.py`
+  - `plans/tao-codec_mp3_coverage/run_mp3_samples_compare.py`
   - 功能: 读取 URL 清单, 逐个执行对比, 自动写入结果表。
 
 ### P3 批量执行与记录
@@ -58,7 +58,7 @@
   - 总样本数、成功数、失败数、失败原因分类。
   - 精度分布(可按区间统计)。
 - 验收:
-  - `plans/tao-codec_mp3_samples_report.md` 覆盖全部 185 条样本。
+  - `plans/tao-codec_mp3_coverage/tao-codec_mp3_samples_report.md` 覆盖全部 185 条样本。
 
 ## 4. 验收标准
 - URL 清单完整且可复用。
