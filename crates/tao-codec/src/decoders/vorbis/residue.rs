@@ -194,7 +194,7 @@ fn decode_one_residue(
                         Err(e) => return Err(e),
                     };
                     let mut tmp = sym as usize;
-                    for i in 0..class_dimensions {
+                    for i in (0..class_dimensions).rev() {
                         if partition_count + i < partitions {
                             classifs[partition_count + i] = tmp % class_count;
                         }
@@ -276,7 +276,7 @@ fn decode_one_residue(
                         Err(e) => return Err(e),
                     };
                     let mut tmp = sym as usize;
-                    for i in 0..class_dimensions {
+                    for i in (0..class_dimensions).rev() {
                         if partition_count + i < partitions {
                             classifs[j * cl_stride + partition_count + i] = tmp % class_count;
                         }

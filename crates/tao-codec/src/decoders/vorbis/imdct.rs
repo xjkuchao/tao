@@ -10,7 +10,7 @@ use super::residue::ResidueSpectrum;
 pub(crate) fn imdct_from_residue(
     residue: &ResidueSpectrum,
     blocksize: usize,
-    window: &[f32],
+    _window: &[f32],
 ) -> TimeDomainBlock {
     if blocksize == 0 {
         return TimeDomainBlock {
@@ -20,7 +20,6 @@ pub(crate) fn imdct_from_residue(
 
     let n = blocksize;
     let n2 = n / 2;
-    let pi = std::f32::consts::PI;
     let mut channels_td = Vec::with_capacity(residue.channels.len());
 
     for spectrum in &residue.channels {
@@ -30,20 +29,10 @@ pub(crate) fn imdct_from_residue(
         }
 
         let mut td = vec![0.0f32; n];
-        let scale = 1.0f32 / n as f32;
-        for (m, out) in td.iter_mut().enumerate() {
-            let mut acc = 0.0f32;
-            for k in 0..n2 {
-                let x = spectrum.get(k).copied().unwrap_or(0.0);
-                let angle = pi / n as f32 * (m as f32 + 0.5 + n2 as f32 / 2.0) * (k as f32 + 0.5);
-                acc += x * angle.cos();
-            }
-            *out = acc * scale;
+        for (k, slot) in td.iter_mut().enumerate().take(n2) {
+            *slot = spectrum.get(k).copied().unwrap_or(0.0);
         }
-
-        for (m, out) in td.iter_mut().enumerate() {
-            *out *= window.get(m).copied().unwrap_or(1.0);
-        }
+        inverse_mdct_slow(&mut td);
         channels_td.push(td);
     }
 
@@ -117,6 +106,38 @@ fn fill_window_segment(window: &mut [f32], start: usize, end: usize, len: usize)
         let angle = x / len as f32 * (pi / 2.0);
         let inner = angle.sin();
         window[i] = (0.5 * pi * inner * inner).sin();
+    }
+}
+
+fn dct_iv_slow(buffer: &mut [f32]) {
+    let x = buffer.to_vec();
+    let n = buffer.len();
+    let nmask = (n << 3) - 1;
+    let mcos = (0..8 * n)
+        .map(|i| (std::f32::consts::FRAC_PI_4 * (i as f32) / (n as f32)).cos())
+        .collect::<Vec<_>>();
+    for (i, out) in buffer.iter_mut().enumerate().take(n) {
+        let mut acc = 0.0f32;
+        for (j, &xj) in x.iter().enumerate().take(n) {
+            acc += xj * mcos[((2 * i + 1) * (2 * j + 1)) & nmask];
+        }
+        *out = acc;
+    }
+}
+
+fn inverse_mdct_slow(buffer: &mut [f32]) {
+    let n = buffer.len();
+    let n4 = n >> 2;
+    let n2 = n >> 1;
+    let n3_4 = n - n4;
+    let mut temp = buffer[..n2].to_vec();
+    dct_iv_slow(&mut temp);
+    buffer[..n4].copy_from_slice(&temp[n4..n2]);
+    for i in n4..n3_4 {
+        buffer[i] = -temp[n3_4 - i - 1];
+    }
+    for i in n3_4..n {
+        buffer[i] = -temp[i - n3_4];
     }
 }
 

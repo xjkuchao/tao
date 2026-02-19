@@ -61,7 +61,6 @@ pub struct VorbisDecoder {
     prev_blocksize: u16,
     next_pts: i64,
     prev_packet_granule: i64,
-    samples_since_last_granule: i64,
     overlap: Vec<Vec<f32>>,
     window_cache: HashMap<(usize, usize, bool, bool, bool), Vec<f32>>,
 }
@@ -85,7 +84,6 @@ impl VorbisDecoder {
             prev_blocksize: 0,
             next_pts: 0,
             prev_packet_granule: tao_core::timestamp::NOPTS_VALUE,
-            samples_since_last_granule: 0,
             overlap: Vec::new(),
             window_cache: HashMap::new(),
         }))
@@ -306,10 +304,7 @@ impl VorbisDecoder {
             };
             if packet_pts != tao_core::timestamp::NOPTS_VALUE && packet_pts >= 0 {
                 self.prev_packet_granule = packet_pts;
-                if packet_pts >= nominal_out && nominal_out > 0 {
-                    self.next_pts = packet_pts.saturating_sub(nominal_out);
-                }
-                self.samples_since_last_granule = 0;
+                self.next_pts = packet_pts;
             }
         }
         self.prev_blocksize = blocksize;
@@ -319,17 +314,10 @@ impl VorbisDecoder {
 
         let mut out_samples_i64 = if is_first_packet { 0 } else { nominal_out };
         let pts = self.next_pts;
-        if !is_first_packet
-            && packet_pts != tao_core::timestamp::NOPTS_VALUE
-            && packet_pts >= 0
-            && self.prev_packet_granule != tao_core::timestamp::NOPTS_VALUE
-            && packet_pts >= self.prev_packet_granule
-        {
-            let delta_total = packet_pts.saturating_sub(self.prev_packet_granule);
-            let corrected = delta_total.saturating_sub(self.samples_since_last_granule);
-            let max_reasonable = nominal_out.saturating_mul(4);
-            if corrected > 0 && corrected <= max_reasonable {
-                out_samples_i64 = corrected;
+        if !is_first_packet && packet_pts != tao_core::timestamp::NOPTS_VALUE && packet_pts >= 0 {
+            let remain_to_granule = packet_pts.saturating_sub(pts);
+            if remain_to_granule >= 0 {
+                out_samples_i64 = out_samples_i64.min(remain_to_granule);
             }
         }
         let out_samples = out_samples_i64 as u32;
@@ -347,7 +335,7 @@ impl VorbisDecoder {
             blocksize as usize / 2,
         )?;
         let mut do_not_decode: Vec<bool> = floor_curves.nonzero.iter().map(|&v| !v).collect();
-        for step in mapping.coupling_steps.iter().rev() {
+        for step in &mapping.coupling_steps {
             let m = usize::from(step.magnitude);
             let a = usize::from(step.angle);
             if m < do_not_decode.len()
@@ -369,7 +357,7 @@ impl VorbisDecoder {
         )?;
         let disable_coupling = std::env::var("TAO_VORBIS_DISABLE_COUPLING")
             .map(|v| v != "0")
-            .unwrap_or(true);
+            .unwrap_or(false);
         if !disable_coupling {
             apply_coupling_inverse(&mut residue, &mapping.coupling_steps)?;
         }
@@ -437,11 +425,6 @@ impl VorbisDecoder {
         }
         if packet_pts != tao_core::timestamp::NOPTS_VALUE && packet_pts >= 0 {
             self.prev_packet_granule = packet_pts;
-            self.samples_since_last_granule = 0;
-        } else {
-            self.samples_since_last_granule = self
-                .samples_since_last_granule
-                .saturating_add(out_samples_i64);
         }
         Ok(())
     }
@@ -704,7 +687,6 @@ impl Decoder for VorbisDecoder {
         self.prev_blocksize = 0;
         self.next_pts = 0;
         self.prev_packet_granule = tao_core::timestamp::NOPTS_VALUE;
-        self.samples_since_last_granule = 0;
         self.overlap.clear();
         self.window_cache.clear();
         self.codebook_huffmans = None;
@@ -765,7 +747,6 @@ impl Decoder for VorbisDecoder {
         self.prev_blocksize = 0;
         self.next_pts = 0;
         self.prev_packet_granule = tao_core::timestamp::NOPTS_VALUE;
-        self.samples_since_last_granule = 0;
         self.overlap.clear();
         self.window_cache.clear();
     }
