@@ -2,7 +2,7 @@
 //!
 //! 支持从字节切片中按位读取数据 (MSB first)
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct BitReader<'a> {
     data: &'a [u8],
     /// 当前字节索引

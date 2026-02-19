@@ -44,7 +44,10 @@ pub fn requantize(
     sample_rate: u32,
 ) -> TaoResult<()> {
     let pow43_table = get_pow43_table();
-    let scalefac_scale: f64 = if granule.scalefac_scale { 1.0 } else { 0.5 };
+    let mut scalefac_scale: f64 = if granule.scalefac_scale { 1.0 } else { 0.5 };
+    if let Ok(force) = std::env::var("TAO_MP3_FORCE_SCALEFAC_SCALE") {
+        scalefac_scale = if force.trim() == "1" { 1.0 } else { 0.5 };
+    }
     let global_gain = granule.global_gain as f64;
 
     if version == MpegVersion::Mpeg1 {
@@ -73,6 +76,11 @@ fn requantize_mpeg1(
     let is = &ctx.is;
     let xr = &mut ctx.xr;
     let scalefac = &ctx.scalefac;
+    let preflag = if std::env::var("TAO_MP3_DISABLE_PRETAB").is_ok() {
+        false
+    } else {
+        granule.preflag
+    };
 
     let sr_idx = samplerate_index(sample_rate);
     let sfb_width_long = &SFB_WIDTH_LONG[sr_idx];
@@ -89,6 +97,7 @@ fn requantize_mpeg1(
                 pow43_table,
                 global_gain,
                 scalefac_scale,
+                preflag,
                 sfb_width_long,
                 sfb_width_short,
             );
@@ -115,6 +124,7 @@ fn requantize_mpeg1(
             pow43_table,
             global_gain,
             scalefac_scale,
+            preflag,
             sfb_width_long,
         );
     }
@@ -126,13 +136,14 @@ fn requantize_long(
     is: &[i32; 576],
     xr: &mut [f32; 576],
     scalefac: &[u8; 40],
-    granule: &Granule,
+    _granule: &Granule,
     pow43_table: &[f32],
     global_gain: f64,
     scalefac_scale: f64,
+    preflag: bool,
     sfb_width: &[usize; 22],
 ) {
-    let preflag = if granule.preflag { 1.0f64 } else { 0.0 };
+    let preflag = if preflag { 1.0f64 } else { 0.0 };
     let mut idx = 0;
 
     for sfb in 0..22 {
@@ -232,10 +243,11 @@ fn requantize_mixed(
     pow43_table: &[f32],
     global_gain: f64,
     scalefac_scale: f64,
+    preflag: bool,
     sfb_width_long: &[usize; 22],
     sfb_width_short: &[usize; 13],
 ) {
-    let preflag = if granule.preflag { 1.0f64 } else { 0.0 };
+    let preflag = if preflag { 1.0f64 } else { 0.0 };
     let mut idx = 0;
 
     for sfb in 0..8 {

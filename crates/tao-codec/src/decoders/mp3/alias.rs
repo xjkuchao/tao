@@ -41,7 +41,7 @@ const CA: [f32; 8] = [
 pub fn alias_reduction(
     granule: &Granule,
     xr: &mut [f32; 576],
-    rzero: usize,
+    rzero: &mut usize,
     _version: MpegVersion,
     _sample_rate: u32,
 ) {
@@ -58,8 +58,9 @@ pub fn alias_reduction(
 
     // 仅处理包含非零数据的子带范围,
     // 多处理 2 个子带以覆盖蝴蝶运算可能"泄漏"到的相邻子带
-    let sb_rzero = rzero / 18;
+    let sb_rzero = *rzero / 18;
     let max_sb = sb_limit.min(sb_rzero + 2).min(32);
+    *rzero = max_sb * 18;
 
     for sb in 1..max_sb {
         let sb_start = sb * 18;

@@ -367,6 +367,7 @@ impl VorbisDecoder {
             channels,
             blocksize as usize,
         )?;
+        apply_coupling_inverse(&mut residue, &mapping.coupling_steps)?;
         for ch in 0..channels {
             if !floor_curves.nonzero.get(ch).copied().unwrap_or(false) {
                 if let Some(sp) = residue.channels.get_mut(ch) {
@@ -384,7 +385,6 @@ impl VorbisDecoder {
                 }
             }
         }
-        apply_coupling_inverse(&mut residue, &mapping.coupling_steps)?;
         if floor_ctx.channel_count != residue.channels.len() {
             return Err(TaoError::Internal("Vorbis 阶段上下文声道数不一致".into()));
         }

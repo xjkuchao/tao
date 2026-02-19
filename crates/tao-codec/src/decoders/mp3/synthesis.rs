@@ -22,7 +22,7 @@ pub fn frequency_inversion(input: &mut [f32; 576]) {
 /// 数据来源: symphonia-bundle-mp3 (已验证正确)
 #[allow(clippy::unreadable_literal, clippy::excessive_precision)]
 #[rustfmt::skip]
-const SYNTH_WINDOW: [f32; 512] = [
+pub(crate) const SYNTH_WINDOW: [f32; 512] = [
     // D[0..63]
      0.000000000, -0.000015259, -0.000015259, -0.000015259,
     -0.000015259, -0.000015259, -0.000015259, -0.000030518,
@@ -176,6 +176,12 @@ impl Default for SynthContext {
             v_vec: [[0.0; 64]; 16],
             v_front: 0,
         }
+    }
+}
+
+impl SynthContext {
+    pub(crate) fn snapshot_state(&self) -> ([[f32; 64]; 16], usize) {
+        (self.v_vec, self.v_front)
     }
 }
 

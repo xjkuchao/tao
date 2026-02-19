@@ -132,6 +132,10 @@ pub fn imdct(
     } else {
         0
     };
+    let imdct_scale = std::env::var("TAO_MP3_IMDCT_SCALE")
+        .ok()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .unwrap_or(1.0);
 
     let sb_limit = rzero.div_ceil(18).min(32);
     let sb_split = if granule.windows_switching_flag && granule.block_type == 2 {
@@ -168,7 +172,7 @@ pub fn imdct(
 
         let win = &windows[win_idx];
         for (sample, &win_val) in raw_out.iter_mut().zip(win.iter()) {
-            *sample *= win_val;
+            *sample *= win_val * imdct_scale;
         }
 
         // Overlap-Add
@@ -211,6 +215,8 @@ pub fn imdct(
         }
 
         for i in 0..18 {
+            raw_out[i] *= imdct_scale;
+            raw_out[18 + i] *= imdct_scale;
             output[sb * 18 + i] = raw_out[i] + overlap[sb][i];
             overlap[sb][i] = raw_out[18 + i];
         }

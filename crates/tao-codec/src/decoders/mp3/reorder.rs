@@ -13,7 +13,13 @@ use super::side_info::Granule;
 use super::tables::{SFB_WIDTH_SHORT, samplerate_index};
 
 /// 短块重排序
-pub fn reorder(granule: &Granule, xr: &mut XrSpectrum, _version: MpegVersion, sample_rate: u32) {
+pub fn reorder(
+    granule: &Granule,
+    xr: &mut XrSpectrum,
+    rzero: &mut usize,
+    _version: MpegVersion,
+    sample_rate: u32,
+) {
     if !granule.windows_switching_flag || granule.block_type != 2 {
         return;
     }
@@ -24,17 +30,24 @@ pub fn reorder(granule: &Granule, xr: &mut XrSpectrum, _version: MpegVersion, sa
     if granule.mixed_block_flag {
         // Mixed blocks: 前 2 个子带 (36 个样本) 是长块, 不重排
         // 从第 36 个样本开始的短块部分需要重排
-        reorder_short_region(xr, sfb_width, 36);
+        let end = reorder_short_region(xr, sfb_width, 36, *rzero);
+        *rzero = (*rzero).max(end);
     } else {
         // 纯短块: 全部重排
-        reorder_short_region(xr, sfb_width, 0);
+        let end = reorder_short_region(xr, sfb_width, 0, *rzero);
+        *rzero = (*rzero).max(end);
     }
 }
 
 /// 对短块区域执行重排序
 ///
 /// `start_sample`: 短块区域起始位置 (mixed blocks 为 36, 纯短块为 0)
-fn reorder_short_region(xr: &mut XrSpectrum, sfb_width: &[usize; 13], start_sample: usize) {
+fn reorder_short_region(
+    xr: &mut XrSpectrum,
+    sfb_width: &[usize; 13],
+    start_sample: usize,
+    rzero: usize,
+) -> usize {
     let mut scratch = *xr;
 
     let mut start_sfb = 0usize;
@@ -49,6 +62,9 @@ fn reorder_short_region(xr: &mut XrSpectrum, sfb_width: &[usize; 13], start_samp
 
     for &width in sfb_width.iter().skip(start_sfb) {
         if width == 0 || src + 3 * width > 576 {
+            break;
+        }
+        if src >= rzero {
             break;
         }
 
@@ -70,4 +86,5 @@ fn reorder_short_region(xr: &mut XrSpectrum, sfb_width: &[usize; 13], start_samp
     }
 
     *xr = scratch;
+    dst
 }

@@ -1,6 +1,6 @@
 use tao_core::{TaoError, TaoResult};
 
-use super::bitreader::LsbBitReader;
+use super::bitreader::{LsbBitReader, ilog};
 use super::codebook::CodebookHuffman;
 use super::setup::{Floor1Config, FloorConfig, MappingConfig, ParsedSetup};
 
@@ -106,8 +106,9 @@ fn decode_floor1_curve(
     };
 
     let mut y_list = Vec::<i32>::with_capacity(cfg.x_list.len());
-    let y0 = br.read_bits(cfg.range_bits)? as i32;
-    let y1 = br.read_bits(cfg.range_bits)? as i32;
+    let y_bits = ilog((range - 1) as u32);
+    let y0 = br.read_bits(y_bits)? as i32;
+    let y1 = br.read_bits(y_bits)? as i32;
     y_list.push(y0);
     y_list.push(y1);
 

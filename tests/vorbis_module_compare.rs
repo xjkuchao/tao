@@ -171,6 +171,10 @@ struct CompareStats {
     max_err: f64,
     psnr: f64,
     precision_pct: f64,
+    gain: f64,
+    corr: f64,
+    ref_power: f64,
+    test_power: f64,
 }
 
 fn compare_pcm(reference: &[f32], test: &[f32]) -> CompareStats {
@@ -181,11 +185,17 @@ fn compare_pcm(reference: &[f32], test: &[f32]) -> CompareStats {
             max_err: 0.0,
             psnr: f64::INFINITY,
             precision_pct: 0.0,
+            gain: 0.0,
+            corr: 0.0,
+            ref_power: 0.0,
+            test_power: 0.0,
         };
     }
     let mut mse = 0.0f64;
     let mut max_err = 0.0f64;
     let mut ref_power = 0.0f64;
+    let mut test_power = 0.0f64;
+    let mut dot = 0.0f64;
     for i in 0..n {
         let r = reference[i] as f64;
         let t = test[i] as f64;
@@ -194,9 +204,13 @@ fn compare_pcm(reference: &[f32], test: &[f32]) -> CompareStats {
         max_err = max_err.max(ad);
         mse += d * d;
         ref_power += r * r;
+        test_power += t * t;
+        dot += r * t;
     }
     mse /= n as f64;
     ref_power /= n as f64;
+    test_power /= n as f64;
+    dot /= n as f64;
     let psnr = if mse > 0.0 {
         20.0 * (1.0 / mse.sqrt()).log10()
     } else {
@@ -218,12 +232,26 @@ fn compare_pcm(reference: &[f32], test: &[f32]) -> CompareStats {
     if precision_pct > 100.0 {
         precision_pct = 100.0;
     }
+    let gain = if ref_power > 0.0 {
+        dot / ref_power
+    } else {
+        0.0
+    };
+    let corr = if ref_power > 0.0 && test_power > 0.0 {
+        dot / (ref_power * test_power).sqrt()
+    } else {
+        0.0
+    };
 
     CompareStats {
         n,
         max_err,
         psnr,
         precision_pct,
+        gain,
+        corr,
+        ref_power,
+        test_power,
     }
 }
 
@@ -237,14 +265,21 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     let stats_tao = compare_pcm(&ff_pcm, &tao_pcm);
     info!(
-        "[{}] Tao对比样本={}, Tao={}, FFmpeg={}, Tao/FFmpeg: max_err={:.6}, psnr={:.2}dB, 精度={:.2}%, FFmpeg=100%",
+        "[{}] Tao对比样本={}, Tao={}, FFmpeg={}, Tao/FFmpeg: max_err={:.6}, psnr={:.2}dB, 精度={:.2}%, 相关系数={:.6}, 增益={:.6}, 能量比={:.6}, FFmpeg=100%",
         path,
         stats_tao.n,
         tao_pcm.len(),
         ff_pcm.len(),
         stats_tao.max_err,
         stats_tao.psnr,
-        stats_tao.precision_pct
+        stats_tao.precision_pct,
+        stats_tao.corr,
+        stats_tao.gain,
+        if stats_tao.ref_power > 0.0 {
+            stats_tao.test_power / stats_tao.ref_power
+        } else {
+            0.0
+        }
     );
 
     assert!(stats_tao.n > 0, "无可比较样本");

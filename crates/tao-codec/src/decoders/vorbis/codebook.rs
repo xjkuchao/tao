@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use tao_core::{TaoError, TaoResult};
 
 use super::bitreader::LsbBitReader;
@@ -7,47 +5,65 @@ use super::setup::{CodebookConfig, CodebookLookupConfig};
 
 #[derive(Debug, Clone)]
 pub(crate) struct CodebookHuffman {
-    table: HashMap<(u8, u32), u32>,
     max_len: u8,
+    nodes: Vec<HuffNode>,
 }
 
 impl CodebookHuffman {
     pub(crate) fn from_lengths(lengths: &[u8]) -> TaoResult<Self> {
-        let mut entries: Vec<(u32, u8)> = lengths
-            .iter()
-            .enumerate()
-            .filter_map(|(sym, &len)| (len > 0).then_some((sym as u32, len)))
-            .collect();
-        entries.sort_by_key(|&(sym, len)| (len, sym));
-
-        let max_len = entries.iter().map(|(_, len)| *len).max().unwrap_or(0);
-        let mut table = HashMap::new();
-        let mut code = 0u32;
-        let mut cur_len = 1u8;
-
-        for (sym, len) in entries {
-            while cur_len < len {
-                code <<= 1;
-                cur_len += 1;
-            }
-            let rev = reverse_bits(code, len);
-            if table.insert((len, rev), sym).is_some() {
-                return Err(TaoError::InvalidData(
-                    "Vorbis codebook Huffman 码冲突".into(),
-                ));
-            }
-            code = code.saturating_add(1);
+        let max_len = lengths.iter().copied().max().unwrap_or(0);
+        if max_len == 0 {
+            return Ok(Self {
+                max_len,
+                nodes: vec![HuffNode::new()],
+            });
         }
 
-        Ok(Self { table, max_len })
+        let mut count = vec![0u32; max_len as usize + 1];
+        for &len in lengths {
+            if len > 0 {
+                count[len as usize] = count[len as usize].saturating_add(1);
+            }
+        }
+
+        let mut next_code = vec![0u32; max_len as usize + 1];
+        let mut code = 0u32;
+        for len in 1..=max_len as usize {
+            code = (code + count[len - 1]) << 1;
+            next_code[len] = code;
+        }
+
+        let mut nodes = vec![HuffNode::new()];
+        for (sym, &len) in lengths.iter().enumerate() {
+            if len == 0 {
+                continue;
+            }
+            let codeword = next_code[len as usize];
+            next_code[len as usize] = next_code[len as usize].saturating_add(1);
+            let rev = reverse_bits(codeword, len);
+            insert_codeword(&mut nodes, rev, len, sym as u32)?;
+        }
+
+        Ok(Self { max_len, nodes })
     }
 
     pub(crate) fn decode_symbol(&self, br: &mut LsbBitReader<'_>) -> TaoResult<u32> {
-        let mut code = 0u32;
-        for len in 1..=self.max_len {
+        let mut node_idx = 0usize;
+        for _ in 0..self.max_len {
             let bit = br.read_bits(1)?;
-            code |= bit << (len - 1);
-            if let Some(&sym) = self.table.get(&(len, code)) {
+            let next = if bit == 0 {
+                self.nodes
+                    .get(node_idx)
+                    .and_then(|n| n.left)
+                    .ok_or_else(|| TaoError::InvalidData("Vorbis Huffman 解码失败".into()))?
+            } else {
+                self.nodes
+                    .get(node_idx)
+                    .and_then(|n| n.right)
+                    .ok_or_else(|| TaoError::InvalidData("Vorbis Huffman 解码失败".into()))?
+            };
+            node_idx = next;
+            if let Some(sym) = self.nodes[node_idx].sym {
                 return Ok(sym);
             }
         }
@@ -55,6 +71,60 @@ impl CodebookHuffman {
             "Vorbis codebook Huffman 解码失败".into(),
         ))
     }
+}
+
+#[derive(Debug, Clone)]
+struct HuffNode {
+    left: Option<usize>,
+    right: Option<usize>,
+    sym: Option<u32>,
+}
+
+impl HuffNode {
+    fn new() -> Self {
+        Self {
+            left: None,
+            right: None,
+            sym: None,
+        }
+    }
+}
+
+fn insert_codeword(nodes: &mut Vec<HuffNode>, code: u32, len: u8, sym: u32) -> TaoResult<()> {
+    let mut idx = 0usize;
+    for i in 0..len {
+        if nodes[idx].sym.is_some() {
+            return Err(TaoError::InvalidData(
+                "Vorbis codebook Huffman 码冲突".into(),
+            ));
+        }
+        let bit = (code >> i) & 1;
+        let next_idx = if bit == 0 {
+            if let Some(v) = nodes[idx].left {
+                v
+            } else {
+                let new_idx = nodes.len();
+                nodes.push(HuffNode::new());
+                nodes[idx].left = Some(new_idx);
+                new_idx
+            }
+        } else if let Some(v) = nodes[idx].right {
+            v
+        } else {
+            let new_idx = nodes.len();
+            nodes.push(HuffNode::new());
+            nodes[idx].right = Some(new_idx);
+            new_idx
+        };
+        idx = next_idx;
+    }
+    if nodes[idx].sym.is_some() {
+        return Err(TaoError::InvalidData(
+            "Vorbis codebook Huffman 码冲突".into(),
+        ));
+    }
+    nodes[idx].sym = Some(sym);
+    Ok(())
 }
 
 pub(crate) fn decode_codebook_scalar(
@@ -164,8 +234,8 @@ mod tests {
         let h = CodebookHuffman::from_lengths(&[1, 3, 3, 3]).expect("构建失败");
         // lengths 对应 canonical 码(按 symbol 升序):
         // sym0(len1)=0, sym1(len3)=100, sym2(len3)=101, sym3(len3)=110
-        // LSB 读取时写入反转位序。
-        let data = [0b0110_0100u8]; // bits: 0 | 001 | 101 ...
+        // LSB 位流拼接: sym0=0, sym1=001(LSB-first 为 100), sym2=101。
+        let data = [0b0101_0010u8]; // bits(LSB-first): 0 | 100 | 101 ...
         let mut br = LsbBitReader::new(&data);
         let s0 = h.decode_symbol(&mut br).expect("sym0 解码失败");
         assert_eq!(s0, 0, "第一个符号应为 sym0");

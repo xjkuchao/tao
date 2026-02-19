@@ -117,6 +117,7 @@ criterion.workspace = true
 tempfile.workspace = true
 symphonia.workspace = true
 tao-format = { workspace = true, features = ["http"] }
+env_logger.workspace = true
 
 [features]
 default = ["http"]
