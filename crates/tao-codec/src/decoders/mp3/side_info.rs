@@ -121,6 +121,9 @@ impl SideInfo {
 
                 if is_mpeg1 {
                     dst.preflag = reader.read_bool().unwrap();
+                } else {
+                    // MPEG-2/2.5 LSF: preflag 不从比特流读取, 由 scalefac_compress 推导.
+                    dst.preflag = dst.scalefac_compress >= 500;
                 }
                 dst.scalefac_scale = reader.read_bool().unwrap();
                 dst.count1table_select = reader.read_bool().unwrap();

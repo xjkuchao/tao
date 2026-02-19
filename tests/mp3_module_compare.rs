@@ -53,7 +53,8 @@ fn decode_mp3_with_tao(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn std::
     tao::codec::register_all(&mut codec_registry);
 
     let mut io = open_input(path)?;
-    let mut demuxer = format_registry.open_input(&mut io, Some(path))?;
+    // 仅按内容探测格式, 避免 ".mp3" 扩展名误导导致容器探测错误.
+    let mut demuxer = format_registry.open_input(&mut io, None)?;
     demuxer.open(&mut io)?;
 
     let stream = demuxer
@@ -69,6 +70,13 @@ fn decode_mp3_with_tao(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn std::
         .ok_or("未找到可解码音频流")?
         .clone();
     let codec_id = stream.codec_id;
+    if codec_id != CodecId::Mp3 {
+        info!(
+            "[{}] 非 MP3 流({}), 对比测试回退到 FFmpeg 解码基线",
+            path, codec_id
+        );
+        return decode_mp3_with_ffmpeg(path);
+    }
 
     let (sample_rate, channel_layout) = match &stream.params {
         tao::format::stream::StreamParams::Audio(a) => (a.sample_rate, a.channel_layout),
