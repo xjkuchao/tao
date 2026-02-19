@@ -359,7 +359,7 @@ fn apply_partition_residue(
 
     match residue.residue_type {
         0 => {
-            let step = (psize / dims).max(1);
+            let step = psize / dims;
             let mut j = 0usize;
             while j < step {
                 let got = match decode_codebook_vector(br, book, huffman, vec_buf) {

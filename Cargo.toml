@@ -116,6 +116,7 @@ bytes.workspace = true
 criterion.workspace = true
 tempfile.workspace = true
 symphonia.workspace = true
+lewton = "0.10"
 tao-format = { workspace = true, features = ["http"] }
 env_logger.workspace = true
 
