@@ -150,7 +150,9 @@ impl FormatRegistry {
         io: &mut IoContext,
         filename: Option<&str>,
     ) -> TaoResult<ProbeResult> {
-        let probe_size = io.size().unwrap_or(8192).min(8192) as usize;
+        // 对含大 ID3v2/APIC 的 MP3 样本, 8KB 头部不足以完成可靠探测.
+        // 将探测窗口提升到 256KB, 以降低误判为 TS 等格式的概率.
+        let probe_size = io.size().unwrap_or(262_144).min(262_144) as usize;
         let probe_size = probe_size.max(12); // 至少读取 12 字节
         let probe_buf = io.read_bytes(probe_size)?;
 

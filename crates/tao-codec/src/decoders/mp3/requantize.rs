@@ -36,11 +36,7 @@ fn pow43(val: i32, table: &[f32]) -> f32 {
 }
 
 /// 反量化处理 (MPEG-1 和 MPEG-2/2.5 使用相同的反量化公式, ISO 13818-3 §2.4.3.4)
-pub fn requantize(
-    granule: &Granule,
-    ctx: &mut GranuleContext,
-    sample_rate: u32,
-) -> TaoResult<()> {
+pub fn requantize(granule: &Granule, ctx: &mut GranuleContext, sample_rate: u32) -> TaoResult<()> {
     let pow43_table = get_pow43_table();
     let mut scalefac_scale: f64 = if granule.scalefac_scale { 1.0 } else { 0.5 };
     if let Ok(force) = std::env::var("TAO_MP3_FORCE_SCALEFAC_SCALE") {
@@ -48,7 +44,14 @@ pub fn requantize(
     }
     let global_gain = granule.global_gain as f64;
 
-    requantize_mpeg1(granule, ctx, pow43_table, global_gain, scalefac_scale, sample_rate);
+    requantize_mpeg1(
+        granule,
+        ctx,
+        pow43_table,
+        global_gain,
+        scalefac_scale,
+        sample_rate,
+    );
 
     Ok(())
 }

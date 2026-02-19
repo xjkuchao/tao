@@ -23,6 +23,7 @@ const IS_RATIOS_MPEG1: [(f32, f32); 7] = [
 ];
 
 const IS_POS_INVALID_MPEG1: u8 = 7;
+const IS_POS_INVALID_MPEG2: u8 = 64;
 
 fn process_mid_side(l: &mut [f32], r: &mut [f32]) {
     let scale = if std::env::var("TAO_MP3_MS_SCALE_HALF").is_ok() {
@@ -40,21 +41,48 @@ fn process_mid_side(l: &mut [f32], r: &mut [f32]) {
 
 fn process_intensity_band(
     intensity_pos: u8,
-    ratios: &[(f32, f32)],
-    invalid_pos: u8,
     ms_stereo: bool,
+    version: MpegVersion,
+    mpeg2_sh: u8,
     l: &mut [f32],
     r: &mut [f32],
 ) {
-    if intensity_pos < invalid_pos {
-        let (kl, kr) = ratios[intensity_pos as usize];
-        for (l_val, r_val) in l.iter_mut().zip(r.iter_mut()) {
-            let v = *l_val;
-            *l_val = v * kl;
-            *r_val = v * kr;
+    match version {
+        MpegVersion::Mpeg1 => {
+            if intensity_pos < IS_POS_INVALID_MPEG1 {
+                let (kl, kr) = IS_RATIOS_MPEG1[intensity_pos as usize];
+                for (l_val, r_val) in l.iter_mut().zip(r.iter_mut()) {
+                    let v = *l_val;
+                    *l_val = v * kl;
+                    *r_val = v * kr;
+                }
+            } else if ms_stereo {
+                process_mid_side(l, r);
+            }
         }
-    } else if ms_stereo {
-        process_mid_side(l, r);
+        _ => {
+            if intensity_pos < IS_POS_INVALID_MPEG2 {
+                // MPEG-2/2.5 intensity stereo 比例:
+                // kr = 2^(-(((is_pos + 1) >> 1) << mpeg2_sh) / 4)
+                let exp_q2 = (((u32::from(intensity_pos) + 1) >> 1) << mpeg2_sh) as f32;
+                let mut kl = 1.0f32;
+                let mut kr = 2.0f32.powf(-exp_q2 * 0.25);
+                if (intensity_pos & 1) != 0 {
+                    kl = kr;
+                    kr = 1.0;
+                }
+                let s = if ms_stereo { 2.0f32.sqrt() } else { 1.0 };
+                let kl = kl * s;
+                let kr = kr * s;
+                for (l_val, r_val) in l.iter_mut().zip(r.iter_mut()) {
+                    let v = *l_val;
+                    *l_val = v * kl;
+                    *r_val = v * kr;
+                }
+            } else if ms_stereo {
+                process_mid_side(l, r);
+            }
+        }
     }
 }
 
@@ -98,8 +126,8 @@ fn process_intensity_long_block(
     l_data: &mut GranuleContext,
     r_data: &mut GranuleContext,
     ms_stereo: bool,
-    ratios: &[(f32, f32)],
-    invalid_pos: u8,
+    version: MpegVersion,
+    mpeg2_sh: u8,
     sample_rate: u32,
     max_bound: usize,
 ) -> usize {
@@ -124,9 +152,9 @@ fn process_intensity_long_block(
         if zero {
             process_intensity_band(
                 is_pos[sfb],
-                ratios,
-                invalid_pos,
                 ms_stereo,
+                version,
+                mpeg2_sh,
                 &mut l_data.xr[start..end],
                 &mut r_data.xr[start..end],
             );
@@ -145,8 +173,8 @@ fn process_intensity_short_block(
     r_data: &mut GranuleContext,
     granule: &Granule,
     ms_stereo: bool,
-    ratios: &[(f32, f32)],
-    invalid_pos: u8,
+    version: MpegVersion,
+    mpeg2_sh: u8,
     sample_rate: u32,
     max_bound: usize,
 ) -> usize {
@@ -197,9 +225,9 @@ fn process_intensity_short_block(
                 let is_pos = short_intensity_pos(&r_data.scalefac, sfb, win, mixed);
                 process_intensity_band(
                     is_pos,
-                    ratios,
-                    invalid_pos,
                     ms_stereo,
+                    version,
+                    mpeg2_sh,
                     &mut l_data.xr[w_start..w_end],
                     &mut r_data.xr[w_start..w_end],
                 );
@@ -233,9 +261,9 @@ fn process_intensity_short_block(
                 let is_pos = r_data.scalefac[sfb];
                 process_intensity_band(
                     is_pos,
-                    ratios,
-                    invalid_pos,
                     ms_stereo,
+                    version,
+                    mpeg2_sh,
                     &mut l_data.xr[start..end],
                     &mut r_data.xr[start..end],
                 );
@@ -283,15 +311,8 @@ pub fn process_stereo(
 
     let end = l_data.rzero.max(r_data.rzero).min(576);
 
-    let mut intensity_enabled = intensity_stereo;
-    let mut ratios: &[(f32, f32)] = &IS_RATIOS_MPEG1;
-    let mut invalid_pos = IS_POS_INVALID_MPEG1;
-
-    if header.version != MpegVersion::Mpeg1 {
-        intensity_enabled = false;
-        ratios = &IS_RATIOS_MPEG1;
-        invalid_pos = IS_POS_INVALID_MPEG1;
-    }
+    let intensity_enabled = intensity_stereo;
+    let mpeg2_sh = (granules[gr][1].scalefac_compress & 1) as u8;
 
     let is_bound = if intensity_enabled {
         if l_gr.windows_switching_flag && l_gr.block_type == 2 {
@@ -300,8 +321,8 @@ pub fn process_stereo(
                 r_data,
                 l_gr,
                 ms_stereo,
-                ratios,
-                invalid_pos,
+                header.version,
+                mpeg2_sh,
                 sample_rate,
                 end,
             )
@@ -310,8 +331,8 @@ pub fn process_stereo(
                 l_data,
                 r_data,
                 ms_stereo,
-                ratios,
-                invalid_pos,
+                header.version,
+                mpeg2_sh,
                 sample_rate,
                 end,
             )

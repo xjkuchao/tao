@@ -242,13 +242,25 @@ impl Mp3Decoder {
 
                 let byte_index = part2_3_begin >> 3;
                 if byte_index >= main_data.len() {
-                    return Err(TaoError::InvalidData("MP3 main_data 偏移无效".into()));
+                    // 损坏帧容错: 当前 granule main_data 越界时跳过, 继续后续解码.
+                    self.granule_data[gr][ch].scalefac.fill(0);
+                    self.granule_data[gr][ch].is.fill(0);
+                    self.granule_data[gr][ch].xr.fill(0.0);
+                    self.granule_data[gr][ch].rzero = 0;
+                    part2_3_begin += part2_3_length;
+                    continue;
                 }
 
                 let mut br = BitReader::new(&main_data[byte_index..]);
                 let bit_index = part2_3_begin & 0x7;
                 if bit_index > 0 && !br.skip_bits(bit_index) {
-                    return Err(TaoError::InvalidData("MP3 main_data 位偏移无效".into()));
+                    // 损坏帧容错: 位偏移无效时跳过当前 granule.
+                    self.granule_data[gr][ch].scalefac.fill(0);
+                    self.granule_data[gr][ch].is.fill(0);
+                    self.granule_data[gr][ch].xr.fill(0.0);
+                    self.granule_data[gr][ch].rzero = 0;
+                    part2_3_begin += part2_3_length;
+                    continue;
                 }
 
                 let start_bit = br.bit_offset();
@@ -350,85 +362,121 @@ impl Mp3Decoder {
                         }
                     }
                 } else {
-                    // MPEG-2/2.5 LSF: scalefac_compress 为 9 位, 无 scfsi, 无 preflag
-                    let sc = scalefac_compress;
-                    // 计算每组比特宽度 (slen) 及各块类型下的每组频带数 (nsf)
-                    // nsf_l: 长块各组频带数; nsf_s: 短块各组 (sfb,win) 对数
-                    let (slen, nsf_l, nsf_s): ([u32; 4], [usize; 4], [usize; 4]) = if sc < 400 {
-                        (
-                            [sc / 80, (sc % 80) / 16, (sc % 16) / 4, sc % 4],
-                            [6, 5, 5, 5],
-                            [6, 6, 6, 3],
-                        )
-                    } else if sc < 500 {
-                        let is2 = sc - 400;
-                        ([is2 / 20, is2 % 20, 0, 0], [11, 10, 0, 0], [6, 6, 6, 3])
-                    } else {
-                        let is2 = sc - 500;
-                        ([is2 / 3, is2 % 3, 0, 0], [11, 10, 0, 0], [6, 6, 6, 3])
+                    // MPEG-2/2.5 LSF 比例因子解码:
+                    // 采用与 minimp3/FFmpeg 一致的分组规则, 避免 part2 读位超界.
+                    const SCF_PARTITIONS: [[usize; 28]; 3] = [
+                        [
+                            6, 5, 5, 5, 6, 5, 5, 5, 6, 5, 7, 3, 11, 10, 0, 0, 7, 7, 7, 0, 6, 6, 6,
+                            3, 8, 8, 5, 0,
+                        ],
+                        [
+                            8, 9, 6, 12, 6, 9, 9, 9, 6, 9, 12, 6, 15, 18, 0, 0, 6, 15, 12, 0, 6,
+                            12, 9, 6, 6, 18, 9, 0,
+                        ],
+                        [
+                            9, 9, 6, 12, 9, 9, 9, 9, 9, 9, 12, 6, 18, 18, 0, 0, 12, 12, 12, 0, 12,
+                            9, 9, 6, 15, 12, 9, 0,
+                        ],
+                    ];
+                    const MOD_TABLE: [u32; 24] = [
+                        5, 5, 4, 4, 5, 5, 4, 1, 4, 3, 1, 1, 5, 6, 6, 1, 4, 4, 4, 1, 4, 3, 1, 1,
+                    ];
+
+                    let is_short = granule.windows_switching_flag && granule.block_type == 2;
+                    let is_mixed = is_short && granule.mixed_block_flag;
+                    let partition_row = match (is_short, is_mixed) {
+                        (false, _) => 0,    // 长块
+                        (true, true) => 1,  // 混合块
+                        (true, false) => 2, // 纯短块
                     };
 
-                    if granule.windows_switching_flag
-                        && granule.block_type == 2
-                        && granule.mixed_block_flag
-                    {
-                        // 混合块: 前 6 个长块 SFB 使用 slen[0], 后续短块部分使用 slen[1..=3]
-                        for sfb in 0..6 {
-                            scalefac[sfb] = if slen[0] > 0 {
-                                br.read_bits(slen[0] as u8).unwrap_or(0) as u8
+                    let intensity_right = ch == 1
+                        && header.mode == header::ChannelMode::JointStereo
+                        && (header.mode_extension & 0x1) != 0;
+                    let ist = usize::from(intensity_right);
+
+                    let mut scf_size = [0u32; 4];
+                    let mut sfc = scalefac_compress >> ist;
+                    let mut k = ist * 12;
+                    loop {
+                        let mut modprod = 1u32;
+                        for i in (0..4).rev() {
+                            let modu = MOD_TABLE[k + i];
+                            scf_size[i] = (sfc / modprod) % modu;
+                            modprod *= modu;
+                        }
+                        if sfc < modprod {
+                            k += 4;
+                            break;
+                        }
+                        sfc -= modprod;
+                        k += 4;
+                    }
+
+                    let partition = &SCF_PARTITIONS[partition_row][k..k + 4];
+                    let mut lsf_values = [0u8; 40];
+                    let mut value_count = 0usize;
+
+                    for g in 0..4 {
+                        let cnt = partition[g];
+                        if cnt == 0 {
+                            continue;
+                        }
+                        let bits = scf_size[g] as u8;
+                        let max_val = if bits > 0 { (1u32 << bits) - 1 } else { 0 };
+                        for _ in 0..cnt {
+                            let raw = if bits > 0 {
+                                br.read_bits(bits).unwrap_or(0)
                             } else {
                                 0
                             };
+                            // MPEG-2 intensity stereo: 最大值表示非法位置, 供后续立体声处理识别.
+                            lsf_values[value_count] =
+                                if intensity_right && bits > 0 && raw == max_val {
+                                    u8::MAX
+                                } else {
+                                    raw as u8
+                                };
+                            value_count += 1;
                         }
-                        // 短块部分: 存入 scalefac[8..], 供 requantize_mixed 使用
-                        let mut idx = 8usize;
-                        for g in 1..4 {
-                            for _ in 0..nsf_s[g] {
-                                if idx < 40 {
-                                    scalefac[idx] = if slen[g] > 0 {
-                                        br.read_bits(slen[g] as u8).unwrap_or(0) as u8
-                                    } else {
-                                        0
-                                    };
-                                    idx += 1;
+                    }
+
+                    if is_short {
+                        if is_mixed {
+                            // 前 6 个长块 SFB
+                            for (i, v) in lsf_values.iter().copied().take(6).enumerate() {
+                                scalefac[i] = v;
+                            }
+                            // 后续 27 个短块 scalefactor, 存到 scalefac[8..]
+                            for (i, v) in lsf_values.iter().copied().skip(6).take(27).enumerate() {
+                                let dst = 8 + i;
+                                if dst < 40 {
+                                    scalefac[dst] = v;
                                 }
                             }
-                        }
-                    } else if granule.windows_switching_flag && granule.block_type == 2 {
-                        // 短块: sum(nsf_s)=21 个 (sfb,win) 对, 按 sfb 优先/win 次序存入 scalefac
-                        // scalefac[sfb*3+win], sfb 0..6, 其余 sfb 保持 0
-                        let mut idx = 0usize;
-                        for g in 0..4 {
-                            for _ in 0..nsf_s[g] {
-                                scalefac[idx] = if slen[g] > 0 {
-                                    br.read_bits(slen[g] as u8).unwrap_or(0) as u8
-                                } else {
-                                    0
-                                };
-                                idx += 1;
+                        } else {
+                            // 纯短块: 36 个值, 按 scalefac[sfb*3+win] 存储
+                            for (i, v) in lsf_values.iter().copied().take(36).enumerate() {
+                                scalefac[i] = v;
                             }
                         }
                     } else {
-                        // 长块: sum(nsf_l)=21 个 SFB 比例因子
-                        let mut sfb = 0usize;
-                        for g in 0..4 {
-                            for _ in 0..nsf_l[g] {
-                                scalefac[sfb] = if slen[g] > 0 {
-                                    br.read_bits(slen[g] as u8).unwrap_or(0) as u8
-                                } else {
-                                    0
-                                };
-                                sfb += 1;
-                            }
+                        // 长块: 前 21 个 SFB
+                        for (i, v) in lsf_values.iter().copied().take(21).enumerate() {
+                            scalefac[i] = v;
                         }
                     }
                 }
 
                 let part2_bits = (br.bit_offset() - start_bit) as u32;
                 if part2_bits > granule.part2_3_length {
-                    return Err(TaoError::InvalidData(
-                        "MP3 part2_3_length 小于 scale factor 长度".into(),
-                    ));
+                    // 损坏帧容错: scale factor 位数越界时跳过当前 granule.
+                    self.granule_data[gr][ch].scalefac.fill(0);
+                    self.granule_data[gr][ch].is.fill(0);
+                    self.granule_data[gr][ch].xr.fill(0.0);
+                    self.granule_data[gr][ch].rzero = 0;
+                    part2_3_begin += part2_3_length;
+                    continue;
                 }
 
                 if std::env::var("TAO_MP3_DEBUG_PART2").is_ok() {
@@ -610,11 +658,7 @@ impl Mp3Decoder {
                 // --- Phase 3: Requantization ---
                 self.granule_data[gr][ch].xr.fill(0.0);
 
-                requantize::requantize(
-                    granule,
-                    &mut self.granule_data[gr][ch],
-                    header.samplerate,
-                )?;
+                requantize::requantize(granule, &mut self.granule_data[gr][ch], header.samplerate)?;
 
                 if let Some(snap) = snap_slot.as_mut() {
                     snap.xr_after_requantize = self.granule_data[gr][ch].xr;

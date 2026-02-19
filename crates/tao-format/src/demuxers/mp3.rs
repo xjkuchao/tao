@@ -252,8 +252,10 @@ impl Mp3Demuxer {
         let start = io.position()?;
         let mut buf = [0u8; 4];
 
-        // 最多搜索 64KB
-        let limit = start + 65536;
+        // 最多搜索 32MB(并受文件长度约束):
+        // 兼容超大前置 ID3v2/APIC 样本, 避免误报“未找到有效帧”.
+        let file_size = io.size().unwrap_or(start + 32 * 1024 * 1024);
+        let limit = (start + 32 * 1024 * 1024).min(file_size.saturating_sub(4));
         let mut pos = start;
 
         while pos < limit {
@@ -651,16 +653,28 @@ impl FormatProbe for Mp3Probe {
             start = 10 + size;
         }
 
-        // 检查起始位置是否存在有效帧同步码（含 ID3 偏移场景）
-        if data.len() >= start + 4 {
-            let header = u32::from_be_bytes([
-                data[start],
-                data[start + 1],
-                data[start + 2],
-                data[start + 3],
-            ]);
-            if parse_frame_header(header).is_some() {
-                return Some(crate::probe::SCORE_MAX - 5);
+        // 在探测窗口内搜索两个连续有效帧:
+        // 仅检查起始4字节容易漏掉带大 ID3v2/APIC 的样本.
+        if data.len() >= start + 8 {
+            let mut pos = start;
+            while pos + 8 <= data.len() {
+                let header =
+                    u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+                if let Some(fh) = parse_frame_header(header) {
+                    let next_pos = pos + fh.frame_size as usize;
+                    if next_pos + 4 <= data.len() {
+                        let next_header = u32::from_be_bytes([
+                            data[next_pos],
+                            data[next_pos + 1],
+                            data[next_pos + 2],
+                            data[next_pos + 3],
+                        ]);
+                        if parse_frame_header(next_header).is_some() {
+                            return Some(crate::probe::SCORE_MAX - 5);
+                        }
+                    }
+                }
+                pos += 1;
             }
         }
 

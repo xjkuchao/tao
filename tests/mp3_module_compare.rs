@@ -60,8 +60,15 @@ fn decode_mp3_with_tao(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn std::
         .streams()
         .iter()
         .find(|s| s.codec_id == CodecId::Mp3)
-        .ok_or("未找到 MP3 音频流")?
+        .or_else(|| {
+            demuxer
+                .streams()
+                .iter()
+                .find(|s| s.media_type == tao::core::MediaType::Audio)
+        })
+        .ok_or("未找到可解码音频流")?
         .clone();
+    let codec_id = stream.codec_id;
 
     let (sample_rate, channel_layout) = match &stream.params {
         tao::format::stream::StreamParams::Audio(a) => (a.sample_rate, a.channel_layout),
@@ -69,7 +76,7 @@ fn decode_mp3_with_tao(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn std::
     };
 
     let params = CodecParameters {
-        codec_id: CodecId::Mp3,
+        codec_id,
         extra_data: stream.extra_data,
         bit_rate: 0,
         params: CodecParamsType::Audio(AudioCodecParams {
@@ -80,7 +87,7 @@ fn decode_mp3_with_tao(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn std::
         }),
     };
 
-    let mut decoder = codec_registry.create_decoder(CodecId::Mp3)?;
+    let mut decoder = codec_registry.create_decoder(codec_id)?;
     decoder.open(&params)?;
 
     let mut out = Vec::<f32>::new();
@@ -133,12 +140,52 @@ fn decode_mp3_with_tao(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn std::
 }
 
 fn decode_mp3_with_ffmpeg(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn std::error::Error>> {
+    // 先用 ffprobe 选择“有效音频流”(sample_rate/channels > 0),
+    // 规避损坏样本中 a:0 为占位流导致的空输出问题.
+    let probe = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=index,codec_type,sample_rate,channels",
+            "-of",
+            "csv=p=0",
+            path,
+        ])
+        .output()?;
+    let probe_s = String::from_utf8_lossy(&probe.stdout);
+
+    let mut selected_idx = 0u32;
+    let mut sr = 44_100u32;
+    let mut ch = 2u32;
+    for line in probe_s.lines() {
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() < 4 || parts[1] != "audio" {
+            continue;
+        }
+        let idx = parts[0].parse::<u32>().ok();
+        let line_sr = parts[2].parse::<u32>().ok();
+        let line_ch = parts[3].parse::<u32>().ok();
+        if let (Some(idx), Some(line_sr), Some(line_ch)) = (idx, line_sr, line_ch)
+            && line_sr > 0
+            && line_ch > 0
+        {
+            selected_idx = idx;
+            sr = line_sr;
+            ch = line_ch;
+            break;
+        }
+    }
+
+    let map_spec = format!("0:{selected_idx}");
     let tmp = make_ffmpeg_tmp_path("mp3_cmp");
     let status = Command::new("ffmpeg")
         .args([
             "-y",
             "-i",
             path,
+            "-map",
+            &map_spec,
             "-f",
             "f32le",
             "-acodec",
@@ -151,30 +198,6 @@ fn decode_mp3_with_ffmpeg(path: &str) -> Result<(u32, u32, Vec<f32>), Box<dyn st
     if !status.success() {
         return Err("ffmpeg 解码失败".into());
     }
-
-    let probe = Command::new("ffprobe")
-        .args([
-            "-v",
-            "error",
-            "-select_streams",
-            "a:0",
-            "-show_entries",
-            "stream=sample_rate,channels",
-            "-of",
-            "csv=p=0",
-            path,
-        ])
-        .output()?;
-    let probe_s = String::from_utf8_lossy(&probe.stdout);
-    let parts: Vec<&str> = probe_s.trim().split(',').collect();
-    let sr = parts
-        .first()
-        .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(44100);
-    let ch = parts
-        .get(1)
-        .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(2);
 
     let raw = std::fs::read(&tmp)?;
     let _ = std::fs::remove_file(&tmp);

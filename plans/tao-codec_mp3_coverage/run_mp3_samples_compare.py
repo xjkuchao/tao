@@ -14,7 +14,10 @@ HEADER_PREFIX = '| 序号 |'
 SEP_PREFIX = '| --- |'
 
 LINE_RE = re.compile(
-    r'Tao对比样本=(\d+), Tao=(\d+), FFmpeg=(\d+), Tao/FFmpeg: max_err=([0-9.]+), psnr=([0-9.]+)dB, 精度=([0-9.]+)%'
+    r'Tao对比样本=(\d+), Tao=(\d+), FFmpeg=(\d+), Tao/FFmpeg: '
+    r'max_err=([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?), '
+    r'psnr=([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)dB, '
+    r'精度=([-+]?[0-9]*\.?[0-9]+)%'
 )
 
 
@@ -156,8 +159,12 @@ def extract_failure_reason(output):
     lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
     if not lines:
         return '无输出'
+    # 优先抽取核心失败信息, 并移除 markdown 表格分隔符以避免污染报告格式.
+    for ln in reversed(lines):
+        if 'MP3 对比失败' in ln or 'InvalidData(' in ln or '未找到 MP3 音频流' in ln:
+            return ln.replace('|', '/')
     tail = lines[-3:]
-    return ' | '.join(tail)
+    return ' / '.join(ln.replace('|', '/') for ln in tail)
 
 
 def should_skip(row, col_map, args, idx):

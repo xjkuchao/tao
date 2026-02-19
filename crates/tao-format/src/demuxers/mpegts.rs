@@ -577,6 +577,14 @@ pub struct TsProbe;
 
 impl FormatProbe for TsProbe {
     fn probe(&self, data: &[u8], filename: Option<&str>) -> Option<crate::probe::ProbeScore> {
+        // .mp3 样本优先交给 MP3 探测器, 避免随机 0x47 模式导致 TS 误判.
+        if let Some(name) = filename
+            && let Some(ext) = name.rsplit('.').next()
+            && ext.eq_ignore_ascii_case("mp3")
+        {
+            return None;
+        }
+
         // 检查连续的 TS 同步字节
         if data.len() >= TS_PACKET_SIZE * 2 {
             let mut sync_count = 0;
