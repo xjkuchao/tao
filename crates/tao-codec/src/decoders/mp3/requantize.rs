@@ -4,7 +4,6 @@
 //! xr = sign(is) * |is|^(4/3) * 2^(exp/4)
 
 use super::data::GranuleContext;
-use super::header::MpegVersion;
 use super::side_info::Granule;
 use super::tables::{PRETAB, SFB_WIDTH_LONG, SFB_WIDTH_SHORT, samplerate_index};
 use std::sync::OnceLock;
@@ -36,11 +35,10 @@ fn pow43(val: i32, table: &[f32]) -> f32 {
     }
 }
 
-/// 反量化处理
+/// 反量化处理 (MPEG-1 和 MPEG-2/2.5 使用相同的反量化公式, ISO 13818-3 §2.4.3.4)
 pub fn requantize(
     granule: &Granule,
     ctx: &mut GranuleContext,
-    version: MpegVersion,
     sample_rate: u32,
 ) -> TaoResult<()> {
     let pow43_table = get_pow43_table();
@@ -50,17 +48,7 @@ pub fn requantize(
     }
     let global_gain = granule.global_gain as f64;
 
-    if version == MpegVersion::Mpeg1 {
-        requantize_mpeg1(
-            granule,
-            ctx,
-            pow43_table,
-            global_gain,
-            scalefac_scale,
-            sample_rate,
-        );
-    }
-    // TODO: MPEG-2/2.5 反量化
+    requantize_mpeg1(granule, ctx, pow43_table, global_gain, scalefac_scale, sample_rate);
 
     Ok(())
 }
@@ -566,7 +554,7 @@ mod tests {
             }
 
             let mut actual = ctx.clone();
-            requantize(&granule, &mut actual, MpegVersion::Mpeg1, 44100).unwrap();
+            requantize(&granule, &mut actual, 44100).unwrap();
             let expected = reference_requantize_mpeg1(&granule, &ctx, 44100);
 
             let mut max_err = 0.0f32;

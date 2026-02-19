@@ -349,6 +349,79 @@ impl Mp3Decoder {
                             }
                         }
                     }
+                } else {
+                    // MPEG-2/2.5 LSF: scalefac_compress 为 9 位, 无 scfsi, 无 preflag
+                    let sc = scalefac_compress;
+                    // 计算每组比特宽度 (slen) 及各块类型下的每组频带数 (nsf)
+                    // nsf_l: 长块各组频带数; nsf_s: 短块各组 (sfb,win) 对数
+                    let (slen, nsf_l, nsf_s): ([u32; 4], [usize; 4], [usize; 4]) = if sc < 400 {
+                        (
+                            [sc / 80, (sc % 80) / 16, (sc % 16) / 4, sc % 4],
+                            [6, 5, 5, 5],
+                            [6, 6, 6, 3],
+                        )
+                    } else if sc < 500 {
+                        let is2 = sc - 400;
+                        ([is2 / 20, is2 % 20, 0, 0], [11, 10, 0, 0], [6, 6, 6, 3])
+                    } else {
+                        let is2 = sc - 500;
+                        ([is2 / 3, is2 % 3, 0, 0], [11, 10, 0, 0], [6, 6, 6, 3])
+                    };
+
+                    if granule.windows_switching_flag
+                        && granule.block_type == 2
+                        && granule.mixed_block_flag
+                    {
+                        // 混合块: 前 6 个长块 SFB 使用 slen[0], 后续短块部分使用 slen[1..=3]
+                        for sfb in 0..6 {
+                            scalefac[sfb] = if slen[0] > 0 {
+                                br.read_bits(slen[0] as u8).unwrap_or(0) as u8
+                            } else {
+                                0
+                            };
+                        }
+                        // 短块部分: 存入 scalefac[8..], 供 requantize_mixed 使用
+                        let mut idx = 8usize;
+                        for g in 1..4 {
+                            for _ in 0..nsf_s[g] {
+                                if idx < 40 {
+                                    scalefac[idx] = if slen[g] > 0 {
+                                        br.read_bits(slen[g] as u8).unwrap_or(0) as u8
+                                    } else {
+                                        0
+                                    };
+                                    idx += 1;
+                                }
+                            }
+                        }
+                    } else if granule.windows_switching_flag && granule.block_type == 2 {
+                        // 短块: sum(nsf_s)=21 个 (sfb,win) 对, 按 sfb 优先/win 次序存入 scalefac
+                        // scalefac[sfb*3+win], sfb 0..6, 其余 sfb 保持 0
+                        let mut idx = 0usize;
+                        for g in 0..4 {
+                            for _ in 0..nsf_s[g] {
+                                scalefac[idx] = if slen[g] > 0 {
+                                    br.read_bits(slen[g] as u8).unwrap_or(0) as u8
+                                } else {
+                                    0
+                                };
+                                idx += 1;
+                            }
+                        }
+                    } else {
+                        // 长块: sum(nsf_l)=21 个 SFB 比例因子
+                        let mut sfb = 0usize;
+                        for g in 0..4 {
+                            for _ in 0..nsf_l[g] {
+                                scalefac[sfb] = if slen[g] > 0 {
+                                    br.read_bits(slen[g] as u8).unwrap_or(0) as u8
+                                } else {
+                                    0
+                                };
+                                sfb += 1;
+                            }
+                        }
+                    }
                 }
 
                 let part2_bits = (br.bit_offset() - start_bit) as u32;
@@ -540,7 +613,6 @@ impl Mp3Decoder {
                 requantize::requantize(
                     granule,
                     &mut self.granule_data[gr][ch],
-                    header.version,
                     header.samplerate,
                 )?;
 
