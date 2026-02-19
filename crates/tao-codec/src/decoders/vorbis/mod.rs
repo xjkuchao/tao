@@ -325,6 +325,7 @@ impl VorbisDecoder {
             && packet_pts >= 0
             && out_samples_i64 > 0
             && out_samples_i64 < nominal_out
+            && nominal_out > i64::from(headers.blocksize0)
         {
             // granule 对齐短包时, 丢弃最后 1 个尾样本以匹配参考实现边界行为.
             out_samples_i64 = out_samples_i64.saturating_sub(1);
