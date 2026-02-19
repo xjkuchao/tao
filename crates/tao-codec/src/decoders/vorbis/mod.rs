@@ -320,6 +320,15 @@ impl VorbisDecoder {
                 out_samples_i64 = out_samples_i64.min(remain_to_granule);
             }
         }
+        if !is_first_packet
+            && packet_pts != tao_core::timestamp::NOPTS_VALUE
+            && packet_pts >= 0
+            && out_samples_i64 > 0
+            && out_samples_i64 < nominal_out
+        {
+            // granule 对齐短包时, 丢弃最后 1 个尾样本以匹配参考实现边界行为.
+            out_samples_i64 = out_samples_i64.saturating_sub(1);
+        }
         let out_samples = out_samples_i64 as u32;
 
         let floor_ctx = build_floor_context(parsed_setup, mapping, channels)?;
@@ -565,6 +574,10 @@ impl VorbisDecoder {
         }
         let remaining = self.prev_packet_granule.saturating_sub(self.next_pts);
         if remaining <= 0 {
+            return;
+        }
+        // 对于仅剩 1 个样本的尾包, 参考实现会直接丢弃以避免 EOS 边界抖动.
+        if remaining <= 1 {
             return;
         }
 
