@@ -191,7 +191,7 @@ mod tests {
     use crate::io::MemoryBackend;
 
     #[test]
-    fn test_box_type_识别() {
+    fn test_box_type_identify() {
         assert_eq!(BoxType::from_fourcc(b"ftyp"), BoxType::Ftyp);
         assert_eq!(BoxType::from_fourcc(b"moov"), BoxType::Moov);
         assert_eq!(BoxType::from_fourcc(b"mdat"), BoxType::Mdat);
@@ -199,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn test_读取_box_头部() {
+    fn test_read_box_header() {
         // 构造一个 size=20, type="ftyp" 的 box
         let mut data = Vec::new();
         data.extend_from_slice(&20u32.to_be_bytes()); // size
@@ -217,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn test_读取_64bit_box_头部() {
+    fn test_read_64bit_box_header() {
         let mut data = Vec::new();
         data.extend_from_slice(&1u32.to_be_bytes()); // size = 1 (使用扩展大小)
         data.extend_from_slice(b"mdat");
@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ftyp_解析() {
+    fn test_ftyp_parse() {
         let mut content = Vec::new();
         content.extend_from_slice(b"isom"); // major brand
         content.extend_from_slice(&0u32.to_be_bytes()); // minor version

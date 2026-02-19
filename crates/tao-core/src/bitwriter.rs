@@ -230,7 +230,7 @@ mod tests {
     use crate::bitreader::BitReader;
 
     #[test]
-    fn test_write_bits_基本() {
+    fn test_write_bits_basic() {
         let mut bw = BitWriter::new();
         bw.write_bits(0b1011, 4);
         bw.write_bits(0b0001, 4);
@@ -239,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn test_write_bits_跨字节() {
+    fn test_write_bits_cross_byte() {
         let mut bw = BitWriter::new();
         bw.write_bits(0b10110001, 8);
         bw.write_bits(0b01010101, 8);
@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn test_write_bits_32位() {
+    fn test_write_bits_32_bit() {
         let mut bw = BitWriter::new();
         bw.write_bits(0xFF00FF00, 32);
         let data = bw.finish();
@@ -256,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn test_write_bit_逐位() {
+    fn test_write_bit_bit_by_bit() {
         let mut bw = BitWriter::new();
         bw.write_bit(1);
         bw.write_bit(0);
@@ -299,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn test_读写往返_utf8() {
+    fn test_read_write_roundtrip_utf8() {
         for value in [0u64, 1, 127, 128, 0x7FF, 0x800, 0xFFFF, 0x10000, 0x1FFFFF] {
             let mut bw = BitWriter::new();
             bw.write_utf8_u64(value);
@@ -312,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn test_读写往返_bits() {
+    fn test_read_write_roundtrip_bits() {
         let mut bw = BitWriter::new();
         bw.write_bits(0b10110, 5);
         bw.write_bits(0xFF, 8);
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn test_读写往返_signed() {
+    fn test_read_write_roundtrip_signed() {
         let mut bw = BitWriter::new();
         bw.write_bits_signed(-1, 5);
         bw.write_bits_signed(10, 5);

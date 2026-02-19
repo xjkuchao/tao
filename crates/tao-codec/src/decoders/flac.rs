@@ -909,14 +909,14 @@ mod tests {
     }
 
     #[test]
-    fn test_打开_flac_解码器() {
+    fn test_open_flac_decoder() {
         let params = make_flac_params(44100, 2, 16, 4096);
         let mut dec = FlacDecoder::create().unwrap();
         dec.open(&params).unwrap();
     }
 
     #[test]
-    fn test_解码_constant_帧() {
+    fn test_decode_constant_frame() {
         let params = make_flac_params(44100, 1, 16, 4096);
         let mut dec = FlacDecoder::create().unwrap();
         dec.open(&params).unwrap();
@@ -940,7 +940,7 @@ mod tests {
     }
 
     #[test]
-    fn test_未打开报错() {
+    fn test_not_open_error() {
         let mut dec = FlacDecoder::create().unwrap();
         let pkt = Packet::from_data(bytes::Bytes::from(vec![0u8; 16]));
         let err = dec.send_packet(&pkt).unwrap_err();
@@ -948,7 +948,7 @@ mod tests {
     }
 
     #[test]
-    fn test_flush_和_eof() {
+    fn test_flush_and_eof() {
         let params = make_flac_params(44100, 1, 16, 4096);
         let mut dec = FlacDecoder::create().unwrap();
         dec.open(&params).unwrap();

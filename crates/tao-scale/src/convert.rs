@@ -573,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rgb24_to_yuv420p_纯红() {
+    fn test_rgb24_to_yuv420p_pure_red() {
         let w = 4u32;
         let h = 4u32;
         let rgb = make_rgb24_solid_red(w, h);
@@ -608,7 +608,7 @@ mod tests {
     }
 
     #[test]
-    fn test_yuv420p_rgb24_往返() {
+    fn test_yuv420p_rgb24_roundtrip() {
         let w = 8u32;
         let h = 8u32;
         // 生成渐变 RGB
@@ -671,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rgb24_gray8_往返() {
+    fn test_rgb24_gray8_roundtrip() {
         let w = 4u32;
         let h = 4u32;
         // 灰色: R=G=B=128
@@ -787,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nv12_yuv420p_往返() {
+    fn test_nv12_yuv420p_roundtrip() {
         let w = 4u32;
         let h = 4u32;
 

@@ -281,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pcm_u8_解码() {
+    fn test_pcm_u8_decode() {
         let mut dec = PcmDecoder::new_u8().unwrap();
         dec.open(&make_audio_params(CodecId::PcmU8, 1)).unwrap();
 
@@ -300,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pcm_s16le_解码() {
+    fn test_pcm_s16le_decode() {
         let mut dec = PcmDecoder::new_s16le().unwrap();
         dec.open(&make_audio_params(CodecId::PcmS16le, 2)).unwrap();
 
@@ -320,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pcm_s16be_字节序翻转() {
+    fn test_pcm_s16be_byte_order_swap() {
         let mut dec = PcmDecoder::new_s16be().unwrap();
         dec.open(&make_audio_params(CodecId::PcmS16be, 1)).unwrap();
 
@@ -339,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pcm_s24le_符号扩展() {
+    fn test_pcm_s24le_sign_extend() {
         let mut dec = PcmDecoder::new_s24le().unwrap();
         dec.open(&make_audio_params(CodecId::PcmS24le, 1)).unwrap();
 
@@ -363,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pcm_s32le_解码() {
+    fn test_pcm_s32le_decode() {
         let mut dec = PcmDecoder::new_s32le().unwrap();
         dec.open(&make_audio_params(CodecId::PcmS32le, 1)).unwrap();
 
@@ -382,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pcm_f32le_解码() {
+    fn test_pcm_f32le_decode() {
         let mut dec = PcmDecoder::new_f32le().unwrap();
         dec.open(&make_audio_params(CodecId::PcmF32le, 1)).unwrap();
 
@@ -402,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn test_未打开报错() {
+    fn test_not_open_error() {
         let mut dec = PcmDecoder::new_s16le().unwrap();
         let pkt = Packet::from_data(Bytes::from(vec![0u8; 4]));
         let err = dec.send_packet(&pkt).unwrap_err();
@@ -410,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn test_数据不对齐报错() {
+    fn test_data_alignment_error() {
         let mut dec = PcmDecoder::new_s16le().unwrap();
         dec.open(&make_audio_params(CodecId::PcmS16le, 2)).unwrap();
         // block_align = 2 * 2 = 4, 但数据大小为 3
@@ -420,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn test_flush_和_eof() {
+    fn test_flush_and_eof() {
         let mut dec = PcmDecoder::new_u8().unwrap();
         dec.open(&make_audio_params(CodecId::PcmU8, 1)).unwrap();
 
@@ -430,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stereo_解码() {
+    fn test_stereo_decode() {
         let mut dec = PcmDecoder::new_s16le().unwrap();
         dec.open(&make_audio_params(CodecId::PcmS16le, 2)).unwrap();
 

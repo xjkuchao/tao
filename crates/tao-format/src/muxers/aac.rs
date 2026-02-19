@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn test_aac_写入头部() {
+    fn test_aac_write_header() {
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
 
@@ -204,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn test_aac_写入数据包() {
+    fn test_aac_write_packets() {
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
 
@@ -233,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn test_aac_空流报错() {
+    fn test_aac_empty_stream_error() {
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
 

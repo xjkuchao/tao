@@ -1027,21 +1027,21 @@ mod tests {
     }
 
     #[test]
-    fn test_探测_avi_魔数() {
+    fn test_probe_avi_magic() {
         let avi = make_minimal_avi();
         let probe = AviProbe;
         assert_eq!(probe.probe(&avi, None), Some(SCORE_MAX));
     }
 
     #[test]
-    fn test_探测_avi_扩展名() {
+    fn test_probe_avi_extension() {
         let probe = AviProbe;
         assert_eq!(probe.probe(&[], Some("test.avi")), Some(SCORE_EXTENSION));
         assert_eq!(probe.probe(&[], Some("test.mp4")), None);
     }
 
     #[test]
-    fn test_解析_最小avi() {
+    fn test_parse_minimal_avi() {
         let avi = make_minimal_avi();
         let backend = crate::io::MemoryBackend::from_data(avi);
         let mut io = IoContext::new(Box::new(backend));

@@ -625,7 +625,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_sf_树解码() {
+    fn test_sf_tree_decode() {
         let cbs = AacCodebooks::build();
         // delta=0 (index=60): 码字 "0" (1 bit)
         let data = [0x00u8];
@@ -635,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn test_所有码本已构建() {
+    fn test_all_codebooks_built() {
         let cbs = AacCodebooks::build();
         for (i, cb) in cbs.spectral.iter().enumerate() {
             assert!(cb.is_some(), "码本 {} 未构建", i + 1);
@@ -643,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cb1_零向量() {
+    fn test_cb1_zero_vector() {
         // CB1: signed, dim=4, mod=3, offset=-1
         // (0,0,0,0) → index = 1*27+1*9+1*3+1 = 40
         // codes1[40] = 0x000, bits1[40] = 1
@@ -656,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cb7_零对() {
+    fn test_cb7_zero_pair() {
         // CB7: unsigned, dim=2, mod=8, offset=0
         // (0,0) → index=0, code=0x000, bits=1
         let cbs = AacCodebooks::build();
@@ -668,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cb8_已实现() {
+    fn test_cb8_implemented() {
         let cbs = AacCodebooks::build();
         assert!(cbs.spectral[7].is_some());
         let cb = cbs.spectral[7].as_ref().unwrap();
@@ -676,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cb10_已实现() {
+    fn test_cb10_implemented() {
         let cbs = AacCodebooks::build();
         assert!(cbs.spectral[9].is_some());
         let cb = cbs.spectral[9].as_ref().unwrap();
@@ -684,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cb11_已实现_带esc() {
+    fn test_cb11_implemented_with_esc() {
         let cbs = AacCodebooks::build();
         assert!(cbs.spectral[10].is_some());
         let cb = cbs.spectral[10].as_ref().unwrap();

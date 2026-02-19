@@ -283,7 +283,7 @@ fn read_all_packet_data(demuxer: &mut dyn tao_format::Demuxer, io: &mut IoContex
 // ============================================================
 
 #[test]
-fn test_转码_s16le_to_f32le_同参数() {
+fn test_transcode_s16le_to_f32le_same_params() {
     let format_registry = tao::default_format_registry();
 
     // 生成 S16LE 单声道 WAV
@@ -314,7 +314,7 @@ fn test_转码_s16le_to_f32le_同参数() {
 }
 
 #[test]
-fn test_转码_mono_to_stereo() {
+fn test_transcode_mono_to_stereo() {
     let format_registry = tao::default_format_registry();
 
     let pcm = generate_sine_s16(44100, 440.0, 0.05, 1);
@@ -341,7 +341,7 @@ fn test_转码_mono_to_stereo() {
 }
 
 #[test]
-fn test_转码_stereo_to_mono() {
+fn test_transcode_stereo_to_mono() {
     let format_registry = tao::default_format_registry();
 
     let pcm = generate_sine_s16(44100, 440.0, 0.05, 2);
@@ -365,7 +365,7 @@ fn test_转码_stereo_to_mono() {
 }
 
 #[test]
-fn test_转码_重采样_44100_to_48000() {
+fn test_transcode_resample_44100_to_48000() {
     let format_registry = tao::default_format_registry();
 
     let pcm = generate_sine_s16(44100, 440.0, 0.1, 1);
@@ -398,7 +398,7 @@ fn test_转码_重采样_44100_to_48000() {
 }
 
 #[test]
-fn test_转码_直接复制() {
+fn test_transcode_direct_copy() {
     let format_registry = tao::default_format_registry();
     let codec_registry = tao::default_codec_registry();
 
@@ -446,7 +446,7 @@ fn test_转码_直接复制() {
 }
 
 #[test]
-fn test_转码_组合_格式_声道_采样率() {
+fn test_transcode_combined_format_channel_sample_rate() {
     let format_registry = tao::default_format_registry();
 
     // 输入: S16LE 44100Hz 立体声
@@ -490,7 +490,7 @@ fn test_format_id_from_extension() {
 }
 
 #[test]
-fn test_registry_open_input_探测并打开() {
+fn test_registry_open_input_probe_and_open() {
     let format_registry = tao::default_format_registry();
 
     let pcm = generate_sine_s16(44100, 440.0, 0.01, 1);

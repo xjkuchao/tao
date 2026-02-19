@@ -201,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pad_黑边() {
+    fn test_pad_black_border() {
         let mut filter = PadFilter::new(10, 10, 2, 2);
         let input = make_solid_rgb(6, 6, 255, 0, 0);
         filter.send_frame(&input).unwrap();
@@ -220,14 +220,14 @@ mod tests {
     }
 
     #[test]
-    fn test_pad_越界报错() {
+    fn test_pad_out_of_bounds_error() {
         let mut filter = PadFilter::new(8, 8, 5, 0);
         let input = make_solid_rgb(6, 6, 0, 0, 0);
         assert!(filter.send_frame(&input).is_err());
     }
 
     #[test]
-    fn test_pad_自定义颜色() {
+    fn test_pad_custom_color() {
         let color = PadColor { r: 0, g: 255, b: 0 };
         let mut filter = PadFilter::with_color(6, 6, 1, 1, color);
         let input = make_solid_rgb(4, 4, 255, 0, 0);

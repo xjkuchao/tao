@@ -820,14 +820,14 @@ mod tests {
     }
 
     #[test]
-    fn test_探测_mkv_魔数() {
+    fn test_probe_mkv_magic() {
         let probe = MkvProbe;
         let data = [0x1A, 0x45, 0xDF, 0xA3];
         assert_eq!(probe.probe(&data, None), Some(crate::probe::SCORE_MAX));
     }
 
     #[test]
-    fn test_探测_mkv_扩展名() {
+    fn test_probe_mkv_extension() {
         let probe = MkvProbe;
         assert!(probe.probe(&[], Some("video.mkv")).is_some());
         assert!(probe.probe(&[], Some("video.webm")).is_some());
@@ -836,7 +836,7 @@ mod tests {
     }
 
     #[test]
-    fn test_解析_最小mkv() {
+    fn test_parse_minimal_mkv() {
         let mkv = build_minimal_mkv();
         let backend = MemoryBackend::from_data(mkv);
         let mut io = IoContext::new(Box::new(backend));
@@ -868,7 +868,7 @@ mod tests {
     }
 
     #[test]
-    fn test_读取数据包() {
+    fn test_read_packets() {
         let mkv = build_minimal_mkv();
         let backend = MemoryBackend::from_data(mkv);
         let mut io = IoContext::new(Box::new(backend));
@@ -888,7 +888,7 @@ mod tests {
     }
 
     #[test]
-    fn test_时长() {
+    fn test_duration() {
         let mkv = build_minimal_mkv();
         let backend = MemoryBackend::from_data(mkv);
         let mut io = IoContext::new(Box::new(backend));
@@ -901,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn test_codec_id_映射() {
+    fn test_codec_id_mapping() {
         assert_eq!(mkv_codec_to_id("V_MPEG4/ISO/AVC"), CodecId::H264);
         assert_eq!(mkv_codec_to_id("V_VP9"), CodecId::Vp9);
         assert_eq!(mkv_codec_to_id("A_OPUS"), CodecId::Opus);

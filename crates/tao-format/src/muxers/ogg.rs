@@ -264,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ogg_写入头部() {
+    fn test_ogg_write_header() {
         let mut muxer = OggMuxer::create().unwrap();
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
@@ -275,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ogg_写入数据包() {
+    fn test_ogg_write_packets() {
         let mut muxer = OggMuxer::create().unwrap();
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ogg_写入尾部() {
+    fn test_ogg_write_trailer() {
         let mut muxer = OggMuxer::create().unwrap();
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
@@ -310,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn test_空流报错() {
+    fn test_empty_stream_error() {
         let mut muxer = OggMuxer::create().unwrap();
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));

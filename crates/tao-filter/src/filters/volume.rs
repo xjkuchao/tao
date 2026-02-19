@@ -143,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn test_volume_加倍() {
+    fn test_volume_double() {
         let mut filter = VolumeFilter::new(2.0);
         let input = make_f32_frame(&[0.1, 0.2, -0.3, 0.5]);
         filter.send_frame(&input).unwrap();
@@ -156,7 +156,7 @@ mod tests {
     }
 
     #[test]
-    fn test_volume_减半() {
+    fn test_volume_half() {
         let mut filter = VolumeFilter::new(0.5);
         let input = make_f32_frame(&[1.0, -1.0, 0.5]);
         filter.send_frame(&input).unwrap();
@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn test_volume_静音() {
+    fn test_volume_mute() {
         let mut filter = VolumeFilter::new(0.0);
         let input = make_f32_frame(&[0.5, -0.3, 1.0]);
         filter.send_frame(&input).unwrap();
@@ -189,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn test_volume_视频帧报错() {
+    fn test_volume_video_frame_error() {
         use tao_core::PixelFormat;
         let mut filter = VolumeFilter::new(1.0);
         let vf = Frame::Video(tao_codec::frame::VideoFrame::new(

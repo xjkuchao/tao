@@ -171,7 +171,7 @@ fn build_test_ts() -> Vec<u8> {
 // ============================================================
 
 #[test]
-fn test_注册表_包含mpegts() {
+fn test_registry_contains_mpegts() {
     let mut registry = tao_format::FormatRegistry::new();
     tao_format::register_all(&mut registry);
     let ids: Vec<_> = registry.list_demuxers().iter().map(|d| d.0).collect();
@@ -182,7 +182,7 @@ fn test_注册表_包含mpegts() {
 }
 
 #[test]
-fn test_探测_mpegts() {
+fn test_probe_mpegts() {
     let mut registry = tao_format::FormatRegistry::new();
     tao_format::register_all(&mut registry);
     let ts = build_test_ts();
@@ -193,7 +193,7 @@ fn test_探测_mpegts() {
 }
 
 #[test]
-fn test_流信息() {
+fn test_stream_info() {
     let ts = build_test_ts();
     let backend = MemoryBackend::from_data(ts);
     let mut io = IoContext::new(Box::new(backend));
@@ -219,7 +219,7 @@ fn test_流信息() {
 }
 
 #[test]
-fn test_读取数据包_pts_正确() {
+fn test_read_packets_pts_correct() {
     let ts = build_test_ts();
     let backend = MemoryBackend::from_data(ts);
     let mut io = IoContext::new(Box::new(backend));
@@ -257,7 +257,7 @@ fn test_读取数据包_pts_正确() {
 }
 
 #[test]
-fn test_关键帧标记() {
+fn test_keyframe_flag() {
     let ts = build_test_ts();
     let backend = MemoryBackend::from_data(ts);
     let mut io = IoContext::new(Box::new(backend));
@@ -292,7 +292,7 @@ fn test_关键帧标记() {
 }
 
 #[test]
-fn test_仅音频_ts() {
+fn test_audio_only_ts() {
     let pmt_pid: u16 = 0x100;
     let a_pid: u16 = 0x201;
 
@@ -335,7 +335,7 @@ fn test_仅音频_ts() {
 }
 
 #[test]
-fn test_时间基_是_90khz() {
+fn test_time_base_is_90khz() {
     let ts = build_test_ts();
     let backend = MemoryBackend::from_data(ts);
     let mut io = IoContext::new(Box::new(backend));

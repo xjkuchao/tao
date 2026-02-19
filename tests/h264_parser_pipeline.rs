@@ -33,7 +33,7 @@ fn build_typical_annex_b() -> Vec<u8> {
 }
 
 #[test]
-fn test_annex_b完整解析() {
+fn test_annex_b_full_parse() {
     let data = build_typical_annex_b();
     let nalus = split_annex_b(&data);
 
@@ -53,7 +53,7 @@ fn test_annex_b完整解析() {
 }
 
 #[test]
-fn test_annex_b_avcc_往返转换() {
+fn test_annex_b_avcc_roundtrip_conversion() {
     let annexb = build_typical_annex_b();
 
     // Annex B → AVCC
@@ -74,7 +74,7 @@ fn test_annex_b_avcc_往返转换() {
 }
 
 #[test]
-fn test_avcc_config_构建与解析_往返() {
+fn test_avcc_config_build_and_parse_roundtrip() {
     let sps_data = vec![0x67, 0x42, 0x00, 0x1E, 0xAB, 0xCD];
     let pps_data = vec![0x68, 0xCE, 0x38, 0x80];
 
@@ -101,7 +101,7 @@ fn test_avcc_config_构建与解析_往返() {
 }
 
 #[test]
-fn test_ref_idc_提取() {
+fn test_ref_idc_extract() {
     // nal_ref_idc=3, type=7 (SPS): 0b0_11_00111 = 0x67
     let nalu = NalUnit::parse(&[0x67, 0x42]).unwrap();
     assert_eq!(nalu.ref_idc, 3);
@@ -207,7 +207,7 @@ fn bits_to_bytes(bits: &[bool]) -> Vec<u8> {
 }
 
 #[test]
-fn test_sps_常用分辨率_1920x1080() {
+fn test_sps_common_resolution_1920x1080() {
     let rbsp = build_sps_rbsp(1920, 1080);
     let sps = parse_sps(&rbsp).unwrap();
 
@@ -221,7 +221,7 @@ fn test_sps_常用分辨率_1920x1080() {
 }
 
 #[test]
-fn test_sps_常用分辨率_1280x720() {
+fn test_sps_common_resolution_1280x720() {
     let rbsp = build_sps_rbsp(1280, 720);
     let sps = parse_sps(&rbsp).unwrap();
 
@@ -233,7 +233,7 @@ fn test_sps_常用分辨率_1280x720() {
 }
 
 #[test]
-fn test_sps_非16对齐分辨率_640x480() {
+fn test_sps_non_16_aligned_resolution_640x480() {
     let rbsp = build_sps_rbsp(640, 480);
     let sps = parse_sps(&rbsp).unwrap();
 
@@ -242,7 +242,7 @@ fn test_sps_非16对齐分辨率_640x480() {
 }
 
 #[test]
-fn test_sps_需要cropping_1920x1080() {
+fn test_sps_need_cropping_1920x1080() {
     let rbsp = build_sps_rbsp(1920, 1080);
     let sps = parse_sps(&rbsp).unwrap();
 
@@ -255,7 +255,7 @@ fn test_sps_需要cropping_1920x1080() {
 }
 
 #[test]
-fn test_完整管线_annex_b_提取sps_解析参数() {
+fn test_full_pipeline_annex_b_extract_sps_parse_params() {
     // 构造 Annex B 码流, 包含可解析的 SPS
     let sps_rbsp = build_sps_rbsp(1920, 1080);
 

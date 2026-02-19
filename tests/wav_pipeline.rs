@@ -73,7 +73,7 @@ fn make_audio_params(codec_id: CodecId, sample_rate: u32, channels: u32) -> Code
 }
 
 #[test]
-fn test_完整管线_生成wav_解封装_解码() {
+fn test_full_pipeline_generate_wav_demux_decode() {
     let sample_rate = 44100u32;
     let channels = 1u32;
 
@@ -132,7 +132,7 @@ fn test_完整管线_生成wav_解封装_解码() {
 }
 
 #[test]
-fn test_完整管线_编码_封装_解封装_解码_往返() {
+fn test_full_pipeline_encode_mux_demux_decode_roundtrip() {
     let sample_rate = 48000u32;
     let channels = 2u32;
 
@@ -204,7 +204,7 @@ fn test_完整管线_编码_封装_解封装_解码_往返() {
 }
 
 #[test]
-fn test_注册表_自动探测_wav() {
+fn test_registry_auto_probe_wav() {
     let sample_rate = 44100u32;
     let pcm_data = generate_sine_wave_s16(sample_rate, 440.0, 0.01, 1);
 
@@ -232,7 +232,7 @@ fn test_注册表_自动探测_wav() {
 }
 
 #[test]
-fn test_wav_不同pcm格式() {
+fn test_wav_not_same_pcm_format() {
     // 测试 U8, S16LE, S32LE, F32LE 格式的 WAV 封装/解封装
     let test_cases: Vec<(CodecId, u32, Vec<u8>)> = vec![
         (

@@ -220,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn test_封装_基本写入() {
+    fn test_mux_basic_write() {
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
 
@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn test_封装解封装_往返() {
+    fn test_mux_demux_roundtrip() {
         let backend = MemoryBackend::new();
         let mut io_w = IoContext::new(Box::new(backend));
 

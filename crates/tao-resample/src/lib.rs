@@ -264,7 +264,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_不需要转换() {
+    fn test_no_conversion_needed() {
         let ctx = ResampleContext::new(
             44100,
             SampleFormat::S16,
@@ -282,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn test_格式转换_s16_to_f32() {
+    fn test_format_convert_s16_to_f32() {
         let ctx = ResampleContext::new(
             44100,
             SampleFormat::S16,
@@ -304,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn test_格式转换_f32_to_s16() {
+    fn test_format_convert_f32_to_s16() {
         let ctx = ResampleContext::new(
             44100,
             SampleFormat::F32,
@@ -325,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn test_声道转换_mono_to_stereo() {
+    fn test_channel_convert_mono_to_stereo() {
         let ctx = ResampleContext::new(
             44100,
             SampleFormat::S16,
@@ -358,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn test_声道转换_stereo_to_mono() {
+    fn test_channel_convert_stereo_to_mono() {
         let ctx = ResampleContext::new(
             44100,
             SampleFormat::S16,
@@ -383,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn test_采样率转换_44100_to_48000() {
+    fn test_sample_rate_convert_44100_to_48000() {
         let ctx = ResampleContext::new(
             44100,
             SampleFormat::S16,
@@ -409,7 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn test_采样率转换_48000_to_44100() {
+    fn test_sample_rate_convert_48000_to_44100() {
         let ctx = ResampleContext::new(
             48000,
             SampleFormat::S16,

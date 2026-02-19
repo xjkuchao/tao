@@ -136,7 +136,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_注册所有编解码器() {
+    fn test_register_all_codecs() {
         let mut registry = CodecRegistry::new();
         crate::register_all(&mut registry);
 
@@ -150,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn test_按codec_id创建解码器() {
+    fn test_by_codec_id_create_decoder() {
         let mut registry = CodecRegistry::new();
         crate::register_all(&mut registry);
 
@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn test_按codec_id创建编码器() {
+    fn test_by_codec_id_create_encoder() {
         let mut registry = CodecRegistry::new();
         crate::register_all(&mut registry);
 
@@ -194,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn test_未注册的编解码器返回错误() {
+    fn test_unregistered_codec_returns_error() {
         let registry = CodecRegistry::new();
         assert!(registry.create_decoder(CodecId::H264).is_err());
         assert!(registry.create_encoder(CodecId::Aac).is_err());

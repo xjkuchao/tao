@@ -168,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn test_滤镜图_空链透传() {
+    fn test_filter_graph_empty_chain_passthrough() {
         let mut graph = FilterGraph::new();
         let input = make_f32_frame(&[0.5, -0.5]);
         let output = graph.process_frame(&input).unwrap();
@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn test_滤镜图_单个滤镜() {
+    fn test_filter_graph_single_filter() {
         let mut graph = FilterGraph::new();
         graph.add_filter(Box::new(VolumeFilter::new(2.0)));
         let input = make_f32_frame(&[0.25, -0.25]);
@@ -188,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn test_滤镜图_链式处理() {
+    fn test_filter_graph_chained_process() {
         let mut graph = FilterGraph::new();
         graph.add_filter(Box::new(VolumeFilter::new(2.0)));
         graph.add_filter(Box::new(VolumeFilter::new(0.5)));
@@ -201,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn test_滤镜图_名称列表() {
+    fn test_filter_graph_name_list() {
         let mut graph = FilterGraph::new();
         graph.add_filter(Box::new(VolumeFilter::new(1.0)));
         graph.add_filter(Box::new(VolumeFilter::from_db(0.0)));
@@ -210,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn test_滤镜图_刷新() {
+    fn test_filter_graph_refresh() {
         let mut graph = FilterGraph::new();
         graph.add_filter(Box::new(VolumeFilter::new(1.0)));
         let remaining = graph.flush_all().unwrap();

@@ -410,21 +410,21 @@ mod tests {
     }
 
     #[test]
-    fn test_探测_wav_魔数() {
+    fn test_probe_wav_magic() {
         let wav = make_simple_wav(&[0; 4]);
         let probe = WavProbe;
         assert_eq!(probe.probe(&wav, None), Some(SCORE_MAX));
     }
 
     #[test]
-    fn test_探测_wav_扩展名() {
+    fn test_probe_wav_extension() {
         let probe = WavProbe;
         assert_eq!(probe.probe(&[], Some("test.wav")), Some(SCORE_EXTENSION));
         assert_eq!(probe.probe(&[], Some("test.mp3")), None);
     }
 
     #[test]
-    fn test_解封装_基本流信息() {
+    fn test_demux_basic_stream_info() {
         // 4 采样的 S16LE 单声道数据 = 8 字节
         let pcm = vec![0x00, 0x01, 0xFF, 0x7F, 0x00, 0x80, 0x01, 0x00];
         let wav = make_simple_wav(&pcm);
@@ -443,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn test_解封装_读取数据包() {
+    fn test_demux_read_packets() {
         let pcm = vec![0x00, 0x01, 0xFF, 0x7F, 0x00, 0x80, 0x01, 0x00];
         let wav = make_simple_wav(&pcm);
 
@@ -463,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn test_解封装_时长() {
+    fn test_demux_duration() {
         let pcm = vec![0u8; 44100 * 2]; // 1 秒的 S16LE 单声道
         let wav = make_simple_wav(&pcm);
 
@@ -476,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn test_非_riff_文件报错() {
+    fn test_non_riff_file_error() {
         let bad = b"NOT_RIFF_DATA_HERE".to_vec();
         let mut io = IoContext::new(Box::new(MemoryBackend::from_data(bad)));
         let mut demuxer = WavDemuxer::create().unwrap();

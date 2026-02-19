@@ -271,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pcm_u8_编码() {
+    fn test_pcm_u8_encode() {
         let mut enc = PcmEncoder::new_u8().unwrap();
         enc.open(&make_audio_params(CodecId::PcmU8, 1)).unwrap();
 
@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pcm_s16be_小端转大端() {
+    fn test_pcm_s16be_little_to_big_endian() {
         let mut enc = PcmEncoder::new_s16be().unwrap();
         enc.open(&make_audio_params(CodecId::PcmS16be, 1)).unwrap();
 
@@ -300,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pcm_s24le_截断() {
+    fn test_pcm_s24le_truncate() {
         let mut enc = PcmEncoder::new_s24le().unwrap();
         enc.open(&make_audio_params(CodecId::PcmS24le, 1)).unwrap();
 
@@ -315,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn test_未打开报错() {
+    fn test_not_open_error() {
         let mut enc = PcmEncoder::new_s16le().unwrap();
         let af = AudioFrame::new(1, 44100, SampleFormat::S16, ChannelLayout::MONO);
         let err = enc.send_frame(Some(&Frame::Audio(af))).unwrap_err();
@@ -323,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn test_flush_和_eof() {
+    fn test_flush_and_eof() {
         let mut enc = PcmEncoder::new_u8().unwrap();
         enc.open(&make_audio_params(CodecId::PcmU8, 1)).unwrap();
         enc.send_frame(None).unwrap();
@@ -332,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn test_编解码往返_s16le() {
+    fn test_codec_roundtrip_s16le() {
         use crate::decoders::pcm::PcmDecoder;
 
         let params = make_audio_params(CodecId::PcmS16le, 2);
@@ -367,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn test_编解码往返_s16be() {
+    fn test_codec_roundtrip_s16be() {
         use crate::decoders::pcm::PcmDecoder;
 
         let params = make_audio_params(CodecId::PcmS16be, 1);
@@ -398,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn test_编解码往返_s24le() {
+    fn test_codec_roundtrip_s24le() {
         use crate::decoders::pcm::PcmDecoder;
 
         let params = make_audio_params(CodecId::PcmS24le, 1);
@@ -431,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn test_采样格式不匹配报错() {
+    fn test_sample_format_mismatch_error() {
         let mut enc = PcmEncoder::new_s16le().unwrap();
         enc.open(&make_audio_params(CodecId::PcmS16le, 1)).unwrap();
 

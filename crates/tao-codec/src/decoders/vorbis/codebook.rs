@@ -289,7 +289,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_huffman_构建与解码() {
+    fn test_huffman_build_and_decode() {
         let h = CodebookHuffman::from_lengths(&[1, 2, 2]).expect("构建失败");
         let data = [0b0001_1010u8];
         let mut br = LsbBitReader::new(&data);
@@ -302,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn test_huffman_官方示例映射() {
+    fn test_huffman_official_example_mapping() {
         let h = CodebookHuffman::from_lengths(&[2, 4, 4, 4, 4, 2, 3, 3]).expect("构建失败");
         let decode = |bits: u32, len: u8| {
             let mut v = 0u8;

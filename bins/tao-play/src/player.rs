@@ -271,6 +271,8 @@ impl Player {
         let mut seek_eof_retried = false;
         // EOF 回退重试时: 跳过前面的帧 (仅构建参考帧), 只显示此 PTS 之后的帧
         let mut seek_skip_until: Option<f64> = None;
+        // 仅音频且总时长未知时, EOF 后给设备缓冲一个短暂排空窗口
+        let mut audio_eof_wait_start: Option<Instant> = None;
 
         let total_duration_sec = streams
             .iter()
@@ -281,6 +283,7 @@ impl Player {
                     None
                 }
             })
+            .or_else(|| demuxer.duration())
             .unwrap_or(0.0);
 
         // seek 上限: 减去一帧, 避免 seek 到 duration 边界导致无帧可解码
@@ -355,6 +358,7 @@ impl Player {
                                         audio_cum_samples =
                                             (target_sec * audio_sample_rate as f64) as u64;
                                         eof = false;
+                                        audio_eof_wait_start = None;
                                         seek_flush_pending = true;
                                         // Seeked 延迟到首帧解码后发送, 避免 GUI 提前清空帧队列
                                         info!(
@@ -409,7 +413,10 @@ impl Player {
 
             // ── 发送状态更新 (低频率) ──
             if frames_sent % 30 == 0 {
-                let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
+                let mut current_sec = clock.current_time_us() as f64 / 1_000_000.0;
+                if total_duration_sec > 0.0 {
+                    current_sec = current_sec.min(total_duration_sec);
+                }
                 status_tx
                     .send(PlayerStatus::Time(current_sec, total_duration_sec))
                     .ok();
@@ -554,6 +561,7 @@ impl Player {
                                         audio_cum_samples =
                                             (retry_sec * audio_sample_rate as f64) as u64;
                                         seek_skip_until = Some(skip_threshold);
+                                        audio_eof_wait_start = None;
                                         info!(
                                             "[Seek] EOF 回退: 从 {:.3}s 解码, 跳过至 {:.3}s 后显示",
                                             retry_sec, skip_threshold
@@ -565,10 +573,12 @@ impl Player {
                             if !retried {
                                 debug!("demuxer 读取完成 (EOF)");
                                 eof = true;
+                                audio_eof_wait_start = Some(Instant::now());
                             }
                         } else {
                             debug!("demuxer 读取完成 (EOF)");
                             eof = true;
+                            audio_eof_wait_start = Some(Instant::now());
                         }
                     }
                     Err(e) => {
@@ -593,8 +603,14 @@ impl Player {
                         continue;
                     }
                 } else {
-                    std::thread::sleep(Duration::from_millis(16));
-                    continue;
+                    // 未知总时长时, 给音频设备短暂排空窗口后进入 EOF 态.
+                    let elapsed = audio_eof_wait_start
+                        .map(|t| t.elapsed())
+                        .unwrap_or_else(|| Duration::from_millis(0));
+                    if elapsed < Duration::from_millis(250) {
+                        std::thread::sleep(Duration::from_millis(16));
+                        continue;
+                    }
                 }
             }
 
@@ -611,6 +627,14 @@ impl Player {
                 if !eof_gui_paused {
                     clock.set_paused(true);
                 }
+                let final_sec = if total_duration_sec > 0.0 {
+                    total_duration_sec
+                } else {
+                    clock.current_time_us() as f64 / 1_000_000.0
+                };
+                status_tx
+                    .send(PlayerStatus::Time(final_sec, total_duration_sec))
+                    .ok();
 
                 let elapsed = start_time.elapsed();
                 info!(
@@ -683,6 +707,7 @@ impl Player {
                                             audio_cum_samples =
                                                 (target_sec * audio_sample_rate as f64) as u64;
                                             eof = false;
+                                            audio_eof_wait_start = None;
                                             seek_flush_pending = true;
                                             // Seeked 延迟到首帧解码后发送
                                             info!(

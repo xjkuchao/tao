@@ -71,12 +71,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_crc8_空数据() {
+    fn test_crc8_empty_data() {
         assert_eq!(crc8(&[]), 0);
     }
 
     #[test]
-    fn test_crc8_已知值() {
+    fn test_crc8_known_value() {
         // FLAC 帧头 CRC-8 的已知测试向量
         let data = [0xFF, 0xF8, 0x69, 0x18, 0x00];
         let crc = crc8(&data);
@@ -85,18 +85,18 @@ mod tests {
     }
 
     #[test]
-    fn test_crc16_空数据() {
+    fn test_crc16_empty_data() {
         assert_eq!(crc16(&[]), 0);
     }
 
     #[test]
-    fn test_crc16_单字节() {
+    fn test_crc16_single_byte() {
         let crc = crc16(&[0x01]);
         assert_ne!(crc, 0); // 非零输入应产生非零 CRC
     }
 
     #[test]
-    fn test_crc8_递增() {
+    fn test_crc8_increment() {
         // 验证 CRC 与数据相关
         let crc1 = crc8(&[0x00]);
         let crc2 = crc8(&[0x01]);
@@ -104,7 +104,7 @@ mod tests {
     }
 
     #[test]
-    fn test_crc16_递增() {
+    fn test_crc16_increment() {
         let crc1 = crc16(&[0x00, 0x00]);
         let crc2 = crc16(&[0x00, 0x01]);
         assert_ne!(crc1, crc2);

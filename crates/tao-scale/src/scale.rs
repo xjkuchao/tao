@@ -595,7 +595,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_最近邻_放大2x_rgb24() {
+    fn test_nearest_upscale_2x_rgb24() {
         // 2x2 RGB24 → 4x4
         let src = [
             255, 0, 0, 0, 255, 0, // 第一行: 红 绿
@@ -623,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn test_最近邻_缩小_rgb24() {
+    fn test_nearest_downscale_rgb24() {
         // 4x4 → 2x2 (每 2x2 块取左上角)
         let mut src = vec![0u8; 4 * 4 * 3];
         // (0,0) = 红
@@ -657,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn test_双线性_放大2x_灰度() {
+    fn test_bilinear_upscale_2x_gray() {
         // 2x2 灰度 → 4x4
         // [0, 100]
         // [200, 50]
@@ -691,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn test_双线性_缩小_灰度() {
+    fn test_bilinear_downscale_gray() {
         // 4x4 → 2x2 (双线性插值做平均)
         let src = [
             10, 20, 30, 40, //
@@ -722,7 +722,7 @@ mod tests {
     }
 
     #[test]
-    fn test_双线性_相同大小_等于复制() {
+    fn test_bilinear_same_size_equals_copy() {
         let src: Vec<u8> = (0..100).collect();
         let mut dst = vec![0u8; 100];
 
@@ -744,7 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn test_yuv420p_缩放() {
+    fn test_yuv420p_scale() {
         let src_w = 8u32;
         let src_h = 8u32;
         let dst_w = 4u32;
@@ -779,7 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn test_map_coord_边界() {
+    fn test_map_coord_boundary() {
         // 1:1 映射
         let (i0, i1, _frac) = map_coord(0, 4, 4);
         assert!(i0 < 4);
@@ -795,7 +795,7 @@ mod tests {
     }
 
     #[test]
-    fn test_双三次_放大2x_灰度() {
+    fn test_bicubic_upscale_2x_gray() {
         let src = [0u8, 100, 200, 50];
         let mut dst = vec![0u8; 4 * 4];
 
@@ -824,7 +824,7 @@ mod tests {
     }
 
     #[test]
-    fn test_双三次_缩小_灰度() {
+    fn test_bicubic_downscale_gray() {
         let src = [
             10, 20, 30, 40, //
             50, 60, 70, 80, //
@@ -853,7 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn test_双三次_均匀色不变() {
+    fn test_bicubic_uniform_color_invariant() {
         let src = vec![128u8; 8 * 8];
         let mut dst = vec![0u8; 4 * 4];
 
@@ -881,7 +881,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lanczos_放大2x_灰度() {
+    fn test_lanczos_upscale_2x_gray() {
         let src = [0u8, 100, 200, 50];
         let mut dst = vec![0u8; 4 * 4];
 
@@ -904,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lanczos_缩小_灰度() {
+    fn test_lanczos_downscale_gray() {
         let src = [
             10, 20, 30, 40, //
             50, 60, 70, 80, //
@@ -933,7 +933,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lanczos_均匀色不变() {
+    fn test_lanczos_uniform_color_invariant() {
         let src = vec![128u8; 8 * 8];
         let mut dst = vec![0u8; 4 * 4];
 
@@ -961,7 +961,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lanczos_rgb24_放大() {
+    fn test_lanczos_rgb24_upscale() {
         let src = vec![200u8; 4 * 4 * 3]; // 4x4 均匀色
         let mut dst = vec![0u8; 8 * 8 * 3]; // 8x8
 
@@ -989,7 +989,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rgba_缩放() {
+    fn test_rgba_scale() {
         let src = vec![255u8; 4 * 4 * 4]; // 4x4 RGBA 全白
         let mut dst = vec![0u8; 8 * 8 * 4]; // 8x8
 
@@ -1012,7 +1012,7 @@ mod tests {
     }
 
     #[test]
-    fn test_area_缩小_灰度() {
+    fn test_area_downscale_gray() {
         // 4x4 灰度 → 2x2, 验证取平均
         // 布局 [0,1,2,3] / [4,5,6,7] / [8,9,10,11] / [12,13,14,15]
         let mut src = vec![0u8; 4 * 4];
@@ -1048,7 +1048,7 @@ mod tests {
     }
 
     #[test]
-    fn test_area_缩小_rgb24() {
+    fn test_area_downscale_rgb24() {
         // 8x8 RGB → 4x4
         let mut src = vec![0u8; 8 * 8 * 3];
         for i in 0..64 {
@@ -1160,7 +1160,7 @@ mod tests {
     }
 
     #[test]
-    fn test_area_均匀色不变() {
+    fn test_area_uniform_color_invariant() {
         // 均匀色缩小后应保持不变
         let src = vec![200u8; 8 * 8];
         let mut dst = vec![0u8; 4 * 4];

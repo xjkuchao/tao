@@ -280,7 +280,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_yuv420p_帧大小() {
+    fn test_yuv420p_frame_size() {
         let pf = PixelFormat::Yuv420p;
         // 1920x1080: Y=1920*1080 + U=960*540 + V=960*540 = 1920*1080*3/2
         assert_eq!(pf.frame_size(1920, 1080), Some(1920 * 1080 * 3 / 2));
@@ -295,7 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn test_yuv420p10le_帧大小() {
+    fn test_yuv420p10le_frame_size() {
         let pf = PixelFormat::Yuv420p10le;
         // 10bit: 每分量 2 字节
         assert_eq!(pf.plane_linesize(0, 1920), Some(3840));
@@ -304,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nv12_帧大小() {
+    fn test_nv12_frame_size() {
         let pf = PixelFormat::Nv12;
         // plane0=Y: w*h, plane1=UV交错: w*(h/2)
         assert_eq!(pf.plane_linesize(0, 1920), Some(1920));
@@ -315,26 +315,26 @@ mod tests {
     }
 
     #[test]
-    fn test_rgb24_帧大小() {
+    fn test_rgb24_frame_size() {
         let pf = PixelFormat::Rgb24;
         assert_eq!(pf.plane_linesize(0, 1920), Some(5760));
         assert_eq!(pf.frame_size(1920, 1080), Some(1920 * 1080 * 3));
     }
 
     #[test]
-    fn test_rgba_帧大小() {
+    fn test_rgba_frame_size() {
         let pf = PixelFormat::Rgba;
         assert_eq!(pf.plane_linesize(0, 1920), Some(7680));
         assert_eq!(pf.frame_size(1920, 1080), Some(1920 * 1080 * 4));
     }
 
     #[test]
-    fn test_gray8_帧大小() {
+    fn test_gray8_frame_size() {
         assert_eq!(PixelFormat::Gray8.frame_size(320, 240), Some(320 * 240));
     }
 
     #[test]
-    fn test_gray16le_帧大小() {
+    fn test_gray16le_frame_size() {
         assert_eq!(
             PixelFormat::Gray16le.frame_size(320, 240),
             Some(320 * 240 * 2)
@@ -342,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rgbf32le_帧大小() {
+    fn test_rgbf32le_frame_size() {
         assert_eq!(
             PixelFormat::Rgbf32le.frame_size(320, 240),
             Some(320 * 240 * 12)
@@ -350,21 +350,21 @@ mod tests {
     }
 
     #[test]
-    fn test_none_返回none() {
+    fn test_none_return_none() {
         assert_eq!(PixelFormat::None.frame_size(1920, 1080), None);
         assert_eq!(PixelFormat::None.plane_linesize(0, 1920), None);
         assert_eq!(PixelFormat::None.plane_height(0, 1080), None);
     }
 
     #[test]
-    fn test_平面索引越界返回none() {
+    fn test_plane_index_out_of_bounds_return_none() {
         assert_eq!(PixelFormat::Rgb24.plane_linesize(1, 1920), None);
         assert_eq!(PixelFormat::Yuv420p.plane_linesize(3, 1920), None);
         assert_eq!(PixelFormat::Nv12.plane_linesize(2, 1920), None);
     }
 
     #[test]
-    fn test_yuv422p_帧大小() {
+    fn test_yuv422p_frame_size() {
         let pf = PixelFormat::Yuv422p;
         // 422: 水平子采样1, 垂直不子采样
         assert_eq!(pf.plane_linesize(0, 1920), Some(1920));
@@ -375,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn test_yuv444p_帧大小() {
+    fn test_yuv444p_frame_size() {
         let pf = PixelFormat::Yuv444p;
         assert_eq!(pf.frame_size(1920, 1080), Some(1920 * 1080 * 3));
     }

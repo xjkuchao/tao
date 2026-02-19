@@ -791,7 +791,7 @@ mod tests {
     }
 
     #[test]
-    fn test_创建与打开() {
+    fn test_create_and_open() {
         let mut decoder = AacDecoder::create().unwrap();
         let params = make_aac_params();
         decoder.open(&params).unwrap();
@@ -800,14 +800,14 @@ mod tests {
     }
 
     #[test]
-    fn test_未打开报错() {
+    fn test_not_open_error() {
         let mut decoder = AacDecoder::create().unwrap();
         let pkt = Packet::from_data(vec![0xFF, 0xF1, 0x50, 0x80, 0x02, 0x00, 0x00]);
         assert!(decoder.send_packet(&pkt).is_err());
     }
 
     #[test]
-    fn test_静音帧解码() {
+    fn test_silence_frame_decode() {
         let mut decoder = AacDecoder::create().unwrap();
         let params = make_aac_params();
         decoder.open(&params).unwrap();
@@ -826,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn test_flush_和_eof() {
+    fn test_flush_and_eof() {
         let mut decoder = AacDecoder::create().unwrap();
         let params = make_aac_params();
         decoder.open(&params).unwrap();
@@ -837,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn test_audio_specific_config_解析() {
+    fn test_audio_specific_config_parse() {
         let mut dec = AacDecoder {
             sample_rate: 0,
             channels: 0,
@@ -856,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    fn test_imdct_全零() {
+    fn test_imdct_all_zero() {
         let spectrum = vec![0.0f32; 1024];
         let output = imdct_1024(&spectrum);
         assert_eq!(output.len(), 2048);
@@ -866,7 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sf_huffman_树构建() {
+    fn test_sf_huffman_tree_build() {
         let cbs = AacCodebooks::build();
         // 测试 delta=0 (index=60): 码字 "0" (1 bit)
         let data = [0x00u8]; // 第一位是 0
@@ -876,7 +876,7 @@ mod tests {
     }
 
     #[test]
-    fn test_adts_头_跳过() {
+    fn test_adts_header_skip() {
         let mut decoder = AacDecoder::create().unwrap();
         let params = make_aac_params();
         decoder.open(&params).unwrap();

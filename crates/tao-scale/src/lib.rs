@@ -229,7 +229,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_同格式复制() {
+    fn test_same_format_copy() {
         let ctx = ScaleContext::new(
             4,
             4,
@@ -246,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn test_格式转换_rgb_to_yuv() {
+    fn test_format_convert_rgb_to_yuv() {
         let ctx = ScaleContext::new(
             4,
             4,
@@ -271,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn test_分辨率缩放_双线性() {
+    fn test_resolution_scale_bilinear() {
         let ctx = ScaleContext::new(
             4,
             4,
@@ -290,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn test_缩放加格式转换() {
+    fn test_scale_with_format_convert() {
         let ctx = ScaleContext::new(
             4,
             4,

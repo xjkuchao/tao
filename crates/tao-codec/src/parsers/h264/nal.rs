@@ -455,7 +455,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_nal类型_创建() {
+    fn test_nal_type_create() {
         assert_eq!(NalUnitType::from_type_id(7), NalUnitType::Sps);
         assert_eq!(NalUnitType::from_type_id(8), NalUnitType::Pps);
         assert_eq!(NalUnitType::from_type_id(5), NalUnitType::SliceIdr);
@@ -464,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nal类型_属性() {
+    fn test_nal_type_property() {
         assert!(NalUnitType::SliceIdr.is_vcl());
         assert!(NalUnitType::SliceIdr.is_idr());
         assert!(NalUnitType::Slice.is_vcl());
@@ -474,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nal类型_type_id() {
+    fn test_nal_type_type_id() {
         for id in 0..=13 {
             let nt = NalUnitType::from_type_id(id);
             assert_eq!(nt.type_id(), id);
@@ -482,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nal单元_解析() {
+    fn test_nal_unit_parse() {
         // NAL header: forbidden=0, ref_idc=3, type=7 (SPS)
         // 0b0_11_00111 = 0x67
         let data = [0x67, 0x42, 0x00, 0x1E];
@@ -492,12 +492,12 @@ mod tests {
     }
 
     #[test]
-    fn test_nal单元_空数据报错() {
+    fn test_nal_unit_empty_data_error() {
         assert!(NalUnit::parse(&[]).is_err());
     }
 
     #[test]
-    fn test_annex_b_分割_3字节起始码() {
+    fn test_annex_b_split_3_byte_start_code() {
         let data = [
             0x00, 0x00, 0x01, 0x67, 0xAA, 0xBB, // SPS
             0x00, 0x00, 0x01, 0x68, 0xCC, // PPS
@@ -512,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn test_annex_b_分割_4字节起始码() {
+    fn test_annex_b_split_4_byte_start_code() {
         let data = [
             0x00, 0x00, 0x00, 0x01, 0x67, 0xAA, // SPS
             0x00, 0x00, 0x00, 0x01, 0x68, 0xBB, // PPS
@@ -525,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn test_annex_b_分割_混合起始码() {
+    fn test_annex_b_split_mixed_start_code() {
         let data = [
             0x00, 0x00, 0x00, 0x01, 0x67, 0xAA, // SPS (4字节)
             0x00, 0x00, 0x01, 0x68, 0xBB, // PPS (3字节)
@@ -538,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn test_avcc_分割() {
+    fn test_avcc_split() {
         let mut data = Vec::new();
         // NAL 1: SPS, 3 bytes
         data.extend_from_slice(&[0x00, 0x00, 0x00, 0x03]);
@@ -554,7 +554,7 @@ mod tests {
     }
 
     #[test]
-    fn test_annex_b_到_avcc_转换() {
+    fn test_annex_b_to_avcc_convert() {
         let annexb = [
             0x00, 0x00, 0x01, 0x67, 0xAA, // SPS
             0x00, 0x00, 0x01, 0x68, 0xBB, // PPS
@@ -573,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn test_avcc_到_annex_b_转换() {
+    fn test_avcc_to_annex_b_convert() {
         let mut avcc = Vec::new();
         avcc.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]); // len=2
         avcc.extend_from_slice(&[0x67, 0xAA]); // SPS
@@ -588,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn test_emulation_prevention_移除() {
+    fn test_emulation_prevention_remove() {
         // 00 00 03 → 00 00
         let data = [0x01, 0x00, 0x00, 0x03, 0x02, 0x03];
         let rbsp = remove_emulation_prevention(&data);
@@ -596,7 +596,7 @@ mod tests {
     }
 
     #[test]
-    fn test_emulation_prevention_连续() {
+    fn test_emulation_prevention_consecutive() {
         // 多个 emulation prevention
         let data = [0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x01];
         let rbsp = remove_emulation_prevention(&data);
@@ -604,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn test_avcc_config_解析() {
+    fn test_avcc_config_parse() {
         // 构造 AVCDecoderConfigurationRecord
         let sps = vec![0x67, 0x42, 0x00, 0x1E, 0xAB];
         let pps = vec![0x68, 0xCE, 0x38, 0x80];
@@ -621,12 +621,12 @@ mod tests {
     }
 
     #[test]
-    fn test_avcc_config_无sps报错() {
+    fn test_avcc_config_no_sps_error() {
         assert!(build_avcc_config(&[], &[], 4).is_err());
     }
 
     #[test]
-    fn test_rbsp_提取() {
+    fn test_rbsp_extract() {
         // SPS header + emulation prevention
         let data = [0x67, 0x42, 0x00, 0x00, 0x03, 0x1E];
         let nalu = NalUnit::parse(&data).unwrap();

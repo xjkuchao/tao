@@ -755,14 +755,14 @@ mod tests {
     }
 
     #[test]
-    fn test_打开编码器() {
+    fn test_open_encoder() {
         let params = make_flac_params(44100, 2, 16);
         let mut enc = FlacEncoder::create().unwrap();
         enc.open(&params).unwrap();
     }
 
     #[test]
-    fn test_编码_全零帧() {
+    fn test_encode_all_zero_frame() {
         let params = make_flac_params(44100, 1, 16);
         let mut enc = FlacEncoder::create().unwrap();
         enc.open(&params).unwrap();
@@ -778,7 +778,7 @@ mod tests {
     }
 
     #[test]
-    fn test_编解码往返_全零() {
+    fn test_codec_roundtrip_all_zero() {
         let params = make_flac_params(44100, 1, 16);
         let mut enc = FlacEncoder::create().unwrap();
         enc.open(&params).unwrap();
@@ -809,7 +809,7 @@ mod tests {
     }
 
     #[test]
-    fn test_编解码往返_正弦波() {
+    fn test_codec_roundtrip_sine_wave() {
         let params = make_flac_params(44100, 1, 16);
         let mut enc = FlacEncoder::create().unwrap();
         enc.open(&params).unwrap();
@@ -848,7 +848,7 @@ mod tests {
     }
 
     #[test]
-    fn test_flush_和_eof() {
+    fn test_flush_and_eof() {
         let params = make_flac_params(44100, 1, 16);
         let mut enc = FlacEncoder::create().unwrap();
         enc.open(&params).unwrap();

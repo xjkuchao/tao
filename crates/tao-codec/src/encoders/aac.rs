@@ -508,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn test_创建与打开() {
+    fn test_create_and_open() {
         let params = make_aac_params(44100, 2);
         let mut enc = AacEncoder::create().unwrap();
         enc.open(&params).unwrap();
@@ -517,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn test_编码静音帧() {
+    fn test_encode_silence_frame() {
         let params = make_aac_params(44100, 1);
         let mut enc = AacEncoder::create().unwrap();
         enc.open(&params).unwrap();
@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn test_flush_和_eof() {
+    fn test_flush_and_eof() {
         let params = make_aac_params(44100, 1);
         let mut enc = AacEncoder::create().unwrap();
         enc.open(&params).unwrap();
@@ -555,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn test_adts_header_格式() {
+    fn test_adts_header_format() {
         let params = make_aac_params(44100, 2);
         let mut enc = AacEncoder::create().unwrap();
         enc.open(&params).unwrap();
@@ -583,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mdct_静音输入() {
+    fn test_mdct_silence_input() {
         let input = vec![0.0; MDCT_INPUT_SIZE];
         let output = AacEncoder::mdct(&input);
         assert_eq!(output.len(), AAC_FRAME_SIZE);
@@ -593,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sine_window_范围() {
+    fn test_sine_window_range() {
         let mut buf = vec![1.0; MDCT_INPUT_SIZE];
         AacEncoder::apply_sine_window(&mut buf);
         for &v in &buf {

@@ -988,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ftyp_写入() {
+    fn test_ftyp_write() {
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
         write_ftyp(&mut io).unwrap();
@@ -997,7 +997,7 @@ mod tests {
     }
 
     #[test]
-    fn test_写入_仅视频() {
+    fn test_write_video_only() {
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
         let streams = vec![make_video_stream()];
@@ -1022,7 +1022,7 @@ mod tests {
     }
 
     #[test]
-    fn test_写入_音视频() {
+    fn test_write_av() {
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
         let streams = vec![make_video_stream(), make_audio_stream()];
@@ -1058,7 +1058,7 @@ mod tests {
     }
 
     #[test]
-    fn test_codec_fourcc_映射() {
+    fn test_codec_fourcc_mapping() {
         assert_eq!(codec_to_mp4_fourcc(CodecId::H264).unwrap(), *b"avc1");
         assert_eq!(codec_to_mp4_fourcc(CodecId::H265).unwrap(), *b"hvc1");
         assert_eq!(codec_to_mp4_fourcc(CodecId::Aac).unwrap(), *b"mp4a");
@@ -1066,7 +1066,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rle_duration_压缩() {
+    fn test_rle_duration_compress() {
         let track = TrackCollector {
             stream_index: 0,
             stream: make_video_stream(),
@@ -1101,7 +1101,7 @@ mod tests {
     }
 
     #[test]
-    fn test_空流报错() {
+    fn test_empty_stream_error() {
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
         let mut muxer = Mp4Muxer::create().unwrap();

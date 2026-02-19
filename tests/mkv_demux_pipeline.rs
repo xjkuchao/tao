@@ -173,7 +173,7 @@ fn build_mkv_with_clusters(doc_type: &str, num_clusters: usize) -> Vec<u8> {
 }
 
 #[test]
-fn test_探测_matroska() {
+fn test_probe_matroska() {
     let probe = MkvProbe;
     let mkv = build_mkv_with_clusters("matroska", 1);
     assert_eq!(
@@ -183,13 +183,13 @@ fn test_探测_matroska() {
 }
 
 #[test]
-fn test_探测_webm() {
+fn test_probe_webm() {
     let probe = MkvProbe;
     assert!(probe.probe(&[], Some("video.webm")).is_some());
 }
 
 #[test]
-fn test_视频轨道信息() {
+fn test_video_track_info() {
     let mkv = build_mkv_with_clusters("matroska", 1);
     let backend = MemoryBackend::from_data(mkv);
     let mut io = IoContext::new(Box::new(backend));
@@ -213,7 +213,7 @@ fn test_视频轨道信息() {
 }
 
 #[test]
-fn test_音频轨道信息() {
+fn test_audio_track_info() {
     let mkv = build_mkv_with_clusters("matroska", 1);
     let backend = MemoryBackend::from_data(mkv);
     let mut io = IoContext::new(Box::new(backend));
@@ -233,7 +233,7 @@ fn test_音频轨道信息() {
 }
 
 #[test]
-fn test_文件时长() {
+fn test_file_duration() {
     let mkv = build_mkv_with_clusters("matroska", 3);
     let backend = MemoryBackend::from_data(mkv);
     let mut io = IoContext::new(Box::new(backend));
@@ -245,7 +245,7 @@ fn test_文件时长() {
 }
 
 #[test]
-fn test_读取多个_cluster_的数据包() {
+fn test_read_multiple_cluster_of_packets() {
     let mkv = build_mkv_with_clusters("matroska", 3);
     let backend = MemoryBackend::from_data(mkv);
     let mut io = IoContext::new(Box::new(backend));
@@ -279,7 +279,7 @@ fn test_读取多个_cluster_的数据包() {
 }
 
 #[test]
-fn test_关键帧标记() {
+fn test_keyframe_flag() {
     let mkv = build_mkv_with_clusters("matroska", 2);
     let backend = MemoryBackend::from_data(mkv);
     let mut io = IoContext::new(Box::new(backend));
@@ -308,7 +308,7 @@ fn create_registry() -> tao_format::registry::FormatRegistry {
 }
 
 #[test]
-fn test_注册表_包含mkv() {
+fn test_registry_contains_mkv() {
     let registry = create_registry();
     let demuxers = registry.list_demuxers();
     assert!(
@@ -318,7 +318,7 @@ fn test_注册表_包含mkv() {
 }
 
 #[test]
-fn test_注册表_探测mkv() {
+fn test_registry_probe_mkv() {
     let registry = create_registry();
     // EBML magic bytes
     let data = [0x1A, 0x45, 0xDF, 0xA3, 0x00, 0x00, 0x00];

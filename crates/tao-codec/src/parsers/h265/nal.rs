@@ -519,7 +519,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_hevc_nal_类型() {
+    fn test_hevc_nal_type() {
         assert_eq!(HevcNalUnitType::from_type_id(19), HevcNalUnitType::IdrWRadl);
         assert_eq!(HevcNalUnitType::from_type_id(32), HevcNalUnitType::Vps);
         assert_eq!(HevcNalUnitType::from_type_id(33), HevcNalUnitType::Sps);
@@ -532,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hevc_nal_解析() {
+    fn test_hevc_nal_parse() {
         // NAL 头: type=33 (SPS), layer_id=0, temporal_id=1
         // byte0 = (33 << 1) | 0 = 0x42
         // byte1 = (0 << 3) | 1 = 0x01
@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn test_annex_b_分割() {
+    fn test_annex_b_split() {
         let mut data = Vec::new();
         // VPS NAL: type=32 -> byte0=(32<<1)|0=0x40, byte1=0x01
         data.extend_from_slice(&[0, 0, 0, 1, 0x40, 0x01, 0x11, 0x22]);
@@ -562,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn test_annex_b_hvcc_往返() {
+    fn test_annex_b_hvcc_roundtrip() {
         let mut annex_b = Vec::new();
         annex_b.extend_from_slice(&[0, 0, 0, 1, 0x40, 0x01, 0xAA]);
         annex_b.extend_from_slice(&[0, 0, 0, 1, 0x42, 0x01, 0xBB]);
@@ -587,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hvcc_config_构建与解析() {
+    fn test_hvcc_config_build_and_parse() {
         // 构建最小 VPS/SPS/PPS NAL (含 2 字节头)
         let vps = vec![
             0x40, 0x01, 0x0C, 0x01, 0xFF, 0xFF, 0x01, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

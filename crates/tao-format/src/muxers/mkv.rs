@@ -583,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn test_codec_id_映射() {
+    fn test_codec_id_mapping() {
         assert_eq!(codec_id_to_mkv(CodecId::H264).unwrap(), "V_MPEG4/ISO/AVC");
         assert_eq!(codec_id_to_mkv(CodecId::H265).unwrap(), "V_MPEGH/ISO/HEVC");
         assert_eq!(codec_id_to_mkv(CodecId::Aac).unwrap(), "A_AAC");
@@ -591,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn test_vint_编码() {
+    fn test_vint_encode() {
         assert_eq!(size_to_vint(0), vec![0x80]);
         assert_eq!(size_to_vint(1), vec![0x81]);
         assert_eq!(size_to_vint(126), vec![0xFE]);
@@ -599,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn test_写入_仅视频() {
+    fn test_write_video_only() {
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
         let streams = vec![make_video_stream()];
@@ -622,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn test_写入_音视频() {
+    fn test_write_av() {
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
         let streams = vec![make_video_stream(), make_audio_stream()];
@@ -656,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn test_webm_格式() {
+    fn test_webm_format() {
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
 
@@ -671,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn test_空流报错() {
+    fn test_empty_stream_error() {
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
         let mut muxer = MkvMuxer::create().unwrap();

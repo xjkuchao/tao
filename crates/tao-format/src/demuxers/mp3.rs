@@ -468,7 +468,17 @@ impl Demuxer for Mp3Demuxer {
 
         let time_base = Rational::new(1, fh.sample_rate as i32);
         let duration = if self.total_frames > 0 {
-            (self.total_frames as i64) * i64::from(fh.samples_per_frame)
+            let total_samples = self
+                .total_frames
+                .saturating_mul(u64::from(fh.samples_per_frame));
+            let valid_samples = if self.encoder_delay > 0 || self.encoder_padding > 0 {
+                total_samples
+                    .saturating_sub(u64::from(self.encoder_delay))
+                    .saturating_sub(u64::from(self.encoder_padding))
+            } else {
+                total_samples
+            };
+            valid_samples as i64
         } else {
             -1
         };
@@ -624,15 +634,13 @@ impl Demuxer for Mp3Demuxer {
     }
 
     fn duration(&self) -> Option<f64> {
-        if self.total_frames > 0 && !self.streams.is_empty() {
-            let sr = match &self.streams[0].params {
-                StreamParams::Audio(a) => a.sample_rate,
-                _ => return None,
-            };
-            if sr > 0 {
-                let total_samples = self.total_frames as f64 * self.samples_per_frame as f64;
-                return Some(total_samples / sr as f64);
-            }
+        if let Some(stream) = self.streams.first()
+            && stream.duration > 0
+            && stream.time_base.den > 0
+        {
+            return Some(
+                stream.duration as f64 * stream.time_base.num as f64 / stream.time_base.den as f64,
+            );
         }
         None
     }
@@ -725,7 +733,7 @@ mod tests {
     }
 
     #[test]
-    fn test_帧头解析_mpeg1_layer3_128kbps_44100() {
+    fn test_frame_header_parse_mpeg1_layer3_128kbps_44100() {
         // bitrate_idx=9 → 128kbps, sr_idx=0 → 44100Hz
         let header = make_mp3_frame_header(9, 0, false);
         let h_val = u32::from_be_bytes(header);
@@ -741,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn test_帧头解析_mpeg1_layer3_320kbps_48000() {
+    fn test_frame_header_parse_mpeg1_layer3_320kbps_48000() {
         // bitrate_idx=14 → 320kbps, sr_idx=1 → 48000Hz
         let header = make_mp3_frame_header(14, 1, false);
         let h_val = u32::from_be_bytes(header);
@@ -753,14 +761,14 @@ mod tests {
     }
 
     #[test]
-    fn test_帧头解析_无效同步() {
+    fn test_frame_header_parse_invalid_sync() {
         // 不是有效的同步码
         assert!(parse_frame_header(0x00000000).is_none());
         assert!(parse_frame_header(0x12345678).is_none());
     }
 
     #[test]
-    fn test_探测_id3v2() {
+    fn test_probe_id3v2() {
         let probe = Mp3Probe;
         // ID3v2 头 (10字节, size=0) + 有效的 MP3 帧头
         let header = make_mp3_frame_header(9, 0, false);
@@ -770,14 +778,14 @@ mod tests {
     }
 
     #[test]
-    fn test_探测_帧同步() {
+    fn test_probe_frame_sync() {
         let probe = Mp3Probe;
         let header = make_mp3_frame_header(9, 0, false);
         assert!(probe.probe(&header, None).is_some());
     }
 
     #[test]
-    fn test_探测_id3_后非_mp3_帧() {
+    fn test_probe_id3_followed_by_non_mp3_frame() {
         let probe = Mp3Probe;
         // ID3(size=0) + "OggS"：不应被识别为 MP3
         let data = b"ID3\x04\x00\x00\x00\x00\x00\x00OggS";
@@ -785,14 +793,14 @@ mod tests {
     }
 
     #[test]
-    fn test_探测_扩展名() {
+    fn test_probe_extension() {
         let probe = Mp3Probe;
         assert!(probe.probe(&[], Some("song.mp3")).is_some());
         assert!(probe.probe(&[], Some("video.mp4")).is_none());
     }
 
     #[test]
-    fn test_id3v2_跳过() {
+    fn test_id3v2_skip() {
         // 构造 ID3v2 头部 + MP3 帧
         let mut data = Vec::new();
         // ID3v2 头部
@@ -820,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn test_读取数据包() {
+    fn test_read_packets() {
         // 构造 3 个连续帧 (多加一个用于验证)
         let frame = build_mp3_frame(9, 0, false);
         let fh = parse_frame_header(u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]))
@@ -850,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    fn test_基本流信息() {
+    fn test_basic_stream_info() {
         let frame = build_mp3_frame(9, 0, false); // 128kbps, 44100Hz
         let mut data = Vec::new();
         for _ in 0..3 {
@@ -877,7 +885,7 @@ mod tests {
     }
 
     #[test]
-    fn test_seek_按时间戳定位后读取() {
+    fn test_seek_seek_by_timestamp_then_read() {
         let frame = build_mp3_frame(9, 0, false); // MPEG1-L3, 1152 样本/帧
         let mut data = Vec::new();
         for _ in 0..8 {

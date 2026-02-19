@@ -99,7 +99,7 @@ fn init_registries() -> (CodecRegistry, FormatRegistry) {
 // ============================================================
 
 #[test]
-fn test_aac_编码器注册() {
+fn test_aac_encoder_registration() {
     let (codec_reg, _) = init_registries();
     let encoder = codec_reg.create_encoder(CodecId::Aac);
     assert!(encoder.is_ok(), "AAC 编码器应已注册");
@@ -107,7 +107,7 @@ fn test_aac_编码器注册() {
 }
 
 #[test]
-fn test_aac_解码器注册() {
+fn test_aac_decoder_registration() {
     let (codec_reg, _) = init_registries();
     let decoder = codec_reg.create_decoder(CodecId::Aac);
     assert!(decoder.is_ok(), "AAC 解码器应已注册");
@@ -115,21 +115,21 @@ fn test_aac_解码器注册() {
 }
 
 #[test]
-fn test_aac_adts_封装器注册() {
+fn test_aac_adts_muxer_registration() {
     let (_, format_reg) = init_registries();
     let muxer = format_reg.create_muxer(FormatId::AacAdts);
     assert!(muxer.is_ok(), "AAC ADTS 封装器应已注册");
 }
 
 #[test]
-fn test_mp3_封装器注册() {
+fn test_mp3_muxer_registration() {
     let (_, format_reg) = init_registries();
     let muxer = format_reg.create_muxer(FormatId::Mp3Container);
     assert!(muxer.is_ok(), "MP3 封装器应已注册");
 }
 
 #[test]
-fn test_aac_编码_静音帧() {
+fn test_aac_encode_silence_frame() {
     let (codec_reg, _) = init_registries();
 
     let mut encoder = codec_reg.create_encoder(CodecId::Aac).unwrap();
@@ -169,7 +169,7 @@ fn test_aac_编码_静音帧() {
 }
 
 #[test]
-fn test_aac_编解码往返_静音() {
+fn test_aac_codec_roundtrip_mute() {
     let (codec_reg, _) = init_registries();
 
     // === 编码 ===
@@ -244,7 +244,7 @@ fn test_aac_编解码往返_静音() {
 }
 
 #[test]
-fn test_aac_adts_封装_写入读取() {
+fn test_aac_adts_mux_write_and_read() {
     let (_, format_reg) = init_registries();
 
     let backend = MemoryBackend::new();
@@ -275,7 +275,7 @@ fn test_aac_adts_封装_写入读取() {
 }
 
 #[test]
-fn test_aac_完整管线_encode_mux_demux_decode() {
+fn test_aac_full_pipeline_encode_mux_demux_decode() {
     let (codec_reg, format_reg) = init_registries();
 
     // === 1. 编码 ===
@@ -387,7 +387,7 @@ fn test_aac_完整管线_encode_mux_demux_decode() {
 // ============================================================
 
 #[test]
-fn test_mp3_封装_透传() {
+fn test_mp3_mux_passthrough() {
     let (_, format_reg) = init_registries();
 
     let backend = MemoryBackend::new();
@@ -411,7 +411,7 @@ fn test_mp3_封装_透传() {
 }
 
 #[test]
-fn test_aac_编码_正弦波() {
+fn test_aac_encode_sine_wave() {
     let (codec_reg, _) = init_registries();
 
     let mut encoder = codec_reg.create_encoder(CodecId::Aac).unwrap();

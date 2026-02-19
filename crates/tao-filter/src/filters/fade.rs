@@ -193,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fade_in_开始时静音() {
+    fn test_fade_in_mute_at_start() {
         let mut filter = FadeFilter::new(FadeType::In, 0.0, 1.0);
         // pts=0, time_base=1/1 -> time=0s (淡入开始, gain=0)
         let input = make_f32_frame_at(0, Rational::new(1, 1), &[1.0, 0.5, -0.5]);
@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fade_in_结束后正常() {
+    fn test_fade_in_normal_after_end() {
         let mut filter = FadeFilter::new(FadeType::In, 0.0, 1.0);
         // pts=2, time_base=1/1 -> time=2s (淡入已结束, gain=1.0)
         let input = make_f32_frame_at(2, Rational::new(1, 1), &[1.0, 0.5]);
@@ -218,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fade_out_结束时静音() {
+    fn test_fade_out_mute_at_end() {
         let mut filter = FadeFilter::new(FadeType::Out, 0.0, 1.0);
         // pts=1, time_base=1/1 -> time=1s (淡出结束, gain=0)
         let input = make_f32_frame_at(1, Rational::new(1, 1), &[1.0, 0.5]);
@@ -251,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fade_中间值() {
+    fn test_fade_middle_value() {
         let mut filter = FadeFilter::new(FadeType::In, 0.0, 2.0);
         // pts=1, time_base=1/1 -> time=1s, progress=0.5, gain=0.5
         let input = make_f32_frame_at(1, Rational::new(1, 1), &[1.0, -1.0]);

@@ -24,6 +24,7 @@
 
 use bytes::Bytes;
 use log::debug;
+use std::collections::HashMap;
 use tao_codec::{CodecId, Packet};
 use tao_core::{ChannelLayout, MediaType, Rational, SampleFormat, TaoError, TaoResult};
 
@@ -128,6 +129,8 @@ pub struct OggDemuxer {
     packet_queue: Vec<Packet>,
     /// 是否已到达 EOF
     eof: bool,
+    /// 容器时长 (秒)
+    duration_sec: Option<f64>,
 }
 
 impl OggDemuxer {
@@ -138,6 +141,7 @@ impl OggDemuxer {
             logical_streams: Vec::new(),
             packet_queue: Vec::new(),
             eof: false,
+            duration_sec: None,
         }))
     }
 
@@ -566,6 +570,74 @@ impl OggDemuxer {
 
         self.packet_queue.push(pkt);
     }
+
+    /// 重置 seek 后的运行态缓存
+    fn reset_runtime_state(&mut self) {
+        self.packet_queue.clear();
+        self.eof = false;
+        for ls in &mut self.logical_streams {
+            ls.partial_packet.clear();
+            ls.discarding_orphan_continued = false;
+            ls.last_granule = -1;
+        }
+    }
+
+    /// 估算时长并回填流 duration
+    ///
+    /// 仅在可 seek 输入上启用. 通过扫描后续页面的 granule_position
+    /// 估算每条逻辑流的末尾时间戳, 再换算为秒.
+    fn estimate_duration(&mut self, io: &mut IoContext) -> TaoResult<()> {
+        self.duration_sec = None;
+        if !io.is_seekable() {
+            return Ok(());
+        }
+
+        let resume_pos = io.position()?;
+        let mut max_granule_by_serial: HashMap<u32, i64> = HashMap::new();
+
+        loop {
+            match Self::sync_to_page(io) {
+                Ok(page) => {
+                    if page.granule_position < 0 {
+                        continue;
+                    }
+                    if self.find_logical_stream(page.serial_number).is_none() {
+                        continue;
+                    }
+                    let entry = max_granule_by_serial
+                        .entry(page.serial_number)
+                        .or_insert(page.granule_position);
+                    if page.granule_position > *entry {
+                        *entry = page.granule_position;
+                    }
+                }
+                Err(TaoError::Eof) => break,
+                Err(_) => break,
+            }
+        }
+
+        io.seek(std::io::SeekFrom::Start(resume_pos))?;
+
+        for ls in &self.logical_streams {
+            if let Some(max_granule) = max_granule_by_serial.get(&ls.serial_number).copied()
+                && max_granule >= 0
+                && let Some(stream) = self.streams.get_mut(ls.stream_index)
+            {
+                stream.duration = max_granule;
+            }
+        }
+
+        let mut best = None::<f64>;
+        for s in &self.streams {
+            if s.duration > 0 && s.time_base.den > 0 {
+                let sec = s.duration as f64 * s.time_base.num as f64 / s.time_base.den as f64;
+                best = Some(best.map_or(sec, |v| v.max(sec)));
+            }
+        }
+        self.duration_sec = best;
+
+        Ok(())
+    }
 }
 
 impl Demuxer for OggDemuxer {
@@ -592,6 +664,10 @@ impl Demuxer for OggDemuxer {
 
         if self.streams.is_empty() {
             return Err(TaoError::InvalidData("Ogg 文件中未找到任何流".into()));
+        }
+
+        if let Err(e) = self.estimate_duration(io) {
+            debug!("Ogg 时长估算失败: {}", e);
         }
 
         debug!("打开 Ogg: {} 个流", self.streams.len(),);
@@ -647,17 +723,101 @@ impl Demuxer for OggDemuxer {
 
     fn seek(
         &mut self,
-        _io: &mut IoContext,
-        _stream_index: usize,
-        _timestamp: i64,
-        _flags: SeekFlags,
+        io: &mut IoContext,
+        stream_index: usize,
+        timestamp: i64,
+        flags: SeekFlags,
     ) -> TaoResult<()> {
-        // TODO: 实现 Ogg seek
-        Err(TaoError::NotImplemented("Ogg seek 尚未实现".into()))
+        if stream_index >= self.streams.len() {
+            return Err(TaoError::InvalidData(format!(
+                "Ogg seek 流索引无效: stream_index={stream_index}"
+            )));
+        }
+        if flags.byte {
+            return Err(TaoError::NotImplemented("Ogg 字节级 seek 尚未实现".into()));
+        }
+        if !io.is_seekable() {
+            return Err(TaoError::Unsupported("不支持在非可寻址流上 seek".into()));
+        }
+
+        let target_serial = self
+            .logical_streams
+            .iter()
+            .find(|s| s.stream_index == stream_index)
+            .map(|s| s.serial_number)
+            .ok_or_else(|| TaoError::InvalidData("Ogg seek 找不到目标逻辑流".into()))?;
+        let codec_id = self.streams[stream_index].codec_id;
+        let min_granule = match codec_id {
+            // Vorbis/Opus 的 comment/setup 头包通常为 granule=0, seek 时跳过头包页.
+            CodecId::Vorbis | CodecId::Opus => 1,
+            _ => 0,
+        };
+        let target_granule = timestamp.max(0);
+
+        io.seek(std::io::SeekFrom::Start(0))?;
+        let mut first_non_bos: Option<u64> = None;
+        let mut best_before: Option<(u64, i64)> = None;
+        let mut first_after: Option<(u64, i64)> = None;
+
+        loop {
+            match Self::sync_to_page(io) {
+                Ok(page) => {
+                    let page_size =
+                        27u64 + page.segment_table.len() as u64 + page.data.len() as u64;
+                    let page_end = io.position()?;
+                    let page_start = page_end.saturating_sub(page_size);
+
+                    if !page.is_bos() && first_non_bos.is_none() {
+                        first_non_bos = Some(page_start);
+                    }
+                    if page.serial_number != target_serial {
+                        continue;
+                    }
+                    if page.data.is_empty() {
+                        continue;
+                    }
+                    if page.granule_position < min_granule {
+                        continue;
+                    }
+
+                    if page.granule_position <= target_granule {
+                        best_before = Some((page_start, page.granule_position));
+                        continue;
+                    }
+                    first_after = Some((page_start, page.granule_position));
+                    break;
+                }
+                Err(TaoError::Eof) => break,
+                Err(e) => return Err(e),
+            }
+        }
+
+        let seek_offset = if flags.backward {
+            best_before
+                .map(|v| v.0)
+                .or_else(|| first_after.map(|v| v.0))
+                .or(first_non_bos)
+                .unwrap_or(0)
+        } else {
+            first_after
+                .map(|v| v.0)
+                .or_else(|| best_before.map(|v| v.0))
+                .or(first_non_bos)
+                .unwrap_or(0)
+        };
+
+        io.seek(std::io::SeekFrom::Start(seek_offset))?;
+        self.reset_runtime_state();
+
+        debug!(
+            "Ogg seek: stream={}, target={}, 定位偏移={}, backward={}",
+            stream_index, target_granule, seek_offset, flags.backward
+        );
+        Ok(())
     }
 
     fn duration(&self) -> Option<f64> {
-        None
+        self.duration_sec
     }
 }
 
@@ -750,6 +910,57 @@ mod tests {
         data
     }
 
+    /// 构造包含 Vorbis 头包页与多个音频页的 Ogg 样本, 用于 seek 单测
+    fn build_vorbis_seek_test_ogg() -> Vec<u8> {
+        let mut data = Vec::new();
+        let serial = 0x87654321;
+        let mut page_seq = 0u32;
+
+        // identification 头包 (BOS)
+        let mut vorbis_id = Vec::new();
+        vorbis_id.push(1u8);
+        vorbis_id.extend_from_slice(b"vorbis");
+        vorbis_id.extend_from_slice(&0u32.to_le_bytes());
+        vorbis_id.push(2);
+        vorbis_id.extend_from_slice(&44100u32.to_le_bytes());
+        vorbis_id.extend_from_slice(&0i32.to_le_bytes());
+        vorbis_id.extend_from_slice(&128000i32.to_le_bytes());
+        vorbis_id.extend_from_slice(&0i32.to_le_bytes());
+        vorbis_id.push(0x88);
+        vorbis_id.push(1);
+        data.extend_from_slice(&build_ogg_page(FLAG_BOS, 0, serial, page_seq, &vorbis_id));
+        page_seq += 1;
+
+        // comment 头包页 (granule=0)
+        let mut comment = Vec::new();
+        comment.push(3u8);
+        comment.extend_from_slice(b"vorbis");
+        comment.extend_from_slice(&[0u8; 8]);
+        data.extend_from_slice(&build_ogg_page(0, 0, serial, page_seq, &comment));
+        page_seq += 1;
+
+        // setup 头包页 (granule=0)
+        let mut setup = Vec::new();
+        setup.push(5u8);
+        setup.extend_from_slice(b"vorbis");
+        setup.extend_from_slice(&[0u8; 8]);
+        data.extend_from_slice(&build_ogg_page(0, 0, serial, page_seq, &setup));
+        page_seq += 1;
+
+        // 音频页
+        data.extend_from_slice(&build_ogg_page(0, 256, serial, page_seq, &[0x00, 0x11]));
+        page_seq += 1;
+        data.extend_from_slice(&build_ogg_page(0, 512, serial, page_seq, &[0x00, 0x22]));
+        page_seq += 1;
+        data.extend_from_slice(&build_ogg_page(0, 768, serial, page_seq, &[0x00, 0x33]));
+        page_seq += 1;
+
+        // EOS 页面
+        data.extend_from_slice(&build_ogg_page(FLAG_EOS, 1024, serial, page_seq, &[]));
+
+        data
+    }
+
     /// 构建一个 Ogg 页面 (含正确的 CRC)
     fn build_ogg_page(
         header_type: u8,
@@ -799,7 +1010,7 @@ mod tests {
     }
 
     #[test]
-    fn test_探测_ogg_魔数() {
+    fn test_probe_ogg_magic() {
         let probe = OggProbe;
         assert!(probe.probe(b"OggS", None).is_some());
         assert!(probe.probe(b"RIFF", None).is_none());
@@ -807,7 +1018,7 @@ mod tests {
     }
 
     #[test]
-    fn test_探测_ogg_id3_前缀() {
+    fn test_probe_ogg_id3_prefix() {
         let probe = OggProbe;
         // ID3(size=0) + OggS
         let data = b"ID3\x04\x00\x00\x00\x00\x00\x00OggS";
@@ -815,7 +1026,7 @@ mod tests {
     }
 
     #[test]
-    fn test_探测_ogg_扩展名() {
+    fn test_probe_ogg_extension() {
         let probe = OggProbe;
         assert!(probe.probe(&[], Some("test.ogg")).is_some());
         assert!(probe.probe(&[], Some("test.oga")).is_some());
@@ -824,39 +1035,39 @@ mod tests {
     }
 
     #[test]
-    fn test_识别_vorbis() {
+    fn test_identify_vorbis() {
         let mut data = vec![1u8]; // packet type
         data.extend_from_slice(b"vorbis");
         assert_eq!(OggDemuxer::identify_codec(&data), CodecId::Vorbis);
     }
 
     #[test]
-    fn test_识别_opus() {
+    fn test_identify_opus() {
         let data = b"OpusHead\x01\x02\x00\x00\x80\xbb\x00\x00";
         assert_eq!(OggDemuxer::identify_codec(data), CodecId::Opus);
     }
 
     #[test]
-    fn test_识别_flac() {
+    fn test_identify_flac() {
         let data = b"\x7fFLAC\x01\x00";
         assert_eq!(OggDemuxer::identify_codec(data), CodecId::Flac);
     }
 
     #[test]
-    fn test_识别_flac_旧版_ogg_包头() {
+    fn test_identify_flac_legacy_ogg_packet_header() {
         let data = b"fLaC";
         assert_eq!(OggDemuxer::identify_codec(data), CodecId::Flac);
     }
 
     #[test]
-    fn test_识别_theora() {
+    fn test_identify_theora() {
         let mut data = vec![0x80];
         data.extend_from_slice(b"theora");
         assert_eq!(OggDemuxer::identify_codec(&data), CodecId::Theora);
     }
 
     #[test]
-    fn test_解封装_vorbis_单流() {
+    fn test_demux_vorbis_single_stream() {
         let ogg_data = build_minimal_ogg_vorbis();
         let backend = MemoryBackend::from_data(ogg_data);
         let mut io = IoContext::new(Box::new(backend));
@@ -879,7 +1090,7 @@ mod tests {
     }
 
     #[test]
-    fn test_解封装_支持_id3_前缀() {
+    fn test_demux_support_id3_prefix() {
         let mut data = Vec::new();
         // ID3 header + size=4 + 4 bytes payload
         data.extend_from_slice(b"ID3");
@@ -900,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn test_读取数据包() {
+    fn test_read_packets() {
         let ogg_data = build_minimal_ogg_vorbis();
         let backend = MemoryBackend::from_data(ogg_data);
         let mut io = IoContext::new(Box::new(backend));
@@ -915,7 +1126,76 @@ mod tests {
     }
 
     #[test]
-    fn test_页面提取_packets() {
+    fn test_duration_estimable() {
+        let ogg_data = build_minimal_ogg_vorbis();
+        let backend = MemoryBackend::from_data(ogg_data);
+        let mut io = IoContext::new(Box::new(backend));
+
+        let mut demuxer = OggDemuxer::create().unwrap();
+        demuxer.open(&mut io).unwrap();
+
+        let streams = demuxer.streams();
+        assert!(streams[0].duration > 0, "应回填流 duration");
+        let duration_sec = demuxer.duration().unwrap_or(0.0);
+        assert!(
+            duration_sec > 0.0,
+            "Ogg demuxer 应返回可用总时长, 实际={duration_sec}"
+        );
+    }
+
+    #[test]
+    fn test_seek_skip_vorbis_header_packet_page() {
+        let ogg_data = build_vorbis_seek_test_ogg();
+        let backend = MemoryBackend::from_data(ogg_data);
+        let mut io = IoContext::new(Box::new(backend));
+        let mut demuxer = OggDemuxer::create().unwrap();
+        demuxer.open(&mut io).unwrap();
+
+        demuxer
+            .seek(&mut io, 0, 0, SeekFlags::default())
+            .expect("seek 到起点不应失败");
+        let pkt = demuxer
+            .read_packet(&mut io)
+            .expect("seek 后应能读取音频数据包");
+        assert_eq!(pkt.pts, 256, "seek 应跳过 granule=0 的头包页");
+    }
+
+    #[test]
+    fn test_seek_backward_seek_to_page_before_target() {
+        let ogg_data = build_vorbis_seek_test_ogg();
+        let backend = MemoryBackend::from_data(ogg_data);
+        let mut io = IoContext::new(Box::new(backend));
+        let mut demuxer = OggDemuxer::create().unwrap();
+        demuxer.open(&mut io).unwrap();
+
+        demuxer
+            .seek(&mut io, 0, 700, SeekFlags::default())
+            .expect("seek backward 不应失败");
+        let pkt = demuxer.read_packet(&mut io).expect("seek 后应能读取数据包");
+        assert_eq!(pkt.pts, 512, "backward seek 应定位到目标之前最近页");
+    }
+
+    #[test]
+    fn test_seek_forward_seek_to_page_after_target() {
+        let ogg_data = build_vorbis_seek_test_ogg();
+        let backend = MemoryBackend::from_data(ogg_data);
+        let mut io = IoContext::new(Box::new(backend));
+        let mut demuxer = OggDemuxer::create().unwrap();
+        demuxer.open(&mut io).unwrap();
+
+        let flags = SeekFlags {
+            backward: false,
+            ..SeekFlags::default()
+        };
+        demuxer
+            .seek(&mut io, 0, 700, flags)
+            .expect("seek forward 不应失败");
+        let pkt = demuxer.read_packet(&mut io).expect("seek 后应能读取数据包");
+        assert_eq!(pkt.pts, 768, "forward seek 应定位到目标之后最近页");
+    }
+
+    #[test]
+    fn test_page_extract_packets() {
         // 段表 [100, 50, 255, 200]:
         // 100 < 255 → packet 1 完成 (100 字节)
         // 50 < 255 → packet 2 完成 (50 字节)

@@ -283,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn test_写入头部() {
+    fn test_write_header() {
         let mut muxer = FlacMuxer::create().unwrap();
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn test_不支持非flac编解码器() {
+    fn test_unsupported_non_flac_codec() {
         let mut muxer = FlacMuxer::create().unwrap();
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));

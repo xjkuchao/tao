@@ -89,7 +89,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_lsb_bit_reader_位序() {
+    fn test_lsb_bit_reader_bit_order() {
         let data = [0b1011_0010];
         let mut br = LsbBitReader::new(&data);
         assert_eq!(br.read_bits(1).unwrap(), 0);

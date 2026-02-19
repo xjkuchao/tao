@@ -471,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sps_帧率提取() {
+    fn test_sps_frame_rate_extract() {
         // 构造带 VUI timing_info 的 SPS
         let rbsp = build_test_sps_with_vui(66, 30, 1920, 1080, 1001, 60000);
         let sps = parse_sps(&rbsp).unwrap();
@@ -484,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sps_rbsp太短() {
+    fn test_sps_rbsp_too_short() {
         assert!(parse_sps(&[0x42]).is_err());
     }
 

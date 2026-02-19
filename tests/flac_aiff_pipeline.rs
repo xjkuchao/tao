@@ -73,7 +73,7 @@ fn mux_aiff_in_memory(
 }
 
 #[test]
-fn test_aiff_封装解封装_往返() {
+fn test_aiff_mux_demux_roundtrip() {
     let format_registry = {
         let mut r = FormatRegistry::new();
         tao::format::register_all(&mut r);
@@ -115,7 +115,7 @@ fn test_aiff_封装解封装_往返() {
 }
 
 #[test]
-fn test_aiff_解码_s16be_往返() {
+fn test_aiff_decode_s16be_roundtrip() {
     let format_registry = {
         let mut r = FormatRegistry::new();
         tao::format::register_all(&mut r);
@@ -183,7 +183,7 @@ fn test_aiff_解码_s16be_往返() {
 }
 
 #[test]
-fn test_aiff_探测() {
+fn test_aiff_probe() {
     let format_registry = {
         let mut r = FormatRegistry::new();
         tao::format::register_all(&mut r);
@@ -366,7 +366,7 @@ fn make_constant_frame(block_size: u32, sample_rate: u32, channels: u32, bps: u3
 }
 
 #[test]
-fn test_flac_探测_魔数() {
+fn test_flac_probe_magic() {
     let format_registry = {
         let mut r = FormatRegistry::new();
         tao::format::register_all(&mut r);
@@ -384,7 +384,7 @@ fn test_flac_探测_魔数() {
 }
 
 #[test]
-fn test_flac_demux_基本流信息() {
+fn test_flac_demux_basic_stream_info() {
     let format_registry = {
         let mut r = FormatRegistry::new();
         tao::format::register_all(&mut r);
@@ -413,7 +413,7 @@ fn test_flac_demux_基本流信息() {
 }
 
 #[test]
-fn test_flac_完整管线_demux_decode_constant() {
+fn test_flac_full_pipeline_demux_decode_constant() {
     let format_registry = {
         let mut r = FormatRegistry::new();
         tao::format::register_all(&mut r);
@@ -473,7 +473,7 @@ fn test_flac_完整管线_demux_decode_constant() {
 }
 
 #[test]
-fn test_flac_完整管线_stereo_constant() {
+fn test_flac_full_pipeline_stereo_constant() {
     let format_registry = {
         let mut r = FormatRegistry::new();
         tao::format::register_all(&mut r);

@@ -180,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn test_基本编码_rgb24() {
+    fn test_basic_encode_rgb24() {
         let mut enc = RawVideoEncoder::create().unwrap();
         enc.open(&make_video_params(2, 2, PixelFormat::Rgb24))
             .unwrap();
@@ -201,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn test_未打开报错() {
+    fn test_not_open_error() {
         let mut enc = RawVideoEncoder::create().unwrap();
         let vf = VideoFrame::new(2, 2, PixelFormat::Rgb24);
         let err = enc.send_frame(Some(&Frame::Video(vf))).unwrap_err();
@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn test_flush_和_eof() {
+    fn test_flush_and_eof() {
         let mut enc = RawVideoEncoder::create().unwrap();
         enc.open(&make_video_params(2, 2, PixelFormat::Gray8))
             .unwrap();
@@ -220,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn test_编解码往返_rgb24() {
+    fn test_codec_roundtrip_rgb24() {
         use crate::decoders::rawvideo::RawVideoDecoder;
 
         let params = make_video_params(4, 2, PixelFormat::Rgb24);
@@ -255,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn test_编解码往返_yuv420p() {
+    fn test_codec_roundtrip_yuv420p() {
         use crate::decoders::rawvideo::RawVideoDecoder;
 
         let params = make_video_params(4, 4, PixelFormat::Yuv420p);

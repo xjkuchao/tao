@@ -84,13 +84,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_timestamp_转换为秒() {
+    fn test_timestamp_to_seconds() {
         let ts = Timestamp::new(90000, Rational::new(1, 90000));
         assert!((ts.to_seconds() - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn test_timestamp_重缩放() {
+    fn test_timestamp_rescale() {
         // 从 90kHz 时间基转换到毫秒时间基
         let ts = Timestamp::new(90000, Rational::new(1, 90000));
         let rescaled = ts.rescale(Rational::new(1, 1000));
@@ -98,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn test_timestamp_无效值() {
+    fn test_timestamp_invalid_value() {
         let ts = Timestamp::none();
         assert!(!ts.is_valid());
         assert!(ts.to_seconds().is_nan());

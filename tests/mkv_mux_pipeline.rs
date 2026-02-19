@@ -72,7 +72,7 @@ fn mux_packets(streams: &[Stream], packets: &[Packet]) -> IoContext {
 }
 
 #[test]
-fn test_注册表_包含mkv封装器() {
+fn test_registry_contains_mkv_muxer() {
     let mut registry = FormatRegistry::new();
     tao_format::register_all(&mut registry);
     assert!(registry.create_muxer(FormatId::Matroska).is_ok());
@@ -80,7 +80,7 @@ fn test_注册表_包含mkv封装器() {
 }
 
 #[test]
-fn test_仅视频_封装() {
+fn test_video_only_mux() {
     let stream = make_video_stream();
     let mut packets = Vec::new();
     for i in 0..10 {
@@ -99,7 +99,7 @@ fn test_仅视频_封装() {
 }
 
 #[test]
-fn test_仅视频_封装解封装往返() {
+fn test_video_only_mux_demux_roundtrip() {
     let stream = make_video_stream();
 
     let data_pattern = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x42];
@@ -133,7 +133,7 @@ fn test_仅视频_封装解封装往返() {
 }
 
 #[test]
-fn test_音视频_封装() {
+fn test_av_mux() {
     let vs = make_video_stream();
     let aus = make_audio_stream();
 
@@ -165,7 +165,7 @@ fn test_音视频_封装() {
 }
 
 #[test]
-fn test_关键帧标记() {
+fn test_keyframe_flag() {
     let stream = make_video_stream();
     let mut packets = Vec::new();
 

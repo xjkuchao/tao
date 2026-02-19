@@ -674,21 +674,21 @@ mod tests {
     }
 
     #[test]
-    fn test_探测_flv_签名() {
+    fn test_probe_flv_signature() {
         let probe = FlvProbe;
         let data = build_flv_header(true, true);
         assert_eq!(probe.probe(&data, None), Some(crate::probe::SCORE_MAX));
     }
 
     #[test]
-    fn test_探测_flv_扩展名() {
+    fn test_probe_flv_extension() {
         let probe = FlvProbe;
         assert!(probe.probe(&[], Some("video.flv")).is_some());
         assert!(probe.probe(&[], Some("video.mp4")).is_none());
     }
 
     #[test]
-    fn test_解析_最小flv() {
+    fn test_parse_minimal_flv() {
         let flv = build_minimal_flv();
         let backend = MemoryBackend::from_data(flv);
         let mut io = IoContext::new(Box::new(backend));
@@ -710,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn test_读取flv数据包() {
+    fn test_read_flv_packets() {
         let flv = build_minimal_flv();
         let backend = MemoryBackend::from_data(flv);
         let mut io = IoContext::new(Box::new(backend));
@@ -734,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn test_视频关键帧标记() {
+    fn test_video_keyframe_flag() {
         let flv = build_minimal_flv();
         let backend = MemoryBackend::from_data(flv);
         let mut io = IoContext::new(Box::new(backend));
@@ -771,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn test_仅音频_flv() {
+    fn test_audio_only_flv() {
         let mut data = build_flv_header(true, false);
         data.extend_from_slice(&build_audio_tag(0, &[0xAA; 50]));
         data.extend_from_slice(&build_audio_tag(23, &[0xBB; 50]));

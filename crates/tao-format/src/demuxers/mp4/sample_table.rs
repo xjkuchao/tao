@@ -589,7 +589,7 @@ mod tests {
     use crate::io::MemoryBackend;
 
     #[test]
-    fn test_fourcc_映射() {
+    fn test_fourcc_mapping() {
         assert_eq!(fourcc_to_codec_id(b"avc1"), CodecId::H264);
         assert_eq!(fourcc_to_codec_id(b"hvc1"), CodecId::H265);
         assert_eq!(fourcc_to_codec_id(b"mp4a"), CodecId::Aac);
@@ -599,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stts_解析() {
+    fn test_stts_parse() {
         let mut data = Vec::new();
         data.push(0); // version
         data.extend_from_slice(&[0, 0, 0]); // flags
@@ -624,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stsz_解析() {
+    fn test_stsz_parse() {
         let mut data = Vec::new();
         data.push(0); // version
         data.extend_from_slice(&[0, 0, 0]); // flags
@@ -646,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stsz_统一大小() {
+    fn test_stsz_uniform_size() {
         let mut data = Vec::new();
         data.push(0);
         data.extend_from_slice(&[0, 0, 0]);
@@ -664,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stss_解析() {
+    fn test_stss_parse() {
         let mut data = Vec::new();
         data.push(0);
         data.extend_from_slice(&[0, 0, 0]);
@@ -685,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn test_无stss_所有帧都是关键帧() {
+    fn test_no_stss_all_frames_are_keyframes() {
         let st = SampleTable::new();
         assert!(st.is_sync_sample(0));
         assert!(st.is_sync_sample(100));

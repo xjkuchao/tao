@@ -204,7 +204,7 @@ mod tests {
     use crate::io::MemoryBackend;
 
     #[test]
-    fn test_读取_1字节_vint_id() {
+    fn test_read_1_byte_vint_id() {
         // 0x81 = 1000_0001 → ID=0x81 (1 byte)
         let backend = MemoryBackend::from_data(vec![0x81]);
         let mut io = IoContext::new(Box::new(backend));
@@ -214,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn test_读取_2字节_vint_id() {
+    fn test_read_2_byte_vint_id() {
         // 0x42, 0x86 → ID=0x4286 (2 bytes)
         let backend = MemoryBackend::from_data(vec![0x42, 0x86]);
         let mut io = IoContext::new(Box::new(backend));
@@ -224,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn test_读取_4字节_vint_id() {
+    fn test_read_4_byte_vint_id() {
         // EBML Header ID: 0x1A45DFA3
         let backend = MemoryBackend::from_data(vec![0x1A, 0x45, 0xDF, 0xA3]);
         let mut io = IoContext::new(Box::new(backend));
@@ -234,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn test_读取_vint_size() {
+    fn test_read_vint_size() {
         // 0x85 → size = 0x05 (1 byte, 掩掉标记位 0x80)
         let backend = MemoryBackend::from_data(vec![0x85]);
         let mut io = IoContext::new(Box::new(backend));
@@ -244,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn test_读取_2字节_vint_size() {
+    fn test_read_2_byte_vint_size() {
         // 0x40, 0x20 → size = 0x0020 = 32 (2 bytes)
         let backend = MemoryBackend::from_data(vec![0x40, 0x20]);
         let mut io = IoContext::new(Box::new(backend));
@@ -254,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn test_未知大小() {
+    fn test_unknown_size() {
         // 0xFF → 所有 7 位数据位为 1 → 未知大小
         let backend = MemoryBackend::from_data(vec![0xFF]);
         let mut io = IoContext::new(Box::new(backend));
@@ -271,7 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn test_read_float_4字节() {
+    fn test_read_float_4_byte() {
         // f32: 1.0 = 0x3F800000
         let bits = 1.0f32.to_bits();
         let data = bits.to_be_bytes().to_vec();

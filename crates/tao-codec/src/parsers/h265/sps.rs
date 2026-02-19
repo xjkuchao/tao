@@ -516,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sps_rbsp太短() {
+    fn test_sps_rbsp_too_short() {
         assert!(parse_hevc_sps(&[0]).is_err());
     }
 }

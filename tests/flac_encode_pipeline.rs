@@ -211,7 +211,7 @@ fn init_registries() -> (CodecRegistry, FormatRegistry) {
 // ============================================================
 
 #[test]
-fn test_flac_无损往返_全零_mono() {
+fn test_flac_lossless_roundtrip_all_zero_mono() {
     let (codec_reg, format_reg) = init_registries();
     let nb_samples = 512u32;
     let original = generate_silence_s16le(nb_samples, 1);
@@ -230,7 +230,7 @@ fn test_flac_无损往返_全零_mono() {
 }
 
 #[test]
-fn test_flac_无损往返_正弦波_mono() {
+fn test_flac_lossless_roundtrip_sine_wave_mono() {
     let (codec_reg, format_reg) = init_registries();
     let nb_samples = 1024u32;
     let original = generate_sine_s16le(44100, 440.0, nb_samples, 1);
@@ -243,7 +243,7 @@ fn test_flac_无损往返_正弦波_mono() {
 }
 
 #[test]
-fn test_flac_无损往返_正弦波_stereo() {
+fn test_flac_lossless_roundtrip_sine_wave_stereo() {
     let (codec_reg, format_reg) = init_registries();
     let nb_samples = 512u32;
     let original = generate_sine_s16le(44100, 440.0, nb_samples, 2);
@@ -256,7 +256,7 @@ fn test_flac_无损往返_正弦波_stereo() {
 }
 
 #[test]
-fn test_flac_无损往返_锯齿波() {
+fn test_flac_lossless_roundtrip_sawtooth_wave() {
     let (codec_reg, format_reg) = init_registries();
     let nb_samples = 768u32;
     let original = generate_sawtooth_s16le(nb_samples, 1);
@@ -269,7 +269,7 @@ fn test_flac_无损往返_锯齿波() {
 }
 
 #[test]
-fn test_flac_无损往返_大块() {
+fn test_flac_lossless_roundtrip_large_block() {
     let (codec_reg, format_reg) = init_registries();
     let nb_samples = 4096u32;
     let original = generate_sine_s16le(44100, 1000.0, nb_samples, 1);
@@ -282,7 +282,7 @@ fn test_flac_无损往返_大块() {
 }
 
 #[test]
-fn test_flac_无损往返_多采样率() {
+fn test_flac_lossless_roundtrip_multi_sample_rate() {
     let (codec_reg, format_reg) = init_registries();
 
     for &sr in &[8000u32, 22050, 44100, 48000, 96000] {
@@ -298,14 +298,14 @@ fn test_flac_无损往返_多采样率() {
 }
 
 #[test]
-fn test_flac_编码器注册() {
+fn test_flac_encoder_registration() {
     let registry = tao::default_codec_registry();
     let encoder = registry.create_encoder(CodecId::Flac);
     assert!(encoder.is_ok(), "FLAC 编码器应在注册表中");
 }
 
 #[test]
-fn test_flac_封装器注册() {
+fn test_flac_muxer_registration() {
     let registry = tao::default_format_registry();
     let muxer = registry.create_muxer(FormatId::FlacContainer);
     assert!(muxer.is_ok(), "FLAC 封装器应在注册表中");

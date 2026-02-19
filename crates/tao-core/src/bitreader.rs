@@ -278,7 +278,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_read_bits_基本() {
+    fn test_read_bits_basic() {
         let data = [0b10110001, 0b01010101];
         let mut br = BitReader::new(&data);
 
@@ -292,7 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn test_read_bits_32位() {
+    fn test_read_bits_32_bit() {
         let data = [0xFF, 0x00, 0xFF, 0x00];
         let mut br = BitReader::new(&data);
         assert_eq!(br.read_bits(32).unwrap(), 0xFF00FF00);

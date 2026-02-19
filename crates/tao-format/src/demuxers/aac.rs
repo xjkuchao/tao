@@ -408,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn test_adts_头部解析() {
+    fn test_adts_header_parse() {
         let frame = build_adts_frame(&[0xAA; 10]);
         let header = parse_adts_header(&frame).expect("应该解析成功");
         assert_eq!(header.profile, 1); // LC
@@ -420,13 +420,13 @@ mod tests {
     }
 
     #[test]
-    fn test_adts_无效同步() {
+    fn test_adts_invalid_sync() {
         let data = [0x00; 7];
         assert!(parse_adts_header(&data).is_none());
     }
 
     #[test]
-    fn test_探测_adts_同步() {
+    fn test_probe_adts_sync() {
         let probe = AacProbe;
         let mut data = build_adts_frame(&[0xAA; 100]);
         data.extend_from_slice(&build_adts_frame(&[0xBB; 100]));
@@ -434,14 +434,14 @@ mod tests {
     }
 
     #[test]
-    fn test_探测_aac_扩展名() {
+    fn test_probe_aac_extension() {
         let probe = AacProbe;
         assert!(probe.probe(&[], Some("audio.aac")).is_some());
         assert!(probe.probe(&[], Some("audio.mp3")).is_none());
     }
 
     #[test]
-    fn test_基本流信息() {
+    fn test_basic_stream_info() {
         let mut data = Vec::new();
         for _ in 0..5 {
             data.extend_from_slice(&build_adts_frame(&[0xAA; 50]));
@@ -467,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn test_读取数据包() {
+    fn test_read_packets() {
         let payload = vec![0xAA; 50];
         let mut data = Vec::new();
         for _ in 0..3 {
@@ -499,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn test_id3v2_跳过() {
+    fn test_id3v2_skip() {
         // ID3v2 header + AAC data
         let mut data = Vec::new();
         data.extend_from_slice(b"ID3");

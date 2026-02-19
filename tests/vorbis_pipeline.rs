@@ -83,11 +83,11 @@ fn run_vorbis_until_output_frames(path: &str) -> Result<(), Box<dyn std::error::
 }
 
 #[test]
-fn test_vorbis_data1_头包与setup解析通过() {
+fn test_vorbis_data1_header_and_setup_parse_ok() {
     run_vorbis_until_output_frames("data/1.ogg").expect("data/1.ogg 解析失败");
 }
 
 #[test]
-fn test_vorbis_data2_头包与setup解析通过() {
+fn test_vorbis_data2_header_and_setup_parse_ok() {
     run_vorbis_until_output_frames("data/2.ogg").expect("data/2.ogg 解析失败");
 }

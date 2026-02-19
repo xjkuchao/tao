@@ -453,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ts_写入头部() {
+    fn test_ts_write_header() {
         let mut muxer = MpegTsMuxer::create().unwrap();
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
@@ -465,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ts_写入数据包() {
+    fn test_ts_write_packets() {
         let mut muxer = MpegTsMuxer::create().unwrap();
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
@@ -488,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ts_音视频() {
+    fn test_ts_av() {
         let mut muxer = MpegTsMuxer::create().unwrap();
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
@@ -516,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn test_空流报错() {
+    fn test_empty_stream_error() {
         let mut muxer = MpegTsMuxer::create().unwrap();
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));

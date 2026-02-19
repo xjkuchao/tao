@@ -88,7 +88,7 @@ fn mux_to_io(streams: &[Stream], packets: &[Packet]) -> IoContext {
 // ========================
 
 #[test]
-fn test_注册表_包含mp4封装器() {
+fn test_registry_contains_mp4_muxer() {
     let mut registry = tao_format::FormatRegistry::new();
     tao_format::register_all(&mut registry);
     let muxers = registry.list_muxers();
@@ -99,7 +99,7 @@ fn test_注册表_包含mp4封装器() {
 }
 
 #[test]
-fn test_仅视频_封装解封装往返() {
+fn test_video_only_mux_demux_roundtrip() {
     let video_stream = make_video_stream(640, 480, 90000);
     let streams = vec![video_stream];
 
@@ -157,7 +157,7 @@ fn test_仅视频_封装解封装往返() {
 }
 
 #[test]
-fn test_仅音频_封装解封装往返() {
+fn test_audio_only_mux_demux_roundtrip() {
     let mut audio_stream = make_audio_stream(44100, 2);
     audio_stream.index = 0; // 唯一流, 索引为 0
 
@@ -202,7 +202,7 @@ fn test_仅音频_封装解封装往返() {
 }
 
 #[test]
-fn test_音视频_封装解封装往返() {
+fn test_av_mux_demux_roundtrip() {
     let video_stream = make_video_stream(1280, 720, 90000);
     let mut audio_stream = make_audio_stream(48000, 2);
     audio_stream.index = 1;
@@ -274,7 +274,7 @@ fn test_音视频_封装解封装往返() {
 }
 
 #[test]
-fn test_关键帧标记_往返() {
+fn test_keyframe_flag_roundtrip() {
     let video_stream = make_video_stream(320, 240, 30000);
     let streams = vec![video_stream];
 
@@ -308,7 +308,7 @@ fn test_关键帧标记_往返() {
 }
 
 #[test]
-fn test_avcc_extra_data_往返() {
+fn test_avcc_extra_data_roundtrip() {
     let video_stream = make_video_stream(640, 480, 90000);
     let expected_extra = video_stream.extra_data.clone();
     let streams = vec![video_stream];
@@ -334,7 +334,7 @@ fn test_avcc_extra_data_往返() {
 }
 
 #[test]
-fn test_esds_aac_extra_data_往返() {
+fn test_esds_aac_extra_data_roundtrip() {
     let mut audio_stream = make_audio_stream(44100, 2);
     audio_stream.index = 0;
     let expected_extra = vec![0x12, 0x10]; // AAC-LC 44100Hz stereo

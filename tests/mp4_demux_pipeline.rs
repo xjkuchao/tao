@@ -413,14 +413,14 @@ fn build_audio_mp4(
 // ========================
 
 #[test]
-fn test_探测_mp4_ftyp() {
+fn test_probe_mp4_ftyp() {
     let probe = Mp4Probe;
     let mp4 = build_ftyp();
     assert_eq!(probe.probe(&mp4, None), Some(SCORE_MAX));
 }
 
 #[test]
-fn test_探测_mp4_扩展名() {
+fn test_probe_mp4_extension() {
     let probe = Mp4Probe;
     assert_eq!(probe.probe(&[], Some("video.mp4")), Some(SCORE_EXTENSION),);
     assert_eq!(probe.probe(&[], Some("audio.m4a")), Some(SCORE_EXTENSION),);
@@ -433,7 +433,7 @@ fn test_探测_mp4_扩展名() {
 // ========================
 
 #[test]
-fn test_视频轨道_基本信息() {
+fn test_video_track_basic_info() {
     let sample_sizes = vec![500, 100, 100, 100, 100];
     let mp4 = build_video_mp4(1920, 1080, 24000, &sample_sizes, 1000);
 
@@ -460,7 +460,7 @@ fn test_视频轨道_基本信息() {
 }
 
 #[test]
-fn test_视频轨道_读取数据包() {
+fn test_video_track_read_packets() {
     let sample_sizes = vec![500, 100, 150, 200, 50];
     let mp4 = build_video_mp4(640, 480, 30000, &sample_sizes, 1001);
 
@@ -502,7 +502,7 @@ fn test_视频轨道_读取数据包() {
 // ========================
 
 #[test]
-fn test_音频轨道_基本信息() {
+fn test_audio_track_basic_info() {
     let mp4 = build_audio_mp4(44100, 2, 44100, 1024, 10);
 
     let backend = MemoryBackend::from_data(mp4);
@@ -527,7 +527,7 @@ fn test_音频轨道_基本信息() {
 }
 
 #[test]
-fn test_音频轨道_读取数据包() {
+fn test_audio_track_read_packets() {
     let num_frames = 5u32;
     let frame_byte_size = 100u32;
     let mp4 = build_audio_mp4(48000, 2, 48000, 1024, num_frames);
@@ -556,7 +556,7 @@ fn test_音频轨道_读取数据包() {
 // ========================
 
 #[test]
-fn test_文件时长() {
+fn test_file_duration() {
     // timescale=1000, duration=5000 → 5 秒
     let sample_sizes = vec![100; 5];
     let mp4 = build_video_mp4(320, 240, 1000, &sample_sizes, 1000);
@@ -585,7 +585,7 @@ fn create_registry() -> tao_format::FormatRegistry {
 }
 
 #[test]
-fn test_注册表_包含mp4() {
+fn test_registry_contains_mp4() {
     let registry = create_registry();
     let demuxers = registry.list_demuxers();
     assert!(
@@ -595,7 +595,7 @@ fn test_注册表_包含mp4() {
 }
 
 #[test]
-fn test_注册表_探测mp4() {
+fn test_registry_probe_mp4() {
     let registry = create_registry();
     let mp4 = build_ftyp();
     let result = registry.probe(&mp4, Some("test.mp4"));

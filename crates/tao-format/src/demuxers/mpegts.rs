@@ -857,14 +857,14 @@ mod tests {
     }
 
     #[test]
-    fn test_探测_ts_同步字节() {
+    fn test_probe_ts_sync_byte() {
         let probe = TsProbe;
         let ts = build_minimal_ts();
         assert_eq!(probe.probe(&ts, None), Some(crate::probe::SCORE_MAX));
     }
 
     #[test]
-    fn test_探测_ts_扩展名() {
+    fn test_probe_ts_extension() {
         let probe = TsProbe;
         assert!(probe.probe(&[], Some("video.ts")).is_some());
         assert!(probe.probe(&[], Some("video.m2ts")).is_some());
@@ -872,7 +872,7 @@ mod tests {
     }
 
     #[test]
-    fn test_解析_pat_pmt() {
+    fn test_parse_pat_pmt() {
         let ts = build_minimal_ts();
         let backend = MemoryBackend::from_data(ts);
         let mut io = IoContext::new(Box::new(backend));
@@ -892,7 +892,7 @@ mod tests {
     }
 
     #[test]
-    fn test_读取数据包() {
+    fn test_read_packets() {
         let ts = build_minimal_ts();
         let backend = MemoryBackend::from_data(ts);
         let mut io = IoContext::new(Box::new(backend));
@@ -921,7 +921,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pts_时间戳() {
+    fn test_pts_timestamp() {
         let ts = build_minimal_ts();
         let backend = MemoryBackend::from_data(ts);
         let mut io = IoContext::new(Box::new(backend));
@@ -935,7 +935,7 @@ mod tests {
     }
 
     #[test]
-    fn test_关键帧标记() {
+    fn test_keyframe_flag() {
         let ts = build_minimal_ts();
         let backend = MemoryBackend::from_data(ts);
         let mut io = IoContext::new(Box::new(backend));
@@ -975,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stream_type映射() {
+    fn test_stream_type_mapping() {
         assert_eq!(stream_type_to_codec(0x1B), CodecId::H264);
         assert_eq!(stream_type_to_codec(0x24), CodecId::H265);
         assert_eq!(stream_type_to_codec(0x0F), CodecId::Aac);
@@ -985,7 +985,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pes_header_解析() {
+    fn test_pes_header_parse() {
         let data = vec![0xAA; 10];
         let pes = build_pes_header(0xE0, Some(45000), &data);
         let (pts, dts, hdr_len) = parse_pes_header(&pes).unwrap();

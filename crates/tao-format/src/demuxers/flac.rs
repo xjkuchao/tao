@@ -685,14 +685,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_探测_flac_魔数() {
+    fn test_probe_flac_magic() {
         let data = b"fLaC\x00\x00\x00\x22"; // magic + metadata block header
         let probe = FlacProbe;
         assert_eq!(probe.probe(data, None), Some(SCORE_MAX));
     }
 
     #[test]
-    fn test_探测_flac_扩展名() {
+    fn test_probe_flac_extension() {
         let probe = FlacProbe;
         assert_eq!(probe.probe(&[], Some("test.flac")), Some(SCORE_EXTENSION));
         assert_eq!(probe.probe(&[], Some("test.wav")), None);

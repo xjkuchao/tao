@@ -202,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn test_crop_基本() {
+    fn test_crop_basic() {
         let mut filter = CropFilter::new(2, 3, 4, 5);
         let input = make_rgb_frame(10, 10);
         filter.send_frame(&input).unwrap();
@@ -219,14 +219,14 @@ mod tests {
     }
 
     #[test]
-    fn test_crop_越界报错() {
+    fn test_crop_out_of_bounds_error() {
         let mut filter = CropFilter::new(8, 0, 4, 4);
         let input = make_rgb_frame(10, 10);
         assert!(filter.send_frame(&input).is_err());
     }
 
     #[test]
-    fn test_crop_全帧() {
+    fn test_crop_full_frame() {
         let mut filter = CropFilter::new(0, 0, 10, 10);
         let input = make_rgb_frame(10, 10);
         filter.send_frame(&input).unwrap();
@@ -238,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn test_crop_音频帧报错() {
+    fn test_crop_audio_frame_error() {
         let mut filter = CropFilter::new(0, 0, 4, 4);
         let af = Frame::Audio(tao_codec::frame::AudioFrame::new(
             1024,

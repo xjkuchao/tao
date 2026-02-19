@@ -523,14 +523,14 @@ mod tests {
     }
 
     #[test]
-    fn test_探测_aiff_魔数() {
+    fn test_probe_aiff_magic() {
         let aiff = make_simple_aiff(&[0; 4], 44100, 1, 16);
         let probe = AiffProbe;
         assert_eq!(probe.probe(&aiff, None), Some(SCORE_MAX));
     }
 
     #[test]
-    fn test_探测_aiff_扩展名() {
+    fn test_probe_aiff_extension() {
         let probe = AiffProbe;
         assert_eq!(probe.probe(&[], Some("test.aiff")), Some(SCORE_EXTENSION));
         assert_eq!(probe.probe(&[], Some("test.aif")), Some(SCORE_EXTENSION));
@@ -538,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn test_解封装_基本流信息() {
+    fn test_demux_basic_stream_info() {
         // 4 采样的 S16BE 单声道 = 8 字节
         let pcm = vec![0x00, 0x01, 0x7F, 0xFF, 0x80, 0x00, 0x00, 0x01];
         let aiff = make_simple_aiff(&pcm, 44100, 1, 16);
@@ -557,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn test_解封装_读取数据包() {
+    fn test_demux_read_packets() {
         let pcm = vec![0x00, 0x01, 0x7F, 0xFF, 0x80, 0x00, 0x00, 0x01];
         let aiff = make_simple_aiff(&pcm, 44100, 1, 16);
 
@@ -576,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    fn test_解封装_时长() {
+    fn test_demux_duration() {
         // 1 秒的 S16BE 单声道: 44100 * 2 = 88200 bytes
         let pcm = vec![0u8; 44100 * 2];
         let aiff = make_simple_aiff(&pcm, 44100, 1, 16);
@@ -590,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ieee_extended_往返() {
+    fn test_ieee_extended_roundtrip() {
         let rates = [8000.0, 11025.0, 22050.0, 44100.0, 48000.0, 96000.0];
         for rate in rates {
             let encoded = encode_ieee_extended(rate);
@@ -606,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn test_非_form_文件报错() {
+    fn test_non_form_file_error() {
         let bad = b"NOT_FORM_DATA_HERE".to_vec();
         let mut io = IoContext::new(Box::new(MemoryBackend::from_data(bad)));
         let mut demuxer = AiffDemuxer::create().unwrap();

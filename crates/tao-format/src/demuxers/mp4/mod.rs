@@ -570,7 +570,7 @@ mod tests {
     use crate::io::MemoryBackend;
 
     #[test]
-    fn test_探测_mp4_ftyp() {
+    fn test_probe_mp4_ftyp() {
         let probe = Mp4Probe;
         // ftyp box: size=20, type="ftyp", brand="isom"
         let mut data = vec![0u8; 20];
@@ -582,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn test_探测_mp4_扩展名() {
+    fn test_probe_mp4_extension() {
         let probe = Mp4Probe;
         assert!(probe.probe(&[], Some("video.mp4")).is_some());
         assert!(probe.probe(&[], Some("audio.m4a")).is_some());
@@ -591,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn test_解析_最小mp4() {
+    fn test_parse_minimal_mp4() {
         // 构造最小的 MP4 (ftyp + moov 含一个空 trak)
         let mp4 = build_minimal_mp4();
         let backend = MemoryBackend::from_data(mp4);

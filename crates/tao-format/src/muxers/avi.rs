@@ -437,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn test_avi_写入头部() {
+    fn test_avi_write_header() {
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
 
@@ -450,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn test_avi_写入数据包() {
+    fn test_avi_write_packets() {
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
 
@@ -464,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn test_avi_音视频() {
+    fn test_avi_av() {
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
 
@@ -480,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn test_空流报错() {
+    fn test_empty_stream_error() {
         let backend = MemoryBackend::new();
         let mut io = IoContext::new(Box::new(backend));
 

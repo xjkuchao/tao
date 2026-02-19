@@ -129,39 +129,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_rational_基本创建() {
+    fn test_rational_basic_creation() {
         let r = Rational::new(1, 30);
         assert_eq!(r.num, 1);
         assert_eq!(r.den, 30);
     }
 
     #[test]
-    fn test_rational_转换为浮点数() {
+    fn test_rational_to_float() {
         let r = Rational::new(1, 4);
         assert!((r.to_f64() - 0.25).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn test_rational_约分() {
+    fn test_rational_reduce() {
         let r = Rational::new(30, 60).reduce();
         assert_eq!(r, Rational::new(1, 2));
     }
 
     #[test]
-    fn test_rational_无效值() {
+    fn test_rational_invalid_value() {
         let r = Rational::UNDEFINED;
         assert!(!r.is_valid());
         assert!(r.to_f64().is_nan());
     }
 
     #[test]
-    fn test_rational_显示() {
+    fn test_rational_display() {
         let r = Rational::new(30000, 1001);
         assert_eq!(format!("{r}"), "30000/1001");
     }
 
     #[test]
-    fn test_rational_求倒数() {
+    fn test_rational_reciprocal() {
         let r = Rational::new(1, 25).invert();
         assert_eq!(r, Rational::new(25, 1));
     }

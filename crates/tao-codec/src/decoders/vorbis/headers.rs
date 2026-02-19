@@ -149,7 +149,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_identification_成功() {
+    fn test_parse_identification_success() {
         let (h, sample_rate, layout) = parse_identification_header(&build_ident_header()).unwrap();
         assert_eq!(sample_rate, 44100);
         assert_eq!(layout.channels, 2);
@@ -159,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_comment_成功() {
+    fn test_parse_comment_success() {
         parse_comment_header(&build_comment_header()).unwrap();
     }
 }
