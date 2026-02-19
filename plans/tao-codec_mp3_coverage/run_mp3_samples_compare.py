@@ -5,7 +5,6 @@ import re
 import subprocess
 from pathlib import Path
 
-LIST_PATH = Path('plans/tao-codec_mp3_coverage/tao-codec_mp3_samples_urls.txt')
 REPORT_PATH = Path('plans/tao-codec_mp3_coverage/tao-codec_mp3_samples_report.md')
 
 HEADER_PREFIX = '| 序号 |'
@@ -54,12 +53,6 @@ def parse_args():
         help='只测试指定序号的记录(可多个, 与上述参数可组合)',
     )
     return parser.parse_args()
-
-
-def read_urls():
-    if not LIST_PATH.exists():
-        raise RuntimeError('URL清单不存在, 请先生成清单.')
-    return [line.strip() for line in LIST_PATH.read_text(encoding='utf-8').splitlines() if line.strip()]
 
 
 def split_row(line):
@@ -183,7 +176,6 @@ def should_skip(row, col_map, args, idx):
 
 def main():
     args = parse_args()
-    urls = read_urls()
     lines, header_idx, header, sep, rows = load_report()
 
     col_map = {name: idx for idx, name in enumerate(header)}
@@ -192,11 +184,9 @@ def main():
         if name not in col_map:
             raise RuntimeError(f'报告表缺少列: {name}')
 
-    total = len(urls)
-    for idx, url in enumerate(urls, 1):
-        if idx - 1 >= len(rows):
-            raise RuntimeError('报告行数不足, 请重新生成报告模板.')
-        row = rows[idx - 1]
+    total = len(rows)
+    for idx, row in enumerate(rows, 1):
+        url = row[col_map['URL']]
         if should_skip(row, col_map, args, idx):
             continue
 
@@ -221,7 +211,6 @@ def main():
             row[col_map['状态']] = '失败'
             row[col_map['失败原因']] = extract_failure_reason(output)
 
-        rows[idx - 1] = row
         write_report(lines, header_idx, sep, rows)
         print(f'已记录 {idx}/{total}: {row[col_map["状态"]]}')
 

@@ -14,9 +14,8 @@
 ## 3. 计划步骤与预期产出
 
 ### P0 生成 URL 清单
-- 产出文件: `plans/tao-codec_mp3_coverage/tao-codec_mp3_samples_urls.txt`
+- 产出: URL 已整合到 `plans/tao-codec_mp3_coverage/tao-codec_mp3_samples_report.md` 的 URL 列, 独立清单文件已删除。
 - 内容: 由 `allsamples.txt` 提取的全部 MP3 完整 URL 列表(共 185 条)。
-- 断点规则: 文件仅需生成一次, 后续复用。
 
 ### P1 建立结果记录表
 - 产出文件: `plans/tao-codec_mp3_coverage/tao-codec_mp3_samples_report.md`
@@ -61,8 +60,7 @@
   - `plans/tao-codec_mp3_coverage/tao-codec_mp3_samples_report.md` 覆盖全部 185 条样本。
 
 ## 4. 验收标准
-- URL 清单完整且可复用。
-- 结果表包含所有样本记录, 且支持断点续运行。
+- 全部 URL 已写入结果表, 结果表包含所有样本记录, 且支持断点续运行。
 - 成功样本记录完整差异指标; 失败样本记录具体原因。
 
 ## 5. 进度标记
