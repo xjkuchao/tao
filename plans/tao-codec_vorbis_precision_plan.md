@@ -2,7 +2,7 @@
 
 ## 1. 背景与目标
 - 参考 `plans/tao-codec_mp3_precision_plan.md` 的推进方式, 建立 Vorbis 精度收敛流程。
-- 对比入口统一为 `tests/vorbis_module_compare.rs`。
+- 对比入口统一为 `tests/perf_compare/vorbis_module_compare.rs`。
 - 当前阶段固定主目标样本: `data/1.ogg`。
 - 目标: `data/1.ogg` 对比 FFmpeg 达到 `100.00%` 精度。
 

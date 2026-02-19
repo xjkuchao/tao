@@ -1,7 +1,7 @@
 # tao-codec MP3 解码精度提升计划
 
 ## 1. 背景与目标
-- 当前 `tests/mp3_module_compare.rs` 对比 FFmpeg 精度约 66.22%, 距离 100% 目标差距较大。
+- 当前 `tests/perf_compare/mp3_module_compare.rs` 对比 FFmpeg 精度约 66.22%, 距离 100% 目标差距较大。
 - 需要定位自研 MP3 解码器与 FFmpeg/开源解码器的差异, 并逐步收敛到 100%。
 - 规则优先级: 正确性 > 向后兼容 > 性能 > 开发效率。
 

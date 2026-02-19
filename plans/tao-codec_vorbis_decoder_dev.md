@@ -91,7 +91,7 @@
 - 验收: `tao-play` 可播放 `data/1.ogg` `data/2.ogg`。
 
 ### P4 逐帧对标测试
-- [x] 新增 `tests/vorbis_module_compare.rs`。
+- [x] 新增 `tests/perf_compare/vorbis_module_compare.rs`。
 - [x] 与 FFmpeg 比较 MSE/PSNR/最大误差并输出报告。
 - [x] 移除 Lewton 对比, 仅保留 FFmpeg 基准。
 - [ ] 建立并满足误差阈值。

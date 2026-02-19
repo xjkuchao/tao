@@ -37,7 +37,7 @@
 
 ### P2 执行方式与脚本
 - 执行方式:
-  - 优先使用 `tests/mp3_module_compare.rs`:
+  - 优先使用 `tests/perf_compare/mp3_module_compare.rs`:
     - `TAO_MP3_COMPARE_INPUT=<URL或本地路径> cargo test --test mp3_module_compare -- --nocapture --ignored`
 - 若未启用 `http` feature:
   - 先将 URL 下载到 `data/mp3_samples/`。
