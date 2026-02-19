@@ -1,6 +1,7 @@
 //! MP3 解码器实现
 
 mod alias;
+mod bit_reservoir;
 mod bitreader;
 mod data;
 mod header;
@@ -21,7 +22,6 @@ use crate::codec_parameters::CodecParameters;
 use crate::decoder::Decoder;
 use crate::frame::{AudioFrame, Frame};
 use crate::packet::Packet;
-use std::collections::VecDeque;
 use tao_core::{ChannelLayout, Rational, SampleFormat, TaoError, TaoResult};
 
 use self::bitreader::BitReader;
@@ -30,13 +30,14 @@ use self::side_info::SideInfo;
 
 use self::data::GranuleContext;
 use self::synthesis::SynthContext;
+use bit_reservoir::BitReservoir;
 
 /// MP3 解码器
 pub struct Mp3Decoder {
     /// 输入缓冲区 (存储未处理的数据包)
     buffer: Vec<u8>,
     /// 比特储备库 (Bit Reservoir)
-    main_data: VecDeque<u8>,
+    bit_reservoir: BitReservoir,
     /// Granule 解码上下文 [granule][channel]
     granule_data: [[GranuleContext; 2]; 2],
     /// IMDCT 重叠缓冲区 [channel][subband][sample]
@@ -74,7 +75,7 @@ impl Mp3Decoder {
     pub fn create() -> TaoResult<Box<dyn Decoder>> {
         Ok(Box::new(Self {
             buffer: Vec::with_capacity(4096),
-            main_data: VecDeque::with_capacity(4096),
+            bit_reservoir: BitReservoir::new(),
             granule_data: Default::default(),
             overlap: [[[0.0; 18]; 32]; 2],
             synth_ctx: Default::default(),
@@ -159,27 +160,14 @@ impl Mp3Decoder {
         // 5. 组装本帧 Main Data 视图:
         // [前序复用字节(main_data_begin)] + [当前帧 main_data]
         let main_data_slice = &frame_data[side_info_end..];
-        let main_data_begin = side_info.main_data_begin as usize;
-        const MAX_MAIN_DATA_BYTES: usize = 2048;
-
-        if main_data_begin > self.main_data.len() {
-            // 数据不足: 仅缓存当前数据, 等后续帧补齐
-            self.main_data.extend(main_data_slice);
-            if self.main_data.len() > MAX_MAIN_DATA_BYTES {
-                let remove_cnt = self.main_data.len() - MAX_MAIN_DATA_BYTES;
-                self.main_data.drain(0..remove_cnt);
-            }
-            return Ok((header.frame_size, None));
+        let mut main_data_begin = side_info.main_data_begin as usize;
+        if std::env::var("TAO_MP3_DISABLE_RESERVOIR").is_ok() {
+            // 调试用途: 忽略 bit reservoir, 强制按当前帧 main_data 解码
+            self.bit_reservoir.clear();
+            main_data_begin = 0;
         }
-
-        let reservoir: Vec<u8> = self.main_data.iter().copied().collect();
-        let reuse_start = reservoir.len() - main_data_begin;
-
-        let mut frame_main_data = Vec::with_capacity(main_data_begin + main_data_slice.len());
-        frame_main_data.extend_from_slice(&reservoir[reuse_start..]);
-        frame_main_data.extend_from_slice(main_data_slice);
-
-        let mut br = BitReader::new(&frame_main_data);
+        let underflow_bytes = self.bit_reservoir.fill(main_data_slice, main_data_begin)?;
+        let underflow_bits = (underflow_bytes * 8) as u32;
 
         let huffman = huffman::HuffmanDecoder::new();
 
@@ -191,17 +179,77 @@ impl Mp3Decoder {
         let is_mpeg1 = header.version == MpegVersion::Mpeg1;
         let ngr = if is_mpeg1 { 2 } else { 1 };
 
+        if std::env::var("TAO_MP3_DEBUG_FRAME_INFO").is_ok() {
+            let mut info = [[debug::GranuleInfo::default(); 2]; 2];
+            for (gr, info_gr) in info.iter_mut().enumerate().take(ngr) {
+                for (ch, info_ch) in info_gr.iter_mut().enumerate().take(nch) {
+                    let granule = &side_info.granules[gr][ch];
+                    *info_ch = debug::GranuleInfo {
+                        block_type: granule.block_type,
+                        mixed_block_flag: granule.mixed_block_flag,
+                        windows_switching_flag: granule.windows_switching_flag,
+                        part2_3_length: granule.part2_3_length,
+                        big_values: granule.big_values,
+                        count1table_select: granule.count1table_select,
+                    };
+                }
+            }
+
+            debug::record_frame_info(debug::FrameInfo {
+                frame_index: self.frame_count,
+                main_data_begin: side_info.main_data_begin,
+                underflow_bytes: underflow_bytes as u32,
+                channels: nch as u32,
+                granules: ngr as u32,
+                info,
+            });
+        }
+
         let mut pcm_buffer = Vec::new();
+        let snapshot_enabled = debug::snapshot_enabled();
+        let mut snapshots: [[Option<debug::FrameSnapshot>; 2]; 2] = [[None, None], [None, None]];
 
         // 构建 SFB 累积边界表 (用于 Huffman region 边界计算)
         let sfb_long_bounds = tables::build_sfb_long_bounds(header.samplerate);
 
-        for gr in 0..ngr {
+        let main_data = self.bit_reservoir.bytes_ref();
+        let mut part2_3_begin = 0usize;
+        let mut part2_3_skipped = 0u32;
+
+        for (gr, snapshots_gr) in snapshots.iter_mut().enumerate().take(ngr) {
+            // resevoir underflow: 跳过缺失比特所属的 granule
+            if part2_3_skipped < underflow_bits {
+                for ch in 0..nch {
+                    self.granule_data[gr][ch].scalefac.fill(0);
+                    self.granule_data[gr][ch].is.fill(0);
+                    self.granule_data[gr][ch].xr.fill(0.0);
+                    self.granule_data[gr][ch].rzero = 0;
+                    part2_3_skipped += side_info.granules[gr][ch].part2_3_length;
+                }
+
+                if part2_3_skipped > underflow_bits {
+                    part2_3_begin = (part2_3_skipped - underflow_bits) as usize;
+                }
+
+                continue;
+            }
+
             // --- Phase 2: Huffman Decoding ---
-            for ch in 0..nch {
+            for (ch, snap_slot) in snapshots_gr.iter_mut().enumerate().take(nch) {
                 let granule = &side_info.granules[gr][ch];
                 let part2_3_length = granule.part2_3_length as usize;
                 let scalefac_compress = granule.scalefac_compress;
+
+                let byte_index = part2_3_begin >> 3;
+                if byte_index >= main_data.len() {
+                    return Err(TaoError::InvalidData("MP3 main_data 偏移无效".into()));
+                }
+
+                let mut br = BitReader::new(&main_data[byte_index..]);
+                let bit_index = part2_3_begin & 0x7;
+                if bit_index > 0 && !br.skip_bits(bit_index) {
+                    return Err(TaoError::InvalidData("MP3 main_data 位偏移无效".into()));
+                }
 
                 let start_bit = br.bit_offset();
 
@@ -283,7 +331,9 @@ impl Mp3Decoder {
                     let groups = [(0, 6), (6, 11), (11, 16), (16, 21)];
 
                     for (group_idx, &(start, end)) in groups.iter().enumerate() {
-                        let use_prev = gr == 1 && scfsi[group_idx] == 1;
+                        let use_prev = gr == 1
+                            && scfsi[group_idx] == 1
+                            && std::env::var("TAO_MP3_DISABLE_SCFsi").is_err();
 
                         for band in start..end {
                             let len = if band < 11 { slen1 } else { slen2 };
@@ -299,6 +349,31 @@ impl Mp3Decoder {
                             }
                         }
                     }
+                }
+
+                let part2_bits = (br.bit_offset() - start_bit) as u32;
+                if part2_bits > granule.part2_3_length {
+                    return Err(TaoError::InvalidData(
+                        "MP3 part2_3_length 小于 scale factor 长度".into(),
+                    ));
+                }
+
+                if std::env::var("TAO_MP3_DEBUG_PART2").is_ok() {
+                    let scfsi = side_info.scfsi[ch];
+                    debug::record_part2_info(debug::Part2Info {
+                        frame_index: self.frame_count,
+                        gr: gr as u8,
+                        ch: ch as u8,
+                        part2_bits,
+                        part2_3_length: granule.part2_3_length,
+                        block_type: granule.block_type,
+                        mixed_block_flag: granule.mixed_block_flag,
+                        windows_switching_flag: granule.windows_switching_flag,
+                        scalefac_compress,
+                        slen1: slen1 as u8,
+                        slen2: slen2 as u8,
+                        scfsi,
+                    });
                 }
 
                 // --- Part 3: Huffman Decoding ---
@@ -335,54 +410,127 @@ impl Mp3Decoder {
                     };
 
                     let linbits = tables::HUFFMAN_TABLE_PARAMS[table_id as usize].1;
+                    let prev_bit = br.bit_offset();
                     match huffman.decode_big_values(&mut br, table_id, linbits) {
                         Ok((x, y)) => {
+                            if br.bit_offset() > end_bit {
+                                // 防止越过 part2_3_length, 丢弃本次输出并终止.
+                                if i < 576 {
+                                    is[i] = 0;
+                                }
+                                if i + 1 < 576 {
+                                    is[i + 1] = 0;
+                                }
+                                // 回退到 end_bit, 确保后续对齐.
+                                br.seek_to_bit(end_bit);
+                                break;
+                            }
+
                             is[i] = x;
                             if i + 1 < 576 {
                                 is[i + 1] = y;
                             }
                             i += 2;
                         }
-                        Err(_) => break,
+                        Err(_) => {
+                            // 若解码失败且已读取部分比特, 避免游标悬停在异常位置.
+                            if br.bit_offset() > prev_bit {
+                                br.seek_to_bit(prev_bit);
+                            }
+                            debug::record_huffman_error(debug::HuffmanErrorInfo {
+                                frame_index: self.frame_count,
+                                gr: gr as u8,
+                                ch: ch as u8,
+                                stage: "big_values",
+                                bit_offset: br.bit_offset(),
+                                end_bit,
+                            });
+                            break;
+                        }
                     }
                 }
 
                 // Count1 区域 (四元组)
                 let count1_table = if granule.count1table_select { 33 } else { 32 };
+                let disable_count1 = std::env::var("TAO_MP3_DISABLE_COUNT1").is_ok();
 
-                while i < 576 {
-                    if br.bit_offset() >= end_bit {
-                        break;
+                if !disable_count1 {
+                    while i < 576 {
+                        if br.bit_offset() >= end_bit {
+                            break;
+                        }
+
+                        if let Ok((v, w, x, y)) = huffman.decode_count1(&mut br, count1_table) {
+                            is[i] = v;
+                            if i + 1 < 576 {
+                                is[i + 1] = w;
+                            }
+                            if i + 2 < 576 {
+                                is[i + 2] = x;
+                            }
+                            if i + 3 < 576 {
+                                is[i + 3] = y;
+                            }
+                            i += 4;
+                        } else {
+                            debug::record_huffman_error(debug::HuffmanErrorInfo {
+                                frame_index: self.frame_count,
+                                gr: gr as u8,
+                                ch: ch as u8,
+                                stage: "count1",
+                                bit_offset: br.bit_offset(),
+                                end_bit,
+                            });
+                            break;
+                        }
                     }
 
-                    if let Ok((v, w, x, y)) = huffman.decode_count1(&mut br, count1_table) {
-                        is[i] = v;
-                        if i + 1 < 576 {
-                            is[i + 1] = w;
+                    // 如果 count1 解码超出了 part2_3_length 边界,
+                    // 丢弃最后一组四元组 (其值基于越界比特, 不可信)
+                    if br.bit_offset() > end_bit && i > big_values {
+                        i -= 4;
+                        for val in is.iter_mut().take((i + 4).min(576)).skip(i) {
+                            *val = 0;
                         }
-                        if i + 2 < 576 {
-                            is[i + 2] = x;
-                        }
-                        if i + 3 < 576 {
-                            is[i + 3] = y;
-                        }
-                        i += 4;
-                    } else {
-                        break;
-                    }
-                }
-
-                // 如果 count1 解码超出了 part2_3_length 边界,
-                // 丢弃最后一组四元组 (其值基于越界比特, 不可信)
-                if br.bit_offset() > end_bit && i > big_values {
-                    i -= 4;
-                    for val in is.iter_mut().take((i + 4).min(576)).skip(i) {
-                        *val = 0;
                     }
                 }
 
                 // rzero: Huffman 解码样本数 (big_values + count1), 之后的样本全为 0
                 self.granule_data[gr][ch].rzero = i;
+
+                if snapshot_enabled
+                    && debug::should_record_snapshot(self.frame_count as usize, gr, ch)
+                {
+                    let snap = debug::FrameSnapshot {
+                        frame_index: self.frame_count as usize,
+                        gr,
+                        ch,
+                        is_samples: self.granule_data[gr][ch].is,
+                        scalefac: self.granule_data[gr][ch].scalefac,
+                        global_gain: granule.global_gain,
+                        scalefac_compress: granule.scalefac_compress,
+                        scalefac_scale: granule.scalefac_scale,
+                        preflag: granule.preflag,
+                        subblock_gain: granule.subblock_gain,
+                        table_select: granule.table_select,
+                        part2_3_length: granule.part2_3_length,
+                        part2_3_begin,
+                        part2_bits,
+                        channel_mode: header.mode as u8,
+                        mode_extension: header.mode_extension,
+                        block_type: granule.block_type,
+                        mixed_block_flag: granule.mixed_block_flag,
+                        windows_switching_flag: granule.windows_switching_flag,
+                        region1_start,
+                        region2_start,
+                        big_values,
+                        count1_table,
+                        rzero: self.granule_data[gr][ch].rzero,
+                        main_data: main_data.to_vec(),
+                        ..Default::default()
+                    };
+                    *snap_slot = Some(snap);
+                }
 
                 br.seek_to_bit(end_bit);
 
@@ -395,6 +543,13 @@ impl Mp3Decoder {
                     header.version,
                     header.samplerate,
                 )?;
+
+                if let Some(snap) = snap_slot.as_mut() {
+                    snap.xr_after_requantize = self.granule_data[gr][ch].xr;
+                    snap.rzero = self.granule_data[gr][ch].rzero;
+                }
+
+                part2_3_begin += part2_3_length;
             }
 
             // --- Phase 3: Stereo Processing (在 reorder 之前, 因为立体声处理需要 SFB 顺序) ---
@@ -415,27 +570,63 @@ impl Mp3Decoder {
                 self.granule_data[gr][1].rzero = max_rzero;
             }
 
+            if snapshot_enabled {
+                for (ch, snap_slot) in snapshots_gr.iter_mut().enumerate().take(nch) {
+                    if let Some(snap) = snap_slot.as_mut() {
+                        snap.xr_after_stereo = self.granule_data[gr][ch].xr;
+                        snap.rzero = self.granule_data[gr][ch].rzero;
+                    }
+                }
+            }
+
             // --- Phase 3: Reorder + Alias Reduction ---
-            for ch in 0..nch {
+            for (ch, snap_slot) in snapshots_gr.iter_mut().enumerate().take(nch) {
                 let granule = &side_info.granules[gr][ch];
 
                 // Reorder (短块重排序)
-                reorder::reorder(
-                    granule,
-                    &mut self.granule_data[gr][ch].xr,
-                    header.version,
-                    header.samplerate,
-                );
+                if std::env::var("TAO_MP3_DISABLE_REORDER").is_err() {
+                    reorder::reorder(
+                        granule,
+                        &mut self.granule_data[gr][ch].xr,
+                        &mut self.granule_data[gr][ch].rzero,
+                        header.version,
+                        header.samplerate,
+                    );
+                }
+
+                if let Some(snap) = snap_slot.as_mut() {
+                    snap.xr_after_reorder = self.granule_data[gr][ch].xr;
+                    snap.rzero = self.granule_data[gr][ch].rzero;
+                }
 
                 // Alias Reduction (抗混叠, 限制处理范围到 rzero 附近)
-                let rzero = self.granule_data[gr][ch].rzero;
-                alias::alias_reduction(
+                if std::env::var("TAO_MP3_DISABLE_ALIAS").is_err() {
+                    alias::alias_reduction(
+                        granule,
+                        &mut self.granule_data[gr][ch].xr,
+                        &mut self.granule_data[gr][ch].rzero,
+                        header.version,
+                        header.samplerate,
+                    );
+                }
+
+                if let Some(snap) = snap_slot.as_mut() {
+                    snap.xr_after_alias = self.granule_data[gr][ch].xr;
+                    snap.rzero = self.granule_data[gr][ch].rzero;
+                }
+
+                let ref_outputs = debug::reference_pipeline_step(
                     granule,
-                    &mut self.granule_data[gr][ch].xr,
-                    rzero,
-                    header.version,
-                    header.samplerate,
+                    &self.granule_data[gr][ch].xr,
+                    self.granule_data[gr][ch].rzero,
+                    ch,
                 );
+                if let Some(snap) = snap_slot.as_mut() {
+                    if let Some(ref_out) = ref_outputs {
+                        snap.ref_imdct_output = ref_out.imdct_output;
+                        snap.ref_pcm_output = ref_out.pcm_output.to_vec();
+                    }
+                }
             }
 
             // --- Phase 4: IMDCT & Synthesis ---
@@ -444,9 +635,13 @@ impl Mp3Decoder {
             for (ch, pcm_channel) in pcm_ch.iter_mut().enumerate().take(nch) {
                 let granule = &side_info.granules[gr][ch];
                 let ctx = &self.granule_data[gr][ch];
+                let snap_slot = &mut snapshots_gr[ch];
 
                 // 1. IMDCT (使用每通道共享的 overlap 缓冲区)
                 let mut imdct_out = [0.0; 576];
+                if let Some(snap) = snap_slot.as_mut() {
+                    snap.overlap_before = self.overlap[ch];
+                }
                 imdct::imdct(
                     granule,
                     &ctx.xr,
@@ -455,11 +650,26 @@ impl Mp3Decoder {
                     &mut imdct_out,
                 );
 
+                if let Some(snap) = snap_slot.as_mut() {
+                    snap.imdct_output = imdct_out;
+                }
+
                 // 2. Frequency Inversion
-                synthesis::frequency_inversion(&mut imdct_out);
+                if std::env::var("TAO_MP3_DISABLE_FREQ_INV").is_err() {
+                    synthesis::frequency_inversion(&mut imdct_out);
+                }
+
+                if let Some(snap) = snap_slot.as_mut() {
+                    snap.after_freq_inversion = imdct_out;
+                }
 
                 // 3. Polyphase Synthesis
                 let synth = &mut self.synth_ctx[ch];
+                if let Some(snap) = snap_slot.as_mut() {
+                    let (v_vec, v_front) = synth.snapshot_state();
+                    snap.synth_v_vec = v_vec;
+                    snap.synth_v_front = v_front;
+                }
 
                 for k in 0..18 {
                     let mut subband_samples = [0.0; 32];
@@ -474,6 +684,15 @@ impl Mp3Decoder {
                 }
             }
 
+            if snapshot_enabled {
+                for (ch, snap_slot) in snapshots_gr.iter_mut().enumerate().take(nch) {
+                    if let Some(mut snap) = snap_slot.take() {
+                        snap.pcm_output = pcm_ch[ch].to_vec();
+                        debug::record_snapshot(snap);
+                    }
+                }
+            }
+
             // 4. Interleave & Output
             for i in 0..576 {
                 for pcm_channel in pcm_ch.iter().take(nch) {
@@ -481,6 +700,10 @@ impl Mp3Decoder {
                 }
             }
         }
+
+        // Bit Reservoir 管理: 记录已消费的字节数
+        let used_bytes = (part2_3_begin + 7) >> 3;
+        self.bit_reservoir.consume(used_bytes);
 
         // 8. Gapless 裁剪: 跳过 encoder delay 前缀
         // pcm_buffer 以交错格式存储, 每帧 nb_interleaved = samples_per_ch * nch
@@ -516,12 +739,6 @@ impl Mp3Decoder {
 
         // 若裁剪后无有效样本, 继续下一帧 (不输出空帧)
         if keep_per_ch == 0 {
-            // Bit Reservoir 管理: 追加当前帧 main_data, 保留最近窗口
-            self.main_data.extend(main_data_slice);
-            if self.main_data.len() > MAX_MAIN_DATA_BYTES {
-                let remove_cnt = self.main_data.len() - MAX_MAIN_DATA_BYTES;
-                self.main_data.drain(0..remove_cnt);
-            }
             self.sample_rate = header.samplerate;
             self.channels = nch as u32;
             self.channel_layout = ChannelLayout::from_channels(nch as u32);
@@ -548,13 +765,6 @@ impl Mp3Decoder {
         self.channel_layout = ChannelLayout::from_channels(nch as u32);
         self.frame_count += 1;
 
-        // Bit Reservoir 管理: 追加当前帧 main_data, 保留最近窗口
-        self.main_data.extend(main_data_slice);
-        if self.main_data.len() > MAX_MAIN_DATA_BYTES {
-            let remove_cnt = self.main_data.len() - MAX_MAIN_DATA_BYTES;
-            self.main_data.drain(0..remove_cnt);
-        }
-
         Ok((header.frame_size, Some(Frame::Audio(frame))))
     }
 }
@@ -571,7 +781,7 @@ impl Decoder for Mp3Decoder {
     fn open(&mut self, params: &CodecParameters) -> TaoResult<()> {
         self.opened = true;
         self.buffer.clear();
-        self.main_data.clear();
+        self.bit_reservoir.clear();
         self.next_pts = 0;
         self.delay_skipped = 0;
         self.total_decoded_samples = 0;
@@ -596,6 +806,7 @@ impl Decoder for Mp3Decoder {
         // 重置 overlap 和 synth 状态
         self.overlap = [[[0.0; 18]; 32]; 2];
         self.synth_ctx = Default::default();
+        debug::reset_reference_pipeline();
         Ok(())
     }
 
@@ -626,7 +837,7 @@ impl Decoder for Mp3Decoder {
 
     fn flush(&mut self) {
         self.buffer.clear();
-        self.main_data.clear();
+        self.bit_reservoir.clear();
         self.next_pts = 0;
         self.delay_skipped = 0;
         self.total_decoded_samples = 0;

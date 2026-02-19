@@ -1,20 +1,18 @@
 //! MP3 立体声处理 (Stereo Processing)
 //!
-//! 采用 FFmpeg `compute_stereo` 的处理策略：
-//! - 长块: 按 SFB 从高到低进行 IS + MS 退化。
-//! - 短块: 按 (SFB, 窗口) 从高频到低频，并按窗口分别判断是否退化到 MS。
-//! - 对应 `s` 为 MS，`i` 为 Intensity Stereo。
+//! 处理 Joint Stereo 的 MS 与 Intensity Stereo 逻辑.
+//! 规则参考 ISO/IEC 11172-3 的描述, 并与 FFmpeg/Symphonia 行为对齐.
 
 use super::data::GranuleContext;
-use super::header::{ChannelMode, Mp3Header};
+use super::header::{ChannelMode, Mp3Header, MpegVersion};
 use super::side_info::Granule;
-use super::tables::{SFB_WIDTH_LONG, SFB_WIDTH_SHORT, samplerate_index};
+use super::tables::{SFB_WIDTH_LONG, SFB_WIDTH_SHORT, build_sfb_long_bounds, samplerate_index};
 use std::f32::consts::FRAC_1_SQRT_2;
 
-/// IS 比率表 (MPEG-1)
-/// 对应 `is_pos = 0..6` 的强度刻度。`is_pos == 7` 视为无效。
+/// MPEG-1 强度立体声比例表
+/// is_pos=0..6, is_pos==7 为无效.
 #[allow(clippy::excessive_precision)]
-const IS_RATIOS: [(f32, f32); 7] = [
+const IS_RATIOS_MPEG1: [(f32, f32); 7] = [
     (0.000000000, 1.000000000),
     (0.211324865, 0.788675135),
     (0.366025404, 0.633974596),
@@ -23,6 +21,233 @@ const IS_RATIOS: [(f32, f32); 7] = [
     (0.788675135, 0.211324865),
     (1.000000000, 0.000000000),
 ];
+
+const IS_POS_INVALID_MPEG1: u8 = 7;
+
+fn process_mid_side(l: &mut [f32], r: &mut [f32]) {
+    let scale = if std::env::var("TAO_MP3_MS_SCALE_HALF").is_ok() {
+        0.5f32
+    } else {
+        FRAC_1_SQRT_2
+    };
+    for (l_val, r_val) in l.iter_mut().zip(r.iter_mut()) {
+        let m = *l_val;
+        let s = *r_val;
+        *l_val = (m + s) * scale;
+        *r_val = (m - s) * scale;
+    }
+}
+
+fn process_intensity_band(
+    intensity_pos: u8,
+    ratios: &[(f32, f32)],
+    invalid_pos: u8,
+    ms_stereo: bool,
+    l: &mut [f32],
+    r: &mut [f32],
+) {
+    if intensity_pos < invalid_pos {
+        let (kl, kr) = ratios[intensity_pos as usize];
+        for (l_val, r_val) in l.iter_mut().zip(r.iter_mut()) {
+            let v = *l_val;
+            *l_val = v * kl;
+            *r_val = v * kr;
+        }
+    } else if ms_stereo {
+        process_mid_side(l, r);
+    }
+}
+
+fn is_zero_band(samples: &[f32]) -> bool {
+    !samples.iter().any(|&v| v != 0.0)
+}
+
+fn short_intensity_pos(scalefac: &[u8; 40], sfb: usize, win: usize, mixed: bool) -> u8 {
+    if mixed {
+        if sfb < 3 {
+            return scalefac[sfb];
+        }
+        if sfb >= 12 {
+            let idx = 32 + win;
+            return scalefac[idx.min(39)];
+        }
+        let idx = 8 + (sfb - 3) * 3 + win;
+        scalefac[idx.min(39)]
+    } else {
+        if sfb >= 12 {
+            let idx = 33 + win;
+            return scalefac[idx.min(39)];
+        }
+        let idx = sfb * 3 + win;
+        scalefac[idx.min(39)]
+    }
+}
+
+fn mixed_long_end(widths: &[usize; 22]) -> usize {
+    let mut acc = 0usize;
+    for (i, w) in widths.iter().enumerate() {
+        acc += *w;
+        if acc >= 36 {
+            return i + 1;
+        }
+    }
+    8
+}
+
+fn process_intensity_long_block(
+    l_data: &mut GranuleContext,
+    r_data: &mut GranuleContext,
+    ms_stereo: bool,
+    ratios: &[(f32, f32)],
+    invalid_pos: u8,
+    sample_rate: u32,
+    max_bound: usize,
+) -> usize {
+    let bounds = build_sfb_long_bounds(sample_rate);
+    let mut is_pos = [0u8; 22];
+    is_pos.copy_from_slice(&r_data.scalefac[..22]);
+    is_pos[21] = is_pos[20];
+
+    let mut bound = max_bound;
+    let rzero = r_data.rzero.min(576);
+
+    for sfb in (0..22).rev() {
+        let start = bounds[sfb];
+        let end = bounds[sfb + 1];
+
+        let zero = if start >= rzero {
+            true
+        } else {
+            is_zero_band(&r_data.xr[start..end])
+        };
+
+        if zero {
+            process_intensity_band(
+                is_pos[sfb],
+                ratios,
+                invalid_pos,
+                ms_stereo,
+                &mut l_data.xr[start..end],
+                &mut r_data.xr[start..end],
+            );
+            bound = start;
+        } else {
+            break;
+        }
+    }
+
+    bound
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_intensity_short_block(
+    l_data: &mut GranuleContext,
+    r_data: &mut GranuleContext,
+    granule: &Granule,
+    ms_stereo: bool,
+    ratios: &[(f32, f32)],
+    invalid_pos: u8,
+    sample_rate: u32,
+    max_bound: usize,
+) -> usize {
+    let sr_idx = samplerate_index(sample_rate);
+    let short_width = &SFB_WIDTH_SHORT[sr_idx];
+    let long_width = &SFB_WIDTH_LONG[sr_idx];
+
+    let mixed = granule.mixed_block_flag;
+    let short_start = if mixed { 3 } else { 0 };
+    let long_end = if mixed { mixed_long_end(long_width) } else { 0 };
+
+    let short_region_start = if mixed {
+        long_width.iter().take(long_end).sum()
+    } else {
+        0
+    };
+
+    let mut sfb_starts = Vec::with_capacity(13);
+    let mut acc = short_region_start;
+    for (sfb, width) in short_width.iter().enumerate().take(13).skip(short_start) {
+        sfb_starts.push((sfb, acc));
+        acc += width * 3;
+    }
+
+    let mut window_is_zero = [true; 3];
+    let mut bound = max_bound;
+    let mut found_bound = false;
+    let rzero = r_data.rzero.min(576);
+
+    for (sfb, start) in sfb_starts.iter().rev().copied() {
+        let width = short_width[sfb];
+        let s0 = start;
+        let s1 = s0 + width;
+        let s2 = s1 + width;
+        let s3 = s2 + width;
+
+        let windows = [(2, s2, s3), (1, s1, s2), (0, s0, s1)];
+        for (win, w_start, w_end) in windows {
+            let zero = if w_start >= rzero {
+                true
+            } else {
+                is_zero_band(&r_data.xr[w_start..w_end])
+            };
+
+            window_is_zero[win] = window_is_zero[win] && zero;
+
+            if window_is_zero[win] {
+                let is_pos = short_intensity_pos(&r_data.scalefac, sfb, win, mixed);
+                process_intensity_band(
+                    is_pos,
+                    ratios,
+                    invalid_pos,
+                    ms_stereo,
+                    &mut l_data.xr[w_start..w_end],
+                    &mut r_data.xr[w_start..w_end],
+                );
+            } else if ms_stereo {
+                process_mid_side(
+                    &mut l_data.xr[w_start..w_end],
+                    &mut r_data.xr[w_start..w_end],
+                );
+            }
+        }
+
+        bound = s0;
+        found_bound = !window_is_zero[0] && !window_is_zero[1] && !window_is_zero[2];
+        if found_bound {
+            break;
+        }
+    }
+
+    if !found_bound && mixed {
+        let long_bounds = build_sfb_long_bounds(sample_rate);
+        for sfb in (0..long_end).rev() {
+            let start = long_bounds[sfb];
+            let end = long_bounds[sfb + 1];
+            let zero = if start >= rzero {
+                true
+            } else {
+                is_zero_band(&r_data.xr[start..end])
+            };
+
+            if zero {
+                let is_pos = r_data.scalefac[sfb];
+                process_intensity_band(
+                    is_pos,
+                    ratios,
+                    invalid_pos,
+                    ms_stereo,
+                    &mut l_data.xr[start..end],
+                    &mut r_data.xr[start..end],
+                );
+                bound = start;
+            } else {
+                break;
+            }
+        }
+    }
+
+    bound
+}
 
 /// 立体声处理
 pub fn process_stereo(
@@ -39,7 +264,10 @@ pub fn process_stereo(
     let mode_ext = header.mode_extension;
     let intensity_stereo =
         (mode_ext & 0x1) != 0 && std::env::var("TAO_MP3_DISABLE_INTENSITY").is_err();
-    let ms_stereo = (mode_ext & 0x2) != 0;
+    let mut ms_stereo = (mode_ext & 0x2) != 0;
+    if std::env::var("TAO_MP3_DISABLE_MS").is_ok() {
+        ms_stereo = false;
+    }
 
     if !intensity_stereo && !ms_stereo {
         return;
@@ -53,214 +281,52 @@ pub fn process_stereo(
 
     let l_gr = &granules[gr][0];
 
-    if l_gr.windows_switching_flag && l_gr.block_type == 2 {
-        process_stereo_short(
-            l_data,
-            r_data,
-            l_gr,
-            ms_stereo,
-            intensity_stereo,
-            sample_rate,
-        );
-    } else {
-        process_stereo_long(
-            l_data,
-            r_data,
-            l_gr,
-            ms_stereo,
-            intensity_stereo,
-            sample_rate,
-        );
-    }
-}
+    let end = l_data.rzero.max(r_data.rzero).min(576);
 
-fn process_stereo_long(
-    l_data: &mut GranuleContext,
-    r_data: &mut GranuleContext,
-    _granule: &Granule,
-    ms_stereo: bool,
-    intensity_stereo: bool,
-    sample_rate: u32,
-) {
-    let sfb_width = &SFB_WIDTH_LONG[samplerate_index(sample_rate)];
-    let sf_max = 7usize;
+    let mut intensity_enabled = intensity_stereo;
+    let mut ratios: &[(f32, f32)] = &IS_RATIOS_MPEG1;
+    let mut invalid_pos = IS_POS_INVALID_MPEG1;
 
-    let mut l_start = [0usize; 22];
-    let mut acc = 0usize;
-    for i in 0..22 {
-        l_start[i] = acc;
-        acc += sfb_width[i];
+    if header.version != MpegVersion::Mpeg1 {
+        intensity_enabled = false;
+        ratios = &IS_RATIOS_MPEG1;
+        invalid_pos = IS_POS_INVALID_MPEG1;
     }
 
-    let mut non_zero_found = false;
-
-    if !intensity_stereo {
-        if ms_stereo {
-            for (l, r) in l_data.xr.iter_mut().zip(r_data.xr.iter_mut()) {
-                let m = *l;
-                let s = *r;
-                *l = (m + s) * FRAC_1_SQRT_2;
-                *r = (m - s) * FRAC_1_SQRT_2;
-            }
-        }
-        return;
-    }
-
-    for i in (0..22).rev() {
-        let len = sfb_width[i];
-        let start = l_start[i];
-
-        let mut is_non_zero = false;
-        if !non_zero_found {
-            for j in 0..len {
-                if r_data.xr[start + j] != 0.0 {
-                    is_non_zero = true;
-                    break;
-                }
-            }
-        }
-
-        let mut do_ms = non_zero_found || is_non_zero;
-        let is_pos = if !do_ms {
-            let idx = if i == 21 { 20 } else { i };
-            r_data.scalefac[idx] as usize
+    let is_bound = if intensity_enabled {
+        if l_gr.windows_switching_flag && l_gr.block_type == 2 {
+            process_intensity_short_block(
+                l_data,
+                r_data,
+                l_gr,
+                ms_stereo,
+                ratios,
+                invalid_pos,
+                sample_rate,
+                end,
+            )
         } else {
-            0
-        };
-
-        if !do_ms && is_pos >= sf_max {
-            do_ms = true;
+            process_intensity_long_block(
+                l_data,
+                r_data,
+                ms_stereo,
+                ratios,
+                invalid_pos,
+                sample_rate,
+                end,
+            )
         }
-
-        if do_ms {
-            non_zero_found = true;
-            if ms_stereo {
-                for j in 0..len {
-                    let idx = start + j;
-                    let m = l_data.xr[idx];
-                    let s = r_data.xr[idx];
-                    l_data.xr[idx] = (m + s) * FRAC_1_SQRT_2;
-                    r_data.xr[idx] = (m - s) * FRAC_1_SQRT_2;
-                }
-            }
-            continue;
-        }
-
-        let (kl, kr) = IS_RATIOS[is_pos];
-        for j in 0..len {
-            let idx = start + j;
-            let m = l_data.xr[idx];
-            l_data.xr[idx] = m * kl;
-            r_data.xr[idx] = m * kr;
-        }
-    }
-}
-
-fn process_stereo_short(
-    l_data: &mut GranuleContext,
-    r_data: &mut GranuleContext,
-    granule: &Granule,
-    ms_stereo: bool,
-    intensity_stereo: bool,
-    sample_rate: u32,
-) {
-    let sr_idx = samplerate_index(sample_rate);
-    let long_width = &SFB_WIDTH_LONG[sr_idx];
-    let short_width = &SFB_WIDTH_SHORT[sr_idx];
-
-    let (long_end, short_start) = if granule.mixed_block_flag {
-        let long_end = if sr_idx <= 2 { 8 } else { 6 };
-        (long_end, 3)
     } else {
-        (0, 0)
+        end
     };
 
-    let short_region_start = if long_end == 0 {
-        0
-    } else {
-        long_width.iter().take(long_end).sum()
-    };
-
-    let sf_max = 7usize;
-    let mut non_zero_found = [false, false, false];
-
-    let mut short_start_offset = [0usize; 13];
-    let mut acc = 0usize;
-    for i in 0..13 {
-        short_start_offset[i] = acc;
-        acc += short_width[i];
-    }
-    let short_start_skip = if short_start == 0 {
-        0
-    } else {
-        short_start_offset[short_start]
-    };
-
-    if !intensity_stereo {
-        if ms_stereo {
-            for (l, r) in l_data.xr.iter_mut().zip(r_data.xr.iter_mut()) {
-                let m = *l;
-                let s = *r;
-                *l = (m + s) * FRAC_1_SQRT_2;
-                *r = (m - s) * FRAC_1_SQRT_2;
-            }
-        }
-        return;
+    if ms_stereo && is_bound > 0 {
+        let bound = is_bound.min(576);
+        process_mid_side(&mut l_data.xr[..bound], &mut r_data.xr[..bound]);
     }
 
-    let mut k = (13 - short_start) * 3 + long_end - 3;
-    for i in (short_start..=12).rev() {
-        if i != 12 {
-            k -= 3;
-        }
-
-        let len = short_width[i];
-        let band_start = short_region_start + short_start_offset[i] - short_start_skip;
-
-        for win in (0..3).rev() {
-            let mut is_non_zero = false;
-            let win_start = band_start + win * len;
-            for j in 0..len {
-                let idx = win_start + j;
-                if r_data.xr[idx] != 0.0 {
-                    is_non_zero = true;
-                    break;
-                }
-            }
-
-            let mut do_ms = non_zero_found[win] || is_non_zero;
-
-            let is_pos = if !do_ms {
-                let pos_idx = k + win;
-                r_data.scalefac[pos_idx] as usize
-            } else {
-                0
-            };
-
-            if !do_ms && is_pos >= sf_max {
-                do_ms = true;
-            }
-
-            if do_ms {
-                non_zero_found[win] = true;
-                if ms_stereo {
-                    for j in 0..len {
-                        let idx = win_start + j;
-                        let m = l_data.xr[idx];
-                        let s = r_data.xr[idx];
-                        l_data.xr[idx] = (m + s) * FRAC_1_SQRT_2;
-                        r_data.xr[idx] = (m - s) * FRAC_1_SQRT_2;
-                    }
-                }
-            } else {
-                let (kl, kr) = IS_RATIOS[is_pos];
-                for j in 0..len {
-                    let idx = win_start + j;
-                    let m = l_data.xr[idx];
-                    l_data.xr[idx] = m * kl;
-                    r_data.xr[idx] = m * kr;
-                }
-            }
-        }
+    if intensity_enabled || ms_stereo {
+        l_data.rzero = end;
+        r_data.rzero = end;
     }
 }

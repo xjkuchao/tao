@@ -7,7 +7,9 @@
 use super::bitreader::BitReader;
 use super::huffman_explicit_tables as explicit;
 use super::tables::{MPA_HUFF_LENS, MPA_HUFF_OFFSET, MPA_HUFF_SYMS};
+use log::warn;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tao_core::{TaoError, TaoResult};
 
 // ============================================================================
@@ -40,6 +42,7 @@ struct BigValueTable {
 
 /// 全局 Big Values 表缓存
 static BIG_VALUE_TABLES: OnceLock<Vec<BigValueTable>> = OnceLock::new();
+static HUFFMAN_MISMATCHES: AtomicUsize = AtomicUsize::new(0);
 
 fn get_big_value_tables() -> &'static Vec<BigValueTable> {
     BIG_VALUE_TABLES.get_or_init(|| {
@@ -182,6 +185,117 @@ fn build_big_value_table(table_id: u8) -> BigValueTable {
     build_big_value_table_from_entries(entries, max_len)
 }
 
+fn build_big_value_entries(table_id: u8) -> Vec<(u32, u8, u8)> {
+    if table_id == 0 || table_id == 4 || table_id == 14 {
+        return Vec::new();
+    }
+
+    if let Some((codes, lens, wrap)) = explicit_codebook(table_id) {
+        let mut entries = Vec::with_capacity(codes.len());
+        for i in 0..codes.len() {
+            let len = lens[i];
+            if len == 0 {
+                continue;
+            }
+            let symbol = (((i / wrap) as u8) << 4) | (i % wrap) as u8;
+            entries.push((codes[i], len, symbol));
+        }
+        return entries;
+    }
+
+    let offset = MPA_HUFF_OFFSET[table_id as usize];
+    let count = match table_id {
+        1 => 4,
+        2..=3 => 9,
+        5..=6 => 16,
+        7..=9 => 36,
+        10..=12 => 64,
+        13 | 15 => 256,
+        16..=23 => 256,
+        24..=31 => 256,
+        _ => 0,
+    };
+
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let lens = &MPA_HUFF_LENS[offset..offset + count];
+    let syms = &MPA_HUFF_SYMS[offset..offset + count];
+    let mut code: u64 = 0;
+    let mut entries: Vec<(u32, u8, u8)> = Vec::with_capacity(count);
+
+    for i in 0..count {
+        let len = lens[i];
+        if len > 0 {
+            let code_val = (code >> (32 - len as u64)) as u32;
+            entries.push((code_val, len, syms[i]));
+            code += 1u64 << (32 - len as u64);
+        }
+    }
+
+    entries
+}
+
+fn decode_big_value_reference_vlc(br: &mut BitReader, entries: &[(u32, u8, u8)]) -> TaoResult<u8> {
+    let mut max_len = 0u8;
+    for &(_, len, _) in entries {
+        if len > max_len {
+            max_len = len;
+        }
+    }
+
+    for len in 1..=max_len {
+        let Some(bits) = br.peek_bits(len) else {
+            break;
+        };
+        for &(code, code_len, symbol) in entries {
+            if code_len == len && code == bits {
+                br.skip_bits(len as usize);
+                return Ok(symbol);
+            }
+        }
+    }
+
+    Err(TaoError::InvalidData(
+        "BigValues Huffman 参考解码失败".to_string(),
+    ))
+}
+
+fn decode_big_values_reference(
+    br: &mut BitReader,
+    table_id: u8,
+    linbits: u8,
+) -> TaoResult<(i32, i32)> {
+    if table_id == 0 {
+        return Ok((0, 0));
+    }
+
+    let entries = build_big_value_entries(table_id);
+    if entries.is_empty() {
+        return Ok((0, 0));
+    }
+
+    let symbol = decode_big_value_reference_vlc(br, &entries)?;
+    let mut x = (symbol >> 4) as i32;
+    let mut y = (symbol & 0x0F) as i32;
+
+    if table_id > 15 && x == 15 && linbits > 0 {
+        x += br.read_bits(linbits).ok_or(TaoError::Eof)? as i32;
+    }
+    if x > 0 && br.read_bool().ok_or(TaoError::Eof)? {
+        x = -x;
+    }
+    if table_id > 15 && y == 15 && linbits > 0 {
+        y += br.read_bits(linbits).ok_or(TaoError::Eof)? as i32;
+    }
+    if y > 0 && br.read_bool().ok_or(TaoError::Eof)? {
+        y = -y;
+    }
+
+    Ok((x, y))
+}
+
 // ============================================================================
 // Count1 快速查找表 (表 32, 33)
 // ============================================================================
@@ -191,20 +305,19 @@ fn build_big_value_table(table_id: u8) -> BigValueTable {
 const COUNT1A_PEEK_BITS: usize = 6;
 const COUNT1A_PEEK_SIZE: usize = 1 << COUNT1A_PEEK_BITS;
 
+// 来自 FFmpeg mpa_quad_bits[0] 和 mpa_quad_codes[0]
+const COUNT1A_BITS: [u8; 16] = [1, 4, 4, 5, 4, 6, 5, 6, 4, 5, 5, 6, 5, 6, 6, 6];
+const COUNT1A_CODES: [u8; 16] = [1, 5, 4, 5, 6, 5, 4, 4, 7, 3, 6, 0, 7, 2, 3, 1];
+
 static COUNT1A_LUT: OnceLock<Vec<LutEntry>> = OnceLock::new();
 
 fn get_count1a_lut() -> &'static Vec<LutEntry> {
     COUNT1A_LUT.get_or_init(|| {
-        // 来自 FFmpeg mpa_quad_bits[0] 和 mpa_quad_codes[0]
-        // 索引 = 符号 (0-15)
-        let bits: [u8; 16] = [1, 4, 4, 5, 4, 6, 5, 6, 4, 5, 5, 6, 5, 6, 6, 6];
-        let codes: [u8; 16] = [1, 5, 4, 5, 6, 5, 4, 4, 7, 3, 6, 0, 7, 2, 3, 1];
-
         let mut lut = vec![LutEntry::default(); COUNT1A_PEEK_SIZE];
 
         for symbol in 0..16u8 {
-            let len = bits[symbol as usize];
-            let code = codes[symbol as usize] as u32;
+            let len = COUNT1A_BITS[symbol as usize];
+            let code = COUNT1A_CODES[symbol as usize] as u32;
             let pad = COUNT1A_PEEK_BITS - len as usize;
             let base = (code as usize) << pad;
             let fill = 1 << pad;
@@ -235,6 +348,20 @@ impl HuffmanDecoder {
         table_id: u8,
         linbits: u8,
     ) -> TaoResult<(i32, i32)> {
+        if std::env::var("TAO_MP3_FORCE_HUFFMAN_REF").is_ok() {
+            return decode_big_values_reference(br, table_id, linbits);
+        }
+        let debug_ref = std::env::var("TAO_MP3_DEBUG_HUFFMAN").is_ok();
+        let start_bit = br.bit_offset();
+        let ref_result = if debug_ref {
+            let mut br_ref = *br;
+            decode_big_values_reference(&mut br_ref, table_id, linbits)
+                .ok()
+                .map(|val| (val, br_ref.bit_offset()))
+        } else {
+            None
+        };
+
         if table_id == 0 {
             return Ok((0, 0));
         }
@@ -251,24 +378,41 @@ impl HuffmanDecoder {
         let mut y = (symbol & 0x0F) as i32;
 
         // Escaped values (linbits), 表 16-31
-        if table_id > 15 {
-            if x == 15 && linbits > 0 {
-                x += br.read_bits(linbits).ok_or(TaoError::Eof)? as i32;
-            }
-            if y == 15 && linbits > 0 {
-                y += br.read_bits(linbits).ok_or(TaoError::Eof)? as i32;
-            }
+        if table_id > 15 && x == 15 && linbits > 0 {
+            x += br.read_bits(linbits).ok_or(TaoError::Eof)? as i32;
         }
-
-        // 符号位
         if x > 0 && br.read_bool().ok_or(TaoError::Eof)? {
             x = -x;
+        }
+        if table_id > 15 && y == 15 && linbits > 0 {
+            y += br.read_bits(linbits).ok_or(TaoError::Eof)? as i32;
         }
         if y > 0 && br.read_bool().ok_or(TaoError::Eof)? {
             y = -y;
         }
 
-        Ok((x, y))
+        let result = (x, y);
+
+        if let Some((ref_val, ref_end)) = ref_result {
+            let actual_end = br.bit_offset();
+            if ref_val != result || ref_end != actual_end {
+                let count = HUFFMAN_MISMATCHES.fetch_add(1, Ordering::Relaxed);
+                if count < 10 {
+                    warn!(
+                        "BigValues 解码不一致: table={}, ref=({},{}) bits_ref={}, actual=({},{}) bits_actual={}",
+                        table_id,
+                        ref_val.0,
+                        ref_val.1,
+                        ref_end.saturating_sub(start_bit),
+                        result.0,
+                        result.1,
+                        actual_end.saturating_sub(start_bit)
+                    );
+                }
+            }
+        }
+
+        Ok(result)
     }
 
     /// 快速 VLC 解码 (Big Values)
@@ -321,10 +465,28 @@ impl HuffmanDecoder {
         br: &mut BitReader,
         table_id: u8,
     ) -> TaoResult<(i32, i32, i32, i32)> {
+        if std::env::var("TAO_MP3_FORCE_HUFFMAN_REF").is_ok() {
+            let (symbol, _) = decode_count1_symbol_reference(br, table_id)?;
+            return decode_count1_signs(br, symbol);
+        }
+        let debug_ref = std::env::var("TAO_MP3_DEBUG_HUFFMAN").is_ok();
+        let start_bit = br.bit_offset();
+        let ref_result = if debug_ref {
+            let mut br_ref = *br;
+            decode_count1_symbol_reference(&mut br_ref, table_id)
+                .ok()
+                .and_then(|(symbol, _)| {
+                    decode_count1_signs(&mut br_ref, symbol)
+                        .ok()
+                        .map(|v| (v, br_ref.bit_offset()))
+                })
+        } else {
+            None
+        };
+
         let symbol = if table_id == 33 {
-            // Table B (固定 4 位): code = 15 - symbol
-            let code = br.read_bits(4).ok_or(TaoError::Eof)?;
-            (15 - code) as u8
+            // Table B: 复用 minimp3 的两级表解码逻辑
+            decode_count1_table_b(br)?
         } else {
             // Table A (变长, 最大 7 位): 使用查找表
             let lut = get_count1a_lut();
@@ -351,13 +513,78 @@ impl HuffmanDecoder {
             }
         };
 
-        // symbol 的 4 位对应 (v,w,x,y),
-        // 符号位按 v->w->x->y 顺序读取.
-        let mut v = 0i32;
-        let mut w = 0i32;
-        let mut x = 0i32;
-        let mut y = 0i32;
+        let result = decode_count1_signs(br, symbol)?;
 
+        if let Some((ref_val, ref_end)) = ref_result {
+            let actual_end = br.bit_offset();
+            if ref_val != result || ref_end != actual_end {
+                let count = HUFFMAN_MISMATCHES.fetch_add(1, Ordering::Relaxed);
+                if count < 10 {
+                    warn!(
+                        "Count1 解码不一致: table={}, ref=({},{},{},{}), actual=({},{},{},{}), bits_ref={}, bits_actual={}",
+                        table_id,
+                        ref_val.0,
+                        ref_val.1,
+                        ref_val.2,
+                        ref_val.3,
+                        result.0,
+                        result.1,
+                        result.2,
+                        result.3,
+                        ref_end.saturating_sub(start_bit),
+                        actual_end.saturating_sub(start_bit)
+                    );
+                }
+            }
+        }
+
+        Ok(result)
+    }
+}
+
+fn decode_count1_signs(br: &mut BitReader, symbol: u8) -> TaoResult<(i32, i32, i32, i32)> {
+    // symbol 的 4 位对应 (v,w,x,y).
+    // 默认使用 v->w->x->y 的符号位读取顺序.
+    // 可通过环境变量切换到 LSB 顺序(y->x->w->v)以进行对照诊断.
+    let use_lsb_order = std::env::var("TAO_MP3_COUNT1_SIGN_LSB")
+        .ok()
+        .is_some_and(|v| v == "1");
+
+    let mut v = 0i32;
+    let mut w = 0i32;
+    let mut x = 0i32;
+    let mut y = 0i32;
+
+    if use_lsb_order {
+        if (symbol & 0x1) != 0 {
+            y = if br.read_bool().ok_or(TaoError::Eof)? {
+                -1
+            } else {
+                1
+            };
+        }
+        if (symbol & 0x2) != 0 {
+            x = if br.read_bool().ok_or(TaoError::Eof)? {
+                -1
+            } else {
+                1
+            };
+        }
+        if (symbol & 0x4) != 0 {
+            w = if br.read_bool().ok_or(TaoError::Eof)? {
+                -1
+            } else {
+                1
+            };
+        }
+        if (symbol & 0x8) != 0 {
+            v = if br.read_bool().ok_or(TaoError::Eof)? {
+                -1
+            } else {
+                1
+            };
+        }
+    } else {
         if (symbol & 0x8) != 0 {
             v = if br.read_bool().ok_or(TaoError::Eof)? {
                 -1
@@ -386,9 +613,49 @@ impl HuffmanDecoder {
                 1
             };
         }
-
-        Ok((v, w, x, y))
     }
+
+    Ok((v, w, x, y))
+}
+
+/// Count1 Table B 解码
+/// 基于 minimp3 的 tab33 解码逻辑, 保持与规范一致的码字/长度。
+fn decode_count1_table_b(br: &mut BitReader) -> TaoResult<u8> {
+    // Table B 为固定 4 位码字, code=15..0 对应 symbol=0..15.
+    let bits = br.read_bits(4).ok_or(TaoError::Eof)? as u8;
+    Ok(15u8.saturating_sub(bits & 0x0F))
+}
+
+fn decode_count1_symbol_reference(br: &mut BitReader, table_id: u8) -> TaoResult<(u8, usize)> {
+    if table_id == 33 {
+        let bits = br.read_bits(4).ok_or(TaoError::Eof)? as u8;
+        return Ok((15u8.saturating_sub(bits & 0x0F), 4));
+    }
+
+    let mut max_len = 0u8;
+    for &len in &COUNT1A_BITS {
+        if len > max_len {
+            max_len = len;
+        }
+    }
+
+    for len in 1..=max_len {
+        let Some(bits) = br.peek_bits(len) else {
+            break;
+        };
+        for symbol in 0..16u8 {
+            let code_len = COUNT1A_BITS[symbol as usize];
+            let code = COUNT1A_CODES[symbol as usize] as u32;
+            if code_len == len && code == bits {
+                br.skip_bits(len as usize);
+                return Ok((symbol, len as usize));
+            }
+        }
+    }
+
+    Err(TaoError::InvalidData(
+        "Count1 Huffman 参考解码失败".to_string(),
+    ))
 }
 
 #[cfg(test)]
