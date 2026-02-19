@@ -394,18 +394,24 @@ impl VorbisDecoder {
         if self.overlap.len() != channels {
             self.overlap = vec![Vec::new(); channels];
         }
-        let td = imdct_from_residue(
-            &residue,
-            blocksize as usize,
-            self.get_or_build_window(
+        let window = self
+            .get_or_build_window(
                 blocksize as usize,
                 headers.blocksize0 as usize,
                 is_long_block,
                 prev_window_flag,
                 next_window_flag,
-            ),
+            )
+            .to_vec();
+        let td = imdct_from_residue(&residue, blocksize as usize, &window);
+        let mut td = overlap_add(
+            &td,
+            &mut self.overlap,
+            &window,
+            left_start,
+            right_start,
+            right_end,
         );
-        let mut td = overlap_add(&td, &mut self.overlap, left_start, right_start, right_end);
         if out_samples as usize > 0 {
             for ch in td.channels.iter_mut() {
                 if ch.len() > out_samples as usize {

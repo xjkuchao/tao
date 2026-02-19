@@ -153,9 +153,9 @@ pub(crate) fn decode_codebook_vector(
     }
     let fill_dims = dims.min(out.len());
     if book.lookup_type == 0 {
-        out[..fill_dims].fill(0.0);
-        let _ = decode_codebook_scalar(br, book, huffman)?;
-        return Ok(fill_dims);
+        return Err(TaoError::InvalidData(
+            "Vorbis 向量 codebook 缺少 value mapping".into(),
+        ));
     }
 
     let sym = decode_codebook_scalar(br, book, huffman)? as usize;

@@ -124,6 +124,7 @@ fn fill_window_segment(window: &mut [f32], start: usize, end: usize, len: usize)
 pub(crate) fn overlap_add(
     td: &TimeDomainBlock,
     overlap: &mut [Vec<f32>],
+    window: &[f32],
     left_start: usize,
     right_start: usize,
     right_end: usize,
@@ -134,7 +135,12 @@ pub(crate) fn overlap_add(
         if let Some(prev) = overlap.get(ch) {
             let n = prev.len().min(mixed.len().saturating_sub(left_start));
             for i in 0..n {
-                mixed[left_start + i] += prev[i];
+                let lhs = window.get(left_start + i).copied().unwrap_or(1.0);
+                let rhs = window
+                    .get(left_start + n.saturating_sub(1 + i))
+                    .copied()
+                    .unwrap_or(1.0);
+                mixed[left_start + i] = mixed[left_start + i] * lhs + prev[i] * rhs;
             }
         }
 
