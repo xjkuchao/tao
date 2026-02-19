@@ -3,6 +3,9 @@ import argparse
 import os
 import re
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from multiprocessing import cpu_count
 from pathlib import Path
 
 REPORT_PATH = Path('plans/tao-codec_mp3_coverage/tao-codec_mp3_samples_report.md')
@@ -35,6 +38,9 @@ def parse_args():
 
   # 只测试指定序号(可多个)
   python plans/tao-codec_mp3_coverage/run_mp3_samples_compare.py --index 3 5 8
+
+  # 指定并行数量
+  python plans/tao-codec_mp3_coverage/run_mp3_samples_compare.py --jobs 4
         """,
     )
     group = parser.add_mutually_exclusive_group()
@@ -51,6 +57,14 @@ def parse_args():
         nargs='+',
         metavar='N',
         help='只测试指定序号的记录(可多个, 与上述参数可组合)',
+    )
+    parser.add_argument(
+        '--jobs',
+        '-j',
+        type=int,
+        default=cpu_count(),
+        metavar='N',
+        help=f'并行处理数量(默认: CPU 核心数, 当前 {cpu_count()})',
     )
     return parser.parse_args()
 
@@ -185,11 +199,23 @@ def main():
             raise RuntimeError(f'报告表缺少列: {name}')
 
     total = len(rows)
-    for idx, row in enumerate(rows, 1):
-        url = row[col_map['URL']]
-        if should_skip(row, col_map, args, idx):
-            continue
+    pending = [
+        (idx, row)
+        for idx, row in enumerate(rows, 1)
+        if not should_skip(row, col_map, args, idx)
+    ]
 
+    if not pending:
+        print('没有需要处理的记录.')
+        return
+
+    jobs = max(1, args.jobs)
+    print(f'共 {len(pending)} 条记录待处理, 并行数: {jobs}')
+
+    lock = threading.Lock()
+
+    def process(idx, row):
+        url = row[col_map['URL']]
         print(f'开始处理 {idx}/{total}: {url}')
         code, output = run_compare(url)
 
@@ -211,8 +237,14 @@ def main():
             row[col_map['状态']] = '失败'
             row[col_map['失败原因']] = extract_failure_reason(output)
 
-        write_report(lines, header_idx, sep, rows)
-        print(f'已记录 {idx}/{total}: {row[col_map["状态"]]}')
+        with lock:
+            write_report(lines, header_idx, sep, rows)
+            print(f'已记录 {idx}/{total}: {row[col_map["状态"]]}')
+
+    with ThreadPoolExecutor(max_workers=jobs) as executor:
+        futures = {executor.submit(process, idx, row): idx for idx, row in pending}
+        for future in as_completed(futures):
+            future.result()  # 重新抛出子线程异常
 
     print('处理完成.')
 
