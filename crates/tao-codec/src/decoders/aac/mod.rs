@@ -14,10 +14,8 @@
 mod huffman;
 
 use std::cell::Cell;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-use log::{debug, info};
+use log::info;
 use tao_core::bitreader::BitReader;
 use tao_core::{ChannelLayout, SampleFormat, TaoError, TaoResult};
 
@@ -28,32 +26,6 @@ use crate::frame::{AudioFrame, Frame};
 use crate::packet::Packet;
 
 use huffman::AacCodebooks;
-
-static AAC_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
-static AAC_TRACE_COUNT: AtomicUsize = AtomicUsize::new(0);
-const AAC_TRACE_LIMIT: usize = 160;
-
-fn aac_trace_enabled() -> bool {
-    *AAC_TRACE_ENABLED.get_or_init(|| {
-        std::env::var("TAO_AAC_TRACE")
-            .map(|v| {
-                let v = v.trim();
-                v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
-            })
-            .unwrap_or(false)
-    })
-}
-
-fn aac_trace_log(message: impl FnOnce() -> String) {
-    if !aac_trace_enabled() {
-        return;
-    }
-    let idx = AAC_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
-    if idx < AAC_TRACE_LIMIT {
-        info!("AAC追踪[{}]: {}", idx + 1, message());
-    }
-}
-
 /// MP4 封装 AAC 常见首包前导裁剪样本数.
 const AAC_MP4_LEADING_TRIM_SAMPLES: usize = 1024;
 /// AAC 时域输出增益校准.
@@ -336,21 +308,8 @@ impl AacDecoder {
             .as_ref()
             .ok_or_else(|| TaoError::InvalidData("AAC: 码本未初始化".into()))?;
 
-        debug!(
-            "AAC raw_data_block: {} 字节, 前4={:02x?}",
-            data.len(),
-            &data[..data.len().min(4)]
-        );
-
         while br.bits_left() >= 3 {
-            let bits_before_ele = br.bits_left();
             let id_syn_ele = br.read_bits(3)?;
-            aac_trace_log(|| {
-                format!(
-                    "raw_data_block 元素: id_syn_ele={}, 解析前剩余位={}, 已解码声道={}",
-                    id_syn_ele, bits_before_ele, ch_idx
-                )
-            });
             if id_syn_ele == 7 {
                 break; // END
             }
@@ -374,29 +333,11 @@ impl AacDecoder {
                     // CPE: Channel Pair Element
                     let _instance_tag = br.read_bits(4)?;
                     let common_window = br.read_bit()? != 0;
-                    aac_trace_log(|| {
-                        format!(
-                            "CPE: common_window={}, 读取后剩余位={}, 当前声道起点={}",
-                            common_window,
-                            br.bits_left(),
-                            ch_idx
-                        )
-                    });
 
                     if common_window {
                         let info = self.parse_ics_info(&mut br)?;
                         // ms_mask_present (2 bits)
                         let ms_mask_present = br.read_bits(2)?;
-                        aac_trace_log(|| {
-                            format!(
-                                "CPE: shared_ics win_seq={}, max_sfb={}, groups={}, ms_mask_present={}, bits_left={}",
-                                info.window_sequence,
-                                info.max_sfb,
-                                info.num_window_groups,
-                                ms_mask_present,
-                                br.bits_left()
-                            )
-                        });
                         let ms_band_count = info.max_sfb * info.num_window_groups;
                         let mut ms_used = vec![false; ms_band_count];
                         if ms_mask_present == 1 {
@@ -513,8 +454,7 @@ impl AacDecoder {
                 }
                 2 => {
                     // CCE: Coupling Channel Element
-                    if let Err(e) = self.skip_cce(&mut br, codebooks) {
-                        debug!("AAC CCE 解析失败, 忽略剩余元素: {}", e);
+                    if self.skip_cce(&mut br, codebooks).is_err() {
                         break;
                     }
                 }
@@ -550,8 +490,7 @@ impl AacDecoder {
                 }
                 5 => {
                     // PCE: Program Config Element
-                    if let Err(e) = self.skip_pce(&mut br) {
-                        debug!("AAC PCE 解析失败, 忽略剩余元素: {}", e);
+                    if self.skip_pce(&mut br).is_err() {
                         break;
                     }
                 }
@@ -571,14 +510,6 @@ impl AacDecoder {
                     )));
                 }
             }
-            aac_trace_log(|| {
-                format!(
-                    "raw_data_block 元素结束: id_syn_ele={}, 解析后剩余位={}, 已解码声道={}",
-                    id_syn_ele,
-                    br.bits_left(),
-                    ch_idx
-                )
-            });
         }
         Ok(())
     }
@@ -815,16 +746,7 @@ impl AacDecoder {
         global_gain: i32,
         mut band_info: Option<&mut IcsBandInfo>,
     ) -> TaoResult<()> {
-        debug!(
-            "AAC ICS: win={}, max_sfb={}, gain={}, bits_left={}",
-            info.window_sequence,
-            info.max_sfb,
-            global_gain,
-            br.bits_left()
-        );
-
         // 1. section_data
-        let bits_before_section = br.bits_left();
         let sections = parse_section_data(br, &info).map_err(|e| {
             TaoError::InvalidData(format!(
                 "AAC section_data 解析失败: win_seq={}, max_sfb={}, 剩余位={}, 错误={}",
@@ -834,46 +756,7 @@ impl AacDecoder {
                 e
             ))
         })?;
-        aac_trace_log(|| {
-            let summary = sections
-                .iter()
-                .map(|s| {
-                    format!(
-                        "g{}:cb{}[{}..{}]",
-                        s.group, s.sect_cb, s.sect_start, s.sect_end
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(",");
-            format!(
-                "ICS section完成: win_seq={}, max_sfb={}, section_bits={}->{}, sections={}",
-                info.window_sequence,
-                info.max_sfb,
-                bits_before_section,
-                br.bits_left(),
-                summary
-            )
-        });
-        {
-            let cbs: Vec<_> = sections
-                .iter()
-                .map(|s| {
-                    format!(
-                        "g{}:cb{}[{}..{}]",
-                        s.group, s.sect_cb, s.sect_start, s.sect_end
-                    )
-                })
-                .collect();
-            debug!(
-                "AAC section_data: {} 个段 {:?}, bits_left={}",
-                sections.len(),
-                cbs,
-                br.bits_left()
-            );
-        }
-
         // 2. scale_factor_data
-        let bits_before_sf = br.bits_left();
         let scale_factors = parse_scale_factor_data(br, &sections, &info, global_gain, codebooks)
             .map_err(|e| {
             TaoError::InvalidData(format!(
@@ -885,17 +768,6 @@ impl AacDecoder {
                 e
             ))
         })?;
-        aac_trace_log(|| {
-            format!(
-                "ICS sf完成: win_seq={}, max_sfb={}, sf_bits={}->{}, sf_slots={}",
-                info.window_sequence,
-                info.max_sfb,
-                bits_before_sf,
-                br.bits_left(),
-                scale_factors.len()
-            )
-        });
-        debug!("AAC sf_data: bits_left={}", br.bits_left());
 
         if let Some(meta) = band_info.as_mut() {
             meta.band_types = vec![0u8; info.num_window_groups * info.max_sfb];
@@ -920,13 +792,6 @@ impl AacDecoder {
                 ))
             })?;
         }
-        aac_trace_log(|| {
-            format!(
-                "ICS pulse完成: pulse_present={}, 剩余位={}",
-                pulse_present,
-                br.bits_left()
-            )
-        });
 
         // 4. tns_data_present
         let tns_present = br.read_bit()? != 0;
@@ -941,14 +806,6 @@ impl AacDecoder {
                 ))
             })?);
         }
-        aac_trace_log(|| {
-            format!(
-                "ICS tns完成: tns_present={}, short={}, 剩余位={}",
-                tns_present,
-                info.window_sequence == 2,
-                br.bits_left()
-            )
-        });
 
         // 5. gain_control_data_present (AAC-LC: 始终为 0)
         let gain_control = br.read_bit().map_err(|e| {
@@ -969,20 +826,6 @@ impl AacDecoder {
                 ))
             })?;
         }
-        aac_trace_log(|| {
-            format!(
-                "ICS gain完成: gain_control={}, 剩余位={}",
-                gain_control,
-                br.bits_left()
-            )
-        });
-
-        debug!(
-            "AAC 频谱解码前: bits_left={}, pulse={}, tns={}",
-            br.bits_left(),
-            pulse_present,
-            tns_present
-        );
 
         // 6. spectral_data
         let swb_offset = if info.window_sequence == 2 {
@@ -990,7 +833,6 @@ impl AacDecoder {
         } else {
             self.swb_offset()
         };
-        let bits_before_spectral = br.bits_left();
         decode_spectral_data(
             br,
             spectral,
@@ -1010,16 +852,6 @@ impl AacDecoder {
                 e
             ))
         })?;
-        aac_trace_log(|| {
-            format!(
-                "ICS spectral完成: win_seq={}, max_sfb={}, spectral_bits={}->{}, 消耗位={}",
-                info.window_sequence,
-                info.max_sfb,
-                bits_before_spectral,
-                br.bits_left(),
-                bits_before_spectral.saturating_sub(br.bits_left())
-            )
-        });
 
         if let Some(tns) = tns_data {
             apply_tns_data(
@@ -1294,15 +1126,6 @@ fn decode_spectral_data(
                             let values = match spec_cb.decode_values(br) {
                                 Ok(v) => v,
                                 Err(e) => {
-                                    debug!(
-                                        "AAC 频谱解码错误: short sfb={}, cb={}, win={}, i={}/{}, bits_left={}",
-                                        sfb,
-                                        cb,
-                                        win,
-                                        i,
-                                        band_width,
-                                        br.bits_left()
-                                    );
                                     return Err(TaoError::InvalidData(format!(
                                         "频谱码字解码失败: short sfb={}, cb={}, win={}, i={}/{}, bits_left={}, 错误={}",
                                         sfb,
@@ -1332,14 +1155,6 @@ fn decode_spectral_data(
                         let values = match spec_cb.decode_values(br) {
                             Ok(v) => v,
                             Err(e) => {
-                                debug!(
-                                    "AAC 频谱解码错误: sfb={}, cb={}, i={}/{}, bits_left={}",
-                                    sfb,
-                                    cb,
-                                    i,
-                                    band_width,
-                                    br.bits_left()
-                                );
                                 return Err(TaoError::InvalidData(format!(
                                     "频谱码字解码失败: sfb={}, cb={}, i={}/{}, bits_left={}, 错误={}",
                                     sfb,
