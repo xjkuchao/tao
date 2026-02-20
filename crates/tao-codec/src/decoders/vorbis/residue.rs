@@ -8,6 +8,7 @@ use super::setup::{CouplingStep, MappingConfig, ParsedSetup, ResidueConfig};
 #[derive(Debug, Clone)]
 pub(crate) struct ResidueSpectrum {
     pub(crate) channels: Vec<Vec<f32>>,
+    pub(crate) had_huffman_loss: bool,
 }
 
 /// 当前阶段的 residue 近似解码:
@@ -30,6 +31,7 @@ pub(crate) fn decode_residue_approx(
     let n2 = blocksize / 2;
     let mut out = ResidueSpectrum {
         channels: vec![vec![0.0; n2]; channel_count],
+        had_huffman_loss: false,
     };
 
     let submaps = mapping.submap_residue.len();
@@ -62,6 +64,7 @@ pub(crate) fn decode_residue_approx(
             do_not_decode,
             &mut out.channels,
             n2,
+            &mut out.had_huffman_loss,
         )?;
     }
 
@@ -118,6 +121,7 @@ fn decode_one_residue(
     do_not_decode: &[bool],
     spectrum: &mut [Vec<f32>],
     n2: usize,
+    had_huffman_loss: &mut bool,
 ) -> TaoResult<()> {
     let mut begin = (residue.begin as usize).min(n2);
     let mut end = (residue.end as usize).min(n2);
@@ -191,6 +195,10 @@ fn decode_one_residue(
                     let sym = match decode_codebook_scalar(br, classbook, classbook_huffman) {
                         Ok(v) => v,
                         Err(TaoError::Eof) => return Ok(()),
+                        Err(TaoError::InvalidData(msg)) if msg.contains("Huffman 解码失败") => {
+                            *had_huffman_loss = true;
+                            0
+                        }
                         Err(e) => return Err(e),
                     };
                     let mut tmp = sym as usize;
@@ -235,6 +243,7 @@ fn decode_one_residue(
                                 psize,
                                 interleaved_n2,
                                 &mut vec_buf,
+                                had_huffman_loss,
                             )?;
                         }
                     }
@@ -273,6 +282,10 @@ fn decode_one_residue(
                     let sym = match decode_codebook_scalar(br, classbook, classbook_huffman) {
                         Ok(v) => v,
                         Err(TaoError::Eof) => return Ok(()),
+                        Err(TaoError::InvalidData(msg)) if msg.contains("Huffman 解码失败") => {
+                            *had_huffman_loss = true;
+                            0
+                        }
                         Err(e) => return Err(e),
                     };
                     let mut tmp = sym as usize;
@@ -322,6 +335,7 @@ fn decode_one_residue(
                             psize,
                             n2,
                             &mut vec_buf,
+                            had_huffman_loss,
                         )?;
                     }
                 }
@@ -346,6 +360,7 @@ fn apply_partition_residue(
     psize: usize,
     n2: usize,
     vec_buf: &mut Vec<f32>,
+    had_huffman_loss: &mut bool,
 ) -> TaoResult<()> {
     let dims = usize::from(book.dimensions.max(1));
     if vec_buf.len() < dims {
@@ -365,6 +380,10 @@ fn apply_partition_residue(
                 let got = match decode_codebook_vector(br, book, huffman, vec_buf) {
                     Ok(v) => v,
                     Err(TaoError::Eof) => break,
+                    Err(TaoError::InvalidData(msg)) if msg.contains("Huffman 解码失败") => {
+                        *had_huffman_loss = true;
+                        break;
+                    }
                     Err(e) => return Err(e),
                 };
                 if let Some(dst) = spectrum.get_mut(channel) {
@@ -384,6 +403,10 @@ fn apply_partition_residue(
                 let got = match decode_codebook_vector(br, book, huffman, vec_buf) {
                     Ok(v) => v,
                     Err(TaoError::Eof) => break,
+                    Err(TaoError::InvalidData(msg)) if msg.contains("Huffman 解码失败") => {
+                        *had_huffman_loss = true;
+                        break;
+                    }
                     Err(e) => return Err(e),
                 };
                 if let Some(dst) = spectrum.get_mut(channel) {
@@ -416,6 +439,7 @@ fn apply_partition_residue_type2(
     psize: usize,
     n2: usize,
     vec_buf: &mut Vec<f32>,
+    had_huffman_loss: &mut bool,
 ) -> TaoResult<()> {
     let dims = usize::from(book.dimensions.max(1));
     if vec_buf.len() < dims {
@@ -435,6 +459,10 @@ fn apply_partition_residue_type2(
         let got = match decode_codebook_vector(br, book, huffman, vec_buf) {
             Ok(v) => v,
             Err(TaoError::Eof) => break,
+            Err(TaoError::InvalidData(msg)) if msg.contains("Huffman 解码失败") => {
+                *had_huffman_loss = true;
+                break;
+            }
             Err(e) => return Err(e),
         };
         for (k, val) in vec_buf.iter().copied().enumerate().take(got) {

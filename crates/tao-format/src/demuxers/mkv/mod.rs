@@ -21,6 +21,7 @@ pub mod ebml;
 
 use bytes::Bytes;
 use log::debug;
+use std::collections::VecDeque;
 use tao_codec::{CodecId, Packet};
 use tao_core::{ChannelLayout, MediaType, Rational, SampleFormat, TaoError, TaoResult};
 
@@ -87,6 +88,8 @@ pub struct MkvDemuxer {
     in_cluster: bool,
     /// 是否为 WebM 格式
     is_webm: bool,
+    /// 由 lacing 拆分后待返回的后续数据包
+    pending_packets: VecDeque<Packet>,
 }
 
 impl MkvDemuxer {
@@ -103,6 +106,7 @@ impl MkvDemuxer {
             cluster_remaining: 0,
             in_cluster: false,
             is_webm: false,
+            pending_packets: VecDeque::new(),
         }))
     }
 
@@ -360,10 +364,23 @@ impl MkvDemuxer {
     /// 读取 Cluster 内的下一个 SimpleBlock 或 Block
     fn read_block_from_cluster(&mut self, io: &mut IoContext) -> TaoResult<Option<Packet>> {
         while self.cluster_remaining > 0 {
+            let element_pos = io.position()?;
             let (eid, esize, hdr_len) = match read_element_header(io) {
                 Ok(v) => v,
                 Err(_) => return Ok(None),
             };
+
+            // unknown-size cluster 结束条件:
+            // 遇到下一个顶层元素时, 回退并交由 read_packet 顶层循环处理.
+            if self.cluster_remaining == EBML_UNKNOWN_SIZE
+                && matches!(
+                    eid,
+                    CLUSTER | SEGMENT_INFO | TRACKS | SEEK_HEAD | CUES | TAGS
+                )
+            {
+                io.seek(std::io::SeekFrom::Start(element_pos))?;
+                return Ok(None);
+            }
 
             let consumed = u64::from(hdr_len) + esize;
             if consumed > self.cluster_remaining {
@@ -376,12 +393,22 @@ impl MkvDemuxer {
                 CLUSTER_TIMESTAMP => {
                     self.cluster_timestamp = read_uint(io, esize)? as i64;
                 }
-                SIMPLE_BLOCK => {
-                    return self.parse_simple_block(io, esize).map(Some);
-                }
-                BLOCK_GROUP => {
-                    return self.parse_block_group(io, esize);
-                }
+                SIMPLE_BLOCK => match self.parse_simple_block(io, esize) {
+                    Ok(pkt) => return Ok(Some(pkt)),
+                    Err(TaoError::InvalidData(msg)) => {
+                        debug!("MKV: 跳过异常 SimpleBlock: {msg}");
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                },
+                BLOCK_GROUP => match self.parse_block_group(io, esize) {
+                    Ok(pkt) => return Ok(pkt),
+                    Err(TaoError::InvalidData(msg)) => {
+                        debug!("MKV: 跳过异常 BlockGroup: {msg}");
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                },
                 _ => {
                     io.skip(esize as usize)?;
                 }
@@ -391,7 +418,7 @@ impl MkvDemuxer {
     }
 
     /// 解析 SimpleBlock
-    fn parse_simple_block(&self, io: &mut IoContext, size: u64) -> TaoResult<Packet> {
+    fn parse_simple_block(&mut self, io: &mut IoContext, size: u64) -> TaoResult<Packet> {
         if size < 4 {
             return Err(TaoError::InvalidData("MKV: SimpleBlock 太小".into()));
         }
@@ -408,33 +435,56 @@ impl MkvDemuxer {
         // 标志字节
         let flags = io.read_u8()?;
         let is_keyframe = (flags & 0x80) != 0;
+        let lacing = (flags >> 1) & 0x03;
 
         // 剩余数据是帧数据
         let header_consumed = u64::from(vint_len) + 3;
         let data_size = size - header_consumed;
-        let data = io.read_bytes(data_size as usize)?;
+        let block_data = io.read_bytes(data_size as usize)?;
 
         let abs_ts = self.cluster_timestamp + relative_ts;
         // 转换为毫秒 (time_base = 1/1000)
         let pts_ms = abs_ts * self.timescale_ns as i64 / 1_000_000;
-
-        let stream_index = self.find_stream_index(track_number).unwrap_or(0);
-
-        let mut pkt = Packet::from_data(Bytes::from(data));
-        pkt.stream_index = stream_index;
-        pkt.pts = pts_ms;
-        pkt.dts = pts_ms;
-        pkt.is_keyframe = is_keyframe;
-
-        if let Some(stream) = self.streams.get(stream_index) {
-            pkt.time_base = stream.time_base;
+        let stream_index = self
+            .find_stream_index(track_number)
+            .ok_or_else(|| TaoError::InvalidData("MKV: Block 轨道号未映射到已知流".into()))?;
+        let frame_payloads = Self::split_laced_frames(&block_data, lacing)?;
+        if frame_payloads.is_empty() {
+            return Err(TaoError::InvalidData("MKV: Block 无有效帧负载".into()));
         }
 
-        Ok(pkt)
+        let mut packets = Vec::with_capacity(frame_payloads.len());
+        for payload in frame_payloads {
+            if payload.is_empty() {
+                continue;
+            }
+            let mut pkt = Packet::from_data(payload);
+            pkt.stream_index = stream_index;
+            pkt.pts = pts_ms;
+            pkt.dts = pts_ms;
+            pkt.is_keyframe = is_keyframe;
+            if let Some(stream) = self.streams.get(stream_index) {
+                pkt.time_base = stream.time_base;
+            }
+            packets.push(pkt);
+        }
+        if packets.is_empty() {
+            return Err(TaoError::InvalidData("MKV: Block 全部为零长度帧".into()));
+        }
+
+        let mut first = packets
+            .drain(..1)
+            .next()
+            .ok_or_else(|| TaoError::InvalidData("MKV: Block 帧拆分失败".into()))?;
+        for pkt in packets {
+            self.pending_packets.push_back(pkt);
+        }
+        first.is_keyframe = is_keyframe;
+        Ok(first)
     }
 
     /// 解析 BlockGroup (提取 Block)
-    fn parse_block_group(&self, io: &mut IoContext, size: u64) -> TaoResult<Option<Packet>> {
+    fn parse_block_group(&mut self, io: &mut IoContext, size: u64) -> TaoResult<Option<Packet>> {
         let end = io.position()? + size;
         let mut result = None;
 
@@ -448,6 +498,176 @@ impl MkvDemuxer {
         }
 
         Ok(result)
+    }
+
+    fn split_laced_frames(block_data: &[u8], lacing: u8) -> TaoResult<Vec<Bytes>> {
+        if block_data.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if lacing == 0 {
+            return Ok(vec![Bytes::copy_from_slice(block_data)]);
+        }
+
+        let mut cursor = 0usize;
+        let frame_count = usize::from(block_data[cursor]) + 1;
+        cursor += 1;
+        if frame_count == 0 {
+            return Err(TaoError::InvalidData("MKV: lacing 帧数非法".into()));
+        }
+
+        let mut sizes = match lacing {
+            0x01 => Self::parse_xiph_lacing_sizes(block_data, &mut cursor, frame_count)?,
+            0x02 => Self::parse_fixed_lacing_sizes(block_data, cursor, frame_count)?,
+            0x03 => Self::parse_ebml_lacing_sizes(block_data, &mut cursor, frame_count)?,
+            _ => {
+                return Err(TaoError::InvalidData(format!(
+                    "MKV: 未知 lacing 类型: {}",
+                    lacing
+                )));
+            }
+        };
+
+        let payload = &block_data[cursor..];
+        let known_total: usize = sizes.iter().take(frame_count.saturating_sub(1)).sum();
+        if payload.len() < known_total {
+            return Err(TaoError::InvalidData(
+                "MKV: lacing 帧长度超出负载范围".into(),
+            ));
+        }
+        let last_size = payload.len() - known_total;
+        if sizes.len() < frame_count {
+            sizes.push(last_size);
+        } else if let Some(last) = sizes.last_mut() {
+            *last = last_size;
+        }
+
+        let mut out = Vec::with_capacity(frame_count);
+        let mut offset = 0usize;
+        for sz in sizes {
+            let end = offset
+                .checked_add(sz)
+                .ok_or_else(|| TaoError::InvalidData("MKV: lacing 帧偏移溢出".into()))?;
+            let frame = payload
+                .get(offset..end)
+                .ok_or_else(|| TaoError::InvalidData("MKV: lacing 帧边界非法".into()))?;
+            out.push(Bytes::copy_from_slice(frame));
+            offset = end;
+        }
+
+        if offset != payload.len() {
+            return Err(TaoError::InvalidData("MKV: lacing 剩余负载未消费".into()));
+        }
+        Ok(out)
+    }
+
+    fn parse_xiph_lacing_sizes(
+        block_data: &[u8],
+        cursor: &mut usize,
+        frame_count: usize,
+    ) -> TaoResult<Vec<usize>> {
+        let mut sizes = Vec::with_capacity(frame_count);
+        for _ in 0..frame_count.saturating_sub(1) {
+            let mut sz = 0usize;
+            loop {
+                let b = *block_data
+                    .get(*cursor)
+                    .ok_or_else(|| TaoError::InvalidData("MKV: Xiph lacing 长度区越界".into()))?;
+                *cursor += 1;
+                sz = sz
+                    .checked_add(usize::from(b))
+                    .ok_or_else(|| TaoError::InvalidData("MKV: Xiph lacing 长度溢出".into()))?;
+                if b != 0xFF {
+                    break;
+                }
+            }
+            sizes.push(sz);
+        }
+        Ok(sizes)
+    }
+
+    fn parse_fixed_lacing_sizes(
+        block_data: &[u8],
+        cursor: usize,
+        frame_count: usize,
+    ) -> TaoResult<Vec<usize>> {
+        let payload_len = block_data
+            .len()
+            .checked_sub(cursor)
+            .ok_or_else(|| TaoError::InvalidData("MKV: Fixed lacing 负载长度非法".into()))?;
+        if frame_count == 0 || payload_len % frame_count != 0 {
+            return Err(TaoError::InvalidData(
+                "MKV: Fixed lacing 帧长度不整除".into(),
+            ));
+        }
+        let each = payload_len / frame_count;
+        Ok(vec![each; frame_count])
+    }
+
+    fn parse_ebml_lacing_sizes(
+        block_data: &[u8],
+        cursor: &mut usize,
+        frame_count: usize,
+    ) -> TaoResult<Vec<usize>> {
+        let mut sizes = Vec::with_capacity(frame_count);
+        let (first_size, consumed) = Self::parse_ebml_vint(block_data, *cursor)?;
+        *cursor += consumed;
+        let mut prev = i64::try_from(first_size)
+            .map_err(|_| TaoError::InvalidData("MKV: EBML lacing 首帧长度过大".into()))?;
+        if prev < 0 {
+            return Err(TaoError::InvalidData(
+                "MKV: EBML lacing 首帧长度非法".into(),
+            ));
+        }
+        sizes.push(prev as usize);
+
+        for _ in 0..frame_count.saturating_sub(2) {
+            let (raw, used) = Self::parse_ebml_vint(block_data, *cursor)?;
+            *cursor += used;
+            let bits = used * 7;
+            if bits == 0 || bits >= 63 {
+                return Err(TaoError::InvalidData(
+                    "MKV: EBML lacing 差分位宽非法".into(),
+                ));
+            }
+            let bias = (1i64 << (bits - 1)) - 1;
+            let diff = i64::try_from(raw)
+                .map_err(|_| TaoError::InvalidData("MKV: EBML lacing 差分值过大".into()))?
+                - bias;
+            let cur = prev + diff;
+            if cur < 0 {
+                return Err(TaoError::InvalidData(
+                    "MKV: EBML lacing 差分后帧长度为负".into(),
+                ));
+            }
+            sizes.push(cur as usize);
+            prev = cur;
+        }
+        Ok(sizes)
+    }
+
+    fn parse_ebml_vint(data: &[u8], start: usize) -> TaoResult<(u64, usize)> {
+        let first = *data
+            .get(start)
+            .ok_or_else(|| TaoError::InvalidData("MKV: EBML lacing 读取越界".into()))?;
+        if first == 0 {
+            return Err(TaoError::InvalidData("MKV: EBML lacing VINT 非法".into()));
+        }
+        let len = first.leading_zeros() as usize + 1;
+        if len > 8 {
+            return Err(TaoError::InvalidData(
+                "MKV: EBML lacing VINT 长度超过 8 字节".into(),
+            ));
+        }
+        if start + len > data.len() {
+            return Err(TaoError::InvalidData("MKV: EBML lacing VINT 越界".into()));
+        }
+
+        let mut value = u64::from(first & (0xFF >> len));
+        for idx in 1..len {
+            value = (value << 8) | u64::from(data[start + idx]);
+        }
+        Ok((value, len))
     }
 }
 
@@ -465,6 +685,8 @@ impl Demuxer for MkvDemuxer {
     }
 
     fn open(&mut self, io: &mut IoContext) -> TaoResult<()> {
+        self.pending_packets.clear();
+
         // 1) 解析 EBML 头部
         self.parse_ebml_header(io)?;
 
@@ -537,6 +759,10 @@ impl Demuxer for MkvDemuxer {
     }
 
     fn read_packet(&mut self, io: &mut IoContext) -> TaoResult<Packet> {
+        if let Some(pkt) = self.pending_packets.pop_front() {
+            return Ok(pkt);
+        }
+
         loop {
             // 如果在 Cluster 内, 尝试读取 Block
             if self.in_cluster {
@@ -586,6 +812,7 @@ impl Demuxer for MkvDemuxer {
         _timestamp: i64,
         _flags: SeekFlags,
     ) -> TaoResult<()> {
+        self.pending_packets.clear();
         Err(TaoError::NotImplemented("MKV seek 尚未实现".into()))
     }
 

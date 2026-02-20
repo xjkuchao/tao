@@ -129,7 +129,11 @@ impl AviDemuxer {
     }
 
     /// 根据 WAV 格式码和位深解析音频 CodecId
-    fn resolve_audio_codec(format_tag: u16, bits_per_sample: u16) -> TaoResult<CodecId> {
+    fn resolve_audio_codec(
+        format_tag: u16,
+        bits_per_sample: u16,
+        stream_format: &[u8],
+    ) -> TaoResult<CodecId> {
         match format_tag {
             WAV_FORMAT_PCM => match bits_per_sample {
                 8 => Ok(CodecId::PcmU8),
@@ -151,11 +155,37 @@ impl AviDemuxer {
             0x0050 => Ok(CodecId::Mp3), // MPEG Layer 3
             0x0055 => Ok(CodecId::Mp3), // MPEG Layer 3
             0x0160 => Ok(CodecId::Aac), // WAVE_FORMAT_AAC
+            // AVI 中的 OggVorbis 变体封装, 当前 demuxer 尚未拆封装到原生 Vorbis 包.
+            // 先标记为 None, 由上层按“非 Vorbis 流”路径回退对比基线.
+            0x674F | 0x6750 | 0x6751 | 0x676F | 0x6770 | 0x6771 | 0x7966 => Ok(CodecId::None),
+            // WAVE_FORMAT_EXTENSIBLE: 从 SubFormat GUID 低 16 位推断真实格式码.
+            0xFFFE => {
+                if let Some(sub_tag) = Self::extract_extensible_sub_tag(stream_format)
+                    && sub_tag != 0xFFFE
+                {
+                    return Self::resolve_audio_codec(sub_tag, bits_per_sample, stream_format);
+                }
+                Err(TaoError::Unsupported(
+                    "不支持的 WAVE_FORMAT_EXTENSIBLE 子格式".into(),
+                ))
+            }
             _ => Err(TaoError::Unsupported(format!(
                 "不支持的音频格式码: 0x{:04X}",
                 format_tag
             ))),
         }
+    }
+
+    fn extract_extensible_sub_tag(stream_format: &[u8]) -> Option<u16> {
+        // WAVEFORMATEXTENSIBLE: 头部 18 字节 + 扩展 22 字节, SubFormat 从偏移 24 开始.
+        if stream_format.len() < 40 {
+            return None;
+        }
+        let cb_size = u16::from_le_bytes([stream_format[16], stream_format[17]]) as usize;
+        if cb_size < 22 || stream_format.len() < 18 + cb_size {
+            return None;
+        }
+        Some(u16::from_le_bytes([stream_format[24], stream_format[25]]))
     }
 
     /// 根据 CodecId 确定采样格式
@@ -357,8 +387,11 @@ impl AviDemuxer {
                                     let bits_per_sample =
                                         u16::from_le_bytes([stream_format[14], stream_format[15]]);
 
-                                    let codec_id =
-                                        Self::resolve_audio_codec(format_tag, bits_per_sample)?;
+                                    let codec_id = Self::resolve_audio_codec(
+                                        format_tag,
+                                        bits_per_sample,
+                                        &stream_format,
+                                    )?;
                                     let sample_format = Self::resolve_sample_format(codec_id);
                                     let channel_layout =
                                         ChannelLayout::from_channels(channels as u32);

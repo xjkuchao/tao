@@ -1,8 +1,8 @@
 use tao_core::{TaoError, TaoResult};
 
 use super::bitreader::{LsbBitReader, ilog};
-use super::codebook::CodebookHuffman;
-use super::setup::{Floor1Config, FloorConfig, MappingConfig, ParsedSetup};
+use super::codebook::{CodebookHuffman, decode_codebook_vector};
+use super::setup::{Floor0Config, Floor1Config, FloorConfig, MappingConfig, ParsedSetup};
 
 /// floor 恢复阶段上下文.
 #[derive(Debug, Clone)]
@@ -63,18 +63,29 @@ pub(crate) fn decode_floor_curves(
             .floors
             .get(floor_idx)
             .ok_or_else(|| TaoError::InvalidData("Vorbis floor 索引越界".into()))?;
-        let used = br.read_flag()?;
-        nonzero[ch] = used;
-        if !used {
-            channel_curves[ch].fill(0.0);
-            continue;
-        }
-
         match floor {
-            FloorConfig::Floor0 => {
-                channel_curves[ch].fill(1.0);
-            }
+            FloorConfig::Floor0(cfg) => match decode_floor0_curve(br, setup, cfg, huffmans, n2) {
+                Ok((used, curve)) => {
+                    nonzero[ch] = used;
+                    channel_curves[ch] = curve;
+                }
+                Err(TaoError::Eof) => {
+                    nonzero[ch] = false;
+                    channel_curves[ch].fill(0.0);
+                }
+                Err(TaoError::InvalidData(_)) => {
+                    nonzero[ch] = false;
+                    channel_curves[ch].fill(0.0);
+                }
+                Err(e) => return Err(e),
+            },
             FloorConfig::Floor1(cfg) => {
+                let used = br.read_flag()?;
+                nonzero[ch] = used;
+                if !used {
+                    channel_curves[ch].fill(0.0);
+                    continue;
+                }
                 channel_curves[ch] = decode_floor1_curve(br, setup, cfg, huffmans, n2)?;
             }
         }
@@ -84,6 +95,77 @@ pub(crate) fn decode_floor_curves(
         channel_curves,
         nonzero,
     })
+}
+
+fn decode_floor0_curve(
+    br: &mut LsbBitReader<'_>,
+    setup: &ParsedSetup,
+    cfg: &Floor0Config,
+    huffmans: &[CodebookHuffman],
+    n2: usize,
+) -> TaoResult<(bool, Vec<f32>)> {
+    let amplitude = br.read_bits_u64(cfg.amp_bits)?;
+    if amplitude == 0 {
+        return Ok((false, vec![0.0; n2]));
+    }
+
+    if cfg.order == 0 || cfg.book_list.is_empty() || cfg.bark_map_size == 0 {
+        return Ok((true, vec![1.0; n2]));
+    }
+
+    // Vorbis floor0: booknumber 的读取位数为 ilog(book_count).
+    let book_sel_bits = ilog(cfg.book_list.len() as u32);
+    let book_sel = if book_sel_bits > 0 {
+        br.read_bits(book_sel_bits)? as usize
+    } else {
+        0
+    };
+    let codebook_idx = *cfg
+        .book_list
+        .get(book_sel)
+        .ok_or_else(|| TaoError::InvalidData("Vorbis floor0 book 选择越界".into()))?
+        as usize;
+    let book = setup
+        .codebooks
+        .get(codebook_idx)
+        .ok_or_else(|| TaoError::InvalidData("Vorbis floor0 codebook 索引越界".into()))?;
+    let huffman = huffmans
+        .get(codebook_idx)
+        .ok_or_else(|| TaoError::InvalidData("Vorbis floor0 Huffman 表索引越界".into()))?;
+
+    let order = usize::from(cfg.order);
+    let mut coeffs = vec![0.0f32; order];
+    let mut i = 0usize;
+    let mut last = 0.0f32;
+    while i < order {
+        let mut tmp = vec![0.0f32; usize::from(book.dimensions)];
+        let got = decode_codebook_vector(br, book, huffman, &mut tmp)?;
+        if got == 0 {
+            return Err(TaoError::InvalidData("Vorbis floor0 VQ 维度非法".into()));
+        }
+        let take = (order - i).min(got);
+        for (dst, src) in coeffs[i..i + take].iter_mut().zip(tmp.iter().take(take)) {
+            *dst = last + *src;
+        }
+        last = coeffs[i + take - 1];
+        i += take;
+    }
+    for c in &mut coeffs {
+        *c = 2.0 * c.cos();
+    }
+
+    let bark_map = build_floor0_bark_map(n2, cfg.rate, cfg.bark_map_size);
+    let mut curve = vec![0.0f32; n2];
+    synthesize_floor0_curve(
+        &coeffs,
+        &bark_map,
+        cfg.bark_map_size,
+        amplitude,
+        cfg.amp_bits,
+        cfg.amp_offset,
+        &mut curve,
+    )?;
+    Ok((true, curve))
 }
 
 fn decode_floor1_curve(
@@ -153,7 +235,10 @@ fn decode_floor1_curve(
     final_y[1] = y_list[1];
 
     for i in 2..y_list.len() {
-        let (low, high) = find_neighbors(&cfg.x_list, i);
+        let low = low_neighbor(&cfg.x_list, i)
+            .ok_or_else(|| TaoError::InvalidData("Vorbis floor1 low_neighbor 无效".into()))?;
+        let high = high_neighbor(&cfg.x_list, i)
+            .ok_or_else(|| TaoError::InvalidData("Vorbis floor1 high_neighbor 无效".into()))?;
         let predicted = render_point(
             cfg.x_list[low] as i32,
             final_y[low],
@@ -228,7 +313,34 @@ fn decode_codebook_scalar(
     let h = huffmans
         .get(book_idx)
         .ok_or_else(|| TaoError::InvalidData("Vorbis Huffman 表索引越界".into()))?;
-    let sym = h.decode_symbol(br)?;
+    let sym = match h.decode_symbol(br) {
+        Ok(sym) => sym,
+        Err(TaoError::InvalidData(msg)) if msg.contains("Huffman 解码失败") => {
+            const MAX_RESYNC_BITS: u8 = 32;
+            let mut recovered = None;
+            for shift in 1..=MAX_RESYNC_BITS {
+                let mut trial = br.clone();
+                if trial.read_bits(shift).is_err() {
+                    break;
+                }
+                let sym_try = match h.decode_symbol(&mut trial) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                if sym_try < book.entries {
+                    recovered = Some((sym_try, trial));
+                    break;
+                }
+            }
+            if let Some((sym_ok, trial_reader)) = recovered {
+                *br = trial_reader;
+                sym_ok
+            } else {
+                return Err(TaoError::InvalidData(msg));
+            }
+        }
+        Err(e) => return Err(e),
+    };
     if sym >= book.entries {
         return Err(TaoError::InvalidData(
             "Vorbis codebook 符号超出 entries".into(),
@@ -237,23 +349,36 @@ fn decode_codebook_scalar(
     Ok(sym)
 }
 
-fn find_neighbors(x_list: &[u16], i: usize) -> (usize, usize) {
-    let xi = x_list[i];
-    let mut low_idx = 0usize;
-    let mut high_idx = 0usize;
-    let mut low_x = 0u16;
-    let mut high_x = u16::MAX;
+fn low_neighbor(x_list: &[u16], i: usize) -> Option<usize> {
+    let xi = *x_list.get(i)?;
+    let mut best_idx: Option<usize> = None;
+    let mut best_x = 0u16;
     for (j, &xj) in x_list.iter().enumerate().take(i) {
-        if xj < xi && xj >= low_x {
-            low_x = xj;
-            low_idx = j;
+        if xj >= xi {
+            continue;
         }
-        if xj > xi && xj <= high_x {
-            high_x = xj;
-            high_idx = j;
+        if best_idx.is_none() || xj > best_x {
+            best_idx = Some(j);
+            best_x = xj;
         }
     }
-    (low_idx, high_idx)
+    best_idx
+}
+
+fn high_neighbor(x_list: &[u16], i: usize) -> Option<usize> {
+    let xi = *x_list.get(i)?;
+    let mut best_idx: Option<usize> = None;
+    let mut best_x = u16::MAX;
+    for (j, &xj) in x_list.iter().enumerate().take(i) {
+        if xj <= xi {
+            continue;
+        }
+        if best_idx.is_none() || xj < best_x {
+            best_idx = Some(j);
+            best_x = xj;
+        }
+    }
+    best_idx
 }
 
 fn render_point(x0: i32, y0: i32, x1: i32, y1: i32, x: i32) -> i32 {
@@ -309,6 +434,89 @@ fn render_line(x0: u32, y0: u32, x1: u32, y1: u32, out: &mut Vec<u32>) {
         }
         out.push(y as u32);
     }
+}
+
+fn build_floor0_bark_map(n2: usize, rate: u16, bark_map_size: u16) -> Vec<u16> {
+    let mut out = Vec::with_capacity(n2);
+    if n2 == 0 || bark_map_size == 0 || rate == 0 {
+        return out;
+    }
+
+    let rate_f64 = f64::from(rate);
+    let bark_half_rate = bark(0.5 * rate_f64);
+    if bark_half_rate <= f64::EPSILON {
+        return out;
+    }
+    let bark_const = f64::from(bark_map_size) / bark_half_rate;
+    let bark_max = i32::from(bark_map_size) - 1;
+    let rate_by_2n = rate_f64 / (2.0 * n2 as f64);
+
+    for i in 0..n2 {
+        let bark_val = (bark(rate_by_2n * i as f64) * bark_const).floor() as i32;
+        out.push(bark_val.min(bark_max) as u16);
+    }
+    out
+}
+
+fn bark(x: f64) -> f64 {
+    (13.1 * (0.00074 * x).atan()) + (2.24 * (0.0000000185 * x * x).atan()) + (0.0001 * x)
+}
+
+fn synthesize_floor0_curve(
+    coeffs: &[f32],
+    bark_map: &[u16],
+    bark_map_size: u16,
+    amplitude: u64,
+    amp_bits: u8,
+    amp_offset: u8,
+    curve: &mut [f32],
+) -> TaoResult<()> {
+    if coeffs.is_empty() || bark_map.is_empty() || curve.is_empty() || bark_map_size == 0 {
+        return Ok(());
+    }
+    let amp_den = ((1u64 << amp_bits) - 1) as f32;
+    if amp_den <= f32::EPSILON || !amp_den.is_finite() {
+        return Err(TaoError::InvalidData("Vorbis floor0 幅值参数非法".into()));
+    }
+    let omega_step = std::f32::consts::PI / f32::from(bark_map_size);
+    let amp_scaled = amplitude.wrapping_mul(u64::from(amp_offset)) as f32;
+    let amp_offset_f = f32::from(amp_offset);
+    let mut i = 0usize;
+    while i < bark_map.len() && i < curve.len() {
+        let map_val = bark_map[i];
+        let omega = omega_step * f32::from(map_val);
+        let cos_omega = omega.cos();
+        let two_cos_omega = 2.0f32 * cos_omega;
+
+        let mut p = 1.0f32;
+        let mut q = 1.0f32;
+        let mut iter = coeffs.chunks_exact(2);
+        for pair in &mut iter {
+            p *= pair[1] - two_cos_omega;
+            q *= pair[0] - two_cos_omega;
+        }
+        let remainder = iter.remainder();
+        if let Some(&last_coeff) = remainder.first() {
+            q *= last_coeff - two_cos_omega;
+            p = p * p * (1.0 - cos_omega * cos_omega);
+            q = q * q * 0.25;
+        } else {
+            p = p * p * ((1.0 - cos_omega) * 0.5);
+            q = q * q * ((1.0 + cos_omega) * 0.5);
+        }
+        let sum = p + q;
+        let linear = if sum.is_finite() && sum > f32::EPSILON {
+            let denom = sum.sqrt() * amp_den;
+            (0.11512925f32 * ((amp_scaled / denom) - amp_offset_f)).exp()
+        } else {
+            0.0
+        };
+        while i < bark_map.len() && i < curve.len() && bark_map[i] == map_val {
+            curve[i] = linear;
+            i += 1;
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::excessive_precision)]

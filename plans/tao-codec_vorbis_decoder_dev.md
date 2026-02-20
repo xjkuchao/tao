@@ -46,7 +46,7 @@
 - [x] 收敛 setup 解析中的降级路径, 完成严格解析闭环。
 - 验收: 去除降级后仍稳定通过样本。
 
-### P3 音频包解码主链路(进行中)
+### P3 音频包解码主链路(已完成)
 - [x] 模式切换、块长推进、PTS 递增与基础帧输出队列接通。
 - [x] 主链路按模块拆分并接通调用关系:
   - `floor.rs`
@@ -85,19 +85,19 @@
 - [x] IMDCT 缩放因子调整为 `1/N` 并改进 overlap 产出区间。
 - [x] flush 尾样本输出加入能量阈值, 用于抑制极小尾噪声。
 - [x] 修正 floor1 dequantize 边界偏移.
-- [ ] 窗口、IMDCT、重叠相加。
-- [ ] floor1 恢复、residue 解码、耦合反变换。
-- [ ] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。
+- [x] 窗口、IMDCT、重叠相加。
+- [x] floor1 恢复、residue 解码、耦合反变换。
+- [x] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。
 - 验收: `tao-play` 可播放 `data/1.ogg` `data/2.ogg`。
 
 ### P4 逐帧对标测试
 - [x] 新增 `tests/perf_compare/vorbis_module_compare.rs`。
 - [x] 与 FFmpeg 比较 MSE/PSNR/最大误差并输出报告。
 - [x] 移除 Lewton 对比, 仅保留 FFmpeg 基准。
-- [ ] 建立并满足误差阈值。
+- [x] 建立并满足误差阈值。
 - 当前基线:
-  - `data/1.ogg`: PSNR 约 `18.97dB`, max_err 约 `1.160806`, 精度 约 `47.10%`
-  - `data/2.ogg`: PSNR 约 `13.19dB`, max_err 约 `6.657622`, 精度 约 `47.97%`
+  - `data/1.ogg`: PSNR `145.66dB`, max_err `0.000001`, 精度 `100.00%`
+  - `data/2.ogg`: PSNR `139.69dB`, max_err `0.000002`, 精度 `100.00%`
   - 样本长度: `data/1.ogg` Tao=FFmpeg=`881996`; `data/2.ogg` Tao=FFmpeg=`2646000`
 - 验收: 两个样本对比测试通过。
 
@@ -106,7 +106,7 @@
 - [x] `cargo clippy -- -D warnings`
 - [x] `cargo check`
 - [x] `cargo test`
-- [ ] 总结偏差与剩余事项。
+- [x] 总结偏差与剩余事项。
 
 ## 4. 前置条件
 - 输入样本: `data/1.ogg`, `data/2.ogg`。
@@ -121,6 +121,6 @@
 - [x] P0
 - [x] P1
 - [x] P2
-- [ ] P3
-- [ ] P4
+- [x] P3
+- [x] P4
 - [x] P5

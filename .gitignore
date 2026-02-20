@@ -19,6 +19,9 @@
 Thumbs.db
 desktop.ini
 
+# Python 缓存
+__pycache__/
+
 # 动态库构建产物
 *.dll
 *.so

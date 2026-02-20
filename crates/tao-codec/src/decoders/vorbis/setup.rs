@@ -36,8 +36,18 @@ pub(crate) struct CodebookLookupConfig {
 
 #[derive(Debug, Clone)]
 pub(crate) enum FloorConfig {
-    Floor0,
+    Floor0(Floor0Config),
     Floor1(Floor1Config),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Floor0Config {
+    pub(crate) order: u8,
+    pub(crate) rate: u16,
+    pub(crate) bark_map_size: u16,
+    pub(crate) amp_bits: u8,
+    pub(crate) amp_offset: u8,
+    pub(crate) book_list: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -284,8 +294,7 @@ fn parse_floors(br: &mut LsbBitReader<'_>) -> TaoResult<Vec<FloorConfig>> {
         let floor_type = br.read_bits(16)?;
         match floor_type {
             0 => {
-                parse_floor0(br)?;
-                floors.push(FloorConfig::Floor0);
+                floors.push(FloorConfig::Floor0(parse_floor0(br)?));
             }
             1 => floors.push(FloorConfig::Floor1(parse_floor1(br)?)),
             _ => {
@@ -316,20 +325,28 @@ fn parse_floors(br: &mut LsbBitReader<'_>) -> TaoResult<Vec<FloorConfig>> {
     Ok(floors)
 }
 
-fn parse_floor0(br: &mut LsbBitReader<'_>) -> TaoResult<()> {
-    let _order = br.read_bits(8)?;
-    let _rate = br.read_bits(16)?;
-    let _bark_map_size = br.read_bits(16)?;
+fn parse_floor0(br: &mut LsbBitReader<'_>) -> TaoResult<Floor0Config> {
+    let order = br.read_bits(8)? as u8;
+    let rate = br.read_bits(16)? as u16;
+    let bark_map_size = br.read_bits(16)? as u16;
     let amp_bits = br.read_bits(6)?;
     if amp_bits == 0 {
         return Err(TaoError::InvalidData("Vorbis floor0 amp_bits 非法".into()));
     }
-    let _amp_offset = br.read_bits(8)?;
+    let amp_offset = br.read_bits(8)? as u8;
     let book_count = br.read_bits(4)? + 1;
+    let mut book_list = Vec::with_capacity(book_count as usize);
     for _ in 0..book_count {
-        let _ = br.read_bits(8)?;
+        book_list.push(br.read_bits(8)? as u8);
     }
-    Ok(())
+    Ok(Floor0Config {
+        order,
+        rate,
+        bark_map_size,
+        amp_bits: amp_bits as u8,
+        amp_offset,
+        book_list,
+    })
 }
 
 fn parse_floor1(br: &mut LsbBitReader<'_>) -> TaoResult<Floor1Config> {

@@ -47,6 +47,31 @@ impl<'a> LsbBitReader<'a> {
         Ok(out)
     }
 
+    pub(crate) fn read_bits_u64(&mut self, n: u8) -> TaoResult<u64> {
+        if n == 0 {
+            return Ok(0);
+        }
+        if n > 64 {
+            return Err(TaoError::InvalidArgument(format!(
+                "Vorbis read_bits_u64 位数非法: {}",
+                n,
+            )));
+        }
+        if self.bits_left() < n as usize {
+            return Err(TaoError::Eof);
+        }
+
+        let mut out = 0u64;
+        for i in 0..n {
+            let bit_idx = self.bit_pos + i as usize;
+            let byte = self.data[bit_idx / 8];
+            let bit = (byte >> (bit_idx % 8)) & 1;
+            out |= u64::from(bit) << i;
+        }
+        self.bit_pos += n as usize;
+        Ok(out)
+    }
+
     pub(crate) fn bit_position(&self) -> usize {
         self.bit_pos
     }

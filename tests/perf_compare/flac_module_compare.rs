@@ -1,15 +1,15 @@
-//! MP3 解码精度对比测试.
+//! FLAC 解码精度对比测试.
 //!
 //! 手动执行示例:
-//! 1) cargo test --test mp3_module_compare -- --nocapture --ignored -- data/1.mp3
-//! 2) TAO_MP3_COMPARE_INPUT=data/1.mp3 cargo test --test mp3_module_compare -- --nocapture --ignored
-//! 3) TAO_MP3_COMPARE_INPUT=https://samples.ffmpeg.org/A-codecs/MP3/hl.mp3 cargo test --test mp3_module_compare -- --nocapture --ignored
+//! 1) cargo test --test flac_module_compare -- --nocapture --ignored test_flac_compare -- data/1.flac
+//! 2) TAO_FLAC_COMPARE_INPUT=data/1.flac cargo test --test flac_module_compare -- --nocapture --ignored test_flac_compare
+//! 3) TAO_FLAC_COMPARE_INPUT=https://samples.ffmpeg.org/A-codecs/lossless/luckynight.flac cargo test --test flac_module_compare -- --nocapture --ignored test_flac_compare
 
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tao::codec::codec_parameters::{AudioCodecParams, CodecParamsType};
-use tao::codec::frame::Frame;
+use tao::codec::frame::{AudioFrame, Frame};
 use tao::codec::packet::Packet;
 use tao::codec::{CodecId, CodecParameters, CodecRegistry};
 use tao::core::{ChannelLayout, SampleFormat, TaoError};
@@ -46,7 +46,62 @@ fn open_input(path: &str) -> Result<IoContext, Box<dyn std::error::Error>> {
     Ok(IoContext::open_read(path)?)
 }
 
-fn decode_mp3_with_tao(
+fn parse_flac_bits_per_sample(extra_data: &[u8]) -> Option<u32> {
+    if extra_data.len() < 34 {
+        return None;
+    }
+    let bps_hi = (u32::from(extra_data[12]) & 0x01) << 4;
+    let bps_lo = u32::from(extra_data[13]) >> 4;
+    Some((bps_hi | bps_lo) + 1)
+}
+
+fn append_audio_frame_to_f32(
+    af: &AudioFrame,
+    nominal_bits: u32,
+    out: &mut Vec<f32>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if af.sample_format.is_planar() {
+        return Err("当前对比脚本不支持平面音频输出".into());
+    }
+
+    let data = af.data.first().ok_or("音频帧缺少主数据平面, 无法对比")?;
+
+    match af.sample_format {
+        SampleFormat::U8 => {
+            out.extend(data.iter().map(|&v| (f32::from(v) - 128.0) / 128.0));
+        }
+        SampleFormat::S16 => {
+            out.extend(
+                data.chunks_exact(2)
+                    .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0),
+            );
+        }
+        SampleFormat::S32 => {
+            let scale = if (1..32).contains(&nominal_bits) {
+                (1u64 << (nominal_bits - 1)) as f32
+            } else {
+                2147483648.0
+            };
+            out.extend(
+                data.chunks_exact(4)
+                    .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / scale),
+            );
+        }
+        SampleFormat::F32 => {
+            out.extend(
+                data.chunks_exact(4)
+                    .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
+            );
+        }
+        _ => {
+            return Err(format!("当前对比脚本暂不支持采样格式: {}", af.sample_format).into());
+        }
+    }
+
+    Ok(())
+}
+
+fn decode_flac_with_tao(
     path: &str,
 ) -> Result<(u32, u32, Vec<f32>, Option<u32>), Box<dyn std::error::Error>> {
     let mut format_registry = FormatRegistry::new();
@@ -55,11 +110,9 @@ fn decode_mp3_with_tao(
     tao::codec::register_all(&mut codec_registry);
 
     let mut io = open_input(path)?;
-    // 仅按内容探测格式, 避免 ".mp3" 扩展名误导导致容器探测错误.
     let mut demuxer = match format_registry.open_input(&mut io, None) {
         Ok(d) => d,
         Err(_) => {
-            // 内容探测失败时回退到扩展名辅助探测, 兼容极端损坏/边缘样本.
             io.seek(std::io::SeekFrom::Start(0))?;
             format_registry.open_input(&mut io, Some(path))?
         }
@@ -68,7 +121,7 @@ fn decode_mp3_with_tao(
     let stream = demuxer
         .streams()
         .iter()
-        .find(|s| s.codec_id == CodecId::Mp3)
+        .find(|s| s.codec_id == CodecId::Flac)
         .or_else(|| {
             demuxer
                 .streams()
@@ -80,19 +133,31 @@ fn decode_mp3_with_tao(
     let stream_index_u32 =
         u32::try_from(stream.index).map_err(|_| "流索引超出 u32 范围, 无法用于 ffmpeg 映射")?;
     let codec_id = stream.codec_id;
-    if codec_id != CodecId::Mp3 {
+    if codec_id != CodecId::Flac {
         info!(
-            "[{}] 非 MP3 流({}), 对比测试回退到 FFmpeg 解码基线",
+            "[{}] 非 FLAC 流({}), 对比测试回退到 FFmpeg 解码基线",
             path, codec_id
         );
-        let (sr, ch, pcm) = decode_mp3_with_ffmpeg(path, Some(stream_index_u32))?;
+        let (sr, ch, pcm) = decode_flac_with_ffmpeg(path, Some(stream_index_u32))?;
         return Ok((sr, ch, pcm, Some(stream_index_u32)));
     }
 
-    let (sample_rate, channel_layout) = match &stream.params {
-        tao::format::stream::StreamParams::Audio(a) => (a.sample_rate, a.channel_layout),
-        _ => (44100, ChannelLayout::STEREO),
+    let (sample_rate, channel_layout, sample_format) = match &stream.params {
+        tao::format::stream::StreamParams::Audio(a) => {
+            (a.sample_rate, a.channel_layout, a.sample_format)
+        }
+        _ => (44100, ChannelLayout::STEREO, SampleFormat::F32),
     };
+
+    let nominal_bits = parse_flac_bits_per_sample(&stream.extra_data).unwrap_or_else(|| {
+        if sample_format == SampleFormat::U8 {
+            8
+        } else if sample_format == SampleFormat::S16 {
+            16
+        } else {
+            32
+        }
+    });
 
     let params = CodecParameters {
         codec_id,
@@ -101,8 +166,8 @@ fn decode_mp3_with_tao(
         params: CodecParamsType::Audio(AudioCodecParams {
             sample_rate,
             channel_layout,
-            sample_format: SampleFormat::F32,
-            frame_size: 1152,
+            sample_format,
+            frame_size: 0,
         }),
     };
 
@@ -114,6 +179,7 @@ fn decode_mp3_with_tao(
     let mut actual_ch = channel_layout.channels;
 
     let mut demux_eof = false;
+    let mut packet_index: u64 = 0;
     loop {
         if !demux_eof {
             match demuxer.read_packet(&mut io) {
@@ -121,13 +187,28 @@ fn decode_mp3_with_tao(
                     if pkt.stream_index != stream.index {
                         continue;
                     }
-                    decoder.send_packet(&pkt)?;
+                    packet_index += 1;
+                    decoder.send_packet(&pkt).map_err(|e| {
+                        format!(
+                            "发送 FLAC 包失败: {}, 包序号={}, pos={}, 大小={}",
+                            e,
+                            packet_index,
+                            pkt.pos,
+                            pkt.data.len()
+                        )
+                    })?;
                 }
                 Err(TaoError::Eof) => {
-                    decoder.send_packet(&Packet::empty())?;
+                    decoder.send_packet(&Packet::empty()).map_err(|e| {
+                        format!("发送 FLAC 刷新包失败: {}, 已处理包数={}", e, packet_index)
+                    })?;
                     demux_eof = true;
                 }
-                Err(e) => return Err(format!("读取包失败: {}", e).into()),
+                Err(e) => {
+                    return Err(
+                        format!("读取 FLAC 包失败: {}, 已处理包数={}", e, packet_index).into(),
+                    );
+                }
             }
         }
 
@@ -136,13 +217,7 @@ fn decode_mp3_with_tao(
                 Ok(Frame::Audio(af)) => {
                     actual_sr = af.sample_rate;
                     actual_ch = af.channel_layout.channels;
-                    if !af.data.is_empty() {
-                        out.extend(
-                            af.data[0]
-                                .chunks_exact(4)
-                                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])),
-                        );
-                    }
+                    append_audio_frame_to_f32(&af, nominal_bits, &mut out)?;
                 }
                 Ok(_) => {}
                 Err(TaoError::NeedMoreData) => {
@@ -154,18 +229,20 @@ fn decode_mp3_with_tao(
                 Err(TaoError::Eof) => {
                     return Ok((actual_sr, actual_ch, out, Some(stream_index_u32)));
                 }
-                Err(e) => return Err(format!("取帧失败: {}", e).into()),
+                Err(e) => {
+                    return Err(
+                        format!("接收 FLAC 帧失败: {}, 当前包序号={}", e, packet_index).into(),
+                    );
+                }
             }
         }
     }
 }
 
-fn decode_mp3_with_ffmpeg(
+fn decode_flac_with_ffmpeg(
     path: &str,
     preferred_stream: Option<u32>,
 ) -> Result<(u32, u32, Vec<f32>), Box<dyn std::error::Error>> {
-    // 先用 ffprobe 选择“有效音频流”(sample_rate/channels > 0),
-    // 规避损坏样本中 a:0 为占位流导致的空输出问题.
     let probe = Command::new("ffprobe")
         .args([
             "-v",
@@ -225,8 +302,9 @@ fn decode_mp3_with_ffmpeg(
         }
     }
     let selected_idx = selected_idx.ok_or("ffprobe 未找到有效音频流")?;
+
     let map_spec = format!("0:{selected_idx}");
-    let tmp = make_ffmpeg_tmp_path("mp3_cmp");
+    let tmp = make_ffmpeg_tmp_path("flac_cmp");
     let status = Command::new("ffmpeg")
         .args([
             "-y",
@@ -261,37 +339,6 @@ struct CompareStats {
     max_err: f64,
     psnr: f64,
     precision_pct: f64,
-}
-
-fn compare_pcm_with_shift(reference: &[f32], test: &[f32], shift: isize) -> CompareStats {
-    if shift == 0 {
-        return compare_pcm(reference, test);
-    }
-    if shift > 0 {
-        let s = shift as usize;
-        if s >= test.len() {
-            return CompareStats {
-                n: 0,
-                max_err: 0.0,
-                psnr: f64::INFINITY,
-                precision_pct: 0.0,
-            };
-        }
-        let n = reference.len().min(test.len() - s);
-        return compare_pcm(&reference[..n], &test[s..s + n]);
-    }
-
-    let s = (-shift) as usize;
-    if s >= reference.len() {
-        return CompareStats {
-            n: 0,
-            max_err: 0.0,
-            psnr: f64::INFINITY,
-            precision_pct: 0.0,
-        };
-    }
-    let n = test.len().min(reference.len() - s);
-    compare_pcm(&reference[s..s + n], &test[..n])
 }
 
 fn compare_pcm(reference: &[f32], test: &[f32]) -> CompareStats {
@@ -333,12 +380,7 @@ fn compare_pcm(reference: &[f32], test: &[f32]) -> CompareStats {
     if precision_pct.is_nan() {
         precision_pct = 0.0;
     }
-    if precision_pct < 0.0 {
-        precision_pct = 0.0;
-    }
-    if precision_pct > 100.0 {
-        precision_pct = 100.0;
-    }
+    precision_pct = precision_pct.clamp(0.0, 100.0);
 
     CompareStats {
         n,
@@ -353,49 +395,59 @@ fn resolve_input() -> Result<String, Box<dyn std::error::Error>> {
     if let Some(arg) = after_dd.next() {
         return Ok(arg);
     }
-    if let Ok(env) = std::env::var("TAO_MP3_COMPARE_INPUT") {
-        if !env.trim().is_empty() {
-            return Ok(env);
-        }
+    if let Ok(env) = std::env::var("TAO_FLAC_COMPARE_INPUT")
+        && !env.trim().is_empty()
+    {
+        return Ok(env);
     }
-    Err("请通过参数或 TAO_MP3_COMPARE_INPUT 指定 MP3 文件或 URL".into())
+    Err("请通过参数或 TAO_FLAC_COMPARE_INPUT 指定 FLAC 文件或 URL".into())
 }
 
 fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     init_test_tracing();
 
-    let (tao_sr, tao_ch, tao_pcm, tao_stream_index) = decode_mp3_with_tao(path)?;
-    let (ff_sr, ff_ch, ff_pcm) = decode_mp3_with_ffmpeg(path, tao_stream_index)?;
+    let (tao_sr, tao_ch, tao_pcm, tao_stream_index) = decode_flac_with_tao(path)?;
+    let (ff_sr, ff_ch, ff_pcm) = decode_flac_with_ffmpeg(path, tao_stream_index)?;
 
     assert_eq!(tao_sr, ff_sr, "采样率不匹配");
     assert_eq!(tao_ch, ff_ch, "通道数不匹配");
-
-    let mut stats_tao = compare_pcm(&ff_pcm, &tao_pcm);
-    let diff = tao_pcm.len() as isize - ff_pcm.len() as isize;
-    if diff != 0 {
-        let by_diff = compare_pcm_with_shift(&ff_pcm, &tao_pcm, diff);
-        if by_diff.n > 0 && by_diff.precision_pct > stats_tao.precision_pct {
-            stats_tao = by_diff;
-        }
-    }
-    info!(
-        "[{}] Tao对比样本={}, Tao={}, FFmpeg={}, Tao/FFmpeg: max_err={:.6}, psnr={:.2}dB, 精度={:.2}%, FFmpeg=100%",
-        path,
-        stats_tao.n,
+    assert_eq!(
         tao_pcm.len(),
         ff_pcm.len(),
-        stats_tao.max_err,
-        stats_tao.psnr,
-        stats_tao.precision_pct
+        "样本总数不匹配: Tao={}, FFmpeg={}",
+        tao_pcm.len(),
+        ff_pcm.len()
     );
 
-    assert!(stats_tao.n > 0, "无可比较样本");
+    let stats = compare_pcm(&ff_pcm, &tao_pcm);
+    info!(
+        "[{}] Tao对比样本={}, Tao={}, FFmpeg={}, Tao/FFmpeg: max_err={:.9}, psnr={:.2}dB, 精度={:.6}%, FFmpeg=100%",
+        path,
+        stats.n,
+        tao_pcm.len(),
+        ff_pcm.len(),
+        stats.max_err,
+        stats.psnr,
+        stats.precision_pct
+    );
+
+    assert!(stats.n > 0, "无可比较样本");
+    assert!(
+        stats.max_err <= 1e-6,
+        "FLAC 为无损格式, 最大误差应接近 0, 实际 max_err={}",
+        stats.max_err
+    );
+    assert!(
+        stats.precision_pct >= 99.9999,
+        "FLAC 对比精度不足 100%, 实际={:.6}%",
+        stats.precision_pct
+    );
     Ok(())
 }
 
 #[test]
 #[ignore]
-fn test_mp3_compare() {
+fn test_flac_compare() {
     let input = resolve_input().expect("缺少对比输入参数");
-    run_compare(&input).expect("MP3 对比失败");
+    run_compare(&input).expect("FLAC 对比失败");
 }

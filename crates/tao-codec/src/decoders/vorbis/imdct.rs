@@ -109,35 +109,45 @@ fn fill_window_segment(window: &mut [f32], start: usize, end: usize, len: usize)
     }
 }
 
-fn dct_iv_slow(buffer: &mut [f32]) {
-    let x = buffer.to_vec();
-    let n = buffer.len();
-    let nmask = (n << 3) - 1;
-    let mcos = (0..8 * n)
-        .map(|i| (std::f32::consts::FRAC_PI_4 * (i as f32) / (n as f32)).cos())
-        .collect::<Vec<_>>();
-    for (i, out) in buffer.iter_mut().enumerate().take(n) {
-        let mut acc = 0.0f32;
-        for (j, &xj) in x.iter().enumerate().take(n) {
-            acc += xj * mcos[((2 * i + 1) * (2 * j + 1)) & nmask];
-        }
-        *out = acc;
-    }
-}
-
 fn inverse_mdct_slow(buffer: &mut [f32]) {
     let n = buffer.len();
-    let n4 = n >> 2;
+    if n == 0 {
+        return;
+    }
     let n2 = n >> 1;
+    let n4 = n >> 2;
     let n3_4 = n - n4;
-    let mut temp = buffer[..n2].to_vec();
+
+    let mut temp = buffer[0..n2].to_vec();
     dct_iv_slow(&mut temp);
-    buffer[..n4].copy_from_slice(&temp[n4..n2]);
+
+    buffer[..n4].copy_from_slice(&temp[n4..(n4 + n4)]);
     for i in n4..n3_4 {
         buffer[i] = -temp[n3_4 - i - 1];
     }
     for i in n3_4..n {
         buffer[i] = -temp[i - n3_4];
+    }
+}
+
+fn dct_iv_slow(buffer: &mut [f32]) {
+    let x = buffer.to_vec();
+    let n = buffer.len();
+    if n == 0 {
+        return;
+    }
+    let nmask = (n << 3) - 1;
+    let mcos = (0..8 * n)
+        .map(|i| (std::f32::consts::FRAC_PI_4 * (i as f32) / (n as f32)).cos())
+        .collect::<Vec<_>>();
+
+    for (i, slot) in buffer.iter_mut().enumerate() {
+        let mut acc = 0.0f32;
+        for (j, &xj) in x.iter().enumerate() {
+            let idx = ((2 * i + 1) * (2 * j + 1)) & nmask;
+            acc += xj * mcos[idx];
+        }
+        *slot = acc;
     }
 }
 

@@ -19,49 +19,65 @@ impl CodebookHuffman {
             });
         }
 
-        let mut nonzero_count = 0usize;
-        let mut last_nonzero_sym = 0usize;
-        for (sym, &len) in lengths.iter().enumerate() {
-            if len > 0 {
-                nonzero_count += 1;
-                last_nonzero_sym = sym;
-            }
-        }
+        let codewords = synthesize_codewords(lengths)?;
+        let mut nodes = vec![HuffNode::new()];
 
-        if nonzero_count == 1 {
-            let only_len = lengths[last_nonzero_sym];
-            if only_len != 1 {
-                return Err(TaoError::InvalidData(
-                    "Vorbis 单项 codebook 的码长必须为 1".into(),
-                ));
-            }
-            let mut nodes = vec![HuffNode::new(), HuffNode::new(), HuffNode::new()];
-            nodes[0].left = Some(1);
-            nodes[0].right = Some(2);
-            nodes[1].sym = Some(last_nonzero_sym as u32);
-            nodes[2].sym = Some(last_nonzero_sym as u32);
-            return Ok(Self { max_len: 1, nodes });
-        }
-
-        let mut root = BuildNode::new();
         for (sym, &len) in lengths.iter().enumerate() {
             if len == 0 {
                 continue;
             }
-            if !root.insert_rec(sym as u32, len) {
+            let code = reverse_bits_len(codewords[sym], len);
+            let mut node_idx = 0usize;
+
+            for bit_pos in 0..len {
+                if nodes[node_idx].sym.is_some() {
+                    return Err(TaoError::InvalidData(
+                        "Vorbis codebook Huffman 长度表过度指定".into(),
+                    ));
+                }
+                let bit = (code >> bit_pos) & 1;
+                let existing = if bit == 0 {
+                    nodes[node_idx].left
+                } else {
+                    nodes[node_idx].right
+                };
+                let next_idx = if let Some(idx) = existing {
+                    idx
+                } else {
+                    let idx = nodes.len();
+                    nodes.push(HuffNode::new());
+                    if bit == 0 {
+                        nodes[node_idx].left = Some(idx);
+                    } else {
+                        nodes[node_idx].right = Some(idx);
+                    }
+                    idx
+                };
+                node_idx = next_idx;
+            }
+
+            if nodes[node_idx].left.is_some() || nodes[node_idx].right.is_some() {
                 return Err(TaoError::InvalidData(
                     "Vorbis codebook Huffman 长度表过度指定".into(),
                 ));
             }
+            if nodes[node_idx].sym.is_some() {
+                return Err(TaoError::InvalidData(
+                    "Vorbis codebook Huffman 长度表过度指定".into(),
+                ));
+            }
+            nodes[node_idx].sym = Some(sym as u32);
         }
-        if !root.even_children {
+
+        if !nodes
+            .iter()
+            .any(|n| n.sym.is_some() || n.left.is_some() || n.right.is_some())
+        {
             return Err(TaoError::InvalidData(
-                "Vorbis codebook Huffman 长度表欠指定".into(),
+                "Vorbis codebook Huffman 长度表非法".into(),
             ));
         }
 
-        let mut nodes = Vec::new();
-        flatten_build_tree(&root, &mut nodes);
         Ok(Self { max_len, nodes })
     }
 
@@ -108,91 +124,78 @@ impl HuffNode {
     }
 }
 
-#[derive(Debug, Clone)]
-struct BuildNode {
-    even_children: bool,
-    sym: Option<u32>,
-    left: Option<Box<BuildNode>>,
-    right: Option<Box<BuildNode>>,
+fn synthesize_codewords(lengths: &[u8]) -> TaoResult<Vec<u32>> {
+    let mut codewords = Vec::with_capacity(lengths.len());
+    let mut next_codeword = [0u32; 33];
+    let mut sparse_count = 0usize;
+
+    for &len in lengths {
+        if len > 32 {
+            return Err(TaoError::InvalidData(
+                "Vorbis codebook Huffman 码长非法".into(),
+            ));
+        }
+        if len == 0 {
+            sparse_count += 1;
+            codewords.push(0);
+            continue;
+        }
+
+        let codeword_len = usize::from(len);
+        let codeword = next_codeword[codeword_len];
+        if len < 32 && (codeword >> len) > 0 {
+            return Err(TaoError::InvalidData(
+                "Vorbis codebook Huffman 长度表过度指定".into(),
+            ));
+        }
+
+        for i in (0..(codeword_len + 1)).rev() {
+            if next_codeword[i] & 1 == 1 {
+                if i == 0 {
+                    return Err(TaoError::InvalidData(
+                        "Vorbis codebook Huffman 长度表过度指定".into(),
+                    ));
+                }
+                next_codeword[i] = next_codeword[i - 1] << 1;
+                break;
+            }
+            next_codeword[i] = next_codeword[i].saturating_add(1);
+        }
+
+        let branch = next_codeword[codeword_len];
+        for (i, next) in next_codeword[codeword_len..].iter_mut().enumerate().skip(1) {
+            if *next == codeword << i {
+                *next = branch << i;
+            } else {
+                break;
+            }
+        }
+
+        codewords.push(codeword);
+    }
+
+    let underspecified = next_codeword
+        .iter()
+        .enumerate()
+        .skip(1)
+        .any(|(i, &c)| c & (u32::MAX >> (32 - i)) != 0);
+    let single_entry = lengths.len().saturating_sub(sparse_count) == 1;
+    if underspecified && !single_entry {
+        return Err(TaoError::InvalidData(
+            "Vorbis codebook Huffman 长度表欠指定".into(),
+        ));
+    }
+
+    Ok(codewords)
 }
 
-impl BuildNode {
-    fn new() -> Self {
-        Self {
-            even_children: true,
-            sym: None,
-            left: None,
-            right: None,
-        }
+#[inline]
+fn reverse_bits_len(v: u32, len: u8) -> u32 {
+    if len == 0 {
+        0
+    } else {
+        v.reverse_bits() >> (32 - len)
     }
-
-    fn insert_rec(&mut self, payload: u32, depth: u8) -> bool {
-        if self.sym.is_some() {
-            return false;
-        }
-        if depth == 0 {
-            if self.left.is_some() || self.right.is_some() {
-                return false;
-            }
-            self.sym = Some(payload);
-            return true;
-        }
-
-        if self.even_children {
-            if self.left.is_some() {
-                return false;
-            }
-            let mut new_node = BuildNode::new();
-            let success = new_node.insert_rec(payload, depth - 1);
-            self.left = Some(Box::new(new_node));
-            self.even_children = false;
-            return success;
-        }
-
-        let left = self
-            .left
-            .as_mut()
-            .expect("Vorbis Huffman 构建内部状态非法: left 缺失");
-        if !left.even_children && left.insert_rec(payload, depth - 1) {
-            let right_even = self
-                .right
-                .as_ref()
-                .map(|r| r.even_children)
-                .unwrap_or(false);
-            self.even_children = left.even_children && right_even;
-            return true;
-        }
-
-        match self.right.as_mut() {
-            Some(right) => {
-                let success = right.insert_rec(payload, depth - 1);
-                self.even_children = left.even_children && right.even_children;
-                success
-            }
-            None => {
-                let mut new_node = BuildNode::new();
-                let success = new_node.insert_rec(payload, depth - 1);
-                self.even_children = left.even_children && new_node.even_children;
-                self.right = Some(Box::new(new_node));
-                success
-            }
-        }
-    }
-}
-
-fn flatten_build_tree(root: &BuildNode, out: &mut Vec<HuffNode>) -> usize {
-    let idx = out.len();
-    out.push(HuffNode::new());
-    out[idx].sym = root.sym;
-    if let Some(left) = &root.left {
-        let left_idx = flatten_build_tree(left, out);
-        out[idx].left = Some(left_idx);
-    }
-    if let Some(right) = &root.right {
-        let right_idx = flatten_build_tree(right, out);
-        out[idx].right = Some(right_idx);
-    }
-    idx
 }
 
 pub(crate) fn decode_codebook_scalar(
@@ -200,7 +203,36 @@ pub(crate) fn decode_codebook_scalar(
     book: &CodebookConfig,
     huffman: &CodebookHuffman,
 ) -> TaoResult<u32> {
-    let sym = huffman.decode_symbol(br)?;
+    let sym = match huffman.decode_symbol(br) {
+        Ok(sym) => sym,
+        Err(TaoError::InvalidData(msg)) if msg.contains("Huffman 解码失败") => {
+            // 损坏流容错: 在位流局部失步时尝试小范围跳位重同步.
+            // 该路径仅在原始 Huffman 解码失败时触发, 不影响正常样本.
+            const MAX_RESYNC_BITS: u8 = 32;
+            let mut recovered = None;
+            for shift in 1..=MAX_RESYNC_BITS {
+                let mut trial = br.clone();
+                if trial.read_bits(shift).is_err() {
+                    break;
+                }
+                let sym_try = match huffman.decode_symbol(&mut trial) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                if sym_try < book.entries {
+                    recovered = Some((sym_try, trial));
+                    break;
+                }
+            }
+            if let Some((sym_ok, trial_reader)) = recovered {
+                *br = trial_reader;
+                sym_ok
+            } else {
+                return Err(TaoError::InvalidData(msg));
+            }
+        }
+        Err(e) => return Err(e),
+    };
     if sym >= book.entries {
         return Err(TaoError::InvalidData(
             "Vorbis codebook 符号超出 entries".into(),
@@ -250,10 +282,12 @@ fn decode_vector_from_lookup(
 
     let fill_dims = dims.min(out.len());
     let mut last = 0.0f32;
-    let mut index_divisor = 1usize;
+    let sym_u64 = sym as u64;
+    let lookup_values_u64 = lookup.lookup_values as u64;
+    let mut index_divisor = 1u64;
     for (i, slot) in out.iter_mut().enumerate().take(fill_dims) {
         let m_idx = if lookup_type == 1 {
-            (sym / index_divisor) % lookup.lookup_values as usize
+            ((sym_u64 / index_divisor) % lookup_values_u64) as usize
         } else if lookup_type == 2 {
             sym.checked_mul(dims)
                 .and_then(|base| base.checked_add(i))
@@ -276,9 +310,7 @@ fn decode_vector_from_lookup(
         }
         *slot = v;
         if lookup_type == 1 {
-            index_divisor = index_divisor
-                .checked_mul(lookup.lookup_values as usize)
-                .ok_or_else(|| TaoError::InvalidData("Vorbis codebook divisor 溢出".into()))?;
+            index_divisor = index_divisor.saturating_mul(lookup_values_u64.max(1));
         }
     }
     Ok(())
@@ -299,6 +331,18 @@ mod tests {
         assert_eq!(s1, 1, "第二个符号应为 sym1");
         let s2 = h.decode_symbol(&mut br).expect("sym2 解码失败");
         assert_eq!(s2, 2, "第三个符号应为 sym2");
+    }
+
+    #[test]
+    fn test_synthesize_codewords_reference() {
+        let lengths = [2u8, 4, 4, 4, 4, 2, 3, 3];
+        let expected = [0u32, 0x4, 0x5, 0x6, 0x7, 0x2, 0x6, 0x7];
+        let codewords = synthesize_codewords(&lengths).expect("codewords 生成失败");
+        assert_eq!(
+            codewords.as_slice(),
+            expected,
+            "canonical codeword 应与参考一致"
+        );
     }
 
     #[test]

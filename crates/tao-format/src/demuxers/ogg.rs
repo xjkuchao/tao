@@ -53,7 +53,7 @@ struct OggPage {
     /// 逻辑流序列号
     serial_number: u32,
     /// 页面序号 (用于乱序检测)
-    _page_sequence: u32,
+    page_sequence: u32,
     /// 段表
     segment_table: Vec<u8>,
     /// 页面数据
@@ -117,6 +117,10 @@ struct OggLogicalStream {
     discarding_orphan_continued: bool,
     /// 上一个粒度位置
     last_granule: i64,
+    /// 上一个页面序号
+    last_page_sequence: Option<u32>,
+    /// 当前逻辑流是否已遇到 EOS
+    ended: bool,
 }
 
 /// Ogg 解封装器
@@ -143,6 +147,18 @@ impl OggDemuxer {
             eof: false,
             duration_sec: None,
         }))
+    }
+
+    /// 归一化 Ogg granule 值.
+    ///
+    /// Ogg 中负值 (常见为 -1) 表示当前页没有可用 granule 时间戳.
+    /// 统一映射到框架的 NOPTS 表示, 避免被上层误判为有效 PTS.
+    fn normalize_granule(granule: i64) -> i64 {
+        if granule < 0 {
+            tao_core::timestamp::NOPTS_VALUE
+        } else {
+            granule
+        }
     }
 
     /// 计算 Ogg 页面 CRC-32
@@ -226,7 +242,7 @@ impl OggDemuxer {
             header_type,
             granule_position,
             serial_number,
-            _page_sequence: page_sequence,
+            page_sequence,
             segment_table,
             data,
         })
@@ -239,9 +255,16 @@ impl OggDemuxer {
             Ok(page) => return Ok(page),
             Err(TaoError::Eof) => return Err(TaoError::Eof),
             Err(TaoError::InvalidData(msg)) if msg.starts_with("Ogg 页面 CRC 校验失败") => {
-                // CRC 失败说明坏页已被完整消费, 先尝试从当前位置直接读取下一页.
-                if let Ok(page) = Self::read_page(io) {
-                    return Ok(page);
+                // CRC 失败说明坏页已被完整消费.
+                // 连续跳过 CRC 坏页, 直到读取到下一个有效页面.
+                loop {
+                    match Self::read_page(io) {
+                        Ok(page) => return Ok(page),
+                        Err(TaoError::InvalidData(next_msg))
+                            if next_msg.starts_with("Ogg 页面 CRC 校验失败") => {}
+                        Err(TaoError::Eof) => return Err(TaoError::Eof),
+                        Err(_) => break,
+                    }
                 }
             }
             Err(_) => {} // 不对齐, 需要重新同步
@@ -300,7 +323,7 @@ impl OggDemuxer {
                     header_type,
                     granule_position,
                     serial_number,
-                    _page_sequence: page_sequence,
+                    page_sequence,
                     segment_table,
                     data,
                 });
@@ -438,7 +461,9 @@ impl OggDemuxer {
             _codec_id: codec_id,
             partial_packet: Vec::new(),
             discarding_orphan_continued: false,
-            last_granule: -1,
+            last_granule: tao_core::timestamp::NOPTS_VALUE,
+            last_page_sequence: Some(page.page_sequence),
+            ended: false,
         });
     }
 
@@ -455,6 +480,41 @@ impl OggDemuxer {
             Some(idx) => idx,
             None => return, // 未知流, 跳过
         };
+
+        let packets = page.extract_packets();
+        let packet_start_index = 0usize;
+        if page.is_bos() {
+            let looks_like_header = packets.first().map(|&(offset, length, complete)| {
+                complete
+                    && Self::identify_codec(&page.data[offset..offset + length]) != CodecId::None
+            });
+            if looks_like_header == Some(true) {
+                // 运行中重新遇到合法 BOS 头页, 视为逻辑流重启边界.
+                // 保留本页包输出给上游, 由解码器/调用方按头包进行重建处理.
+                self.logical_streams[ls_idx].partial_packet.clear();
+                self.logical_streams[ls_idx].discarding_orphan_continued = false;
+                self.logical_streams[ls_idx].last_granule = tao_core::timestamp::NOPTS_VALUE;
+                self.logical_streams[ls_idx].last_page_sequence = Some(page.page_sequence);
+                self.logical_streams[ls_idx].ended = false;
+            }
+        }
+
+        if self.logical_streams[ls_idx].ended {
+            return;
+        }
+
+        let mut force_granule_nopts = false;
+        if let Some(prev_seq) = self.logical_streams[ls_idx].last_page_sequence
+            && page.page_sequence != prev_seq.wrapping_add(1)
+        {
+            // 页面序号断裂/回绕(非自然 +1), 标记为不可靠页:
+            // 1) 清理残包状态，避免跨断点拼包;
+            // 2) 本页不传播 granule，避免误导解码器裁剪策略.
+            self.logical_streams[ls_idx].partial_packet.clear();
+            self.logical_streams[ls_idx].discarding_orphan_continued = page.is_continued();
+            force_granule_nopts = true;
+        }
+        self.logical_streams[ls_idx].last_page_sequence = Some(page.page_sequence);
 
         // 若当前页面未标记 continued, 但存在残留 partial:
         // 1) 正常情况: 上一页最后 lacing=255 且包恰好在页尾结束, 需要在此处补发.
@@ -481,10 +541,10 @@ impl OggDemuxer {
             }
         }
 
-        let packets = page.extract_packets();
         let last_complete_idx = packets.iter().rposition(|(_, _, complete)| *complete);
 
-        for (i, &(offset, length, complete)) in packets.iter().enumerate() {
+        for (i, &(offset, length, complete)) in packets.iter().enumerate().skip(packet_start_index)
+        {
             let chunk = &page.data[offset..offset + length];
 
             // 如果是第一个 packet 且页面标记为 continued
@@ -507,8 +567,10 @@ impl OggDemuxer {
                     let data = std::mem::take(&mut self.logical_streams[ls_idx].partial_packet);
                     self.logical_streams[ls_idx].discarding_orphan_continued = false;
                     let stream_idx = self.logical_streams[ls_idx].stream_index;
-                    let granule = if Some(i) == last_complete_idx {
-                        page.granule_position
+                    let granule = if force_granule_nopts {
+                        tao_core::timestamp::NOPTS_VALUE
+                    } else if Some(i) == last_complete_idx {
+                        Self::normalize_granule(page.granule_position)
                     } else {
                         tao_core::timestamp::NOPTS_VALUE
                     };
@@ -525,8 +587,10 @@ impl OggDemuxer {
                     continue;
                 }
                 let stream_idx = self.logical_streams[ls_idx].stream_index;
-                let granule = if Some(i) == last_complete_idx {
-                    page.granule_position
+                let granule = if force_granule_nopts {
+                    tao_core::timestamp::NOPTS_VALUE
+                } else if Some(i) == last_complete_idx {
+                    Self::normalize_granule(page.granule_position)
                 } else {
                     tao_core::timestamp::NOPTS_VALUE
                 };
@@ -543,12 +607,13 @@ impl OggDemuxer {
         }
 
         // 更新粒度位置
-        if page.granule_position >= 0 {
+        if !force_granule_nopts && page.granule_position >= 0 {
             self.logical_streams[ls_idx].last_granule = page.granule_position;
         }
 
         // 检测 EOS
         if page.is_eos() {
+            self.logical_streams[ls_idx].ended = true;
             debug!(
                 "Ogg: 流 #{} (serial={}) 结束",
                 self.logical_streams[ls_idx].stream_index, page.serial_number,
@@ -560,6 +625,7 @@ impl OggDemuxer {
     fn emit_packet(&mut self, stream_index: usize, granule: i64, data: Vec<u8>) {
         let mut pkt = Packet::from_data(Bytes::from(data));
         pkt.stream_index = stream_index;
+        let granule = Self::normalize_granule(granule);
         pkt.pts = granule;
         pkt.dts = granule;
         pkt.is_keyframe = true; // Ogg 不直接提供关键帧信息
@@ -578,7 +644,9 @@ impl OggDemuxer {
         for ls in &mut self.logical_streams {
             ls.partial_packet.clear();
             ls.discarding_orphan_continued = false;
-            ls.last_granule = -1;
+            ls.last_granule = tao_core::timestamp::NOPTS_VALUE;
+            ls.last_page_sequence = None;
+            ls.ended = false;
         }
     }
 
@@ -693,17 +761,15 @@ impl Demuxer for OggDemuxer {
         loop {
             match Self::sync_to_page(io) {
                 Ok(page) => {
-                    if page.is_eos() {
-                        self.process_page(page);
-                        // 检查是否所有流都已结束
-                        // 先尝试返回队列中的包
-                        if !self.packet_queue.is_empty() {
-                            return Ok(self.packet_queue.remove(0));
+                    if page.is_bos() {
+                        if self.find_logical_stream(page.serial_number).is_none() {
+                            self.handle_bos_page(&page);
+                        } else {
+                            self.process_page(page);
                         }
-                        self.eof = true;
-                        return Err(TaoError::Eof);
+                    } else {
+                        self.process_page(page);
                     }
-                    self.process_page(page);
                     if !self.packet_queue.is_empty() {
                         return Ok(self.packet_queue.remove(0));
                     }
@@ -1205,7 +1271,7 @@ mod tests {
             header_type: 0,
             granule_position: 100,
             serial_number: 1,
-            _page_sequence: 0,
+            page_sequence: 0,
             segment_table: vec![100, 50, 255, 200],
             data: vec![0u8; 100 + 50 + 255 + 200],
         };
@@ -1220,7 +1286,7 @@ mod tests {
             header_type: 0,
             granule_position: 100,
             serial_number: 1,
-            _page_sequence: 0,
+            page_sequence: 0,
             segment_table: vec![100, 255],
             data: vec![0u8; 100 + 255],
         };

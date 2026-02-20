@@ -213,6 +213,41 @@ impl FlacDemuxer {
         None
     }
 
+    /// 验证一帧数据末尾的 CRC-16.
+    ///
+    /// `frame_data` 必须是完整 FLAC 帧(含尾部 2 字节 CRC-16).
+    fn validate_frame_crc16(frame_data: &[u8]) -> bool {
+        if frame_data.len() < 2 {
+            return false;
+        }
+        let split = frame_data.len() - 2;
+        let crc_read = u16::from_be_bytes([frame_data[split], frame_data[split + 1]]);
+        let crc_calc = crc::crc16(&frame_data[..split]);
+        crc_read == crc_calc
+    }
+
+    /// 搜索下一帧边界.
+    ///
+    /// 规则: 候选同步码除了通过头部校验外, 还必须让前一帧 CRC-16 校验通过,
+    /// 以降低帧内伪同步导致的误切分风险.
+    fn find_frame_end_with_crc(buf: &[u8], start: usize) -> Option<usize> {
+        if buf.len() < start + 2 {
+            return None;
+        }
+
+        let mut candidate = start;
+        while let Some(offset) = Self::find_sync_code_from(buf, candidate) {
+            if offset >= 2 && Self::validate_frame_crc16(&buf[..offset]) {
+                return Some(offset);
+            }
+            candidate = offset + 1;
+            if candidate + 1 >= buf.len() {
+                break;
+            }
+        }
+        None
+    }
+
     /// 验证候选帧头的有效性
     ///
     /// 检查帧头字段合法性并验证 CRC-8, 以区分真正的帧同步码和数据中的巧合匹配.
@@ -316,10 +351,11 @@ impl FlacDemuxer {
             _ => {}
         }
 
-        // CRC-8 在 pos 位置
+        // CRC-8 在 pos 位置.
+        // 对于同步码搜索场景, 头部数据不足必须判定失败,
+        // 否则可能把帧尾附近的伪同步码误判为新帧起点, 导致分帧截断.
         if pos >= data.len() {
-            // 数据不足以包含 CRC-8, 按基本验证结果通过
-            return true;
+            return false;
         }
 
         let crc_read = data[pos];
@@ -513,10 +549,10 @@ impl Demuxer for FlacDemuxer {
             return Err(TaoError::Eof);
         }
 
-        // 搜索下一个有效帧同步码来确定当前帧大小
-        // 从偏移 2 开始搜索, 使用带 CRC-8 验证的搜索方法
+        // 搜索下一个有效帧同步码来确定当前帧大小.
+        // 除头部校验外, 额外要求当前帧 CRC-16 成立, 避免帧内伪同步误切分.
         let frame_end = if buf.len() > 2 {
-            Self::find_sync_code_from(&buf, 2)
+            Self::find_frame_end_with_crc(&buf, 2)
         } else {
             None
         };
