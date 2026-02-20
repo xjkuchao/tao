@@ -1583,15 +1583,22 @@ fn tns_coef_from_index(map_idx: usize, q: usize) -> TaoResult<f32> {
 /// 将 TNS 反射系数转换为 LPC 系数.
 fn compute_tns_lpc(coefs: &[f32]) -> [f32; 20] {
     let mut lpc = [0.0f32; 20];
-    for i in 0..coefs.len() {
-        let r = -coefs[i];
-        lpc[i] = r;
-        for j in 0..((i + 1) >> 1) {
-            let f = lpc[j];
-            let b = lpc[i - 1 - j];
-            lpc[j] = f + r * b;
-            lpc[i - 1 - j] = b + r * f;
+    if coefs.is_empty() {
+        return lpc;
+    }
+    lpc[0] = coefs[0];
+    for i in 1..coefs.len() {
+        let r = coefs[i];
+        for j in 0..(i / 2) {
+            let tmp_coef = r * lpc[j];
+            lpc[j] += r * lpc[i - 1 - j];
+            lpc[i - 1 - j] += tmp_coef;
         }
+        if i % 2 != 0 {
+            let j = i / 2;
+            lpc[j] += r * lpc[j];
+        }
+        lpc[i] = r;
     }
     lpc
 }
