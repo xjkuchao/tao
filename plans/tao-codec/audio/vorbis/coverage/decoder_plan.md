@@ -5,7 +5,7 @@
 基于 `https://samples.ffmpeg.org/allsamples.txt` 抓取 Vorbis 相关样本, 建立与 MP3 覆盖率一致的批量对比流程.
 
 本轮已完成样本清单初始化:
-- 报告文件: `plans/tao-codec_vorbis_coverage/tao-codec_vorbis_samples_report.md`
+- 报告文件: `plans/coverage/report.md`
 - 样本总数: 48 条
 - 筛选规则: 路径包含 `vorbis`(不区分大小写), 扩展名属于 `.ogg/.ogm/.mkv/.avi/.mp4/.nut`
 
@@ -23,9 +23,9 @@
 
 ## 2. 执行范围
 
-- 覆盖目录: `plans/tao-codec_vorbis_coverage/`
-- 核心脚本: `run_vorbois_samples_compare.py`
-- 输入报告: `tao-codec_vorbis_samples_report.md`
+- 覆盖目录: `plans/coverage/`
+- 核心脚本: `run.py`
+- 输入报告: `report.md`
 - 对比测试入口: `cargo test --test vorbis_module_compare -- --nocapture --ignored`
 
 ## 3. 分步任务与预期产出
@@ -36,7 +36,7 @@
 - 生成报告模板并写入序号与 URL.
 
 预期产出:
-- `tao-codec_vorbis_samples_report.md` 初始表格.
+- `report.md` 初始表格.
 
 ### 任务 B: 批量执行脚本(已完成)
 
@@ -49,7 +49,7 @@
 - 结果实时回写报告.
 
 预期产出:
-- `run_vorbois_samples_compare.py`.
+- `run.py`.
 
 ### 任务 C: 基线跑批与分类(已完成)
 
@@ -60,7 +60,7 @@
 - 将失败样本按根因分类并形成修复列表.
 
 预期产出:
-- 更新后的 `tao-codec_vorbis_samples_report.md`
+- 更新后的 `report.md`
 - 分类别修复清单(追加到本计划文档).
 
 ### 任务 D: 解码器修复迭代(已完成)
@@ -165,7 +165,7 @@
 
 ### 全量回归复核(2026-02-20, 第八轮)
 
-- 执行命令: `python plans/tao-codec_vorbis_coverage/run_vorbois_samples_compare.py --retest-all`。
+- 执行命令: `python plans/coverage/run.py --retest-all`。
 - 结果:
   - 总样本: 48
   - 成功: 40
@@ -198,7 +198,7 @@
     - 修复关闭: `45:-24128`, `46:-47083`, `47:-43518`
   - 结论: 三条 MetalGearSolid 样本仍归类为异常损坏流专项, 本轮不纳入严格口径收敛.
 - 默认口径全量回归:
-  - 执行命令: `python plans/tao-codec_vorbis_coverage/run_vorbois_samples_compare.py --retest-all --jobs 4`
+  - 执行命令: `python plans/coverage/run.py --retest-all --jobs 4`
   - 结果:
     - 总样本: 48
     - 成功: 44
@@ -230,22 +230,22 @@
 
 ```bash
 # 默认断点续测
-python plans/tao-codec_vorbis_coverage/run_vorbois_samples_compare.py
+python plans/coverage/run.py
 
 # 重测所有失败样本
-python plans/tao-codec_vorbis_coverage/run_vorbois_samples_compare.py --retest-failed
+python plans/coverage/run.py --retest-failed
 
 # 重测精度不为 100% 的样本(含失败)
-python plans/tao-codec_vorbis_coverage/run_vorbois_samples_compare.py --retest-imprecise
+python plans/coverage/run.py --retest-imprecise
 
 # 重测全部样本
-python plans/tao-codec_vorbis_coverage/run_vorbois_samples_compare.py --retest-all
+python plans/coverage/run.py --retest-all
 
 # 包含默认跳过样本(手动复测时使用)
-python plans/tao-codec_vorbis_coverage/run_vorbois_samples_compare.py --retest-all --include-skipped
+python plans/coverage/run.py --retest-all --include-skipped
 
 # 指定序号 + 并行
-python plans/tao-codec_vorbis_coverage/run_vorbois_samples_compare.py --index 1 2 3 --jobs 4
+python plans/coverage/run.py --index 1 2 3 --jobs 4
 ```
 
 ## 6. 验收标准
@@ -257,10 +257,10 @@ python plans/tao-codec_vorbis_coverage/run_vorbois_samples_compare.py --index 1 
 
 ## 7. 进度标记
 
-- [x] 创建 `plans/tao-codec_vorbis_coverage/` 子目录
+- [x] 创建 `plans/coverage/` 子目录
 - [x] 抓取 `allsamples.txt` 生成 Vorbis 样本报告(48 条)
-- [x] 创建 `run_vorbois_samples_compare.py` 批量对比脚本
-- [x] 创建 `tao-codec_vorbis_decoder_coverage_plan.md` 计划文档
+- [x] 创建 `run.py` 批量对比脚本
+- [x] 创建 `plan.md` 计划文档
 - [x] 跑首轮全量基线并更新报告
 - [x] 失败样本根因分类
 - [x] 精度收敛到 100.00%(按当前阶段跳过口径)
@@ -276,7 +276,7 @@ python plans/tao-codec_vorbis_coverage/run_vorbois_samples_compare.py --index 1 
   - `46`: `Tao=1932026`, `FFmpeg=1931755`, 差值 `+271` (由 `+399` 继续收敛)
   - `47`: `Tao=1815360`, `FFmpeg=1811262`, 差值 `+4098` (未变化)
 - 默认口径全量回归:
-  - `python plans/tao-codec_vorbis_coverage/run_vorbois_samples_compare.py --retest-all --jobs 4`
+  - `python plans/coverage/run.py --retest-all --jobs 4`
   - 结果: `成功 44 / 跳过 4 / 失败 0`, 成功样本精度均 `100.00%`.
 
 
@@ -290,7 +290,7 @@ python plans/tao-codec_vorbis_coverage/run_vorbois_samples_compare.py --index 1 
   - `46`: `Tao=1932026`, `FFmpeg=1931755`, 差值 `+271` (维持当前最优)
   - `47`: `Tao=1813824`, `FFmpeg=1811262`, 差值 `+2562` (由 `+4098` 收敛)
 - 默认口径回归:
-  - 命令: `python plans/tao-codec_vorbis_coverage/run_vorbois_samples_compare.py --retest-all --jobs 4`
+  - 命令: `python plans/coverage/run.py --retest-all --jobs 4`
   - 结果: `成功 44 / 跳过 4 / 失败 0`, 成功样本精度均 `100.00%`.
 
 ### 异常样本继续收敛(2026-02-20, 第十四轮)
@@ -310,7 +310,7 @@ python plans/tao-codec_vorbis_coverage/run_vorbois_samples_compare.py --index 1 
 - 回归确认:
   - `data/1.ogg`、`data/2.ogg` 仍保持 `100.00%`.
   - 默认口径全量回归:
-    - 命令: `python plans/tao-codec_vorbis_coverage/run_vorbois_samples_compare.py --retest-all --jobs 4`
+    - 命令: `python plans/coverage/run.py --retest-all --jobs 4`
     - 结果: `成功 44 / 跳过 4 / 失败 0`, 成功样本精度均 `100.00%`.
 
 ### 异常样本继续收敛(2026-02-20, 第十五轮)
@@ -325,6 +325,6 @@ python plans/tao-codec_vorbis_coverage/run_vorbois_samples_compare.py --index 1 
   - `47`: `Tao=1813312`, `FFmpeg=1811262`, 差值 `+2050`, 精度 `33.088783%`
 - 口径稳定性回归:
   - `data/1.ogg`、`data/2.ogg` 仍为严格 `100.00%`。
-  - 执行 `python plans/tao-codec_vorbis_coverage/run_vorbois_samples_compare.py --retest-all --jobs 4`:
+  - 执行 `python plans/coverage/run.py --retest-all --jobs 4`:
     - `成功 44 / 跳过 4 / 失败 0`
     - 成功样本精度均 `100.00%`。

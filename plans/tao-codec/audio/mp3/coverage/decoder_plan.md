@@ -2,48 +2,54 @@
 
 ## 1. 背景与目标
 
-基于 `tao-codec_mp3_samples_report.md` 的 185 条样本首轮批量对比结果,
+基于 `report.md` 的 185 条样本首轮批量对比结果,
 制定 MP3 解码器精度提升与全覆盖达标计划.
 
 **最终目标**: 全部 185 条样本状态为"成功", 精度达到 100.00%.
 
+### MP3 解码精度提升专项归档目标
+
+- 定位自研 MP3 解码器与 FFmpeg 的差异 (位池管理, scalefactor 解析, IMDCT 窗函数等)
+- 曾用 `data/1.mp3` 单一样本进行的基线与对齐诊断现已融入到批量脚本 `run.py` 中。
+- 采用阶段级误差对比（快照输出: is/xr/立体声后/IMDCT后/合成后）逐步修正实现直至精确对齐。
+
 ### 首轮测试结果概览(修复前)
 
-| 类别 | 数量 | 描述 | 处理策略 |
-| --- | --- | --- | --- |
-| A. 精度 100% | 20 | 成功且精度 = 100.00% | 标注通过, 无需复测 |
-| B. 精度 < 100% | 143 | 成功但精度未达标, 根因为样本数差异 | 修复起点帧/末尾帧偏差后复测 |
-| C. 测试失败 | 22 | 解码过程发生错误 | 修复解码错误, 使其通过并达到精度 100% |
+| 类别           | 数量 | 描述                               | 处理策略                              |
+| -------------- | ---- | ---------------------------------- | ------------------------------------- |
+| A. 精度 100%   | 20   | 成功且精度 = 100.00%               | 标注通过, 无需复测                    |
+| B. 精度 < 100% | 143  | 成功但精度未达标, 根因为样本数差异 | 修复起点帧/末尾帧偏差后复测           |
+| C. 测试失败    | 22   | 解码过程发生错误                   | 修复解码错误, 使其通过并达到精度 100% |
 
 ### P0 修复后测试结果概览(2026-02-19)
 
 修复 `parse_vbr_header` 无条件跳过首帧 bug 后复测结果:
 
-| 类别 | 数量 | 变化 | 说明 |
-| --- | --- | --- | --- |
-| A. 精度 100% | 97 | +77 | 修复 CBR 首帧被跳过的问题后大幅提升 |
-| B. 精度 < 100% | 66 | -77 | 仍有 B 类问题待解决(见下方分析) |
-| C. 测试失败 | 22 | 0 | 未变化 |
+| 类别           | 数量 | 变化 | 说明                                |
+| -------------- | ---- | ---- | ----------------------------------- |
+| A. 精度 100%   | 97   | +77  | 修复 CBR 首帧被跳过的问题后大幅提升 |
+| B. 精度 < 100% | 66   | -77  | 仍有 B 类问题待解决(见下方分析)     |
+| C. 测试失败    | 22   | 0    | 未变化                              |
 
 ### 最新复测结果概览(2026-02-19, 本轮修复后)
 
 本轮已完成 MPEG-2/2.5 LSF 比例因子解码、MPEG-2 intensity stereo、探测器误判修复与损坏帧容错增强, 并多轮复测.
 
-| 类别 | 数量 | 说明 |
-| --- | --- | --- |
-| A. 精度 100% | 122 | 较 P0 后继续提升 |
-| B. 精度 < 100% | 59 | 主要为高失真样本与边缘 case |
-| C. 测试失败 | 4 | 剩余少量异常样本 |
+| 类别           | 数量 | 说明                        |
+| -------------- | ---- | --------------------------- |
+| A. 精度 100%   | 122  | 较 P0 后继续提升            |
+| B. 精度 < 100% | 59   | 主要为高失真样本与边缘 case |
+| C. 测试失败    | 4    | 剩余少量异常样本            |
 
 #### 修复后 B 类问题分类
 
-| 特征 | 数量 | 根因 | 策略 |
-| --- | --- | --- | --- |
-| diff=0, prec≈50% | 59 | 立体声处理 bug: 一个声道输出错误(前首帧 bug 掩盖了此问题) | 修复联合立体声/强度立体声解码 |
-| diff=-1152, prec≈38% | 4 | takethat.mp3 × 4 镜像, 仍少一帧 | 排查末尾帧截断逻辑 |
-| diff=+1058, prec≈35% | 1 | sample.VBR.32.64.44100Hz.Joint.mp3, Tao 比 FFmpeg 多输出样本 | 排查 VBR 末尾判断逻辑 |
-| diff=-2304, prec≈24% | 1 | issue1044/j.mp3, 少两帧 | 单独排查 |
-| diff=43324176, prec≈50% | 1 | 异常大差值, 需单独分析 | 单独排查 |
+| 特征                    | 数量 | 根因                                                         | 策略                          |
+| ----------------------- | ---- | ------------------------------------------------------------ | ----------------------------- |
+| diff=0, prec≈50%        | 59   | 立体声处理 bug: 一个声道输出错误(前首帧 bug 掩盖了此问题)    | 修复联合立体声/强度立体声解码 |
+| diff=-1152, prec≈38%    | 4    | takethat.mp3 × 4 镜像, 仍少一帧                              | 排查末尾帧截断逻辑            |
+| diff=+1058, prec≈35%    | 1    | sample.VBR.32.64.44100Hz.Joint.mp3, Tao 比 FFmpeg 多输出样本 | 排查 VBR 末尾判断逻辑         |
+| diff=-2304, prec≈24%    | 1    | issue1044/j.mp3, 少两帧                                      | 单独排查                      |
+| diff=43324176, prec≈50% | 1    | 异常大差值, 需单独分析                                       | 单独排查                      |
 
 ## 2. 各类问题分析
 
@@ -54,6 +60,7 @@ B 类样本的共同特征: `样本数差异 < 0`(Tao 比 FFmpeg 少),
 1152 = MP3 单帧每通道样本数.
 
 可能根因(按优先级排查):
+
 1. **Xing/Info/VBRI 标头帧**: Tao 将其跳过, FFmpeg 输出其静音帧内容
 2. **首帧对齐差异**: Tao 的 Demuxer 起始位置比 FFmpeg 多跳 N 帧
 3. **ID3 标签偏移**: 含大尺寸 ID3v2 标签时, 帧同步起点偏移不一致
@@ -61,14 +68,14 @@ B 类样本的共同特征: `样本数差异 < 0`(Tao 比 FFmpeg 少),
 
 ### C 类: 测试失败根因分类
 
-| 失败原因 | 数量 | 分析 |
-| --- | --- | --- |
-| `MP3: 未找到有效的 MPEG 音频帧` | 15 | Demuxer 未能跳过大 ID3 标签/内嵌封面图到达音频帧 |
-| `未找到 MP3 音频流` | 2 | 文件格式被误识别或 MP3 流提取逻辑缺失 |
-| `TS: 同步字节不匹配` | 2 | 文件被 FormatProbe 误识别为 MPEG-TS |
-| `MP3 main_data 偏移无效` | 1 | main_data_begin 回溯超出缓冲区 |
-| `MP3 part2_3_length 小于 scale factor 长度` | 1 | 帧长度字段异常, 缺少边界保护 |
-| `right: 0`(断言失败) | 1 | FFmpeg 解码输出为空, 属异常样本 |
+| 失败原因                                    | 数量 | 分析                                             |
+| ------------------------------------------- | ---- | ------------------------------------------------ |
+| `MP3: 未找到有效的 MPEG 音频帧`             | 15   | Demuxer 未能跳过大 ID3 标签/内嵌封面图到达音频帧 |
+| `未找到 MP3 音频流`                         | 2    | 文件格式被误识别或 MP3 流提取逻辑缺失            |
+| `TS: 同步字节不匹配`                        | 2    | 文件被 FormatProbe 误识别为 MPEG-TS              |
+| `MP3 main_data 偏移无效`                    | 1    | main_data_begin 回溯超出缓冲区                   |
+| `MP3 part2_3_length 小于 scale factor 长度` | 1    | 帧长度字段异常, 缺少边界保护                     |
+| `right: 0`(断言失败)                        | 1    | FFmpeg 解码输出为空, 属异常样本                  |
 
 ## 3. 修复路径
 
@@ -117,30 +124,31 @@ B 类样本的共同特征: `样本数差异 < 0`(Tao 比 FFmpeg 少),
 
 ```bash
 # 默认断点续测(跳过已有结果的记录, 只处理未测试的)
-python plans/tao-codec_mp3_coverage/run_mp3_samples_compare.py
+python plans/coverage/run.py
 
 # 重新测试所有精度不为 100% 的记录(含失败, B + C 类)
-python plans/tao-codec_mp3_coverage/run_mp3_samples_compare.py --retest-imprecise
+python plans/coverage/run.py --retest-imprecise
 
 # 只重新测试失败的记录(C 类)
-python plans/tao-codec_mp3_coverage/run_mp3_samples_compare.py --retest-failed
+python plans/coverage/run.py --retest-failed
 
 # 重新测试全部 185 条记录
-python plans/tao-codec_mp3_coverage/run_mp3_samples_compare.py --retest-all
+python plans/coverage/run.py --retest-all
 
 # 只测试指定序号(可多个, 如 3, 5, 8)
-python plans/tao-codec_mp3_coverage/run_mp3_samples_compare.py --index 3 5 8
+python plans/coverage/run.py --index 3 5 8
 
 # 组合使用: 只复测指定序号中失败的
-python plans/tao-codec_mp3_coverage/run_mp3_samples_compare.py --retest-failed --index 3 5 8
+python plans/coverage/run.py --retest-failed --index 3 5 8
 ```
 
 ## 5. 未来扩展: 编码器覆盖率
 
 MP3 编码器开发完成后, 在本目录下新建:
-- `tao-codec_mp3_encoder_samples_urls.txt` — 编码测试输入样本清单
-- `tao-codec_mp3_encoder_samples_report.md` — 编码器测试结果报告
-- `run_mp3_encoder_samples_compare.py` — 编码器批量对比脚本
+
+- `encoder_urls.txt` — 编码测试输入样本清单
+- `encoder_report.md` — 编码器测试结果报告
+- `run_encoder.py` — 编码器批量对比脚本
 
 编码器测试策略: 对 PCM 样本执行 Tao 编码 -> FFmpeg 解码 -> 与参考输出对比精度.
 

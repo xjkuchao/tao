@@ -31,7 +31,7 @@
 - 验收: 计划与脚本均可被后续 AI 直接续做。
 
 ### P1 对比测试落地
-- [x] 新增 `tests/perf_compare/flac_module_compare.rs`。
+- [x] 新增 `tests/perf_compare/compare.rs`。
 - [x] 接入 `Cargo.toml` 的 `[[test]]`。
 - [x] 支持参数与环境变量输入:
   - `cargo test --test flac_module_compare -- --nocapture --ignored test_flac_compare -- data/1.flac`

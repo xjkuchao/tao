@@ -123,18 +123,6 @@ env_logger.workspace = true
 default = ["http"]
 http = ["tao-format/http"]
 
-[[test]]
-name = "mp3_module_compare"
-path = "tests/perf_compare/mp3_module_compare.rs"
-
-[[test]]
-name = "vorbis_module_compare"
-path = "tests/perf_compare/vorbis_module_compare.rs"
-
-[[test]]
-name = "flac_module_compare"
-path = "tests/perf_compare/flac_module_compare.rs"
-
 [[bench]]
 name = "codec_bench"
 harness = false

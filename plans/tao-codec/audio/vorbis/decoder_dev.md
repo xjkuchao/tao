@@ -1,43 +1,49 @@
 # tao-codec Vorbis 解码器开发计划
 
 ## 1. 背景与目标
+
 - 当前 Vorbis 仍未完成音频主链路解码。
 - 必须遵守项目规则: 纯自研实现, 不依赖外部多媒体算法库。
 - 目标: 对 `data/1.ogg` 与 `data/2.ogg` 完成可播放解码与逐帧对标 FFmpeg。
 
 ## 2. 模块化决策(按新规则)
+
 - 判定: Vorbis 完整实现复杂度高(头包解析、codebook/floor/residue/mapping、IMDCT、overlap、耦合反变换), 不适合单文件。
 - 决策: 采用独立子目录实现。
 - 目录规划:
-  - `crates/tao-codec/src/decoders/vorbis/mod.rs`: 解码器状态机与对外接口
-  - `crates/tao-codec/src/decoders/vorbis/headers.rs`: identification/comment 头包解析
-  - `crates/tao-codec/src/decoders/vorbis/setup.rs`: setup 语法解析与结构校验
-  - `crates/tao-codec/src/decoders/vorbis/bitreader.rs`: Vorbis LSB 比特读取器
-  - 后续按需要新增 `imdct.rs` `floor.rs` `residue.rs` `mapping.rs` `synthesis.rs`
+    - `crates/tao-codec/src/decoders/vorbis/mod.rs`: 解码器状态机与对外接口
+    - `crates/tao-codec/src/decoders/vorbis/headers.rs`: identification/comment 头包解析
+    - `crates/tao-codec/src/decoders/vorbis/setup.rs`: setup 语法解析与结构校验
+    - `crates/tao-codec/src/decoders/vorbis/bitreader.rs`: Vorbis LSB 比特读取器
+    - 后续按需要新增 `imdct.rs` `floor.rs` `residue.rs` `mapping.rs` `synthesis.rs`
 
 ## 3. 里程碑与执行顺序
 
 ### 执行与提交规则(强制)
+
 - 每完成一个关键变更(如: 头包解析修正、setup 严格解析修正、IMDCT 接入、floor/residue 完成、对比测试落地), 必须立即执行:
-  1. `cargo fmt --check`
-  2. `cargo clippy -- -D warnings`
-  3. `cargo check`
-  4. `cargo test`
+    1. `cargo fmt --check`
+    2. `cargo clippy -- -D warnings`
+    3. `cargo check`
+    4. `cargo test`
 - 四项通过后, 立即提交该关键变更代码, 提交信息使用中文并准确描述本次关键点。
 - 禁止将多个关键变更长期堆积后一次性提交, 以确保可回滚、可审计、可断点续做。
 - 若某关键变更阶段无法通过四项门禁, 不进入下一关键变更, 先修复到通过再提交。
 
 ### P0 基线与计划
+
 - [x] 明确禁用外部多媒体库。
 - [x] 输出可续执行计划。
 
 ### P1 结构重构与状态机
+
 - [x] `vorbis` 从单文件迁移到子目录模块。
 - [x] `send_packet/receive_frame/flush` 状态机可工作。
 - [x] 三头包入口接通 (`identification/comment/setup`)。
 - 验收: 可推进到音频包阶段。
 
 ### P2 setup 解析基础设施
+
 - [x] 实现 codebook/floor/residue/mapping/mode 解析框架。
 - [x] setup 保留结构化 mode->mapping/mux/coupling 信息, 为后续 floor/residue 真正解码做准备。
 - [x] setup 保留 codebook/floor/residue 细粒度配置并增加运行时一致性校验。
@@ -47,12 +53,13 @@
 - 验收: 去除降级后仍稳定通过样本。
 
 ### P3 音频包解码主链路(已完成)
+
 - [x] 模式切换、块长推进、PTS 递增与基础帧输出队列接通。
 - [x] 主链路按模块拆分并接通调用关系:
-  - `floor.rs`
-  - `residue.rs`
-  - `imdct.rs`
-  - `synthesis.rs`
+    - `floor.rs`
+    - `residue.rs`
+    - `imdct.rs`
+    - `synthesis.rs`
 - [x] overlap 状态与拼接接口接入主流程 (当前为占位实现)。
 - [x] Ogg granule 语义修正与解码端时长对账(仅页尾完整包携带 granule, 其余回退块长推进)。
 - [x] 接入 channel coupling 反变换流程(当前 residue 仍为占位频谱)。
@@ -90,18 +97,21 @@
 - [x] 输出 `Frame::Audio(F32 interleaved)` + PTS/duration/time_base。
 - 验收: `tao-play` 可播放 `data/1.ogg` `data/2.ogg`。
 
-### P4 逐帧对标测试
-- [x] 新增 `tests/perf_compare/vorbis_module_compare.rs`。
+### P4 逐帧对标测试与精度提升专项
+
+- [x] 新增 `tests/perf_compare/compare.rs`。
 - [x] 与 FFmpeg 比较 MSE/PSNR/最大误差并输出报告。
 - [x] 移除 Lewton 对比, 仅保留 FFmpeg 基准。
+- [x] 通过诊断“首个明显偏差阶段”(逆量化/floor/IMDCT/Overlap-Add)进行精度调优。
 - [x] 建立并满足误差阈值。
 - 当前基线:
-  - `data/1.ogg`: PSNR `145.66dB`, max_err `0.000001`, 精度 `100.00%`
-  - `data/2.ogg`: PSNR `139.69dB`, max_err `0.000002`, 精度 `100.00%`
-  - 样本长度: `data/1.ogg` Tao=FFmpeg=`881996`; `data/2.ogg` Tao=FFmpeg=`2646000`
-- 验收: 两个样本对比测试通过。
+    - `data/1.ogg`: PSNR `145.66dB`, max_err `0.000001`, 精度 `100.00%`
+    - `data/2.ogg`: PSNR `139.69dB`, max_err `0.000002`, 精度 `100.00%`
+    - 样本长度: `data/1.ogg` Tao=FFmpeg=`881996`; `data/2.ogg` Tao=FFmpeg=`2646000`
+- 验收: 两个样本对比测试通过 (严格口径下)。
 
 ### P5 质量门禁与交付
+
 - [x] `cargo fmt --check`
 - [x] `cargo clippy -- -D warnings`
 - [x] `cargo check`
@@ -109,15 +119,18 @@
 - [x] 总结偏差与剩余事项。
 
 ## 4. 前置条件
+
 - 输入样本: `data/1.ogg`, `data/2.ogg`。
 - 本地工具: `ffmpeg`, `ffprobe` (仅用于对比, 不参与解码实现)。
 
 ## 5. 验收标准
+
 - Vorbis 全链路为 Tao 自研实现。
 - 两个样本可稳定解码并逐帧对标 FFmpeg。
 - 四项门禁全部通过。
 
 ## 6. 进度标记
+
 - [x] P0
 - [x] P1
 - [x] P2

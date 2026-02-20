@@ -1,5 +1,7 @@
 # CLAUDE.md — Tao 项目 Claude Code 规则
 
+> 本文档为 AGENTS.md 的浓缩版，供要求精简上下文的工具使用，如有模糊之处请以 AGENTS.md 为准
+
 ## 语言规范
 
 - 所有输出(注释、日志、错误信息、过程说明、文档)统一使用**中文**.
@@ -75,7 +77,7 @@ tao/
 ## 日志规范
 
 - 统一使用 `tracing`; 库 crate 只记录日志, 不初始化后端.
-- 日志内容必须中文.
+- 日志内容必须中文. 日志文件命名为 `{prefix}.{YYYY-MM-DD}.log`.
 - `error!`: 不可恢复错误 | `warn!`: 可恢复异常 | `info!`: 关键生命周期 | `debug!`: 内部状态 | `trace!`: 高频热路径.
 - 禁止在热路径使用 `info!` 及以上级别.
 - 禁止将正常流程(如 EOF)记为 `error!/warn!`.
@@ -90,6 +92,7 @@ tao/
 - 功能验证通常只需解码前 5-10 帧; 大型测试使用 `#[ignore]`.
 - 禁止完整播放全片验证; 默认播放 10 秒, 最多 30 秒.
 - Windows 播放测试超时保护: `Start-Process` + `Start-Sleep` + `TASKKILL /F /IM tao-play.exe /T`.
+- Unix(Linux/macOS) 播放测试必须带超时保护: `timeout 15|30 ...`.
 
 ## 临时文件管理
 
@@ -125,6 +128,7 @@ tao/
 ## 提交流程
 
 提交前按顺序执行:
+
 1. `cargo fmt --check`
 2. `cargo clippy -- -D warnings`
 3. `cargo check`

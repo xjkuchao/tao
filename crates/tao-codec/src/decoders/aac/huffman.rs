@@ -89,20 +89,47 @@ impl SpectralCodebook {
         }
         let raw = &self.values[entry_idx];
         let mut out = [0i32; 4];
+        if self.is_signed {
+            // 有符号码本: 值已包含正确符号
+            for i in 0..self.dim {
+                out[i] = raw[i] as i32;
+            }
+            return Ok(out);
+        }
+
+        if self.is_esc {
+            // CB11 特殊规则:
+            // 先读取该码字所有非零值的符号位, 再处理 ESC 扩展.
+            // 若边读符号边读 ESC, 会导致后续位流错位.
+            let mut sign_bits = [0u32; 4];
+            for i in 0..self.dim {
+                let v = raw[i] as i32;
+                if v != 0 {
+                    sign_bits[i] = br.read_bit()?;
+                }
+                out[i] = v;
+            }
+
+            for i in 0..self.dim {
+                let mut v = out[i];
+                if v != 0 && sign_bits[i] != 0 {
+                    v = -v;
+                }
+                if v.unsigned_abs() as i16 == self.esc_val {
+                    let esc_mag = Self::read_escape(br)?;
+                    v = if v < 0 { -esc_mag } else { esc_mag };
+                }
+                out[i] = v;
+            }
+            return Ok(out);
+        }
+
         for i in 0..self.dim {
             let v = raw[i] as i32;
-            if self.is_signed {
-                // 有符号码本: 值已包含正确符号
-                out[i] = v;
-            } else if v != 0 {
+            if v != 0 {
                 // 无符号码本: 读取 1 位符号
                 let sign_bit = br.read_bit()?;
                 out[i] = if sign_bit != 0 { -v } else { v };
-            }
-            // ESC 码本: magnitude == esc_val 时读取 escape 序列
-            if self.is_esc && out[i].unsigned_abs() as i16 == self.esc_val {
-                let esc_mag = Self::read_escape(br)?;
-                out[i] = if out[i] < 0 { -esc_mag } else { esc_mag };
             }
         }
         Ok(out)
