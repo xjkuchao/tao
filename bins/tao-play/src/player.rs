@@ -11,6 +11,7 @@ use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use tao_codec::CodecId;
 use tao_codec::codec_parameters::{AudioCodecParams, CodecParameters, CodecParamsType};
 use tao_codec::frame::Frame;
 use tao_core::{MediaType, PixelFormat, SampleFormat, TaoError};
@@ -245,6 +246,7 @@ impl Player {
 
         let mut audio_decoder = audio_stream.and_then(create_decoder);
         let mut video_decoder = video_stream.and_then(create_decoder);
+        let audio_nominal_bits = audio_stream.and_then(resolve_audio_nominal_bits);
 
         // 音频时钟: 用解码输出的累计采样数计算, 不依赖 demuxer PTS
         // (AVI 等容器的音频 PTS 可能不准确, 特别是压缩音频)
@@ -451,7 +453,8 @@ impl Player {
                                                 continue;
                                             }
                                             if let Some(out) = &audio_sender {
-                                                let samples = extract_f32_samples(af);
+                                                let samples =
+                                                    extract_f32_samples(af, audio_nominal_bits);
                                                 let chunk = AudioChunk {
                                                     samples,
                                                     pts_us: chunk_pts_us,
@@ -758,7 +761,7 @@ fn pts_to_us(pts: i64, num: i32, den: i32) -> i64 {
 }
 
 /// 从音频帧提取 F32 交错采样
-fn extract_f32_samples(af: &tao_codec::frame::AudioFrame) -> Vec<f32> {
+fn extract_f32_samples(af: &tao_codec::frame::AudioFrame, nominal_bits: Option<u32>) -> Vec<f32> {
     match af.sample_format {
         SampleFormat::F32 => af.data[0]
             .chunks_exact(4)
@@ -768,13 +771,76 @@ fn extract_f32_samples(af: &tao_codec::frame::AudioFrame) -> Vec<f32> {
             .chunks_exact(2)
             .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
             .collect(),
-        SampleFormat::S32 => af.data[0]
-            .chunks_exact(4)
-            .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32 / 2_147_483_648.0)
-            .collect(),
-        _ => {
-            vec![0.0f32; af.nb_samples as usize * 2]
+        SampleFormat::S32 => {
+            let scale = match nominal_bits {
+                Some(bits) if (1..32).contains(&bits) => (1u64 << (bits - 1)) as f32,
+                _ => 2_147_483_648.0,
+            };
+            af.data[0]
+                .chunks_exact(4)
+                .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32 / scale)
+                .collect()
         }
+        _ => {
+            vec![0.0f32; af.nb_samples as usize * af.channel_layout.channels as usize]
+        }
+    }
+}
+
+fn resolve_audio_nominal_bits(stream: &Stream) -> Option<u32> {
+    if stream.codec_id == CodecId::Flac {
+        return parse_flac_bits_per_sample(&stream.extra_data);
+    }
+    match &stream.params {
+        StreamParams::Audio(a) => match a.sample_format {
+            SampleFormat::U8 => Some(8),
+            SampleFormat::S16 => Some(16),
+            SampleFormat::S32 => Some(32),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn parse_flac_bits_per_sample(extra_data: &[u8]) -> Option<u32> {
+    if extra_data.len() < 34 {
+        return None;
+    }
+    let bps_hi = (u32::from(extra_data[12]) & 0x01) << 4;
+    let bps_lo = u32::from(extra_data[13]) >> 4;
+    Some((bps_hi | bps_lo) + 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tao_codec::frame::AudioFrame;
+    use tao_core::ChannelLayout;
+
+    #[test]
+    fn test_parse_flac_bits_per_sample_24bit() {
+        let mut extra_data = vec![0u8; 34];
+        // 按 FLAC STREAMINFO 打包规则写入 bps=24 (存储值为 bps-1=23=0b10111).
+        extra_data[12] = 0x01; // bps 高 1 位
+        extra_data[13] = 0x70; // bps 低 4 位 << 4
+        assert_eq!(parse_flac_bits_per_sample(&extra_data), Some(24));
+    }
+
+    #[test]
+    fn test_extract_f32_samples_s32_24bit_scale() {
+        let mut af = AudioFrame::new(1, 44_100, SampleFormat::S32, ChannelLayout::MONO);
+        // 24-bit 满幅正值 (sign-extended 到 i32).
+        let sample = 8_388_607i32;
+        af.data[0] = sample.to_le_bytes().to_vec();
+        let out = extract_f32_samples(&af, Some(24));
+        assert_eq!(out.len(), 1);
+        let expected = sample as f32 / 8_388_608.0;
+        assert!(
+            (out[0] - expected).abs() < 1e-7,
+            "S32 24bit 缩放异常: got={}, expected={}",
+            out[0],
+            expected
+        );
     }
 }
 
