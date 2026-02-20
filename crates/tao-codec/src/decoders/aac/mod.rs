@@ -2093,6 +2093,8 @@ mod tests {
             sample_rate: 0,
             channels: 0,
             channel_layout: ChannelLayout::from_channels(1),
+            channel_config: 1,
+            use_default_channel_map: true,
             sample_rate_index: 0,
             output_frame: None,
             opened: false,

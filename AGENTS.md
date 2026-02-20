@@ -260,10 +260,11 @@ tao/
 
 提交前必须按顺序执行:
 
-1. `cargo fmt --check`
-2. `cargo clippy -- -D warnings`
-3. `cargo check`
-4. `cargo test`
+1. `cargo fmt --all -- --check`
+2. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+3. `cargo check --workspace --all-targets --all-features`
+4. `cargo test --workspace --all-targets --all-features --no-fail-fast`
+5. `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps`
 
 提交信息格式:
 
