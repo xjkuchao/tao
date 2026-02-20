@@ -47,7 +47,7 @@
 
 - [快速开始指南](docs/quick_start_cn.md)
 - [API 文档](docs/api_docs_cn.md)
-- [AI 工具经验心得](经验心得.md)
+- [AI 工具经验心得](LESSONS_LEARNED_CN.md)
 
 ## 贡献
 

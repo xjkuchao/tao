@@ -72,7 +72,7 @@ tao/
 允许的根目录文件类型:
 
 - 项目配置: `Cargo.toml`, `.rustfmt.toml`, `.gitignore`
-- 核心文档: `README.md`, `README_CN.md`, `AGENTS.md`, `经验心得.md`, `LESSONS_LEARNED.md`
+- 核心文档: `README.md`, `README_CN.md`, `AGENTS.md`, `LESSONS_LEARNED.md`, `LESSONS_LEARNED_CN.md`
 - 许可证: `LICENSE*`
 
 文件放置要求:
