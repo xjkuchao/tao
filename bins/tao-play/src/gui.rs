@@ -492,6 +492,7 @@ fn play_mode_str(paused: bool, step: bool) -> &'static str {
 /// - 处理 SDL 事件
 /// - 调用 `video_refresh` 决定帧显示时机
 /// - 按 `remaining_time` 精确休眠
+#[allow(clippy::too_many_arguments)]
 pub fn run_event_loop(
     mut canvas: Canvas<Window>,
     frame_rx: Receiver<VideoFrame>,

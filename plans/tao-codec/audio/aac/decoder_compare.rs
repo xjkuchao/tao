@@ -17,6 +17,7 @@ use tao::format::{FormatRegistry, IoContext};
 
 static FF_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const DEFAULT_COMPARE_SECONDS: u32 = 10;
+type DecodeResult = Result<(u32, u32, Vec<f32>, Option<u32>), Box<dyn std::error::Error>>;
 
 fn compare_seconds_limit() -> u32 {
     std::env::var("TAO_AAC_COMPARE_SECONDS")
@@ -96,9 +97,7 @@ fn append_audio_frame_to_f32(
     Ok(())
 }
 
-fn decode_aac_with_tao(
-    path: &str,
-) -> Result<(u32, u32, Vec<f32>, Option<u32>), Box<dyn std::error::Error>> {
+fn decode_aac_with_tao(path: &str) -> DecodeResult {
     let mut format_registry = FormatRegistry::new();
     tao::format::register_all(&mut format_registry);
     let mut codec_registry = CodecRegistry::new();

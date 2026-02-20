@@ -16,6 +16,7 @@ use tao::core::{ChannelLayout, SampleFormat, TaoError};
 use tao::format::{FormatRegistry, IoContext};
 
 static FF_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+type DecodeResult = Result<(u32, u32, Vec<f32>, Option<u32>), Box<dyn std::error::Error>>;
 
 fn make_ffmpeg_tmp_path(tag: &str) -> String {
     let pid = std::process::id();
@@ -96,9 +97,7 @@ fn append_audio_frame_to_f32(
     Ok(())
 }
 
-fn decode_flac_with_tao(
-    path: &str,
-) -> Result<(u32, u32, Vec<f32>, Option<u32>), Box<dyn std::error::Error>> {
+fn decode_flac_with_tao(path: &str) -> DecodeResult {
     let mut format_registry = FormatRegistry::new();
     tao::format::register_all(&mut format_registry);
     let mut codec_registry = CodecRegistry::new();

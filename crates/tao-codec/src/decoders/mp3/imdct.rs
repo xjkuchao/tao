@@ -276,13 +276,13 @@ mod tests {
     /// f64 精度参考 18 点 IMDCT
     fn imdct18_reference(input: &[f32; 18]) -> [f64; 36] {
         let mut output = [0.0f64; 36];
-        for i in 0..36 {
+        for (i, out) in output.iter_mut().enumerate() {
             let mut sum = 0.0f64;
-            for k in 0..18 {
+            for (k, &val) in input.iter().enumerate().take(18) {
                 let angle = PI64 / 72.0 * (2.0 * i as f64 + 19.0) * (2.0 * k as f64 + 1.0);
-                sum += input[k] as f64 * angle.cos();
+                sum += val as f64 * angle.cos();
             }
-            output[i] = sum;
+            *out = sum;
         }
         output
     }
@@ -290,13 +290,13 @@ mod tests {
     /// f64 精度参考 6 点 IMDCT
     fn imdct6_reference(input: &[f32; 6]) -> [f64; 12] {
         let mut output = [0.0f64; 12];
-        for i in 0..12 {
+        for (i, out) in output.iter_mut().enumerate() {
             let mut sum = 0.0f64;
-            for k in 0..6 {
+            for (k, &val) in input.iter().enumerate().take(6) {
                 let angle = PI64 / 24.0 * (2.0 * i as f64 + 7.0) * (2.0 * k as f64 + 1.0);
-                sum += input[k] as f64 * angle.cos();
+                sum += val as f64 * angle.cos();
             }
-            output[i] = sum;
+            *out = sum;
         }
         output
     }
@@ -347,14 +347,16 @@ mod tests {
     #[test]
     fn test_imdct_full_long_block() {
         // 测试完整的 IMDCT (长块, Normal窗口) + overlap-add
-        let mut granule = Granule::default();
-        granule.windows_switching_flag = false;
-        granule.block_type = 0;
+        let granule = Granule {
+            windows_switching_flag: false,
+            block_type: 0,
+            ..Granule::default()
+        };
 
         let mut xr = [0.0f32; 576];
         // 仅在子带 0 放入数据
-        for k in 0..18 {
-            xr[k] = (k as f32 + 1.0) * 0.1;
+        for (k, slot) in xr.iter_mut().enumerate().take(18) {
+            *slot = (k as f32 + 1.0) * 0.1;
         }
 
         let mut overlap = [[0.0f32; 18]; 32];
@@ -401,15 +403,17 @@ mod tests {
     #[test]
     fn test_imdct_short_block() {
         // 测试完整的 IMDCT (纯短块) + overlap-add
-        let mut granule = Granule::default();
-        granule.windows_switching_flag = true;
-        granule.block_type = 2;
-        granule.mixed_block_flag = false;
+        let granule = Granule {
+            windows_switching_flag: true,
+            block_type: 2,
+            mixed_block_flag: false,
+            ..Granule::default()
+        };
 
         let mut xr = [0.0f32; 576];
         // 子带 0: 3 个窗口各 6 个样本
-        for k in 0..18 {
-            xr[k] = (k as f32 + 1.0) * 0.05;
+        for (k, slot) in xr.iter_mut().enumerate().take(18) {
+            *slot = (k as f32 + 1.0) * 0.05;
         }
 
         let mut overlap = [[0.0f32; 18]; 32];

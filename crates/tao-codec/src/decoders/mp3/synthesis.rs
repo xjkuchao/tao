@@ -642,13 +642,13 @@ mod tests {
     /// 使用 f64 精度计算参考 matrixing 输出
     fn reference_matrixing(samples: &[f32; 32]) -> [f64; 64] {
         let mut v = [0.0f64; 64];
-        for i in 0..64 {
+        for (i, out) in v.iter_mut().enumerate() {
             let mut sum = 0.0f64;
-            for k in 0..32 {
+            for (k, &sample) in samples.iter().enumerate().take(32) {
                 let angle = PI64 / 64.0 * (16.0 + i as f64) * (2.0 * k as f64 + 1.0);
-                sum += samples[k] as f64 * angle.cos();
+                sum += sample as f64 * angle.cos();
             }
-            v[i] = sum;
+            *out = sum;
         }
         v
     }
@@ -676,13 +676,13 @@ mod tests {
 
         // 窗口加权 + 累加
         let mut pcm = [0.0f64; 32];
-        for j in 0..32 {
+        for (j, out) in pcm.iter_mut().enumerate() {
             let mut sum = 0.0f64;
             for i in 0..16 {
                 let idx = j + 32 * i;
                 sum += window[idx] as f64 * u[idx];
             }
-            pcm[j] = sum;
+            *out = sum;
         }
         pcm
     }

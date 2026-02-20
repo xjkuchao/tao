@@ -250,12 +250,9 @@ mod tests {
                                 }
 
                                 // 验证帧信息
-                                match frame {
-                                    tao_codec::frame::Frame::Video(vf) => {
-                                        assert_eq!(vf.width, width, "帧宽度应匹配");
-                                        assert_eq!(vf.height, height, "帧高度应匹配");
-                                    }
-                                    _ => {}
+                                if let tao_codec::frame::Frame::Video(vf) = frame {
+                                    assert_eq!(vf.width, width, "帧宽度应匹配");
+                                    assert_eq!(vf.height, height, "帧高度应匹配");
                                 }
 
                                 if frame_count >= max_frames {
@@ -429,7 +426,7 @@ mod tests {
                         continue;
                     }
 
-                    if let Err(_) = decoder.send_packet(&packet) {
+                    if decoder.send_packet(&packet).is_err() {
                         continue;
                     }
 
@@ -566,7 +563,7 @@ mod tests {
                         continue;
                     }
 
-                    if let Err(_) = decoder.send_packet(&packet) {
+                    if decoder.send_packet(&packet).is_err() {
                         continue;
                     }
 
@@ -705,7 +702,7 @@ mod tests {
                         continue;
                     }
 
-                    if let Err(_) = decoder.send_packet(&packet) {
+                    if decoder.send_packet(&packet).is_err() {
                         continue;
                     }
 
@@ -843,7 +840,7 @@ mod tests {
                         continue;
                     }
 
-                    if let Err(_) = decoder.send_packet(&packet) {
+                    if decoder.send_packet(&packet).is_err() {
                         continue;
                     }
 
@@ -1131,7 +1128,7 @@ mod tests {
                         continue;
                     }
 
-                    if let Err(_) = decoder.send_packet(&packet) {
+                    if decoder.send_packet(&packet).is_err() {
                         continue;
                     }
 
@@ -1269,7 +1266,7 @@ mod tests {
                         continue;
                     }
 
-                    if let Err(_) = decoder.send_packet(&packet) {
+                    if decoder.send_packet(&packet).is_err() {
                         continue;
                     }
 
@@ -1412,7 +1409,7 @@ mod tests {
                         continue;
                     }
 
-                    if let Err(_) = decoder.send_packet(&packet) {
+                    if decoder.send_packet(&packet).is_err() {
                         continue;
                     }
 

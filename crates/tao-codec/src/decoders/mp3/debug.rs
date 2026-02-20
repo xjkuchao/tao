@@ -18,7 +18,7 @@ pub struct FrameSnapshot {
     pub gr: usize,
     /// Channel 索引 (0 或 1)
     pub ch: usize,
-    /// Huffman 解码后的整数样本 (is[576])
+    /// Huffman 解码后的整数样本 (is\[576\])
     pub is_samples: IsSpectrum,
     /// 比例因子 (scalefac)
     pub scalefac: [u8; 40],
@@ -58,7 +58,7 @@ pub struct FrameSnapshot {
     pub big_values: usize,
     /// count1_table
     pub count1_table: u8,
-    /// 反量化后的频谱 (xr[576])
+    /// 反量化后的频谱 (xr\[576\])
     pub xr_after_requantize: XrSpectrum,
     /// 立体声处理后的频谱
     pub xr_after_stereo: XrSpectrum,
@@ -162,7 +162,7 @@ pub struct FrameInfo {
     pub channels: u32,
     /// granule 数
     pub granules: u32,
-    /// [granule][channel] 侧信息摘要
+    /// \[granule\]\[channel\] 侧信息摘要
     pub info: [[GranuleInfo; 2]; 2],
 }
 

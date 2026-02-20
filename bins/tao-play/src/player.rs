@@ -812,6 +812,7 @@ fn parse_flac_bits_per_sample(extra_data: &[u8]) -> Option<u32> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use tao_codec::frame::AudioFrame;

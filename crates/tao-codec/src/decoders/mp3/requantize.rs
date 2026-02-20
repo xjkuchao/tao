@@ -502,10 +502,12 @@ mod tests {
     fn test_requantize_matches_reference_long_short_mixed() {
         let mut seed = 0x1234_5678u32;
         for case in 0..120 {
-            let mut granule = Granule::default();
-            granule.scalefac_scale = (next_u32(&mut seed) & 1) != 0;
-            granule.preflag = (next_u32(&mut seed) & 1) != 0;
-            granule.global_gain = gen_u8(&mut seed, 255) as u32;
+            let mut granule = Granule {
+                scalefac_scale: (next_u32(&mut seed) & 1) != 0,
+                preflag: (next_u32(&mut seed) & 1) != 0,
+                global_gain: gen_u8(&mut seed, 255) as u32,
+                ..Granule::default()
+            };
 
             match case % 3 {
                 0 => {

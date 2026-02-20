@@ -16,6 +16,7 @@ use tao::core::{ChannelLayout, SampleFormat, TaoError};
 use tao::format::{FormatRegistry, IoContext};
 
 static FF_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+type DecodeResult = Result<(u32, u32, Vec<f32>, Option<u32>), Box<dyn std::error::Error>>;
 
 fn make_ffmpeg_tmp_path(tag: &str) -> String {
     let pid = std::process::id();
@@ -41,9 +42,7 @@ fn open_input(path: &str) -> Result<IoContext, Box<dyn std::error::Error>> {
     Ok(IoContext::open_read(path)?)
 }
 
-fn decode_mp3_with_tao(
-    path: &str,
-) -> Result<(u32, u32, Vec<f32>, Option<u32>), Box<dyn std::error::Error>> {
+fn decode_mp3_with_tao(path: &str) -> DecodeResult {
     let mut format_registry = FormatRegistry::new();
     tao::format::register_all(&mut format_registry);
     let mut codec_registry = CodecRegistry::new();
@@ -328,12 +327,7 @@ fn compare_pcm(reference: &[f32], test: &[f32]) -> CompareStats {
     if precision_pct.is_nan() {
         precision_pct = 0.0;
     }
-    if precision_pct < 0.0 {
-        precision_pct = 0.0;
-    }
-    if precision_pct > 100.0 {
-        precision_pct = 100.0;
-    }
+    precision_pct = precision_pct.clamp(0.0, 100.0);
 
     CompareStats {
         n,

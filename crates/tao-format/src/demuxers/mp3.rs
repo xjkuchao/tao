@@ -770,18 +770,23 @@ mod tests {
     #[test]
     fn test_probe_id3v2() {
         let probe = Mp3Probe;
-        // ID3v2 头 (10字节, size=0) + 有效的 MP3 帧头
-        let header = make_mp3_frame_header(9, 0, false);
+        // ID3v2 头 (10字节, size=0) + 两个连续有效 MP3 帧
+        let frame = build_mp3_frame(9, 0, false);
         let mut data = b"ID3\x04\x00\x00\x00\x00\x00\x00".to_vec();
-        data.extend_from_slice(&header);
+        data.extend_from_slice(&frame);
+        data.extend_from_slice(&frame);
         assert_eq!(probe.probe(&data, None), Some(crate::probe::SCORE_MAX - 5),);
     }
 
     #[test]
     fn test_probe_frame_sync() {
         let probe = Mp3Probe;
-        let header = make_mp3_frame_header(9, 0, false);
-        assert!(probe.probe(&header, None).is_some());
+        // 探测器要求至少两个连续有效帧.
+        let frame = build_mp3_frame(9, 0, false);
+        let mut data = Vec::new();
+        data.extend_from_slice(&frame);
+        data.extend_from_slice(&frame);
+        assert!(probe.probe(&data, None).is_some());
     }
 
     #[test]

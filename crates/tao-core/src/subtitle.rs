@@ -196,7 +196,7 @@ fn strip_ass_tags(text: &str) -> String {
 
 /// 解析 ASS/SSA 格式字幕内容.
 ///
-/// 解析 [Events] 段落中的 Dialogue 行, 提取开始时间、结束时间、样式和文本.
+/// 解析 \[Events\] 段落中的 Dialogue 行, 提取开始时间、结束时间、样式和文本.
 pub fn parse_ass(content: &str) -> TaoResult<SubtitleTrack> {
     let mut events = Vec::new();
     let content = content.trim();

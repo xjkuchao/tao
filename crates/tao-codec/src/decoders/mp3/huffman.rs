@@ -790,7 +790,7 @@ mod tests {
                 // 将 code_val (len 位) 编码到字节数组
                 // 需要至少 (len + PEEK_BITS) 位的空间来确保 peek 能工作
                 let total_bits = len as usize + PEEK_BITS;
-                let total_bytes = (total_bits + 7) / 8;
+                let total_bytes = total_bits.div_ceil(8);
                 let mut buf = vec![0u8; total_bytes + 2];
 
                 // MSB first: 将 code_val 放在 buf 的最前面
