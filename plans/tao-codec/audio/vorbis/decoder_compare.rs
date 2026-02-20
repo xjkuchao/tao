@@ -16,7 +16,6 @@ use tao::codec::{CodecId, CodecParameters, CodecRegistry};
 use tao::core::{ChannelLayout, SampleFormat, TaoError};
 use tao::format::{FormatRegistry, IoContext};
 use tao::resample::ResampleContext;
-use tracing::info;
 
 static FF_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -28,10 +27,6 @@ fn make_tmp_path(tag: &str, ext: &str) -> String {
 
 fn make_ffmpeg_tmp_path(tag: &str) -> String {
     make_tmp_path(tag, "raw")
-}
-
-fn init_test_tracing() {
-    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
 }
 
 fn is_url(path: &str) -> bool {
@@ -613,7 +608,7 @@ fn decode_vorbis_with_tao(
         u32::try_from(stream.index).map_err(|_| "流索引超出 u32 范围, 无法用于 ffmpeg 映射")?;
     let codec_id = stream.codec_id;
     if codec_id != CodecId::Vorbis {
-        info!(
+        println!(
             "[{}] 非 Vorbis 流({}), 对比测试回退到 FFmpeg 解码基线",
             path, codec_id
         );
@@ -672,7 +667,7 @@ fn decode_vorbis_with_tao(
                     let packet_data = pkt.data.as_ref();
                     let header_type = parse_vorbis_header_type(packet_data);
                     if debug_pts && seen_audio_payload && header_type.is_some() {
-                        info!(
+                        println!(
                             "[{}] 中途头包: type={:?}, pkt_pts={}, tb={}/{}",
                             path, header_type, pkt.pts, pkt.time_base.num, pkt.time_base.den
                         );
@@ -824,7 +819,7 @@ fn decode_vorbis_with_tao(
                         && let Some(last_end) = last_frame_end_pts_target
                         && corrected_start != last_end
                     {
-                        info!(
+                        println!(
                             "[{}] PTS不连续: last_end={}, cur_start={}, raw_start={}, sr={}, ch={}",
                             path,
                             last_end,
@@ -848,7 +843,7 @@ fn decode_vorbis_with_tao(
                 Err(TaoError::NeedMoreData) => {
                     if demux_eof {
                         if debug_pts {
-                            info!(
+                            println!(
                                 "[{}] Tao原始帧采样率分布: {:?}",
                                 path, frame_samples_by_rate
                             );
@@ -859,7 +854,7 @@ fn decode_vorbis_with_tao(
                 }
                 Err(TaoError::Eof) => {
                     if debug_pts {
-                        info!(
+                        println!(
                             "[{}] Tao原始帧采样率分布: {:?}",
                             path, frame_samples_by_rate
                         );
@@ -1042,12 +1037,10 @@ fn resolve_input() -> Result<String, Box<dyn std::error::Error>> {
 }
 
 fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    init_test_tracing();
-
     let mut compare_input = path.to_string();
     let mut temp_ogg = None::<String>;
     if let Some(extracted) = try_extract_embedded_ogg_from_avi(path)? {
-        info!(
+        println!(
             "[{}] 检测到 AVI 内嵌 Ogg 音频, 对比输入切换为 {}",
             path, extracted
         );
@@ -1065,7 +1058,7 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
             let n = tao_pcm.len().min(ff_pcm.len());
             if n > 0 {
                 let min_stats = compare_pcm(&ff_pcm[..n], &tao_pcm[..n]);
-                info!(
+                println!(
                     "[{}] 截断重叠区精度: n={}, max_err={:.9}, psnr={:.2}dB, 精度={:.6}%",
                     path, n, min_stats.max_err, min_stats.psnr, min_stats.precision_pct
                 );
@@ -1090,7 +1083,7 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 (tail_power / tail.len() as f64).sqrt()
             };
-            info!(
+            println!(
                 "[{}] 长度差尾段统计: longer={}, diff={}, tail_max={:.9}, tail_rms={:.9}",
                 path,
                 longer_tag,
@@ -1108,7 +1101,7 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         );
 
         let stats_tao = compare_pcm(&ff_pcm, &tao_pcm);
-        info!(
+        println!(
             "[{}] Tao对比样本={}, Tao={}, FFmpeg={}, Tao/FFmpeg: max_err={:.9}, psnr={:.2}dB, 精度={:.6}%, FFmpeg=100%",
             path,
             stats_tao.n,

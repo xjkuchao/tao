@@ -439,6 +439,12 @@ impl MkvDemuxer {
 
         // 剩余数据是帧数据
         let header_consumed = u64::from(vint_len) + 3;
+        if size < header_consumed {
+            return Err(TaoError::InvalidData(format!(
+                "MKV: SimpleBlock 尺寸 {} 小于头部 {} 字节",
+                size, header_consumed
+            )));
+        }
         let data_size = size - header_consumed;
         let block_data = io.read_bytes(data_size as usize)?;
 

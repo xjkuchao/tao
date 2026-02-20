@@ -14,7 +14,6 @@ use tao::codec::packet::Packet;
 use tao::codec::{CodecId, CodecParameters, CodecRegistry};
 use tao::core::{ChannelLayout, SampleFormat, TaoError};
 use tao::format::{FormatRegistry, IoContext};
-use tracing::info;
 
 static FF_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -22,10 +21,6 @@ fn make_ffmpeg_tmp_path(tag: &str) -> String {
     let pid = std::process::id();
     let seq = FF_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("data/tmp_{}_{}_{}.raw", tag, pid, seq)
-}
-
-fn init_test_tracing() {
-    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
 }
 
 fn is_url(path: &str) -> bool {
@@ -134,7 +129,7 @@ fn decode_flac_with_tao(
         u32::try_from(stream.index).map_err(|_| "流索引超出 u32 范围, 无法用于 ffmpeg 映射")?;
     let codec_id = stream.codec_id;
     if codec_id != CodecId::Flac {
-        info!(
+        println!(
             "[{}] 非 FLAC 流({}), 对比测试回退到 FFmpeg 解码基线",
             path, codec_id
         );
@@ -404,8 +399,6 @@ fn resolve_input() -> Result<String, Box<dyn std::error::Error>> {
 }
 
 fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    init_test_tracing();
-
     let (tao_sr, tao_ch, tao_pcm, tao_stream_index) = decode_flac_with_tao(path)?;
     let (ff_sr, ff_ch, ff_pcm) = decode_flac_with_ffmpeg(path, tao_stream_index)?;
 
@@ -420,7 +413,7 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let stats = compare_pcm(&ff_pcm, &tao_pcm);
-    info!(
+    println!(
         "[{}] Tao对比样本={}, Tao={}, FFmpeg={}, Tao/FFmpeg: max_err={:.9}, psnr={:.2}dB, 精度={:.6}%, FFmpeg=100%",
         path,
         stats.n,
