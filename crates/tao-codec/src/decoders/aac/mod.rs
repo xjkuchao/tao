@@ -2143,6 +2143,7 @@ mod tests {
             long_kbd_window: Vec::new(),
             short_sine_window: Vec::new(),
             short_kbd_window: Vec::new(),
+            random_state: Cell::new(0x1f2e3d4c),
         };
         dec.parse_audio_specific_config(&[0x12, 0x10]).unwrap();
         assert_eq!(dec.sample_rate, 44100);
