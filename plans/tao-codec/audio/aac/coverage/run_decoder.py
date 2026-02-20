@@ -9,23 +9,44 @@ from multiprocessing import cpu_count
 from pathlib import Path
 
 REPORT_PATH = Path("plans/tao-codec/audio/aac/coverage/report.md")
-SKIPPED_SAMPLE_INDEXES = {9, 17, 46, 52, 77, 83, 89, 103}
-SKIPPED_SAMPLE_REASONS = {
-    9: "暂时跳过: HE-AAC(aot=29), 当前 AAC 解码器仅支持 AAC-LC(aot=2)",
-    17: "暂时跳过: AAC Main(aot=1), 当前 AAC 解码器仅支持 AAC-LC(aot=2)",
-    46: "暂时跳过: AAC Main(aot=1), 当前 AAC 解码器仅支持 AAC-LC(aot=2)",
-    52: "暂时跳过: AAC Main(aot=1), 当前 AAC 解码器仅支持 AAC-LC(aot=2)",
-    77: "暂时跳过: 非法/未知 profile(aot=0), 当前 AAC 解码器仅支持 AAC-LC(aot=2)",
-    83: "暂时跳过: AAC Main(aot=1), 当前 AAC 解码器仅支持 AAC-LC(aot=2)",
-    89: "暂时跳过: AAC Main(aot=1), 当前 AAC 解码器仅支持 AAC-LC(aot=2)",
-    103: "暂时跳过: AAC SSR/LTP 类别(aot=3), 当前 AAC 解码器仅支持 AAC-LC(aot=2)",
+NO_AUDIO_SAMPLE_INDEXES = {
+    20,
+    49,
+    50,
+    55,
+    57,
+    60,
+    63,
+    67,
+    68,
+    79,
+    80,
+    86,
+    87,
+    92,
+    93,
+    94,
+    95,
+    96,
+    97,
+    98,
+    99,
+    107,
 }
+SBR_SAMPLE_RATE_MISMATCH_INDEXES = {5, 6, 7, 8, 15, 26, 27, 28, 29}
+INVALID_ADTS_SAMPLE_INDEXES = {36, 102, 111}
+NON_AAC_STREAM_INDEXES = {54}
+INVALID_CONTAINER_INDEXES = {33, 110}
+CORRUPTED_STREAM_INDEXES = {37}
+# 按用户要求禁用默认跳过策略, 全量样本统一进入真实回归.
+SKIPPED_SAMPLE_INDEXES = set()
+SKIPPED_SAMPLE_REASONS = {}
 
 HEADER_PREFIX = "| 序号 |"
 SEP_PREFIX = "| --- |"
 
 LINE_RE = re.compile(
-    r"Tao对比样本=(\d+), Tao=(\d+), FFmpeg=(\d+), Tao/FFmpeg: "
+    r"Tao对比样本=(\d+), Tao=(\d+), FFmpeg=(\d+), (?:lag=[-+]?\d+, )?Tao/FFmpeg: "
     r"max_err=([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?), "
     r"psnr=([A-Za-z]+|[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)dB, "
     r"精度=([-+]?[0-9]*\.?[0-9]+)%"
@@ -349,6 +370,13 @@ def main():
         else:
             row[col_map["状态"]] = "失败"
             row[col_map["失败原因"]] = extract_failure_reason(output)
+            row[col_map["Tao样本数"]] = ""
+            row[col_map["FFmpeg样本数"]] = ""
+            row[col_map["样本数差异"]] = ""
+            row[col_map["max_err"]] = ""
+            row[col_map["psnr(dB)"]] = ""
+            row[col_map["精度(%)"]] = ""
+            row[col_map["备注"]] = ""
 
         with lock:
             write_report(lines, header_idx, sep, rows)

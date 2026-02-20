@@ -40,29 +40,74 @@ const AAC_SAMPLE_RATES: [u32; 16] = [
     0,
 ];
 
-/// 44100Hz 下 1024 点 LONG 窗口的 SFB 边界 (49 个 band)
-const SWB_OFFSET_1024_44100: [usize; 50] = [
+/// 96kHz 下 1024 点 LONG 窗口的 SFB 边界.
+const SWB_OFFSET_1024_96: [usize; 42] = [
+    0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 64, 72, 80, 88, 96, 108, 120, 132,
+    144, 156, 172, 188, 212, 240, 276, 320, 384, 448, 512, 576, 640, 704, 768, 832, 896, 960, 1024,
+];
+
+/// 64kHz 下 1024 点 LONG 窗口的 SFB 边界.
+const SWB_OFFSET_1024_64: [usize; 48] = [
+    0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 64, 72, 80, 88, 100, 112, 124, 140,
+    156, 172, 192, 216, 240, 268, 304, 344, 384, 424, 464, 504, 544, 584, 624, 664, 704, 744, 784,
+    824, 864, 904, 944, 984, 1024,
+];
+
+/// 48kHz/44.1kHz 下 1024 点 LONG 窗口的 SFB 边界.
+const SWB_OFFSET_1024_48: [usize; 50] = [
     0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 48, 56, 64, 72, 80, 88, 96, 108, 120, 132, 144, 160,
     176, 196, 216, 240, 264, 292, 320, 352, 384, 416, 448, 480, 512, 544, 576, 608, 640, 672, 704,
     736, 768, 800, 832, 864, 896, 928, 1024,
 ];
 
-/// 48000Hz 下 1024 点 LONG 窗口的 SFB 边界
-const SWB_OFFSET_1024_48000: [usize; 50] = [
+/// 32kHz 下 1024 点 LONG 窗口的 SFB 边界.
+const SWB_OFFSET_1024_32: [usize; 52] = [
     0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 48, 56, 64, 72, 80, 88, 96, 108, 120, 132, 144, 160,
     176, 196, 216, 240, 264, 292, 320, 352, 384, 416, 448, 480, 512, 544, 576, 608, 640, 672, 704,
-    736, 768, 800, 832, 864, 896, 928, 1024,
+    736, 768, 800, 832, 864, 896, 928, 960, 992, 1024,
 ];
 
-/// 44100Hz 下 128 点 SHORT 窗口的 SFB 边界.
-///
-/// AAC 采样率索引 4(44.1kHz)与索引 3(48kHz)共用同一套 short SFB 表.
-const SWB_OFFSET_128_44100: [usize; 15] =
-    [0, 4, 8, 12, 16, 20, 28, 36, 44, 56, 68, 80, 96, 112, 128];
+/// 24kHz/22.05kHz 下 1024 点 LONG 窗口的 SFB 边界.
+const SWB_OFFSET_1024_24: [usize; 48] = [
+    0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 52, 60, 68, 76, 84, 92, 100, 108, 116, 124, 136,
+    148, 160, 172, 188, 204, 220, 240, 260, 284, 308, 336, 364, 396, 432, 468, 508, 552, 600, 652,
+    704, 768, 832, 896, 960, 1024,
+];
 
-/// 48000Hz 下 128 点 SHORT 窗口的 SFB 边界.
-const SWB_OFFSET_128_48000: [usize; 15] =
-    [0, 4, 8, 12, 16, 20, 28, 36, 44, 56, 68, 80, 96, 112, 128];
+/// 16kHz/12kHz/11.025kHz 下 1024 点 LONG 窗口的 SFB 边界.
+const SWB_OFFSET_1024_16: [usize; 44] = [
+    0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 100, 112, 124, 136, 148, 160, 172, 184, 196, 212,
+    228, 244, 260, 280, 300, 320, 344, 368, 396, 424, 456, 492, 532, 572, 616, 664, 716, 772, 832,
+    896, 960, 1024,
+];
+
+/// 8kHz/7.35kHz 下 1024 点 LONG 窗口的 SFB 边界.
+const SWB_OFFSET_1024_8: [usize; 41] = [
+    0, 12, 24, 36, 48, 60, 72, 84, 96, 108, 120, 132, 144, 156, 172, 188, 204, 220, 236, 252, 268,
+    288, 308, 328, 348, 372, 396, 420, 448, 476, 508, 544, 580, 620, 664, 712, 764, 820, 880, 944,
+    1024,
+];
+
+/// 96kHz/88.2kHz/64kHz 下 128 点 SHORT 窗口的 SFB 边界.
+const SWB_OFFSET_128_96: [usize; 13] = [0, 4, 8, 12, 16, 20, 24, 32, 40, 48, 64, 92, 128];
+
+/// 48kHz/44.1kHz/32kHz 下 128 点 SHORT 窗口的 SFB 边界.
+const SWB_OFFSET_128_48: [usize; 15] = [0, 4, 8, 12, 16, 20, 28, 36, 44, 56, 68, 80, 96, 112, 128];
+
+/// 24kHz/22.05kHz 下 128 点 SHORT 窗口的 SFB 边界.
+const SWB_OFFSET_128_24: [usize; 16] = [
+    0, 4, 8, 12, 16, 20, 24, 28, 36, 44, 52, 64, 76, 92, 108, 128,
+];
+
+/// 16kHz/12kHz/11.025kHz 下 128 点 SHORT 窗口的 SFB 边界.
+const SWB_OFFSET_128_16: [usize; 16] = [
+    0, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 60, 72, 88, 108, 128,
+];
+
+/// 8kHz/7.35kHz 下 128 点 SHORT 窗口的 SFB 边界.
+const SWB_OFFSET_128_8: [usize; 16] = [
+    0, 4, 8, 12, 16, 20, 24, 28, 36, 44, 52, 60, 72, 88, 108, 128,
+];
 
 /// AAC TNS 最大频带数表 (索引为采样率索引).
 const TNS_MAX_BANDS_1024: [u8; 13] = [31, 31, 34, 40, 42, 51, 46, 46, 42, 42, 42, 39, 39];
@@ -114,6 +159,8 @@ pub struct AacDecoder {
     sample_rate: u32,
     channels: u32,
     channel_layout: ChannelLayout,
+    channel_config: u8,
+    use_default_channel_map: bool,
     sample_rate_index: u8,
     output_frame: Option<Frame>,
     opened: bool,
@@ -148,6 +195,8 @@ impl AacDecoder {
             sample_rate: 44100,
             channels: 2,
             channel_layout: ChannelLayout::from_channels(2),
+            channel_config: 2,
+            use_default_channel_map: true,
             sample_rate_index: 4,
             output_frame: None,
             opened: false,
@@ -185,34 +234,73 @@ impl AacDecoder {
             self.sample_rate_index = freq_idx;
         }
         if chan_config > 0 && chan_config <= 7 {
-            self.channels = match chan_config {
-                1 => 1,
-                2 => 2,
-                3 => 3,
-                4 => 4,
-                5 => 5,
-                6 => 6,
-                7 => 8,
-                _ => 2,
-            };
+            self.channels = Self::channels_from_config(chan_config);
             self.channel_layout = ChannelLayout::from_channels(self.channels);
+            self.channel_config = chan_config;
+            self.use_default_channel_map = true;
+        } else if chan_config == 0 {
+            // 显式 PCE 声道布局, 不应套用默认声道重排表.
+            self.use_default_channel_map = false;
         }
         Ok(())
     }
 
+    fn channels_from_config(channel_config: u8) -> u32 {
+        match channel_config {
+            1 => 1,
+            2 => 2,
+            3 => 3,
+            4 => 4,
+            5 => 5,
+            6 => 6,
+            7 => 8,
+            _ => 2,
+        }
+    }
+
+    /// AAC 默认声道配置到常见播放声道顺序的映射.
+    ///
+    /// 返回值含义: `输出声道索引 -> 解码内部声道索引`.
+    fn output_channel_map(&self) -> Option<&'static [usize]> {
+        if !self.use_default_channel_map {
+            return None;
+        }
+        const MAP_3: [usize; 3] = [1, 2, 0];
+        const MAP_5: [usize; 5] = [1, 2, 0, 3, 4];
+        const MAP_6: [usize; 6] = [1, 2, 0, 5, 3, 4];
+        const MAP_7: [usize; 8] = [1, 2, 0, 7, 5, 6, 3, 4];
+        match self.channel_config {
+            3 => Some(&MAP_3),
+            5 => Some(&MAP_5),
+            6 => Some(&MAP_6),
+            7 => Some(&MAP_7),
+            _ => None,
+        }
+    }
+
     /// 获取当前采样率对应的 SFB 边界表
     fn swb_offset(&self) -> &'static [usize] {
-        match self.sample_rate {
-            48000 => &SWB_OFFSET_1024_48000,
-            _ => &SWB_OFFSET_1024_44100,
+        match self.sample_rate_index {
+            0 | 1 => &SWB_OFFSET_1024_96,
+            2 => &SWB_OFFSET_1024_64,
+            3 | 4 => &SWB_OFFSET_1024_48,
+            5 => &SWB_OFFSET_1024_32,
+            6 | 7 => &SWB_OFFSET_1024_24,
+            8..=10 => &SWB_OFFSET_1024_16,
+            11 | 12 => &SWB_OFFSET_1024_8,
+            _ => &SWB_OFFSET_1024_48,
         }
     }
 
     /// 获取当前采样率对应的 SHORT 窗口 SFB 边界表
     fn swb_offset_short(&self) -> &'static [usize] {
-        match self.sample_rate {
-            48000 => &SWB_OFFSET_128_48000,
-            _ => &SWB_OFFSET_128_44100,
+        match self.sample_rate_index {
+            0..=2 => &SWB_OFFSET_128_96,
+            3..=5 => &SWB_OFFSET_128_48,
+            6 | 7 => &SWB_OFFSET_128_24,
+            8..=10 => &SWB_OFFSET_128_16,
+            11 | 12 => &SWB_OFFSET_128_8,
+            _ => &SWB_OFFSET_128_48,
         }
     }
 
@@ -229,6 +317,10 @@ impl AacDecoder {
     /// 解码一个原始 AAC 帧
     fn decode_raw_frame(&mut self, data: &[u8]) -> TaoResult<Vec<Vec<f32>>> {
         let channels = self.channels as usize;
+        if self.overlap.len() != channels {
+            self.overlap = vec![vec![0.0f32; 1024]; channels];
+            self.first_frame = true;
+        }
         if self.prev_window_shape.len() != channels {
             self.prev_window_shape.resize(channels, 0);
         }
@@ -295,7 +387,7 @@ impl AacDecoder {
 
     /// 解析原始数据块 (raw_data_block)
     fn parse_raw_data_block(
-        &self,
+        &mut self,
         data: &[u8],
         spectral: &mut [Vec<f32>],
         window_sequences: &mut [u32],
@@ -303,10 +395,6 @@ impl AacDecoder {
     ) -> TaoResult<()> {
         let mut br = BitReader::new(data);
         let mut ch_idx = 0usize;
-        let codebooks = self
-            .codebooks
-            .as_ref()
-            .ok_or_else(|| TaoError::InvalidData("AAC: 码本未初始化".into()))?;
 
         while br.bits_left() >= 3 {
             let id_syn_ele = br.read_bits(3)?;
@@ -318,6 +406,10 @@ impl AacDecoder {
                     // SCE: Single Channel Element
                     let _instance_tag = br.read_bits(4)?;
                     if ch_idx < spectral.len() {
+                        let codebooks = self
+                            .codebooks
+                            .as_ref()
+                            .ok_or_else(|| TaoError::InvalidData("AAC: 码本未初始化".into()))?;
                         let info =
                             self.parse_ics(&mut br, &mut spectral[ch_idx], codebooks, None, false)?;
                         if ch_idx < window_sequences.len() {
@@ -333,6 +425,10 @@ impl AacDecoder {
                     // CPE: Channel Pair Element
                     let _instance_tag = br.read_bits(4)?;
                     let common_window = br.read_bit()? != 0;
+                    let codebooks = self
+                        .codebooks
+                        .as_ref()
+                        .ok_or_else(|| TaoError::InvalidData("AAC: 码本未初始化".into()))?;
 
                     if common_window {
                         let info = self.parse_ics_info(&mut br)?;
@@ -454,6 +550,10 @@ impl AacDecoder {
                 }
                 2 => {
                     // CCE: Coupling Channel Element
+                    let codebooks = self
+                        .codebooks
+                        .as_ref()
+                        .ok_or_else(|| TaoError::InvalidData("AAC: 码本未初始化".into()))?;
                     if self.skip_cce(&mut br, codebooks).is_err() {
                         break;
                     }
@@ -462,6 +562,10 @@ impl AacDecoder {
                     // LFE: 和 SCE 结构相同
                     let _instance_tag = br.read_bits(4)?;
                     if ch_idx < spectral.len() {
+                        let codebooks = self
+                            .codebooks
+                            .as_ref()
+                            .ok_or_else(|| TaoError::InvalidData("AAC: 码本未初始化".into()))?;
                         let info =
                             self.parse_ics(&mut br, &mut spectral[ch_idx], codebooks, None, false)?;
                         if ch_idx < window_sequences.len() {
@@ -498,7 +602,9 @@ impl AacDecoder {
                     // FIL: Fill Element - 跳过
                     let mut count = br.read_bits(4)? as usize;
                     if count == 15 {
-                        count += br.read_bits(8)? as usize - 1;
+                        // 规范为 count += esc_count - 1, 对损坏码流 esc_count=0 做饱和保护, 避免 usize 下溢 panic.
+                        let esc_count = br.read_bits(8)? as usize;
+                        count += esc_count.saturating_sub(1);
                     }
                     for _ in 0..count {
                         br.read_bits(8)?;
@@ -515,10 +621,12 @@ impl AacDecoder {
     }
 
     /// 跳过 Program Config Element (PCE).
-    fn skip_pce(&self, br: &mut BitReader) -> TaoResult<()> {
+    fn skip_pce(&mut self, br: &mut BitReader) -> TaoResult<()> {
+        // PCE 出现表示当前流采用显式声道元素布局, 禁用默认声道重排.
+        self.use_default_channel_map = false;
         let _element_instance_tag = br.read_bits(4)?;
         let _object_type = br.read_bits(2)?;
-        let _sampling_frequency_index = br.read_bits(4)?;
+        let sampling_frequency_index = br.read_bits(4)? as usize;
         let num_front = br.read_bits(4)? as usize;
         let num_side = br.read_bits(4)? as usize;
         let num_back = br.read_bits(4)? as usize;
@@ -537,20 +645,25 @@ impl AacDecoder {
             let _pseudo_surround = br.read_bit()?;
         }
 
+        let mut pce_channels = 0u32;
         for _ in 0..num_front {
-            let _is_cpe = br.read_bit()?;
+            let is_cpe = br.read_bit()?;
             let _tag_select = br.read_bits(4)?;
+            pce_channels += if is_cpe != 0 { 2 } else { 1 };
         }
         for _ in 0..num_side {
-            let _is_cpe = br.read_bit()?;
+            let is_cpe = br.read_bit()?;
             let _tag_select = br.read_bits(4)?;
+            pce_channels += if is_cpe != 0 { 2 } else { 1 };
         }
         for _ in 0..num_back {
-            let _is_cpe = br.read_bit()?;
+            let is_cpe = br.read_bit()?;
             let _tag_select = br.read_bits(4)?;
+            pce_channels += if is_cpe != 0 { 2 } else { 1 };
         }
         for _ in 0..num_lfe {
             let _tag_select = br.read_bits(4)?;
+            pce_channels += 1;
         }
         for _ in 0..num_assoc_data {
             let _tag_select = br.read_bits(4)?;
@@ -565,6 +678,22 @@ impl AacDecoder {
         for _ in 0..comment_field_bytes {
             let _comment_byte = br.read_bits(8)?;
         }
+
+        if (1..=8).contains(&pce_channels) && pce_channels <= self.channels {
+            self.channels = pce_channels;
+            self.channel_layout = ChannelLayout::from_channels(pce_channels);
+            self.channel_config = match pce_channels {
+                1 => 1,
+                2 => 2,
+                3 => 3,
+                4 => 4,
+                5 => 5,
+                6 => 6,
+                8 => 7,
+                _ => self.channel_config,
+            };
+        }
+        let _ = sampling_frequency_index;
         Ok(())
     }
 
@@ -866,8 +995,27 @@ impl AacDecoder {
     }
 
     /// 跳过 ADTS 头, 返回原始帧数据与是否存在 ADTS 头标记.
-    fn strip_adts_header<'a>(&self, data: &'a [u8]) -> (&'a [u8], bool) {
+    fn strip_adts_header<'a>(&mut self, data: &'a [u8]) -> (&'a [u8], bool) {
         if data.len() >= 7 && data[0] == 0xFF && (data[1] & 0xF0) == 0xF0 {
+            let sampling_frequency_index = ((data[2] >> 2) & 0x0F) as usize;
+            let channel_config = ((data[2] & 0x01) << 2) | ((data[3] >> 6) & 0x03);
+            if sampling_frequency_index < AAC_SAMPLE_RATES.len() {
+                let sr = AAC_SAMPLE_RATES[sampling_frequency_index];
+                if sr > 0 {
+                    self.sample_rate = sr;
+                    self.sample_rate_index = sampling_frequency_index as u8;
+                }
+            }
+            if (1..=7).contains(&channel_config) {
+                let channels = Self::channels_from_config(channel_config);
+                if channels != self.channels {
+                    self.channels = channels;
+                    self.channel_layout = ChannelLayout::from_channels(channels);
+                    self.overlap = vec![vec![0.0f32; 1024]; channels as usize];
+                    self.first_frame = true;
+                }
+                self.channel_config = channel_config;
+            }
             let protection_absent = (data[1] & 0x01) != 0;
             let header_size = if protection_absent { 7 } else { 9 };
             if data.len() > header_size {
@@ -1090,12 +1238,11 @@ fn decode_spectral_data(
                     let mut energy = 0.0f32;
                     for i in 0..band_width {
                         let idx = win_base + i;
-                        if idx >= spectral.len() {
-                            continue;
+                        if idx < spectral.len() {
+                            let noise = lcg_random(random_state);
+                            spectral[idx] = noise;
+                            energy += noise * noise;
                         }
-                        let noise = lcg_random(random_state);
-                        spectral[idx] = noise;
-                        energy += noise * noise;
                     }
                     if energy > 0.0 {
                         let scale = target / energy.sqrt();
@@ -1576,13 +1723,24 @@ impl Decoder for AacDecoder {
         };
 
         let channels = self.channels as usize;
+        let channel_map = self.output_channel_map();
         let num_samples = 1024;
         let mut interleaved = vec![0u8; num_samples * channels * 4];
 
         for i in 0..num_samples {
             for ch in 0..channels {
-                let sample = if ch < pcm.len() {
-                    (pcm[ch][i] * AAC_OUTPUT_GAIN).clamp(-1.0, 1.0)
+                let src_ch = channel_map
+                    .and_then(|map| map.get(ch))
+                    .copied()
+                    .unwrap_or(ch);
+                let sample = if src_ch < pcm.len() {
+                    // F32 输出不做 [-1,1] 强制削顶, 仅对异常值做保护, 避免与参考实现产生系统性截断误差.
+                    let scaled = pcm[src_ch][i] * AAC_OUTPUT_GAIN;
+                    if scaled.is_finite() {
+                        scaled.clamp(-8.0, 8.0)
+                    } else {
+                        0.0
+                    }
                 } else {
                     0.0
                 };

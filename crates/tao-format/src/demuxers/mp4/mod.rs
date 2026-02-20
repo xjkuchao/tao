@@ -511,11 +511,63 @@ impl Demuxer for Mp4Demuxer {
     fn seek(
         &mut self,
         _io: &mut IoContext,
-        _stream_index: usize,
-        _timestamp: i64,
-        _flags: SeekFlags,
+        stream_index: usize,
+        timestamp: i64,
+        flags: SeekFlags,
     ) -> TaoResult<()> {
-        Err(TaoError::NotImplemented("MP4 seek 尚未实现".into()))
+        // 验证流索引
+        if stream_index >= self.streams.len() {
+            return Err(TaoError::InvalidData(format!(
+                "流索引超出范围: {}",
+                stream_index
+            )));
+        }
+
+        let st = &self.sample_tables[stream_index];
+
+        // 1. 根据时间戳找到对应的采样
+        let mut target_sample = st.timestamp_to_sample(timestamp);
+
+        // 2. 根据 flags 决定是否需要关键帧
+        if !flags.any {
+            // 如果不是 ANY 模式（即需要关键帧）
+            if flags.backward {
+                // BACKWARD: 查找目标采样处或之前的最近关键帧
+                target_sample = st.find_keyframe_at_or_before(target_sample);
+            } else {
+                // FORWARD: 查找目标采样处或之后的最近关键帧（简化为找当前或之前的）
+                target_sample = st.find_keyframe_at_or_before(target_sample);
+            }
+        }
+
+        // 3. 更新该流的当前采样索引
+        if target_sample < st.sample_count() {
+            self.current_sample[stream_index] = target_sample;
+
+            // 4. 其他流也跳转到相同或相近的时间位置（保持音视频同步）
+            let target_pts = st.sample_pts(target_sample);
+            for (other_idx, other_st) in self.sample_tables.iter().enumerate() {
+                if other_idx == stream_index {
+                    continue;
+                }
+                // 找到其他流中最接近该时间的采样
+                let other_sample = other_st.timestamp_to_sample(target_pts);
+                let keyframe_sample = if !flags.any {
+                    other_st.find_keyframe_at_or_before(other_sample)
+                } else {
+                    other_sample
+                };
+                self.current_sample[other_idx] = keyframe_sample;
+            }
+
+            Ok(())
+        } else {
+            Err(TaoError::InvalidData(format!(
+                "采样索引超出范围: target={}, total={}",
+                target_sample,
+                st.sample_count()
+            )))
+        }
     }
 
     fn duration(&self) -> Option<f64> {

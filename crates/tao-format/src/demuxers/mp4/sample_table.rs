@@ -180,6 +180,56 @@ impl SampleTable {
         self.sync_samples.binary_search(&sample_num).is_ok()
     }
 
+    /// 根据时间戳（以时间刻度为单位）找到对应的采样索引
+    /// 返回: 最接近的采样索引（可能小于或等于给定时间戳）
+    pub fn timestamp_to_sample(&self, timestamp: i64) -> u32 {
+        let mut sample_idx = 0u32;
+        let mut accum_time = 0i64;
+
+        for entry in &self.stts_entries {
+            let entry_duration = i64::from(entry.count) * i64::from(entry.delta);
+            if accum_time + entry_duration >= timestamp {
+                // 时间戳落在这个条目内
+                let offset = (timestamp - accum_time) / i64::from(entry.delta);
+                sample_idx += offset as u32;
+                break;
+            }
+            accum_time += entry_duration;
+            sample_idx += entry.count;
+        }
+
+        // 确保不超过总采样数
+        sample_idx.min(self.sample_count().saturating_sub(1))
+    }
+
+    /// 找到给定采样处或之前的最近关键帧
+    /// 返回: 关键帧的采样索引
+    pub fn find_keyframe_at_or_before(&self, sample_idx: u32) -> u32 {
+        if !self.has_stss || self.sync_samples.is_empty() {
+            // 无关键帧表，返回 sample_idx（所有采样都是关键帧）
+            return sample_idx;
+        }
+
+        // stss 使用 1-based 索引，查找小于等于 (sample_idx + 1) 的最大值
+        let sample_num = sample_idx + 1;
+        match self.sync_samples.binary_search(&sample_num) {
+            Ok(idx) => {
+                // 精确匹配
+                self.sync_samples[idx] - 1
+            }
+            Err(idx) => {
+                // 未精确匹配，idx 是第一个大于 sample_num 的位置
+                if idx > 0 {
+                    // 返回前一个关键帧
+                    self.sync_samples[idx - 1] - 1
+                } else {
+                    // 没有更早的关键帧，返回第一个采样
+                    0
+                }
+            }
+        }
+    }
+
     // === 解析方法 ===
 
     /// 解析 stsd (Sample Description Box)
