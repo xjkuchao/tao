@@ -47,6 +47,7 @@ Throughout the repository, we have preserved comprehensive working plans, debugg
 
 - [Quick Start Guide](docs/quick_start.md)
 - [API Documentation](docs/api_docs.md)
+- [AI Tooling Lessons Learned](LESSONS_LEARNED.md)
 
 ## Contributing
 

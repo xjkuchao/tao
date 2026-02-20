@@ -1,7 +1,5 @@
 # AGENTS.md
 
-> 注意：在此文件做出的关键规则更新，请提炼后同步至 CLAUDE.md
-
 本文件是 Tao 项目的统一 AI 开发规范, 适用于 VSCode, Cursor, Windsurf, Claude Code, Codex 等所有工具。
 目标是在不依赖工具特定机制的前提下, 提供一致、可执行、可审计的开发规则。
 
@@ -74,7 +72,7 @@ tao/
 允许的根目录文件类型:
 
 - 项目配置: `Cargo.toml`, `.rustfmt.toml`, `.gitignore`
-- 核心文档: `README.md`, `AGENTS.md`, `CLAUDE.md`
+- 核心文档: `README.md`, `README_CN.md`, `AGENTS.md`, `经验心得.md`, `LESSONS_LEARNED.md`
 - 许可证: `LICENSE*`
 
 文件放置要求:
