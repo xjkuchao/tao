@@ -1750,6 +1750,25 @@ fn test_decode_cavlc_slice_data_b_non_skip_l0_only() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_b_non_skip_l0_only_ref_idx() {
+    let mut dec = build_test_decoder();
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_custom_reference(&mut dec, 1, 2, 20, None);
+    push_custom_reference(&mut dec, 2, 1, 99, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+    header.num_ref_idx_l0 = 2;
+
+    // mb_skip_run=0, mb_type=1(B_L0_16x16), ref_idx_l0=1
+    let rbsp = build_rbsp_from_ues(&[0, 1, 1]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+    assert_eq!(dec.ref_y[0], 99, "B_L0_16x16 应按 ref_idx_l0 选择参考帧");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_b_non_skip_l1_only() {
     let mut dec = build_test_decoder();
     dec.last_slice_type = 1;
@@ -1765,6 +1784,25 @@ fn test_decode_cavlc_slice_data_b_non_skip_l1_only() {
     let rbsp = build_rbsp_from_ues(&[0, 2]);
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(dec.ref_y[0], 100, "B_L1_16x16 应仅使用 list1 预测");
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_b_non_skip_l1_only_ref_idx() {
+    let mut dec = build_test_decoder();
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_custom_reference(&mut dec, 1, 2, 20, None);
+    push_custom_reference(&mut dec, 2, 1, 99, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+    header.num_ref_idx_l1 = 2;
+
+    // mb_skip_run=0, mb_type=2(B_L1_16x16), ref_idx_l1=1
+    let rbsp = build_rbsp_from_ues(&[0, 2, 1]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+    assert_eq!(dec.ref_y[0], 99, "B_L1_16x16 应按 ref_idx_l1 选择参考帧");
 }
 
 #[test]

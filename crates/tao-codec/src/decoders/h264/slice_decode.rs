@@ -917,15 +917,23 @@ impl H264Decoder {
                 if is_inter {
                     self.mb_types[mb_idx] = 254;
                     self.mb_cbp[mb_idx] = 0;
+                    let mut l0_ref_idx = 0usize;
+                    let mut l1_ref_idx = 0usize;
+                    if mb_type == 1 && header.num_ref_idx_l0 > 1 {
+                        l0_ref_idx = read_ue(&mut br).unwrap_or(0) as usize;
+                    }
+                    if mb_type == 2 && header.num_ref_idx_l1 > 1 {
+                        l1_ref_idx = read_ue(&mut br).unwrap_or(0) as usize;
+                    }
                     let mut l0_motion = Some(BMotion {
                         mv_x: 0,
                         mv_y: 0,
-                        ref_idx: 0,
+                        ref_idx: l0_ref_idx.min(i8::MAX as usize) as i8,
                     });
                     let mut l1_motion = Some(BMotion {
                         mv_x: 0,
                         mv_y: 0,
-                        ref_idx: 0,
+                        ref_idx: l1_ref_idx.min(i8::MAX as usize) as i8,
                     });
                     if mb_type == 1 {
                         l1_motion = None;
