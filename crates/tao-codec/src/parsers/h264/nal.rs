@@ -434,6 +434,13 @@ pub fn build_avcc_config(
                 u16::MAX
             )));
         }
+        let nalu = NalUnit::parse(sps)?;
+        if nalu.nal_type != NalUnitType::Sps {
+            return Err(tao_core::TaoError::InvalidData(format!(
+                "H.264: SPS NAL 类型非法, index={}, nal_type={}",
+                idx, nalu.nal_type
+            )));
+        }
     }
     for (idx, pps) in pps_list.iter().enumerate() {
         if pps.is_empty() {
@@ -448,6 +455,13 @@ pub fn build_avcc_config(
                 idx,
                 pps.len(),
                 u16::MAX
+            )));
+        }
+        let nalu = NalUnit::parse(pps)?;
+        if nalu.nal_type != NalUnitType::Pps {
+            return Err(tao_core::TaoError::InvalidData(format!(
+                "H.264: PPS NAL 类型非法, index={}, nal_type={}",
+                idx, nalu.nal_type
             )));
         }
     }
@@ -816,6 +830,31 @@ mod tests {
         assert!(
             msg.contains("PPS 数据为空"),
             "错误信息应包含 PPS 数据为空, actual={}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_build_avcc_config_reject_invalid_sps_nal_type() {
+        let fake_sps = vec![0x68, 0xCE, 0x38, 0x80]; // 实际是 PPS NAL
+        let err = build_avcc_config(&[fake_sps], &[], 4).expect_err("SPS 类型错误应失败");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("SPS NAL 类型非法"),
+            "错误信息应包含 SPS NAL 类型非法, actual={}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_build_avcc_config_reject_invalid_pps_nal_type() {
+        let sps = vec![0x67, 0x42, 0x00, 0x1E];
+        let fake_pps = vec![0x67, 0x64, 0x00, 0x1E]; // 实际是 SPS NAL
+        let err = build_avcc_config(&[sps], &[fake_pps], 4).expect_err("PPS 类型错误应失败");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("PPS NAL 类型非法"),
+            "错误信息应包含 PPS NAL 类型非法, actual={}",
             msg
         );
     }

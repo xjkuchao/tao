@@ -101,6 +101,7 @@
     - [x] `parse_avcc_config` 增加 `configurationVersion==1` 合法性校验, 并补齐非法版本失败单测。
     - [x] `split_avcc` 补齐 `length_size` 边界保护(`1..=4`), 避免 `length_size=0` 的死循环风险, 并补齐非法长度单测。
     - [x] `build_avcc_config` 补齐合法性校验(`length_size` 范围、`SPS<=31/PPS<=255` 计数边界、`SPS/PPS` 非空与 `u16` 长度上限), 并补齐失败路径单测。
+    - [x] `build_avcc_config` 增加 `SPS/PPS` NAL 类型校验(`SPS=7/PPS=8`), 并补齐错误类型失败单测。
 - [ ] 参数集变更时上下文重建。
     - [x] 新增 `PPS` 变更重建分级策略(`None/RuntimeOnly/Full`)并接入 `activate_parameter_sets`。
     - [x] 覆盖 `PPS` 关键字段变更单元测试(熵编码/SPS绑定触发 Full, QP/加权预测触发 RuntimeOnly)。
