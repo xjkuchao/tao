@@ -158,6 +158,7 @@ fn apply_adaptive_deblock_plane(
     if width < 3 || height < 3 || stride == 0 || boundary_step == 0 {
         return;
     }
+    let strong_luma = boundary_step == 4;
 
     // 垂直边界
     let mut x = boundary_step;
@@ -168,12 +169,35 @@ fn apply_adaptive_deblock_plane(
                 let p0 = y * stride + (x - 1);
                 let q0 = y * stride + x;
                 let q1 = y * stride + (x + 1);
+                let p2 = if x >= 3 {
+                    Some(y * stride + (x - 3))
+                } else {
+                    None
+                };
+                let q2 = if x + 2 < width {
+                    Some(y * stride + (x + 2))
+                } else {
+                    None
+                };
                 if p1 >= plane.len() || p0 >= plane.len() || q0 >= plane.len() || q1 >= plane.len()
                 {
                     continue;
                 }
                 let bs = boundary_strength_vertical(x, y, mb_step, mb_ctx);
-                filter_edge_with_bs(plane, p1, p0, q0, q1, alpha_idx, alpha, beta, bs);
+                filter_edge_with_bs(
+                    plane,
+                    p2,
+                    p1,
+                    p0,
+                    q0,
+                    q1,
+                    q2,
+                    alpha_idx,
+                    alpha,
+                    beta,
+                    bs,
+                    strong_luma,
+                );
             }
         }
         x += boundary_step;
@@ -188,12 +212,35 @@ fn apply_adaptive_deblock_plane(
                 let p0 = (y - 1) * stride + x;
                 let q0 = y * stride + x;
                 let q1 = (y + 1) * stride + x;
+                let p2 = if y >= 3 {
+                    Some((y - 3) * stride + x)
+                } else {
+                    None
+                };
+                let q2 = if y + 2 < height {
+                    Some((y + 2) * stride + x)
+                } else {
+                    None
+                };
                 if p1 >= plane.len() || p0 >= plane.len() || q0 >= plane.len() || q1 >= plane.len()
                 {
                     continue;
                 }
                 let bs = boundary_strength_horizontal(x, y, mb_step, mb_ctx);
-                filter_edge_with_bs(plane, p1, p0, q0, q1, alpha_idx, alpha, beta, bs);
+                filter_edge_with_bs(
+                    plane,
+                    p2,
+                    p1,
+                    p0,
+                    q0,
+                    q1,
+                    q2,
+                    alpha_idx,
+                    alpha,
+                    beta,
+                    bs,
+                    strong_luma,
+                );
             }
         }
         y += boundary_step;
@@ -203,14 +250,17 @@ fn apply_adaptive_deblock_plane(
 #[allow(clippy::too_many_arguments)]
 fn filter_edge_with_bs(
     plane: &mut [u8],
+    p2_idx: Option<usize>,
     p1_idx: usize,
     p0_idx: usize,
     q0_idx: usize,
     q1_idx: usize,
+    q2_idx: Option<usize>,
     alpha_idx: usize,
     alpha: u8,
     beta: u8,
     bs: u8,
+    strong_luma: bool,
 ) {
     if bs == 0 {
         return;
@@ -227,13 +277,47 @@ fn filter_edge_with_bs(
         return;
     }
 
-    let tc = if bs >= 4 {
-        (i32::from(alpha) / 4 + 4).max(2)
-    } else {
-        let tc0 = i32::from(tc0_threshold(alpha_idx, bs));
-        if tc0 == 0 {
+    if bs >= 4 {
+        if strong_luma {
+            let alpha_half = (i32::from(alpha) >> 2) + 2;
+            if (p0 - q0).abs() < alpha_half {
+                let mut new_p0 = ((2 * p1 + p0 + q1 + 2) >> 2).clamp(0, 255);
+                let mut new_q0 = ((2 * q1 + q0 + p1 + 2) >> 2).clamp(0, 255);
+                if let Some(p2_idx) = p2_idx {
+                    let p2 = i32::from(plane[p2_idx]);
+                    if (p2 - p0).abs() < i32::from(beta) {
+                        new_p0 = ((p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3).clamp(0, 255);
+                        let new_p1 = ((p2 + p1 + p0 + q0 + 2) >> 2).clamp(0, 255);
+                        plane[p1_idx] = new_p1 as u8;
+                    }
+                }
+                if let Some(q2_idx) = q2_idx {
+                    let q2 = i32::from(plane[q2_idx]);
+                    if (q2 - q0).abs() < i32::from(beta) {
+                        new_q0 = ((q2 + 2 * q1 + 2 * q0 + 2 * p0 + p1 + 4) >> 3).clamp(0, 255);
+                        let new_q1 = ((q2 + q1 + q0 + p0 + 2) >> 2).clamp(0, 255);
+                        plane[q1_idx] = new_q1 as u8;
+                    }
+                }
+                plane[p0_idx] = new_p0 as u8;
+                plane[q0_idx] = new_q0 as u8;
+                return;
+            }
+        } else {
+            // 色度强滤波仅更新 p0/q0, 保持 2 像素语义.
+            let new_p0 = ((2 * p1 + p0 + q1 + 2) >> 2).clamp(0, 255);
+            let new_q0 = ((2 * q1 + q0 + p1 + 2) >> 2).clamp(0, 255);
+            plane[p0_idx] = new_p0 as u8;
+            plane[q0_idx] = new_q0 as u8;
             return;
         }
+    }
+
+    let tc0 = i32::from(tc0_threshold(alpha_idx, bs.min(3)));
+    if tc0 == 0 {
+        return;
+    }
+    let tc =
         tc0 + if (p1 - p0).abs() < i32::from(beta) {
             1
         } else {
@@ -242,20 +326,12 @@ fn filter_edge_with_bs(
             1
         } else {
             0
-        }
-    };
+        };
     let mut delta = ((q0 - p0) * 4 + (p1 - q1) + 4) >> 3;
     delta = delta.clamp(-tc, tc);
 
     plane[p0_idx] = (p0 + delta).clamp(0, 255) as u8;
     plane[q0_idx] = (q0 - delta).clamp(0, 255) as u8;
-
-    if bs >= 4 {
-        let p1_delta = (delta / 2).clamp(-tc, tc);
-        let q1_delta = (delta / 2).clamp(-tc, tc);
-        plane[p1_idx] = (p1 + p1_delta).clamp(0, 255) as u8;
-        plane[q1_idx] = (q1 - q1_delta).clamp(0, 255) as u8;
-    }
 }
 
 fn alpha_index(slice_qp: i32, alpha_offset_div2: i32) -> usize {
@@ -1097,12 +1173,45 @@ mod tests {
         let mut weak = vec![40u8, 40, 48, 48];
         let mut strong = weak.clone();
 
-        filter_edge_with_bs(&mut weak, 0, 1, 2, 3, 26, 15, 4, 1);
-        filter_edge_with_bs(&mut strong, 0, 1, 2, 3, 26, 15, 4, 3);
+        filter_edge_with_bs(&mut weak, None, 0, 1, 2, 3, None, 26, 15, 4, 1, true);
+        filter_edge_with_bs(&mut strong, None, 0, 1, 2, 3, None, 26, 15, 4, 3, true);
 
         assert_eq!(weak[1], 40, "弱滤波在 tc0=0 时应保持原样");
         assert_eq!(weak[2], 48, "弱滤波在 tc0=0 时应保持原样");
         assert!(strong[1] > weak[1], "更高 bs 应带来更强的左侧平滑");
         assert!(strong[2] < weak[2], "更高 bs 应带来更强的右侧平滑");
+    }
+
+    #[test]
+    fn test_filter_edge_with_bs_strong_luma_uses_p2_q2_and_updates_four_pixels() {
+        let mut plane = vec![40u8, 40, 45, 47, 48, 48];
+        filter_edge_with_bs(
+            &mut plane,
+            Some(0),
+            1,
+            2,
+            3,
+            4,
+            Some(5),
+            30,
+            20,
+            10,
+            4,
+            true,
+        );
+        assert!(plane[1] != 40, "亮度强滤波应更新 p1");
+        assert!(plane[2] != 45, "亮度强滤波应更新 p0");
+        assert!(plane[3] != 47, "亮度强滤波应更新 q0");
+        assert!(plane[4] != 48, "亮度强滤波应更新 q1");
+    }
+
+    #[test]
+    fn test_filter_edge_with_bs_strong_chroma_updates_only_two_pixels() {
+        let mut plane = vec![40u8, 40, 48, 48];
+        filter_edge_with_bs(&mut plane, None, 0, 1, 2, 3, None, 30, 20, 10, 4, false);
+        assert_eq!(plane[0], 40, "色度强滤波不应更新 p1");
+        assert!(plane[1] != 40, "色度强滤波应更新 p0");
+        assert!(plane[2] != 48, "色度强滤波应更新 q0");
+        assert_eq!(plane[3], 48, "色度强滤波不应更新 q1");
     }
 }
