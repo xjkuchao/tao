@@ -381,10 +381,30 @@ pub fn build_avcc_config(
     pps_list: &[Vec<u8>],
     length_size: usize,
 ) -> TaoResult<Vec<u8>> {
+    if !(1..=4).contains(&length_size) {
+        return Err(tao_core::TaoError::InvalidData(format!(
+            "H.264: length_size 非法, value={}, 期望范围为 1..=4",
+            length_size
+        )));
+    }
+
     if sps_list.is_empty() {
         return Err(tao_core::TaoError::InvalidData(
             "H.264: 构建 avcC 需要至少一个 SPS".into(),
         ));
+    }
+    if sps_list.len() > 31 {
+        return Err(tao_core::TaoError::InvalidData(format!(
+            "H.264: SPS 数量超出范围, count={}, max=31",
+            sps_list.len()
+        )));
+    }
+    if pps_list.len() > u8::MAX as usize {
+        return Err(tao_core::TaoError::InvalidData(format!(
+            "H.264: PPS 数量超出范围, count={}, max={}",
+            pps_list.len(),
+            u8::MAX
+        )));
     }
 
     let sps0 = &sps_list[0];
@@ -392,6 +412,38 @@ pub fn build_avcc_config(
         return Err(tao_core::TaoError::InvalidData(
             "H.264: SPS 数据太短".into(),
         ));
+    }
+    for (idx, sps) in sps_list.iter().enumerate() {
+        if sps.is_empty() {
+            return Err(tao_core::TaoError::InvalidData(format!(
+                "H.264: SPS 数据为空, index={}",
+                idx
+            )));
+        }
+        if sps.len() > u16::MAX as usize {
+            return Err(tao_core::TaoError::InvalidData(format!(
+                "H.264: SPS 数据过长, index={}, len={}, max={}",
+                idx,
+                sps.len(),
+                u16::MAX
+            )));
+        }
+    }
+    for (idx, pps) in pps_list.iter().enumerate() {
+        if pps.is_empty() {
+            return Err(tao_core::TaoError::InvalidData(format!(
+                "H.264: PPS 数据为空, index={}",
+                idx
+            )));
+        }
+        if pps.len() > u16::MAX as usize {
+            return Err(tao_core::TaoError::InvalidData(format!(
+                "H.264: PPS 数据过长, index={}, len={}, max={}",
+                idx,
+                pps.len(),
+                u16::MAX
+            )));
+        }
     }
 
     let mut out = vec![
@@ -709,6 +761,45 @@ mod tests {
     #[test]
     fn test_avcc_config_no_sps_error() {
         assert!(build_avcc_config(&[], &[], 4).is_err());
+    }
+
+    #[test]
+    fn test_build_avcc_config_reject_invalid_length_size() {
+        let sps = vec![0x67, 0x42, 0x00, 0x1E];
+        let err = build_avcc_config(&[sps], &[], 0).expect_err("length_size=0 应失败");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("length_size"),
+            "错误信息应包含 length_size, actual={}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_build_avcc_config_reject_too_many_sps() {
+        let sps = vec![0x67, 0x42, 0x00, 0x1E];
+        let sps_list = vec![sps; 32];
+        let err = build_avcc_config(&sps_list, &[], 4).expect_err("SPS 数量超过 31 应失败");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("SPS 数量"),
+            "错误信息应包含 SPS 数量, actual={}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_build_avcc_config_reject_too_many_pps() {
+        let sps = vec![0x67, 0x42, 0x00, 0x1E];
+        let pps = vec![0x68, 0xCE, 0x38, 0x80];
+        let pps_list = vec![pps; 256];
+        let err = build_avcc_config(&[sps], &pps_list, 4).expect_err("PPS 数量超过 255 应失败");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("PPS 数量"),
+            "错误信息应包含 PPS 数量, actual={}",
+            msg
+        );
     }
 
     #[test]

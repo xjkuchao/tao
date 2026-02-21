@@ -99,6 +99,7 @@
     - [x] `avcC` 配置入口新增早期失败保护: 若配置内全部 `SPS` 均不受支持则直接报错, 并补齐通过/失败两条配置路径单测。
     - [x] `parse_avcc_config` 补齐截断/缺字段边界校验(`SPS/PPS` 长度字段、负载截断、缺失 `numOfPictureParameterSets`), 由静默跳过改为显式 `InvalidData` 并补齐单测。
     - [x] `split_avcc` 补齐 `length_size` 边界保护(`1..=4`), 避免 `length_size=0` 的死循环风险, 并补齐非法长度单测。
+    - [x] `build_avcc_config` 补齐合法性校验(`length_size` 范围、`SPS<=31/PPS<=255` 计数边界、`SPS/PPS` 非空与 `u16` 长度上限), 并补齐失败路径单测。
 - [ ] 参数集变更时上下文重建。
     - [x] 新增 `PPS` 变更重建分级策略(`None/RuntimeOnly/Full`)并接入 `activate_parameter_sets`。
     - [x] 覆盖 `PPS` 关键字段变更单元测试(熵编码/SPS绑定触发 Full, QP/加权预测触发 RuntimeOnly)。
