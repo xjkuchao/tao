@@ -1,0 +1,888 @@
+//! CAVLC 宏块级语法与残差解码.
+//!
+//! 提供 coded_block_pattern 映射表、nC 上下文计算、
+//! 以及 CAVLC 亮度/色度残差的 MB 级解码接口.
+
+use super::*;
+
+// ============================================================
+// coded_block_pattern 映射表 (H.264 Table 9-4)
+// ============================================================
+
+/// Intra 宏块 CBP 映射: code_num → CBP
+const GOLOMB_TO_INTRA_CBP: [u8; 48] = [
+    47, 31, 15, 0, 23, 27, 29, 30, 7, 11, 13, 14, 39, 43, 45, 46, 16, 3, 5, 10, 12, 19, 21, 26, 28,
+    35, 37, 42, 44, 1, 2, 4, 8, 17, 18, 20, 24, 6, 9, 22, 25, 32, 33, 34, 36, 40, 38, 41,
+];
+
+/// Inter 宏块 CBP 映射: code_num → CBP
+const GOLOMB_TO_INTER_CBP: [u8; 48] = [
+    0, 16, 1, 2, 4, 8, 32, 3, 5, 10, 12, 15, 47, 7, 11, 13, 14, 6, 9, 31, 35, 37, 42, 44, 33, 34,
+    36, 40, 39, 43, 45, 46, 17, 18, 20, 24, 19, 21, 26, 28, 23, 27, 29, 30, 22, 25, 38, 41,
+];
+
+/// I_16x16 宏块按 8x8 分组遍历 4x4 子块的顺序 (对齐 FFmpeg scan8).
+const I4X4_SCAN_ORDER: [(usize, usize); 16] = [
+    (0, 0),
+    (1, 0),
+    (0, 1),
+    (1, 1),
+    (2, 0),
+    (3, 0),
+    (2, 1),
+    (3, 1),
+    (0, 2),
+    (1, 2),
+    (0, 3),
+    (1, 3),
+    (2, 2),
+    (3, 2),
+    (2, 3),
+    (3, 3),
+];
+
+// ============================================================
+// nC 上下文计算
+// ============================================================
+
+impl H264Decoder {
+    /// 获取 luma 4x4 块的非零系数计数.
+    pub(super) fn get_nz_count_luma(&self, x4: usize, y4: usize) -> u8 {
+        self.cbf_index(x4, y4)
+            .and_then(|idx| self.nz_count_luma.get(idx).copied())
+            .unwrap_or(0)
+    }
+
+    /// 设置 luma 4x4 块的非零系数计数.
+    pub(super) fn set_nz_count_luma(&mut self, x4: usize, y4: usize, count: u8) {
+        if let Some(idx) = self.cbf_index(x4, y4)
+            && let Some(slot) = self.nz_count_luma.get_mut(idx)
+        {
+            *slot = count;
+        }
+    }
+
+    /// 获取 chroma U 4x4 块的非零系数计数.
+    pub(super) fn get_nz_count_chroma_u(&self, x2: usize, y2: usize) -> u8 {
+        self.chroma_cbf_index(x2, y2)
+            .and_then(|idx| self.nz_count_chroma_u.get(idx).copied())
+            .unwrap_or(0)
+    }
+
+    /// 设置 chroma U 4x4 块的非零系数计数.
+    pub(super) fn set_nz_count_chroma_u(&mut self, x2: usize, y2: usize, count: u8) {
+        if let Some(idx) = self.chroma_cbf_index(x2, y2)
+            && let Some(slot) = self.nz_count_chroma_u.get_mut(idx)
+        {
+            *slot = count;
+        }
+    }
+
+    /// 获取 chroma V 4x4 块的非零系数计数.
+    pub(super) fn get_nz_count_chroma_v(&self, x2: usize, y2: usize) -> u8 {
+        self.chroma_cbf_index(x2, y2)
+            .and_then(|idx| self.nz_count_chroma_v.get(idx).copied())
+            .unwrap_or(0)
+    }
+
+    /// 设置 chroma V 4x4 块的非零系数计数.
+    pub(super) fn set_nz_count_chroma_v(&mut self, x2: usize, y2: usize, count: u8) {
+        if let Some(idx) = self.chroma_cbf_index(x2, y2)
+            && let Some(slot) = self.nz_count_chroma_v.get_mut(idx)
+        {
+            *slot = count;
+        }
+    }
+
+    /// 计算 luma 4x4 块的 nC 上下文.
+    ///
+    /// nC = (nA + nB + 1) >> 1, 其中 nA=左邻块, nB=上邻块.
+    /// 仅一方可用时直接取该方, 均不可用时返回 0.
+    pub(super) fn calc_luma_nc(&self, x4: usize, y4: usize) -> i32 {
+        let has_left = x4 > 0;
+        let has_top = y4 > 0;
+        match (has_left, has_top) {
+            (true, true) => {
+                let na = self.get_nz_count_luma(x4 - 1, y4) as i32;
+                let nb = self.get_nz_count_luma(x4, y4 - 1) as i32;
+                (na + nb + 1) >> 1
+            }
+            (true, false) => self.get_nz_count_luma(x4 - 1, y4) as i32,
+            (false, true) => self.get_nz_count_luma(x4, y4 - 1) as i32,
+            (false, false) => 0,
+        }
+    }
+
+    /// 计算 chroma U 4x4 块的 nC 上下文.
+    pub(super) fn calc_chroma_u_nc(&self, x2: usize, y2: usize) -> i32 {
+        let has_left = x2 > 0;
+        let has_top = y2 > 0;
+        match (has_left, has_top) {
+            (true, true) => {
+                let na = self.get_nz_count_chroma_u(x2 - 1, y2) as i32;
+                let nb = self.get_nz_count_chroma_u(x2, y2 - 1) as i32;
+                (na + nb + 1) >> 1
+            }
+            (true, false) => self.get_nz_count_chroma_u(x2 - 1, y2) as i32,
+            (false, true) => self.get_nz_count_chroma_u(x2, y2 - 1) as i32,
+            (false, false) => 0,
+        }
+    }
+
+    /// 计算 chroma V 4x4 块的 nC 上下文.
+    pub(super) fn calc_chroma_v_nc(&self, x2: usize, y2: usize) -> i32 {
+        let has_left = x2 > 0;
+        let has_top = y2 > 0;
+        match (has_left, has_top) {
+            (true, true) => {
+                let na = self.get_nz_count_chroma_v(x2 - 1, y2) as i32;
+                let nb = self.get_nz_count_chroma_v(x2, y2 - 1) as i32;
+                (na + nb + 1) >> 1
+            }
+            (true, false) => self.get_nz_count_chroma_v(x2 - 1, y2) as i32,
+            (false, true) => self.get_nz_count_chroma_v(x2, y2 - 1) as i32,
+            (false, false) => 0,
+        }
+    }
+
+    // ============================================================
+    // CAVLC CBP 解码
+    // ============================================================
+
+    /// 解码 coded_block_pattern (me(v) 映射).
+    ///
+    /// 返回 (luma_cbp, chroma_cbp), luma_cbp 为 4 位 (每位对应一个 8x8 块),
+    /// chroma_cbp 为 0/1/2.
+    pub(super) fn decode_cavlc_cbp(br: &mut BitReader, is_intra: bool) -> (u8, u8) {
+        let code_num = read_ue(br).unwrap_or(0) as usize;
+        let table = if is_intra {
+            &GOLOMB_TO_INTRA_CBP
+        } else {
+            &GOLOMB_TO_INTER_CBP
+        };
+        let cbp = if code_num < table.len() {
+            table[code_num]
+        } else {
+            0u8
+        };
+        let luma_cbp = cbp & 0x0f;
+        let chroma_cbp = (cbp >> 4) & 0x03;
+        (luma_cbp, chroma_cbp)
+    }
+
+    // ============================================================
+    // I_4x4 / I_8x8 预测模式 (CAVLC 语法)
+    // ============================================================
+
+    /// CAVLC 解码 I_4x4 预测模式 (16 个 4x4 块).
+    ///
+    /// 每个 4x4 块: prev_intra4x4_pred_mode_flag(1bit),
+    /// 若为 0 则 rem_intra4x4_pred_mode(3bits).
+    pub(super) fn decode_cavlc_i4x4_pred_modes(
+        &self,
+        br: &mut BitReader,
+        mb_x: usize,
+        mb_y: usize,
+    ) -> [u8; 16] {
+        let mut modes = [2u8; 16];
+        for &(sub_x, sub_y) in &I4X4_SCAN_ORDER {
+            let x4 = mb_x * 4 + sub_x;
+            let y4 = mb_y * 4 + sub_y;
+            let pred_a = if x4 > 0 {
+                self.get_i4x4_mode(x4 - 1, y4)
+            } else {
+                2
+            };
+            let pred_b = if y4 > 0 {
+                self.get_i4x4_mode(x4, y4 - 1)
+            } else {
+                2
+            };
+            let mpm = pred_a.min(pred_b);
+
+            let prev_flag = br.read_bit().unwrap_or(0);
+            let mode = if prev_flag == 1 {
+                mpm
+            } else {
+                let rem = br.read_bits(3).unwrap_or(0) as u8;
+                if rem < mpm { rem } else { rem + 1 }
+            };
+            modes[sub_y * 4 + sub_x] = mode;
+            // 同步到全局缓存, 供后续块引用
+            self.set_i4x4_mode_unchecked(x4, y4, mode);
+        }
+        modes
+    }
+
+    /// 无 &mut self 借用冲突的 set_i4x4_mode (通过裸指针绕过).
+    ///
+    /// # Safety
+    /// 仅在 decode_cavlc_i4x4_pred_modes 中使用, 调用方已确保 x4/y4 在有效范围内.
+    fn set_i4x4_mode_unchecked(&self, x4: usize, y4: usize, mode: u8) {
+        let stride = self.mb_width * 4;
+        if stride == 0 || y4 >= self.mb_height * 4 || x4 >= stride {
+            return;
+        }
+        let idx = y4 * stride + x4;
+        if idx < self.i4x4_modes.len() {
+            // SAFETY: 单线程上下文, 且 decode_cavlc_i4x4_pred_modes 不持有 i4x4_modes 的其他引用.
+            unsafe {
+                let ptr = self.i4x4_modes.as_ptr() as *mut u8;
+                *ptr.add(idx) = mode;
+            }
+        }
+    }
+
+    // ============================================================
+    // CAVLC MB 级残差解码
+    // ============================================================
+
+    /// CAVLC 解码 I_4x4 宏块的完整 luma 残差.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn decode_cavlc_i4x4_luma_residual(
+        &mut self,
+        br: &mut BitReader,
+        luma_cbp: u8,
+        mb_x: usize,
+        mb_y: usize,
+        qp: i32,
+        pred_modes: &[u8; 16],
+    ) {
+        let luma_scaling_4x4 = self.active_luma_scaling_list_4x4(true);
+        let transform_bypass = self.is_transform_bypass_active(qp);
+        for sub_y in 0..4 {
+            for sub_x in 0..4 {
+                self.set_luma_cbf(mb_x * 4 + sub_x, mb_y * 4 + sub_y, false);
+                self.set_nz_count_luma(mb_x * 4 + sub_x, mb_y * 4 + sub_y, 0);
+            }
+        }
+
+        for i8x8 in 0..4u8 {
+            let x8x8 = (i8x8 & 1) as usize;
+            let y8x8 = (i8x8 >> 1) as usize;
+            let has_residual_8x8 = luma_cbp & (1 << i8x8) != 0;
+            let mut coded_8x8 = false;
+
+            for i_sub in 0..4 {
+                let sub_x = i_sub & 1;
+                let sub_y = i_sub >> 1;
+                let abs_sub_x = x8x8 * 2 + sub_x;
+                let abs_sub_y = y8x8 * 2 + sub_y;
+
+                let px = mb_x * 16 + abs_sub_x * 4;
+                let py = mb_y * 16 + abs_sub_y * 4;
+                let x4 = mb_x * 4 + abs_sub_x;
+                let y4 = mb_y * 4 + abs_sub_y;
+
+                let mode = pred_modes[abs_sub_y * 4 + abs_sub_x];
+                intra::predict_4x4(&mut self.ref_y, self.stride_y, px, py, mode);
+
+                if !has_residual_8x8 {
+                    self.set_luma_cbf(x4, y4, false);
+                    self.set_nz_count_luma(x4, y4, 0);
+                    continue;
+                }
+
+                let nc = self.calc_luma_nc(x4, y4);
+                let mut coeffs = [0i32; 16];
+                let tc = cavlc::decode_cavlc_residual_block(br, nc, 16, &mut coeffs).unwrap_or(0);
+                self.set_nz_count_luma(x4, y4, tc);
+                let coded = tc > 0;
+                self.set_luma_cbf(x4, y4, coded);
+                if coded {
+                    coded_8x8 = true;
+                }
+
+                if transform_bypass {
+                    residual::apply_4x4_bypass_residual(
+                        &mut self.ref_y,
+                        self.stride_y,
+                        px,
+                        py,
+                        &coeffs,
+                    );
+                } else {
+                    residual::dequant_4x4_ac_with_scaling(&mut coeffs, qp, &luma_scaling_4x4);
+                    residual::apply_4x4_ac_residual(
+                        &mut self.ref_y,
+                        self.stride_y,
+                        px,
+                        py,
+                        &coeffs,
+                    );
+                }
+            }
+            self.set_luma_8x8_cbf(mb_x * 2 + x8x8, mb_y * 2 + y8x8, coded_8x8);
+        }
+    }
+
+    /// CAVLC 解码 I_16x16 亮度 DC 系数.
+    pub(super) fn decode_cavlc_luma_dc(
+        &mut self,
+        br: &mut BitReader,
+        mb_x: usize,
+        mb_y: usize,
+        qp: i32,
+    ) -> [i32; 16] {
+        let luma_scaling_4x4 = self.active_luma_scaling_list_4x4(true);
+        let transform_bypass = self.is_transform_bypass_active(qp);
+        let nc = self.calc_luma_nc(mb_x * 4, mb_y * 4);
+        let mut dc_scan = [0i32; 16];
+        let _tc = cavlc::decode_cavlc_residual_block(br, nc, 16, &mut dc_scan).unwrap_or(0);
+        self.set_luma_dc_cbf(mb_x, mb_y, dc_scan.iter().any(|&c| c != 0));
+
+        let mut dc_block = [0i32; 16];
+        for (scan_pos, &(row, col)) in residual::ZIGZAG_4X4.iter().enumerate() {
+            if scan_pos < 16 {
+                dc_block[row * 4 + col] = dc_scan[scan_pos];
+            }
+        }
+        if !transform_bypass {
+            residual::inverse_hadamard_4x4(&mut dc_block);
+            residual::dequant_luma_dc_with_scaling(&mut dc_block, qp, &luma_scaling_4x4);
+        }
+        dc_block
+    }
+
+    /// CAVLC 解码并应用 I_16x16 亮度残差 (DC + AC).
+    pub(super) fn decode_cavlc_i16x16_luma_residual(
+        &mut self,
+        br: &mut BitReader,
+        mb_x: usize,
+        mb_y: usize,
+        qp: i32,
+        dc_coeffs: &[i32; 16],
+        has_luma_ac: bool,
+    ) {
+        let luma_scaling_4x4 = self.active_luma_scaling_list_4x4(true);
+        let transform_bypass = self.is_transform_bypass_active(qp);
+
+        for sub_y in 0..4 {
+            for sub_x in 0..4 {
+                self.set_luma_cbf(mb_x * 4 + sub_x, mb_y * 4 + sub_y, false);
+                self.set_nz_count_luma(mb_x * 4 + sub_x, mb_y * 4 + sub_y, 0);
+            }
+        }
+        self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
+        let mut coded_8x8 = [false; 4];
+
+        for &(sub_x, sub_y) in &I4X4_SCAN_ORDER {
+            let block_idx = sub_y * 4 + sub_x;
+            let mut coeffs_scan = [0i32; 16];
+            let x4 = mb_x * 4 + sub_x;
+            let y4 = mb_y * 4 + sub_y;
+
+            if has_luma_ac {
+                let nc = self.calc_luma_nc(x4, y4);
+                let mut ac_coeffs = [0i32; 16];
+                let tc =
+                    cavlc::decode_cavlc_residual_block(br, nc, 15, &mut ac_coeffs).unwrap_or(0);
+                self.set_nz_count_luma(x4, y4, tc);
+                let coded = tc > 0;
+                self.set_luma_cbf(x4, y4, coded);
+                if coded {
+                    let idx8 = (sub_y / 2) * 2 + (sub_x / 2);
+                    coded_8x8[idx8] = true;
+                }
+                coeffs_scan[1..16].copy_from_slice(&ac_coeffs[..15]);
+            } else {
+                self.set_luma_cbf(x4, y4, false);
+                self.set_nz_count_luma(x4, y4, 0);
+            }
+            coeffs_scan[0] = dc_coeffs[block_idx];
+
+            let px = mb_x * 16 + sub_x * 4;
+            let py = mb_y * 16 + sub_y * 4;
+            if transform_bypass {
+                residual::apply_4x4_bypass_residual(
+                    &mut self.ref_y,
+                    self.stride_y,
+                    px,
+                    py,
+                    &coeffs_scan,
+                );
+            } else {
+                residual::dequant_4x4_ac_with_scaling(&mut coeffs_scan, qp, &luma_scaling_4x4);
+                residual::apply_4x4_ac_residual(
+                    &mut self.ref_y,
+                    self.stride_y,
+                    px,
+                    py,
+                    &coeffs_scan,
+                );
+            }
+        }
+
+        for (idx8, coded) in coded_8x8.iter().copied().enumerate() {
+            let x8 = idx8 & 1;
+            let y8 = idx8 >> 1;
+            self.set_luma_8x8_cbf(mb_x * 2 + x8, mb_y * 2 + y8, coded);
+        }
+    }
+
+    /// CAVLC 解码 Inter 宏块的 luma 残差 (I_4x4 式逐块解码, 无预测重建).
+    pub(super) fn decode_cavlc_inter_luma_residual(
+        &mut self,
+        br: &mut BitReader,
+        luma_cbp: u8,
+        mb_x: usize,
+        mb_y: usize,
+        qp: i32,
+    ) {
+        let luma_scaling_4x4 = self.active_luma_scaling_list_4x4(false);
+        let transform_bypass = self.is_transform_bypass_active(qp);
+
+        for sub_y in 0..4 {
+            for sub_x in 0..4 {
+                self.set_luma_cbf(mb_x * 4 + sub_x, mb_y * 4 + sub_y, false);
+                self.set_nz_count_luma(mb_x * 4 + sub_x, mb_y * 4 + sub_y, 0);
+            }
+        }
+
+        for i8x8 in 0..4u8 {
+            let x8x8 = (i8x8 & 1) as usize;
+            let y8x8 = (i8x8 >> 1) as usize;
+            let has_residual = luma_cbp & (1 << i8x8) != 0;
+            let mut coded_8x8 = false;
+
+            for i_sub in 0..4 {
+                let sub_x = i_sub & 1;
+                let sub_y = i_sub >> 1;
+                let abs_sub_x = x8x8 * 2 + sub_x;
+                let abs_sub_y = y8x8 * 2 + sub_y;
+                let x4 = mb_x * 4 + abs_sub_x;
+                let y4 = mb_y * 4 + abs_sub_y;
+
+                if !has_residual {
+                    self.set_luma_cbf(x4, y4, false);
+                    self.set_nz_count_luma(x4, y4, 0);
+                    continue;
+                }
+
+                let nc = self.calc_luma_nc(x4, y4);
+                let mut coeffs = [0i32; 16];
+                let tc = cavlc::decode_cavlc_residual_block(br, nc, 16, &mut coeffs).unwrap_or(0);
+                self.set_nz_count_luma(x4, y4, tc);
+                let coded = tc > 0;
+                self.set_luma_cbf(x4, y4, coded);
+                if coded {
+                    coded_8x8 = true;
+                }
+
+                let px = mb_x * 16 + abs_sub_x * 4;
+                let py = mb_y * 16 + abs_sub_y * 4;
+                if transform_bypass {
+                    residual::apply_4x4_bypass_residual(
+                        &mut self.ref_y,
+                        self.stride_y,
+                        px,
+                        py,
+                        &coeffs,
+                    );
+                } else {
+                    residual::dequant_4x4_ac_with_scaling(&mut coeffs, qp, &luma_scaling_4x4);
+                    residual::apply_4x4_ac_residual(
+                        &mut self.ref_y,
+                        self.stride_y,
+                        px,
+                        py,
+                        &coeffs,
+                    );
+                }
+            }
+            self.set_luma_8x8_cbf(mb_x * 2 + x8x8, mb_y * 2 + y8x8, coded_8x8);
+        }
+    }
+
+    /// CAVLC 解码并应用色度残差 (DC + AC).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn decode_cavlc_chroma_residual(
+        &mut self,
+        br: &mut BitReader,
+        mb_x: usize,
+        mb_y: usize,
+        qp: i32,
+        has_chroma_ac: bool,
+        intra_defaults: bool,
+    ) {
+        let u_scaling_4x4 = self.active_chroma_scaling_list_4x4(intra_defaults, false);
+        let v_scaling_4x4 = self.active_chroma_scaling_list_4x4(intra_defaults, true);
+        let transform_bypass = self.is_transform_bypass_active(qp);
+        let (chroma_off_u, chroma_off_v) = self
+            .pps
+            .as_ref()
+            .map(|p| (p.chroma_qp_index_offset, p.second_chroma_qp_index_offset))
+            .unwrap_or((0, 0));
+        let chroma_qp_u = chroma_qp_from_luma_with_offset(qp, chroma_off_u);
+        let chroma_qp_v = chroma_qp_from_luma_with_offset(qp, chroma_off_v);
+
+        // Chroma DC: nc=-1 (chroma DC 专用表)
+        let mut u_dc_scan = [0i32; 4];
+        let _tc_u_dc = cavlc::decode_cavlc_residual_block(br, -1, 4, &mut u_dc_scan).unwrap_or(0);
+        self.set_chroma_dc_u_cbf(mb_x, mb_y, u_dc_scan.iter().any(|&c| c != 0));
+
+        let mut v_dc_scan = [0i32; 4];
+        let _tc_v_dc = cavlc::decode_cavlc_residual_block(br, -1, 4, &mut v_dc_scan).unwrap_or(0);
+        self.set_chroma_dc_v_cbf(mb_x, mb_y, v_dc_scan.iter().any(|&c| c != 0));
+
+        let mut u_dc = [0i32; 4];
+        u_dc.copy_from_slice(&u_dc_scan[..4]);
+        if !transform_bypass {
+            residual::inverse_hadamard_2x2(&mut u_dc);
+            residual::dequant_chroma_dc_with_scaling(&mut u_dc, chroma_qp_u, &u_scaling_4x4);
+        }
+
+        let mut v_dc = [0i32; 4];
+        v_dc.copy_from_slice(&v_dc_scan[..4]);
+        if !transform_bypass {
+            residual::inverse_hadamard_2x2(&mut v_dc);
+            residual::dequant_chroma_dc_with_scaling(&mut v_dc, chroma_qp_v, &v_scaling_4x4);
+        }
+
+        // Chroma AC
+        let mut u_scans = [[0i32; 16]; 4];
+        let mut v_scans = [[0i32; 16]; 4];
+
+        if has_chroma_ac {
+            for (block_idx, u_scan) in u_scans.iter_mut().enumerate() {
+                let sub_x = block_idx & 1;
+                let sub_y = block_idx >> 1;
+                let x2 = mb_x * 2 + sub_x;
+                let y2 = mb_y * 2 + sub_y;
+                let nc = self.calc_chroma_u_nc(x2, y2);
+                let mut ac_coeffs = [0i32; 16];
+                let tc =
+                    cavlc::decode_cavlc_residual_block(br, nc, 15, &mut ac_coeffs).unwrap_or(0);
+                self.set_nz_count_chroma_u(x2, y2, tc);
+                self.set_chroma_u_cbf(x2, y2, tc > 0);
+                u_scan[1..16].copy_from_slice(&ac_coeffs[..15]);
+            }
+            for (block_idx, v_scan) in v_scans.iter_mut().enumerate() {
+                let sub_x = block_idx & 1;
+                let sub_y = block_idx >> 1;
+                let x2 = mb_x * 2 + sub_x;
+                let y2 = mb_y * 2 + sub_y;
+                let nc = self.calc_chroma_v_nc(x2, y2);
+                let mut ac_coeffs = [0i32; 16];
+                let tc =
+                    cavlc::decode_cavlc_residual_block(br, nc, 15, &mut ac_coeffs).unwrap_or(0);
+                self.set_nz_count_chroma_v(x2, y2, tc);
+                self.set_chroma_v_cbf(x2, y2, tc > 0);
+                v_scan[1..16].copy_from_slice(&ac_coeffs[..15]);
+            }
+        } else {
+            for block_idx in 0..4usize {
+                let sub_x = block_idx & 1;
+                let sub_y = block_idx >> 1;
+                let x2 = mb_x * 2 + sub_x;
+                let y2 = mb_y * 2 + sub_y;
+                self.set_chroma_u_cbf(x2, y2, false);
+                self.set_chroma_v_cbf(x2, y2, false);
+                self.set_nz_count_chroma_u(x2, y2, 0);
+                self.set_nz_count_chroma_v(x2, y2, 0);
+            }
+        }
+
+        for block_idx in 0..4usize {
+            let sub_x = block_idx & 1;
+            let sub_y = block_idx >> 1;
+            let px = mb_x * 8 + sub_x * 4;
+            let py = mb_y * 8 + sub_y * 4;
+
+            let mut u_scan = u_scans[block_idx];
+            u_scan[0] = u_dc[block_idx];
+            if transform_bypass {
+                residual::apply_4x4_bypass_residual(
+                    &mut self.ref_u,
+                    self.stride_c,
+                    px,
+                    py,
+                    &u_scan,
+                );
+            } else {
+                residual::dequant_4x4_ac_with_scaling(&mut u_scan, chroma_qp_u, &u_scaling_4x4);
+                residual::apply_4x4_ac_residual(&mut self.ref_u, self.stride_c, px, py, &u_scan);
+            }
+
+            let mut v_scan = v_scans[block_idx];
+            v_scan[0] = v_dc[block_idx];
+            if transform_bypass {
+                residual::apply_4x4_bypass_residual(
+                    &mut self.ref_v,
+                    self.stride_c,
+                    px,
+                    py,
+                    &v_scan,
+                );
+            } else {
+                residual::dequant_4x4_ac_with_scaling(&mut v_scan, chroma_qp_v, &v_scaling_4x4);
+                residual::apply_4x4_ac_residual(&mut self.ref_v, self.stride_c, px, py, &v_scan);
+            }
+        }
+    }
+
+    /// CAVLC 解码完整的非 skip 宏块残差 (CBP + qp_delta + luma + chroma).
+    ///
+    /// 适用于 CAVLC 路径下的 I_4x4、I_16x16 和 Inter 宏块.
+    /// 对于 I_16x16, CBP 从 mb_type 导出, 不调用此函数.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn decode_cavlc_mb_residual(
+        &mut self,
+        br: &mut BitReader,
+        mb_x: usize,
+        mb_y: usize,
+        cur_qp: &mut i32,
+        is_intra: bool,
+    ) {
+        let (luma_cbp, chroma_cbp) = Self::decode_cavlc_cbp(br, is_intra);
+        self.set_mb_cbp(mb_x, mb_y, luma_cbp | (chroma_cbp << 4));
+
+        let has_residual = luma_cbp != 0 || chroma_cbp != 0;
+        if has_residual {
+            let qp_delta = read_se(br).unwrap_or(0);
+            *cur_qp = wrap_qp((*cur_qp + qp_delta) as i64);
+        }
+
+        if luma_cbp != 0 {
+            if is_intra {
+                // I_4x4 路径: 在调用方已完成预测, 此处仅解码残差并应用
+                self.decode_cavlc_inter_luma_residual(br, luma_cbp, mb_x, mb_y, *cur_qp);
+            } else {
+                self.decode_cavlc_inter_luma_residual(br, luma_cbp, mb_x, mb_y, *cur_qp);
+            }
+        } else {
+            // 清除 luma nz 计数和 cbf
+            for sub_y in 0..4 {
+                for sub_x in 0..4 {
+                    let x4 = mb_x * 4 + sub_x;
+                    let y4 = mb_y * 4 + sub_y;
+                    self.set_luma_cbf(x4, y4, false);
+                    self.set_nz_count_luma(x4, y4, 0);
+                }
+            }
+            self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
+        }
+
+        if chroma_cbp >= 1 {
+            self.decode_cavlc_chroma_residual(br, mb_x, mb_y, *cur_qp, chroma_cbp >= 2, is_intra);
+        } else {
+            self.reset_chroma_cbf_mb(mb_x, mb_y);
+            for sub_y in 0..2 {
+                for sub_x in 0..2 {
+                    let x2 = mb_x * 2 + sub_x;
+                    let y2 = mb_y * 2 + sub_y;
+                    self.set_nz_count_chroma_u(x2, y2, 0);
+                    self.set_nz_count_chroma_v(x2, y2, 0);
+                }
+            }
+        }
+    }
+
+    /// 清除一个宏块的全部 CAVLC nz 计数 (skip MB 或无残差时).
+    #[allow(dead_code)]
+    pub(super) fn clear_cavlc_nz_counts(&mut self, mb_x: usize, mb_y: usize) {
+        for sub_y in 0..4 {
+            for sub_x in 0..4 {
+                self.set_nz_count_luma(mb_x * 4 + sub_x, mb_y * 4 + sub_y, 0);
+            }
+        }
+        for sub_y in 0..2 {
+            for sub_x in 0..2 {
+                self.set_nz_count_chroma_u(mb_x * 2 + sub_x, mb_y * 2 + sub_y, 0);
+                self.set_nz_count_chroma_v(mb_x * 2 + sub_x, mb_y * 2 + sub_y, 0);
+            }
+        }
+    }
+
+    // ============================================================
+    // CAVLC I 宏块完整解码
+    // ============================================================
+
+    /// CAVLC 解码一个 I 宏块 (I-slice 或 P/B-slice 中的 Intra MB).
+    ///
+    /// `raw_mb_type`: 已读取的 mb_type (I-slice 原始值, 或 P/B-slice 中减去偏移后的值).
+    pub(super) fn decode_cavlc_i_mb(
+        &mut self,
+        br: &mut BitReader,
+        mb_x: usize,
+        mb_y: usize,
+        raw_mb_type: u32,
+        cur_qp: &mut i32,
+    ) {
+        let mb_idx = mb_y * self.mb_width + mb_x;
+        self.reset_chroma_cbf_mb(mb_x, mb_y);
+        self.set_luma_dc_cbf(mb_x, mb_y, false);
+        self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
+        self.set_transform_8x8_flag(mb_x, mb_y, false);
+
+        if raw_mb_type == 0 {
+            // I_4x4
+            self.mb_types[mb_idx] = 0;
+            let pred_modes = self.decode_cavlc_i4x4_pred_modes(br, mb_x, mb_y);
+            let chroma_mode = read_ue(br).unwrap_or(0).min(3) as u8;
+            self.set_chroma_pred_mode(mb_x, mb_y, chroma_mode);
+
+            intra::predict_chroma_8x8(
+                &mut self.ref_u,
+                self.stride_c,
+                mb_x * 8,
+                mb_y * 8,
+                chroma_mode,
+                mb_x > 0,
+                mb_y > 0,
+            );
+            intra::predict_chroma_8x8(
+                &mut self.ref_v,
+                self.stride_c,
+                mb_x * 8,
+                mb_y * 8,
+                chroma_mode,
+                mb_x > 0,
+                mb_y > 0,
+            );
+
+            let (luma_cbp, chroma_cbp) = Self::decode_cavlc_cbp(br, true);
+            self.set_mb_cbp(mb_x, mb_y, luma_cbp | (chroma_cbp << 4));
+
+            let has_residual = luma_cbp != 0 || chroma_cbp != 0;
+            if has_residual {
+                let qp_delta = read_se(br).unwrap_or(0);
+                self.prev_qp_delta_nz = qp_delta != 0;
+                *cur_qp = wrap_qp((*cur_qp + qp_delta) as i64);
+            } else {
+                self.prev_qp_delta_nz = false;
+            }
+
+            self.decode_cavlc_i4x4_luma_residual(br, luma_cbp, mb_x, mb_y, *cur_qp, &pred_modes);
+
+            if chroma_cbp >= 1 {
+                self.decode_cavlc_chroma_residual(br, mb_x, mb_y, *cur_qp, chroma_cbp >= 2, true);
+            } else {
+                self.clear_cavlc_nz_counts_chroma(mb_x, mb_y);
+            }
+        } else if raw_mb_type <= 24 {
+            // I_16x16
+            self.mb_types[mb_idx] = raw_mb_type as u8;
+            let pred_mode = ((raw_mb_type - 1) % 4) as u8;
+            let cbp_chroma = ((raw_mb_type - 1) / 4 % 3) as u8;
+            let cbp_luma_nz = raw_mb_type > 12;
+            let cbp_luma: u8 = if cbp_luma_nz { 0x0f } else { 0x00 };
+            self.set_mb_cbp(mb_x, mb_y, cbp_luma | (cbp_chroma << 4));
+
+            let chroma_mode = read_ue(br).unwrap_or(0).min(3) as u8;
+            self.set_chroma_pred_mode(mb_x, mb_y, chroma_mode);
+
+            let qp_delta = read_se(br).unwrap_or(0);
+            self.prev_qp_delta_nz = qp_delta != 0;
+            *cur_qp = wrap_qp((*cur_qp + qp_delta) as i64);
+
+            intra::predict_16x16(
+                &mut self.ref_y,
+                self.stride_y,
+                mb_x * 16,
+                mb_y * 16,
+                pred_mode,
+                mb_x > 0,
+                mb_y > 0,
+            );
+            intra::predict_chroma_8x8(
+                &mut self.ref_u,
+                self.stride_c,
+                mb_x * 8,
+                mb_y * 8,
+                chroma_mode,
+                mb_x > 0,
+                mb_y > 0,
+            );
+            intra::predict_chroma_8x8(
+                &mut self.ref_v,
+                self.stride_c,
+                mb_x * 8,
+                mb_y * 8,
+                chroma_mode,
+                mb_x > 0,
+                mb_y > 0,
+            );
+
+            let dc_coeffs = self.decode_cavlc_luma_dc(br, mb_x, mb_y, *cur_qp);
+            self.decode_cavlc_i16x16_luma_residual(
+                br,
+                mb_x,
+                mb_y,
+                *cur_qp,
+                &dc_coeffs,
+                cbp_luma_nz,
+            );
+
+            if cbp_chroma >= 1 {
+                self.decode_cavlc_chroma_residual(br, mb_x, mb_y, *cur_qp, cbp_chroma >= 2, true);
+            } else {
+                self.clear_cavlc_nz_counts_chroma(mb_x, mb_y);
+            }
+        } else {
+            // I_PCM (mb_type == 25): 字节对齐后读取原始样本
+            self.mb_types[mb_idx] = 25;
+            self.set_mb_cbp(mb_x, mb_y, 0x2f);
+            self.prev_qp_delta_nz = false;
+            br.align_to_byte();
+            let x0 = mb_x * 16;
+            let y0 = mb_y * 16;
+            for dy in 0..16 {
+                for dx in 0..16 {
+                    let idx = (y0 + dy) * self.stride_y + x0 + dx;
+                    let val = br.read_bits(8).unwrap_or(128) as u8;
+                    if idx < self.ref_y.len() {
+                        self.ref_y[idx] = val;
+                    }
+                }
+            }
+            let cx0 = mb_x * 8;
+            let cy0 = mb_y * 8;
+            for dy in 0..8 {
+                for dx in 0..8 {
+                    let idx = (cy0 + dy) * self.stride_c + cx0 + dx;
+                    let val = br.read_bits(8).unwrap_or(128) as u8;
+                    if idx < self.ref_u.len() {
+                        self.ref_u[idx] = val;
+                    }
+                }
+            }
+            for dy in 0..8 {
+                for dx in 0..8 {
+                    let idx = (cy0 + dy) * self.stride_c + cx0 + dx;
+                    let val = br.read_bits(8).unwrap_or(128) as u8;
+                    if idx < self.ref_v.len() {
+                        self.ref_v[idx] = val;
+                    }
+                }
+            }
+            // I_PCM 所有块标记为有内容
+            for sub_y in 0..4 {
+                for sub_x in 0..4 {
+                    self.set_luma_cbf(mb_x * 4 + sub_x, mb_y * 4 + sub_y, true);
+                    self.set_nz_count_luma(mb_x * 4 + sub_x, mb_y * 4 + sub_y, 16);
+                }
+            }
+            for sub_y in 0..2 {
+                for sub_x in 0..2 {
+                    self.set_luma_8x8_cbf(mb_x * 2 + sub_x, mb_y * 2 + sub_y, true);
+                    self.set_chroma_u_cbf(mb_x * 2 + sub_x, mb_y * 2 + sub_y, true);
+                    self.set_chroma_v_cbf(mb_x * 2 + sub_x, mb_y * 2 + sub_y, true);
+                    self.set_nz_count_chroma_u(mb_x * 2 + sub_x, mb_y * 2 + sub_y, 16);
+                    self.set_nz_count_chroma_v(mb_x * 2 + sub_x, mb_y * 2 + sub_y, 16);
+                }
+            }
+        }
+    }
+
+    /// 仅清除色度 nz 计数 (用于 chroma_cbp == 0 时).
+    fn clear_cavlc_nz_counts_chroma(&mut self, mb_x: usize, mb_y: usize) {
+        self.reset_chroma_cbf_mb(mb_x, mb_y);
+        for sub_y in 0..2 {
+            for sub_x in 0..2 {
+                self.set_nz_count_chroma_u(mb_x * 2 + sub_x, mb_y * 2 + sub_y, 0);
+                self.set_nz_count_chroma_v(mb_x * 2 + sub_x, mb_y * 2 + sub_y, 0);
+            }
+        }
+    }
+}

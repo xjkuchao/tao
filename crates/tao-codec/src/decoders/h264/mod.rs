@@ -6,6 +6,8 @@
 mod cabac;
 mod cabac_init_ext;
 mod cabac_init_pb;
+mod cavlc;
+mod cavlc_mb;
 mod common;
 mod config;
 mod deblock;
@@ -272,6 +274,12 @@ pub struct H264Decoder {
     cbf_chroma_dc_v: Vec<bool>,
     /// I_4x4 预测模式缓存 (4x4 块粒度)
     i4x4_modes: Vec<u8>,
+    /// CAVLC 非零系数计数 (luma 4x4 块粒度, 用于 nC 上下文)
+    nz_count_luma: Vec<u8>,
+    /// CAVLC 非零系数计数 (chroma U 4x4 块粒度, 用于 nC 上下文)
+    nz_count_chroma_u: Vec<u8>,
+    /// CAVLC 非零系数计数 (chroma V 4x4 块粒度, 用于 nC 上下文)
+    nz_count_chroma_v: Vec<u8>,
     /// 上一个宏块的 qp_delta 是否非零
     prev_qp_delta_nz: bool,
     /// 每个宏块 list0 运动向量 X (1/4 像素单位)
@@ -382,6 +390,9 @@ impl H264Decoder {
             cbf_chroma_dc_u: Vec::new(),
             cbf_chroma_dc_v: Vec::new(),
             i4x4_modes: Vec::new(),
+            nz_count_luma: Vec::new(),
+            nz_count_chroma_u: Vec::new(),
+            nz_count_chroma_v: Vec::new(),
             prev_qp_delta_nz: false,
             mv_l0_x: Vec::new(),
             mv_l0_y: Vec::new(),
@@ -449,6 +460,9 @@ impl H264Decoder {
         self.cbf_chroma_dc_u = vec![false; total_mb];
         self.cbf_chroma_dc_v = vec![false; total_mb];
         self.i4x4_modes = vec![2u8; self.mb_width * 4 * self.mb_height * 4];
+        self.nz_count_luma = vec![0u8; self.mb_width * 4 * self.mb_height * 4];
+        self.nz_count_chroma_u = vec![0u8; self.mb_width * 2 * self.mb_height * 2];
+        self.nz_count_chroma_v = vec![0u8; self.mb_width * 2 * self.mb_height * 2];
         self.mv_l0_x = vec![0i16; total_mb];
         self.mv_l0_y = vec![0i16; total_mb];
         self.ref_idx_l0 = vec![-1i8; total_mb];
@@ -601,6 +615,9 @@ impl H264Decoder {
         self.cbf_chroma_dc_u.fill(false);
         self.cbf_chroma_dc_v.fill(false);
         self.i4x4_modes.fill(2);
+        self.nz_count_luma.fill(0);
+        self.nz_count_chroma_u.fill(0);
+        self.nz_count_chroma_v.fill(0);
         self.mv_l0_x.fill(0);
         self.mv_l0_y.fill(0);
         self.ref_idx_l0.fill(-1);
@@ -1065,6 +1082,9 @@ impl Decoder for H264Decoder {
         self.cbf_chroma_dc_u.fill(false);
         self.cbf_chroma_dc_v.fill(false);
         self.i4x4_modes.fill(2);
+        self.nz_count_luma.fill(0);
+        self.nz_count_chroma_u.fill(0);
+        self.nz_count_chroma_v.fill(0);
         self.mv_l0_x.fill(0);
         self.mv_l0_y.fill(0);
         self.ref_idx_l0.fill(-1);

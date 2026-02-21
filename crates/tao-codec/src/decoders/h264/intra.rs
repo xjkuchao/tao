@@ -720,6 +720,727 @@ pub fn fill_block(
     }
 }
 
+// ============================================================
+// Intra 8x8 亮度预测 (H.264 规范 8.3.2, 9 种模式)
+// ============================================================
+//
+// 与 Intra 4x4 不同, Intra 8x8 的边界参考样本须先经过低通滤波处理.
+// 滤波后的参考样本命名为 p'[-1,-1..7] (上方/右上) 与 p'[-1,0..7] (左侧),
+// 对应 FFmpeg `PREDICT_8x8_LOAD_*` 宏.
+//
+// 参数约定:
+//   plane       -- 图像平面像素缓冲
+//   stride      -- 行步长
+//   x0, y0      -- 8x8 块左上角像素坐标
+//   has_left    -- 左邻居是否可用
+//   has_top     -- 上邻居是否可用
+//   has_topleft -- 左上角像素是否可用
+//   has_topright-- 右上邻居是否可用(列宽超出宏块右边界则不可用)
+
+/// 读取原始像素, 越界时夹紧到边界
+#[inline(always)]
+fn px(plane: &[u8], stride: usize, x: i64, y: i64) -> u8 {
+    let xi = x.max(0) as usize;
+    let yi = y.max(0) as usize;
+    let idx = yi * stride + xi;
+    if idx < plane.len() { plane[idx] } else { 128 }
+}
+
+/// Intra 8x8 低通滤波参考样本结构体
+///
+/// 按规范 8.3.2.2.2 对左侧(l0..l7)、上方(t0..t7)、右上(t8..t15)、左上角(lt)做低通滤波.
+struct I8x8Refs {
+    lt: i32,
+    t: [i32; 16],
+    l: [i32; 8],
+}
+
+/// Intra 8x8 预测的邻居可用性标志
+pub struct I8x8Avail {
+    pub has_left: bool,
+    pub has_top: bool,
+    pub has_topleft: bool,
+    pub has_topright: bool,
+}
+
+impl I8x8Refs {
+    /// 收集并滤波 8x8 块的边界参考样本.
+    ///
+    /// 滤波公式 (对应规范与 FFmpeg `PREDICT_8x8_LOAD_*` 宏):
+    ///   - 内部点: (p[i-1] + 2*p[i] + p[i+1] + 2) >> 2
+    ///   - 端点用相邻点或 has_topleft/topright 控制
+    fn load(plane: &[u8], stride: usize, x0: usize, y0: usize, avail: &I8x8Avail) -> Self {
+        let has_left = avail.has_left;
+        let has_top = avail.has_top;
+        let has_topleft = avail.has_topleft;
+        let has_topright = avail.has_topright;
+        let x = x0 as i64;
+        let y = y0 as i64;
+
+        // 读取原始参考样本 (未滤波)
+        let raw_tl = if has_topleft && x > 0 && y > 0 {
+            px(plane, stride, x - 1, y - 1)
+        } else if has_top && y > 0 {
+            px(plane, stride, x, y - 1)
+        } else if has_left && x > 0 {
+            px(plane, stride, x - 1, y)
+        } else {
+            128
+        } as i32;
+
+        // 上方参考 (含右上)
+        let mut raw_t = [128i32; 16];
+        if has_top && y > 0 {
+            for (i, item) in raw_t[..8].iter_mut().enumerate() {
+                *item = px(plane, stride, x + i as i64, y - 1) as i32;
+            }
+        }
+        if has_topright && y > 0 {
+            for (i, item) in raw_t[8..].iter_mut().enumerate() {
+                *item = px(plane, stride, x + (i + 8) as i64, y - 1) as i32;
+            }
+        } else {
+            // 右上不可用时复制 t7
+            let t7 = raw_t[7];
+            for item in raw_t[8..].iter_mut() {
+                *item = t7;
+            }
+        }
+
+        // 左侧参考
+        let mut raw_l = [128i32; 8];
+        if has_left && x > 0 {
+            for (i, item) in raw_l.iter_mut().enumerate() {
+                *item = px(plane, stride, x - 1, y + i as i64) as i32;
+            }
+        }
+
+        // 滤波
+        // lt = (l[0] + 2*tl + t[0] + 2) >> 2  (左上角)
+        let lt = if has_topleft && has_left && has_top {
+            (raw_l[0] + 2 * raw_tl + raw_t[0] + 2) >> 2
+        } else {
+            raw_tl
+        };
+
+        // l[0]: has_topleft 时用 tl, 否则复制 l[0]
+        let mut l = [0i32; 8];
+        if has_left {
+            l[0] = if has_topleft {
+                (raw_tl + 2 * raw_l[0] + raw_l[1] + 2) >> 2
+            } else {
+                (raw_l[0] + 2 * raw_l[0] + raw_l[1] + 2) >> 2
+            };
+            for i in 1..7 {
+                l[i] = (raw_l[i - 1] + 2 * raw_l[i] + raw_l[i + 1] + 2) >> 2;
+            }
+            l[7] = (raw_l[6] + 3 * raw_l[7] + 2) >> 2;
+        } else {
+            l.fill(128);
+        }
+
+        // t[0]: has_topleft 时用 tl, 否则复制 t[0]
+        let mut t = [0i32; 16];
+        if has_top {
+            t[0] = if has_topleft {
+                (raw_tl + 2 * raw_t[0] + raw_t[1] + 2) >> 2
+            } else {
+                (raw_t[0] + 2 * raw_t[0] + raw_t[1] + 2) >> 2
+            };
+            for i in 1..7 {
+                t[i] = (raw_t[i - 1] + 2 * raw_t[i] + raw_t[i + 1] + 2) >> 2;
+            }
+            // t[7]: 有右上时用 t8, 否则复制 t7
+            t[7] = if has_topright {
+                (raw_t[6] + 2 * raw_t[7] + raw_t[8] + 2) >> 2
+            } else {
+                (raw_t[6] + 3 * raw_t[7] + 2) >> 2
+            };
+            // t[8..15] (右上参考)
+            if has_topright {
+                t[8] = (raw_t[7] + 2 * raw_t[8] + raw_t[9] + 2) >> 2;
+                for i in 9..15 {
+                    t[i] = (raw_t[i - 1] + 2 * raw_t[i] + raw_t[i + 1] + 2) >> 2;
+                }
+                t[15] = (raw_t[14] + 3 * raw_t[15] + 2) >> 2;
+            } else {
+                let t7 = t[7];
+                for item in t[8..].iter_mut() {
+                    *item = t7;
+                }
+            }
+        } else {
+            t.fill(128);
+        }
+
+        I8x8Refs { lt, t, l }
+    }
+}
+
+/// Intra 8x8 预测入口 -- 根据模式分发
+///
+/// 模式编号与 Intra 4x4 相同: 0=V, 1=H, 2=DC, 3=DDL, 4=DDR, 5=VR, 6=HD, 7=VL, 8=HU.
+pub fn predict_8x8(
+    plane: &mut [u8],
+    stride: usize,
+    x0: usize,
+    y0: usize,
+    mode: u8,
+    avail: &I8x8Avail,
+) {
+    let r = I8x8Refs::load(plane, stride, x0, y0, avail);
+    match mode {
+        0 => predict_8x8_vertical(plane, stride, x0, y0, &r, avail.has_top),
+        1 => predict_8x8_horizontal(plane, stride, x0, y0, &r, avail.has_left),
+        2 => predict_8x8_dc(plane, stride, x0, y0, &r, avail.has_left, avail.has_top),
+        3 => predict_8x8_down_left(plane, stride, x0, y0, &r),
+        4 => predict_8x8_down_right(plane, stride, x0, y0, &r),
+        5 => predict_8x8_vertical_right(plane, stride, x0, y0, &r),
+        6 => predict_8x8_horizontal_down(plane, stride, x0, y0, &r),
+        7 => predict_8x8_vertical_left(plane, stride, x0, y0, &r),
+        8 => predict_8x8_horizontal_up(plane, stride, x0, y0, &r),
+        _ => predict_8x8_dc(plane, stride, x0, y0, &r, avail.has_left, avail.has_top),
+    }
+}
+
+#[inline(always)]
+fn set8(plane: &mut [u8], stride: usize, x0: usize, y0: usize, dx: usize, dy: usize, v: i32) {
+    let idx = (y0 + dy) * stride + x0 + dx;
+    if idx < plane.len() {
+        plane[idx] = v.clamp(0, 255) as u8;
+    }
+}
+
+/// 模式 0: 垂直 (Vertical)
+fn predict_8x8_vertical(
+    plane: &mut [u8],
+    stride: usize,
+    x0: usize,
+    y0: usize,
+    r: &I8x8Refs,
+    has_top: bool,
+) {
+    if !has_top {
+        fill_block(plane, stride, x0, y0, 8, 8, 128);
+        return;
+    }
+    for dy in 0..8 {
+        for dx in 0..8 {
+            set8(plane, stride, x0, y0, dx, dy, r.t[dx]);
+        }
+    }
+}
+
+/// 模式 1: 水平 (Horizontal)
+fn predict_8x8_horizontal(
+    plane: &mut [u8],
+    stride: usize,
+    x0: usize,
+    y0: usize,
+    r: &I8x8Refs,
+    has_left: bool,
+) {
+    if !has_left {
+        fill_block(plane, stride, x0, y0, 8, 8, 128);
+        return;
+    }
+    for dy in 0..8 {
+        let v = r.l[dy];
+        for dx in 0..8 {
+            set8(plane, stride, x0, y0, dx, dy, v);
+        }
+    }
+}
+
+/// 模式 2: DC
+fn predict_8x8_dc(
+    plane: &mut [u8],
+    stride: usize,
+    x0: usize,
+    y0: usize,
+    r: &I8x8Refs,
+    has_left: bool,
+    has_top: bool,
+) {
+    let dc = if has_left && has_top {
+        let sum: i32 = r.l.iter().sum::<i32>() + r.t[..8].iter().sum::<i32>();
+        (sum + 8) >> 4
+    } else if has_top {
+        let sum: i32 = r.t[..8].iter().sum();
+        (sum + 4) >> 3
+    } else if has_left {
+        let sum: i32 = r.l.iter().sum();
+        (sum + 4) >> 3
+    } else {
+        128
+    };
+    fill_block(plane, stride, x0, y0, 8, 8, dc.clamp(0, 255) as u8);
+}
+
+/// 模式 3: 对角线向下左 (Diagonal Down-Left)
+fn predict_8x8_down_left(plane: &mut [u8], stride: usize, x0: usize, y0: usize, r: &I8x8Refs) {
+    // SRC(x,y) = t[x+y], SRC(x,y) using filtered top/topright
+    let t = &r.t;
+    // 对应 FFmpeg pred8x8l_down_left
+    macro_rules! s {
+        ($x:expr, $y:expr, $v:expr) => {
+            set8(plane, stride, x0, y0, $x, $y, $v)
+        };
+    }
+    s!(0, 0, (t[0] + 2 * t[1] + t[2] + 2) >> 2);
+    s!(1, 0, (t[1] + 2 * t[2] + t[3] + 2) >> 2);
+    s!(0, 1, (t[1] + 2 * t[2] + t[3] + 2) >> 2);
+    s!(2, 0, (t[2] + 2 * t[3] + t[4] + 2) >> 2);
+    s!(1, 1, (t[2] + 2 * t[3] + t[4] + 2) >> 2);
+    s!(0, 2, (t[2] + 2 * t[3] + t[4] + 2) >> 2);
+    s!(3, 0, (t[3] + 2 * t[4] + t[5] + 2) >> 2);
+    s!(2, 1, (t[3] + 2 * t[4] + t[5] + 2) >> 2);
+    s!(1, 2, (t[3] + 2 * t[4] + t[5] + 2) >> 2);
+    s!(0, 3, (t[3] + 2 * t[4] + t[5] + 2) >> 2);
+    s!(4, 0, (t[4] + 2 * t[5] + t[6] + 2) >> 2);
+    s!(3, 1, (t[4] + 2 * t[5] + t[6] + 2) >> 2);
+    s!(2, 2, (t[4] + 2 * t[5] + t[6] + 2) >> 2);
+    s!(1, 3, (t[4] + 2 * t[5] + t[6] + 2) >> 2);
+    s!(0, 4, (t[4] + 2 * t[5] + t[6] + 2) >> 2);
+    s!(5, 0, (t[5] + 2 * t[6] + t[7] + 2) >> 2);
+    s!(4, 1, (t[5] + 2 * t[6] + t[7] + 2) >> 2);
+    s!(3, 2, (t[5] + 2 * t[6] + t[7] + 2) >> 2);
+    s!(2, 3, (t[5] + 2 * t[6] + t[7] + 2) >> 2);
+    s!(1, 4, (t[5] + 2 * t[6] + t[7] + 2) >> 2);
+    s!(0, 5, (t[5] + 2 * t[6] + t[7] + 2) >> 2);
+    s!(6, 0, (t[6] + 2 * t[7] + t[8] + 2) >> 2);
+    s!(5, 1, (t[6] + 2 * t[7] + t[8] + 2) >> 2);
+    s!(4, 2, (t[6] + 2 * t[7] + t[8] + 2) >> 2);
+    s!(3, 3, (t[6] + 2 * t[7] + t[8] + 2) >> 2);
+    s!(2, 4, (t[6] + 2 * t[7] + t[8] + 2) >> 2);
+    s!(1, 5, (t[6] + 2 * t[7] + t[8] + 2) >> 2);
+    s!(0, 6, (t[6] + 2 * t[7] + t[8] + 2) >> 2);
+    s!(7, 0, (t[7] + 2 * t[8] + t[9] + 2) >> 2);
+    s!(6, 1, (t[7] + 2 * t[8] + t[9] + 2) >> 2);
+    s!(5, 2, (t[7] + 2 * t[8] + t[9] + 2) >> 2);
+    s!(4, 3, (t[7] + 2 * t[8] + t[9] + 2) >> 2);
+    s!(3, 4, (t[7] + 2 * t[8] + t[9] + 2) >> 2);
+    s!(2, 5, (t[7] + 2 * t[8] + t[9] + 2) >> 2);
+    s!(1, 6, (t[7] + 2 * t[8] + t[9] + 2) >> 2);
+    s!(0, 7, (t[7] + 2 * t[8] + t[9] + 2) >> 2);
+    s!(7, 1, (t[8] + 2 * t[9] + t[10] + 2) >> 2);
+    s!(6, 2, (t[8] + 2 * t[9] + t[10] + 2) >> 2);
+    s!(5, 3, (t[8] + 2 * t[9] + t[10] + 2) >> 2);
+    s!(4, 4, (t[8] + 2 * t[9] + t[10] + 2) >> 2);
+    s!(3, 5, (t[8] + 2 * t[9] + t[10] + 2) >> 2);
+    s!(2, 6, (t[8] + 2 * t[9] + t[10] + 2) >> 2);
+    s!(1, 7, (t[8] + 2 * t[9] + t[10] + 2) >> 2);
+    s!(7, 2, (t[9] + 2 * t[10] + t[11] + 2) >> 2);
+    s!(6, 3, (t[9] + 2 * t[10] + t[11] + 2) >> 2);
+    s!(5, 4, (t[9] + 2 * t[10] + t[11] + 2) >> 2);
+    s!(4, 5, (t[9] + 2 * t[10] + t[11] + 2) >> 2);
+    s!(3, 6, (t[9] + 2 * t[10] + t[11] + 2) >> 2);
+    s!(2, 7, (t[9] + 2 * t[10] + t[11] + 2) >> 2);
+    s!(7, 3, (t[10] + 2 * t[11] + t[12] + 2) >> 2);
+    s!(6, 4, (t[10] + 2 * t[11] + t[12] + 2) >> 2);
+    s!(5, 5, (t[10] + 2 * t[11] + t[12] + 2) >> 2);
+    s!(4, 6, (t[10] + 2 * t[11] + t[12] + 2) >> 2);
+    s!(3, 7, (t[10] + 2 * t[11] + t[12] + 2) >> 2);
+    s!(7, 4, (t[11] + 2 * t[12] + t[13] + 2) >> 2);
+    s!(6, 5, (t[11] + 2 * t[12] + t[13] + 2) >> 2);
+    s!(5, 6, (t[11] + 2 * t[12] + t[13] + 2) >> 2);
+    s!(4, 7, (t[11] + 2 * t[12] + t[13] + 2) >> 2);
+    s!(7, 5, (t[12] + 2 * t[13] + t[14] + 2) >> 2);
+    s!(6, 6, (t[12] + 2 * t[13] + t[14] + 2) >> 2);
+    s!(5, 7, (t[12] + 2 * t[13] + t[14] + 2) >> 2);
+    s!(7, 6, (t[13] + 2 * t[14] + t[15] + 2) >> 2);
+    s!(6, 7, (t[13] + 2 * t[14] + t[15] + 2) >> 2);
+    s!(7, 7, (t[14] + 3 * t[15] + 2) >> 2);
+}
+
+/// 模式 4: 对角线向下右 (Diagonal Down-Right)
+fn predict_8x8_down_right(plane: &mut [u8], stride: usize, x0: usize, y0: usize, r: &I8x8Refs) {
+    let t = &r.t;
+    let l = &r.l;
+    let lt = r.lt;
+    macro_rules! s {
+        ($x:expr, $y:expr, $v:expr) => {
+            set8(plane, stride, x0, y0, $x, $y, $v)
+        };
+    }
+    s!(0, 7, (l[6] + 2 * l[5] + l[4] + 2) >> 2); // SRC(0,7)
+    // 按 FFmpeg pred8x8l_down_right 逐行赋值
+    s!(0, 6, (l[5] + 2 * l[4] + l[3] + 2) >> 2);
+    s!(1, 7, (l[5] + 2 * l[4] + l[3] + 2) >> 2);
+    s!(0, 5, (l[4] + 2 * l[3] + l[2] + 2) >> 2);
+    s!(1, 6, (l[4] + 2 * l[3] + l[2] + 2) >> 2);
+    s!(2, 7, (l[4] + 2 * l[3] + l[2] + 2) >> 2);
+    s!(0, 4, (l[3] + 2 * l[2] + l[1] + 2) >> 2);
+    s!(1, 5, (l[3] + 2 * l[2] + l[1] + 2) >> 2);
+    s!(2, 6, (l[3] + 2 * l[2] + l[1] + 2) >> 2);
+    s!(3, 7, (l[3] + 2 * l[2] + l[1] + 2) >> 2);
+    s!(0, 3, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
+    s!(1, 4, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
+    s!(2, 5, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
+    s!(3, 6, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
+    s!(4, 7, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
+    s!(0, 2, (l[1] + 2 * l[0] + lt + 2) >> 2);
+    s!(1, 3, (l[1] + 2 * l[0] + lt + 2) >> 2);
+    s!(2, 4, (l[1] + 2 * l[0] + lt + 2) >> 2);
+    s!(3, 5, (l[1] + 2 * l[0] + lt + 2) >> 2);
+    s!(4, 6, (l[1] + 2 * l[0] + lt + 2) >> 2);
+    s!(5, 7, (l[1] + 2 * l[0] + lt + 2) >> 2);
+    s!(0, 1, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(1, 2, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(2, 3, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(3, 4, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(4, 5, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(5, 6, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(6, 7, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(0, 0, (l[0] + 2 * lt + t[0] + 2) >> 2); // SRC(0,0) = SRC(1,1) = ... (主对角线同一公式)
+    // 主对角线: (l0 + 2*lt + t0 + 2) >> 2
+    s!(0, 0, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(1, 1, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(2, 2, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(3, 3, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(4, 4, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(5, 5, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(6, 6, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(7, 7, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(1, 0, (lt + 2 * t[0] + t[1] + 2) >> 2);
+    s!(2, 1, (lt + 2 * t[0] + t[1] + 2) >> 2);
+    s!(3, 2, (lt + 2 * t[0] + t[1] + 2) >> 2);
+    s!(4, 3, (lt + 2 * t[0] + t[1] + 2) >> 2);
+    s!(5, 4, (lt + 2 * t[0] + t[1] + 2) >> 2);
+    s!(6, 5, (lt + 2 * t[0] + t[1] + 2) >> 2);
+    s!(7, 6, (lt + 2 * t[0] + t[1] + 2) >> 2);
+    s!(2, 0, (t[0] + 2 * t[1] + t[2] + 2) >> 2);
+    s!(3, 1, (t[0] + 2 * t[1] + t[2] + 2) >> 2);
+    s!(4, 2, (t[0] + 2 * t[1] + t[2] + 2) >> 2);
+    s!(5, 3, (t[0] + 2 * t[1] + t[2] + 2) >> 2);
+    s!(6, 4, (t[0] + 2 * t[1] + t[2] + 2) >> 2);
+    s!(7, 5, (t[0] + 2 * t[1] + t[2] + 2) >> 2);
+    s!(3, 0, (t[1] + 2 * t[2] + t[3] + 2) >> 2);
+    s!(4, 1, (t[1] + 2 * t[2] + t[3] + 2) >> 2);
+    s!(5, 2, (t[1] + 2 * t[2] + t[3] + 2) >> 2);
+    s!(6, 3, (t[1] + 2 * t[2] + t[3] + 2) >> 2);
+    s!(7, 4, (t[1] + 2 * t[2] + t[3] + 2) >> 2);
+    s!(4, 0, (t[2] + 2 * t[3] + t[4] + 2) >> 2);
+    s!(5, 1, (t[2] + 2 * t[3] + t[4] + 2) >> 2);
+    s!(6, 2, (t[2] + 2 * t[3] + t[4] + 2) >> 2);
+    s!(7, 3, (t[2] + 2 * t[3] + t[4] + 2) >> 2);
+    s!(5, 0, (t[3] + 2 * t[4] + t[5] + 2) >> 2);
+    s!(6, 1, (t[3] + 2 * t[4] + t[5] + 2) >> 2);
+    s!(7, 2, (t[3] + 2 * t[4] + t[5] + 2) >> 2);
+    s!(6, 0, (t[4] + 2 * t[5] + t[6] + 2) >> 2);
+    s!(7, 1, (t[4] + 2 * t[5] + t[6] + 2) >> 2);
+    s!(7, 0, (t[5] + 2 * t[6] + t[7] + 2) >> 2);
+}
+
+/// 模式 5: 垂直右 (Vertical-Right)
+fn predict_8x8_vertical_right(plane: &mut [u8], stride: usize, x0: usize, y0: usize, r: &I8x8Refs) {
+    let t = &r.t;
+    let l = &r.l;
+    let lt = r.lt;
+    macro_rules! s {
+        ($x:expr, $y:expr, $v:expr) => {
+            set8(plane, stride, x0, y0, $x, $y, $v)
+        };
+    }
+    s!(0, 6, (l[4] + 2 * l[3] + l[2] + 2) >> 2);
+    s!(0, 7, (l[5] + 2 * l[4] + l[3] + 2) >> 2);
+    s!(0, 4, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
+    s!(1, 6, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
+    s!(0, 5, (l[3] + 2 * l[2] + l[1] + 2) >> 2);
+    s!(1, 7, (l[3] + 2 * l[2] + l[1] + 2) >> 2);
+    s!(0, 2, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(1, 4, (l[0] + 2 * lt + t[0] + 2) >> 2); // 注意: 此处使用带滤波的公式
+    // 实际上 Vertical-Right 中左侧用的是 l[1]+2*l[0]+lt 等
+    s!(0, 2, (l[1] + 2 * l[0] + lt + 2) >> 2);
+    s!(1, 4, (l[1] + 2 * l[0] + lt + 2) >> 2);
+    s!(2, 6, (l[1] + 2 * l[0] + lt + 2) >> 2);
+    s!(0, 3, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
+    s!(1, 5, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
+    s!(2, 7, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
+    s!(0, 1, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(1, 3, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(2, 5, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(3, 7, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(0, 0, (lt + t[0] + 1) >> 1);
+    s!(1, 2, (lt + t[0] + 1) >> 1);
+    s!(2, 4, (lt + t[0] + 1) >> 1);
+    s!(3, 6, (lt + t[0] + 1) >> 1);
+    s!(1, 1, (lt + 2 * t[0] + t[1] + 2) >> 2);
+    s!(2, 3, (lt + 2 * t[0] + t[1] + 2) >> 2);
+    s!(3, 5, (lt + 2 * t[0] + t[1] + 2) >> 2);
+    s!(4, 7, (lt + 2 * t[0] + t[1] + 2) >> 2);
+    s!(1, 0, (t[0] + t[1] + 1) >> 1);
+    s!(2, 2, (t[0] + t[1] + 1) >> 1);
+    s!(3, 4, (t[0] + t[1] + 1) >> 1);
+    s!(4, 6, (t[0] + t[1] + 1) >> 1);
+    s!(2, 1, (t[0] + 2 * t[1] + t[2] + 2) >> 2);
+    s!(3, 3, (t[0] + 2 * t[1] + t[2] + 2) >> 2);
+    s!(4, 5, (t[0] + 2 * t[1] + t[2] + 2) >> 2);
+    s!(5, 7, (t[0] + 2 * t[1] + t[2] + 2) >> 2);
+    s!(2, 0, (t[1] + t[2] + 1) >> 1);
+    s!(3, 2, (t[1] + t[2] + 1) >> 1);
+    s!(4, 4, (t[1] + t[2] + 1) >> 1);
+    s!(5, 6, (t[1] + t[2] + 1) >> 1);
+    s!(3, 1, (t[1] + 2 * t[2] + t[3] + 2) >> 2);
+    s!(4, 3, (t[1] + 2 * t[2] + t[3] + 2) >> 2);
+    s!(5, 5, (t[1] + 2 * t[2] + t[3] + 2) >> 2);
+    s!(6, 7, (t[1] + 2 * t[2] + t[3] + 2) >> 2);
+    s!(3, 0, (t[2] + t[3] + 1) >> 1);
+    s!(4, 2, (t[2] + t[3] + 1) >> 1);
+    s!(5, 4, (t[2] + t[3] + 1) >> 1);
+    s!(6, 6, (t[2] + t[3] + 1) >> 1);
+    s!(4, 1, (t[2] + 2 * t[3] + t[4] + 2) >> 2);
+    s!(5, 3, (t[2] + 2 * t[3] + t[4] + 2) >> 2);
+    s!(6, 5, (t[2] + 2 * t[3] + t[4] + 2) >> 2);
+    s!(7, 7, (t[2] + 2 * t[3] + t[4] + 2) >> 2);
+    s!(4, 0, (t[3] + t[4] + 1) >> 1);
+    s!(5, 2, (t[3] + t[4] + 1) >> 1);
+    s!(6, 4, (t[3] + t[4] + 1) >> 1);
+    s!(7, 6, (t[3] + t[4] + 1) >> 1);
+    s!(5, 1, (t[3] + 2 * t[4] + t[5] + 2) >> 2);
+    s!(6, 3, (t[3] + 2 * t[4] + t[5] + 2) >> 2);
+    s!(7, 5, (t[3] + 2 * t[4] + t[5] + 2) >> 2);
+    s!(5, 0, (t[4] + t[5] + 1) >> 1);
+    s!(6, 2, (t[4] + t[5] + 1) >> 1);
+    s!(7, 4, (t[4] + t[5] + 1) >> 1);
+    s!(6, 1, (t[4] + 2 * t[5] + t[6] + 2) >> 2);
+    s!(7, 3, (t[4] + 2 * t[5] + t[6] + 2) >> 2);
+    s!(6, 0, (t[5] + t[6] + 1) >> 1);
+    s!(7, 2, (t[5] + t[6] + 1) >> 1);
+    s!(7, 1, (t[5] + 2 * t[6] + t[7] + 2) >> 2);
+    s!(7, 0, (t[6] + t[7] + 1) >> 1);
+}
+
+/// 模式 6: 水平向下 (Horizontal-Down)
+fn predict_8x8_horizontal_down(
+    plane: &mut [u8],
+    stride: usize,
+    x0: usize,
+    y0: usize,
+    r: &I8x8Refs,
+) {
+    let t = &r.t;
+    let l = &r.l;
+    let lt = r.lt;
+    macro_rules! s {
+        ($x:expr, $y:expr, $v:expr) => {
+            set8(plane, stride, x0, y0, $x, $y, $v)
+        };
+    }
+    s!(0, 7, (l[6] + l[7] + 1) >> 1);
+    s!(1, 7, (l[5] + 2 * l[6] + l[7] + 2) >> 2);
+    s!(0, 6, (l[5] + l[6] + 1) >> 1);
+    s!(2, 7, (l[5] + l[6] + 1) >> 1);
+    s!(1, 6, (l[4] + 2 * l[5] + l[6] + 2) >> 2);
+    s!(3, 7, (l[4] + 2 * l[5] + l[6] + 2) >> 2);
+    s!(0, 5, (l[4] + l[5] + 1) >> 1);
+    s!(2, 6, (l[4] + l[5] + 1) >> 1);
+    s!(4, 7, (l[4] + l[5] + 1) >> 1);
+    s!(1, 5, (l[3] + 2 * l[4] + l[5] + 2) >> 2);
+    s!(3, 6, (l[3] + 2 * l[4] + l[5] + 2) >> 2);
+    s!(5, 7, (l[3] + 2 * l[4] + l[5] + 2) >> 2);
+    s!(0, 4, (l[3] + l[4] + 1) >> 1);
+    s!(2, 5, (l[3] + l[4] + 1) >> 1);
+    s!(4, 6, (l[3] + l[4] + 1) >> 1);
+    s!(6, 7, (l[3] + l[4] + 1) >> 1);
+    s!(1, 4, (l[2] + 2 * l[3] + l[4] + 2) >> 2);
+    s!(3, 5, (l[2] + 2 * l[3] + l[4] + 2) >> 2);
+    s!(5, 6, (l[2] + 2 * l[3] + l[4] + 2) >> 2);
+    s!(7, 7, (l[2] + 2 * l[3] + l[4] + 2) >> 2);
+    s!(0, 3, (l[2] + l[3] + 1) >> 1);
+    s!(2, 4, (l[2] + l[3] + 1) >> 1);
+    s!(4, 5, (l[2] + l[3] + 1) >> 1);
+    s!(6, 6, (l[2] + l[3] + 1) >> 1);
+    s!(1, 3, (l[1] + 2 * l[2] + l[3] + 2) >> 2);
+    s!(3, 4, (l[1] + 2 * l[2] + l[3] + 2) >> 2);
+    s!(5, 5, (l[1] + 2 * l[2] + l[3] + 2) >> 2);
+    s!(7, 6, (l[1] + 2 * l[2] + l[3] + 2) >> 2);
+    s!(0, 2, (l[1] + l[2] + 1) >> 1);
+    s!(2, 3, (l[1] + l[2] + 1) >> 1);
+    s!(4, 4, (l[1] + l[2] + 1) >> 1);
+    s!(6, 5, (l[1] + l[2] + 1) >> 1);
+    s!(1, 2, (l[0] + 2 * l[1] + l[2] + 2) >> 2);
+    s!(3, 3, (l[0] + 2 * l[1] + l[2] + 2) >> 2);
+    s!(5, 4, (l[0] + 2 * l[1] + l[2] + 2) >> 2);
+    s!(7, 5, (l[0] + 2 * l[1] + l[2] + 2) >> 2);
+    s!(0, 1, (l[0] + l[1] + 1) >> 1);
+    s!(2, 2, (l[0] + l[1] + 1) >> 1);
+    s!(4, 3, (l[0] + l[1] + 1) >> 1);
+    s!(6, 4, (l[0] + l[1] + 1) >> 1);
+    s!(1, 1, (lt + 2 * l[0] + l[1] + 2) >> 2);
+    s!(3, 2, (lt + 2 * l[0] + l[1] + 2) >> 2);
+    s!(5, 3, (lt + 2 * l[0] + l[1] + 2) >> 2);
+    s!(7, 4, (lt + 2 * l[0] + l[1] + 2) >> 2);
+    s!(0, 0, (lt + l[0] + 1) >> 1);
+    s!(2, 1, (lt + l[0] + 1) >> 1);
+    s!(4, 2, (lt + l[0] + 1) >> 1);
+    s!(6, 3, (lt + l[0] + 1) >> 1);
+    s!(1, 0, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(3, 1, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(5, 2, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(7, 3, (l[0] + 2 * lt + t[0] + 2) >> 2);
+    s!(2, 0, (t[1] + 2 * t[0] + lt + 2) >> 2);
+    s!(4, 1, (t[1] + 2 * t[0] + lt + 2) >> 2);
+    s!(6, 2, (t[1] + 2 * t[0] + lt + 2) >> 2);
+    s!(3, 0, (t[2] + 2 * t[1] + t[0] + 2) >> 2);
+    s!(5, 1, (t[2] + 2 * t[1] + t[0] + 2) >> 2);
+    s!(7, 2, (t[2] + 2 * t[1] + t[0] + 2) >> 2);
+    s!(4, 0, (t[3] + 2 * t[2] + t[1] + 2) >> 2);
+    s!(6, 1, (t[3] + 2 * t[2] + t[1] + 2) >> 2);
+    s!(5, 0, (t[4] + 2 * t[3] + t[2] + 2) >> 2);
+    s!(7, 1, (t[4] + 2 * t[3] + t[2] + 2) >> 2);
+    s!(6, 0, (t[5] + 2 * t[4] + t[3] + 2) >> 2);
+    s!(7, 0, (t[6] + 2 * t[5] + t[4] + 2) >> 2);
+}
+
+/// 模式 7: 垂直左 (Vertical-Left)
+fn predict_8x8_vertical_left(plane: &mut [u8], stride: usize, x0: usize, y0: usize, r: &I8x8Refs) {
+    let t = &r.t;
+    macro_rules! s {
+        ($x:expr, $y:expr, $v:expr) => {
+            set8(plane, stride, x0, y0, $x, $y, $v)
+        };
+    }
+    s!(0, 0, (t[0] + t[1] + 1) >> 1);
+    s!(0, 1, (t[0] + 2 * t[1] + t[2] + 2) >> 2);
+    s!(1, 0, (t[1] + t[2] + 1) >> 1);
+    s!(0, 2, (t[1] + t[2] + 1) >> 1);
+    s!(1, 1, (t[1] + 2 * t[2] + t[3] + 2) >> 2);
+    s!(0, 3, (t[1] + 2 * t[2] + t[3] + 2) >> 2);
+    s!(2, 0, (t[2] + t[3] + 1) >> 1);
+    s!(1, 2, (t[2] + t[3] + 1) >> 1);
+    s!(0, 4, (t[2] + t[3] + 1) >> 1);
+    s!(2, 1, (t[2] + 2 * t[3] + t[4] + 2) >> 2);
+    s!(1, 3, (t[2] + 2 * t[3] + t[4] + 2) >> 2);
+    s!(0, 5, (t[2] + 2 * t[3] + t[4] + 2) >> 2);
+    s!(3, 0, (t[3] + t[4] + 1) >> 1);
+    s!(2, 2, (t[3] + t[4] + 1) >> 1);
+    s!(1, 4, (t[3] + t[4] + 1) >> 1);
+    s!(0, 6, (t[3] + t[4] + 1) >> 1);
+    s!(3, 1, (t[3] + 2 * t[4] + t[5] + 2) >> 2);
+    s!(2, 3, (t[3] + 2 * t[4] + t[5] + 2) >> 2);
+    s!(1, 5, (t[3] + 2 * t[4] + t[5] + 2) >> 2);
+    s!(0, 7, (t[3] + 2 * t[4] + t[5] + 2) >> 2);
+    s!(4, 0, (t[4] + t[5] + 1) >> 1);
+    s!(3, 2, (t[4] + t[5] + 1) >> 1);
+    s!(2, 4, (t[4] + t[5] + 1) >> 1);
+    s!(1, 6, (t[4] + t[5] + 1) >> 1);
+    s!(4, 1, (t[4] + 2 * t[5] + t[6] + 2) >> 2);
+    s!(3, 3, (t[4] + 2 * t[5] + t[6] + 2) >> 2);
+    s!(2, 5, (t[4] + 2 * t[5] + t[6] + 2) >> 2);
+    s!(1, 7, (t[4] + 2 * t[5] + t[6] + 2) >> 2);
+    s!(5, 0, (t[5] + t[6] + 1) >> 1);
+    s!(4, 2, (t[5] + t[6] + 1) >> 1);
+    s!(3, 4, (t[5] + t[6] + 1) >> 1);
+    s!(2, 6, (t[5] + t[6] + 1) >> 1);
+    s!(5, 1, (t[5] + 2 * t[6] + t[7] + 2) >> 2);
+    s!(4, 3, (t[5] + 2 * t[6] + t[7] + 2) >> 2);
+    s!(3, 5, (t[5] + 2 * t[6] + t[7] + 2) >> 2);
+    s!(2, 7, (t[5] + 2 * t[6] + t[7] + 2) >> 2);
+    s!(6, 0, (t[6] + t[7] + 1) >> 1);
+    s!(5, 2, (t[6] + t[7] + 1) >> 1);
+    s!(4, 4, (t[6] + t[7] + 1) >> 1);
+    s!(3, 6, (t[6] + t[7] + 1) >> 1);
+    s!(6, 1, (t[6] + 2 * t[7] + t[8] + 2) >> 2);
+    s!(5, 3, (t[6] + 2 * t[7] + t[8] + 2) >> 2);
+    s!(4, 5, (t[6] + 2 * t[7] + t[8] + 2) >> 2);
+    s!(3, 7, (t[6] + 2 * t[7] + t[8] + 2) >> 2);
+    s!(7, 0, (t[7] + t[8] + 1) >> 1);
+    s!(6, 2, (t[7] + t[8] + 1) >> 1);
+    s!(5, 4, (t[7] + t[8] + 1) >> 1);
+    s!(4, 6, (t[7] + t[8] + 1) >> 1);
+    s!(7, 1, (t[7] + 2 * t[8] + t[9] + 2) >> 2);
+    s!(6, 3, (t[7] + 2 * t[8] + t[9] + 2) >> 2);
+    s!(5, 5, (t[7] + 2 * t[8] + t[9] + 2) >> 2);
+    s!(4, 7, (t[7] + 2 * t[8] + t[9] + 2) >> 2);
+    s!(7, 2, (t[8] + t[9] + 1) >> 1);
+    s!(6, 4, (t[8] + t[9] + 1) >> 1);
+    s!(5, 6, (t[8] + t[9] + 1) >> 1);
+    s!(7, 3, (t[8] + 2 * t[9] + t[10] + 2) >> 2);
+    s!(6, 5, (t[8] + 2 * t[9] + t[10] + 2) >> 2);
+    s!(5, 7, (t[8] + 2 * t[9] + t[10] + 2) >> 2);
+    s!(7, 4, (t[9] + t[10] + 1) >> 1);
+    s!(6, 6, (t[9] + t[10] + 1) >> 1);
+    s!(7, 5, (t[9] + 2 * t[10] + t[11] + 2) >> 2);
+    s!(6, 7, (t[9] + 2 * t[10] + t[11] + 2) >> 2);
+    s!(7, 6, (t[10] + t[11] + 1) >> 1);
+    s!(7, 7, (t[10] + 2 * t[11] + t[12] + 2) >> 2);
+}
+
+/// 模式 8: 水平向上 (Horizontal-Up)
+fn predict_8x8_horizontal_up(plane: &mut [u8], stride: usize, x0: usize, y0: usize, r: &I8x8Refs) {
+    let l = &r.l;
+    macro_rules! s {
+        ($x:expr, $y:expr, $v:expr) => {
+            set8(plane, stride, x0, y0, $x, $y, $v)
+        };
+    }
+    s!(0, 0, (l[0] + l[1] + 1) >> 1);
+    s!(1, 0, (l[0] + 2 * l[1] + l[2] + 2) >> 2);
+    s!(2, 0, (l[1] + l[2] + 1) >> 1);
+    s!(0, 1, (l[1] + l[2] + 1) >> 1);
+    s!(3, 0, (l[1] + 2 * l[2] + l[3] + 2) >> 2);
+    s!(1, 1, (l[1] + 2 * l[2] + l[3] + 2) >> 2);
+    s!(4, 0, (l[2] + l[3] + 1) >> 1);
+    s!(2, 1, (l[2] + l[3] + 1) >> 1);
+    s!(0, 2, (l[2] + l[3] + 1) >> 1);
+    s!(5, 0, (l[2] + 2 * l[3] + l[4] + 2) >> 2);
+    s!(3, 1, (l[2] + 2 * l[3] + l[4] + 2) >> 2);
+    s!(1, 2, (l[2] + 2 * l[3] + l[4] + 2) >> 2);
+    s!(6, 0, (l[3] + l[4] + 1) >> 1);
+    s!(4, 1, (l[3] + l[4] + 1) >> 1);
+    s!(2, 2, (l[3] + l[4] + 1) >> 1);
+    s!(0, 3, (l[3] + l[4] + 1) >> 1);
+    s!(7, 0, (l[3] + 2 * l[4] + l[5] + 2) >> 2);
+    s!(5, 1, (l[3] + 2 * l[4] + l[5] + 2) >> 2);
+    s!(3, 2, (l[3] + 2 * l[4] + l[5] + 2) >> 2);
+    s!(1, 3, (l[3] + 2 * l[4] + l[5] + 2) >> 2);
+    s!(6, 1, (l[4] + l[5] + 1) >> 1);
+    s!(4, 2, (l[4] + l[5] + 1) >> 1);
+    s!(2, 3, (l[4] + l[5] + 1) >> 1);
+    s!(0, 4, (l[4] + l[5] + 1) >> 1);
+    s!(7, 1, (l[4] + 2 * l[5] + l[6] + 2) >> 2);
+    s!(5, 2, (l[4] + 2 * l[5] + l[6] + 2) >> 2);
+    s!(3, 3, (l[4] + 2 * l[5] + l[6] + 2) >> 2);
+    s!(1, 4, (l[4] + 2 * l[5] + l[6] + 2) >> 2);
+    s!(6, 2, (l[5] + l[6] + 1) >> 1);
+    s!(4, 3, (l[5] + l[6] + 1) >> 1);
+    s!(2, 4, (l[5] + l[6] + 1) >> 1);
+    s!(0, 5, (l[5] + l[6] + 1) >> 1);
+    s!(7, 2, (l[5] + 2 * l[6] + l[7] + 2) >> 2);
+    s!(5, 3, (l[5] + 2 * l[6] + l[7] + 2) >> 2);
+    s!(3, 4, (l[5] + 2 * l[6] + l[7] + 2) >> 2);
+    s!(1, 5, (l[5] + 2 * l[6] + l[7] + 2) >> 2);
+    s!(6, 3, (l[6] + l[7] + 1) >> 1);
+    s!(4, 4, (l[6] + l[7] + 1) >> 1);
+    s!(2, 5, (l[6] + l[7] + 1) >> 1);
+    s!(0, 6, (l[6] + l[7] + 1) >> 1);
+    s!(7, 3, (l[6] + 3 * l[7] + 2) >> 2);
+    s!(5, 4, (l[6] + 3 * l[7] + 2) >> 2);
+    s!(3, 5, (l[6] + 3 * l[7] + 2) >> 2);
+    s!(1, 6, (l[6] + 3 * l[7] + 2) >> 2);
+    s!(6, 4, l[7]);
+    s!(4, 5, l[7]);
+    s!(2, 6, l[7]);
+    s!(0, 7, l[7]);
+    s!(7, 4, l[7]);
+    s!(5, 5, l[7]);
+    s!(3, 6, l[7]);
+    s!(1, 7, l[7]);
+    s!(6, 5, l[7]);
+    s!(4, 6, l[7]);
+    s!(2, 7, l[7]);
+    s!(7, 5, l[7]);
+    s!(5, 6, l[7]);
+    s!(3, 7, l[7]);
+    s!(6, 6, l[7]);
+    s!(4, 7, l[7]);
+    s!(7, 6, l[7]);
+    s!(5, 7, l[7]);
+    s!(6, 7, l[7]);
+    s!(7, 7, l[7]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{predict_4x4, predict_16x16, predict_chroma_8x8};
@@ -1324,5 +2045,217 @@ mod tests {
         assert_eq!(b1[0][0], 40, "mode1 首像素应来自左样本");
         assert_eq!(b2[0][0], 20, "mode2 首像素应来自上样本");
         assert_eq!(b3[0][0], 23, "mode3 首像素应来自 plane 预测结果");
+    }
+
+    // ===== Intra 8x8 预测测试 =====
+
+    /// 辅助: 读取 8x8 块内容
+    fn read_block_8x8_intra(plane: &[u8], stride: usize, x0: usize, y0: usize) -> [[u8; 8]; 8] {
+        let mut out = [[0u8; 8]; 8];
+        for dy in 0..8 {
+            for dx in 0..8 {
+                out[dy][dx] = plane[(y0 + dy) * stride + x0 + dx];
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn test_intra8x8_mode2_dc_no_neighbors_gives_128() {
+        // 模式 2 (DC): 无上无左时填充 128
+        let stride = 32;
+        let x0 = 0;
+        let y0 = 0;
+        let mut plane = vec![200u8; stride * 32];
+
+        super::predict_8x8(
+            &mut plane,
+            stride,
+            x0,
+            y0,
+            2,
+            &super::I8x8Avail {
+                has_left: false,
+                has_top: false,
+                has_topleft: false,
+                has_topright: false,
+            },
+        );
+        let got = read_block_8x8_intra(&plane, stride, x0, y0);
+        for row in &got {
+            assert_eq!(row, &[128u8; 8], "无邻居时 DC 预测应填充 128");
+        }
+    }
+
+    #[test]
+    fn test_intra8x8_mode2_dc_top_only() {
+        // 模式 2 (DC): 仅上方可用, DC = (sum_top + 4) >> 3
+        let stride = 32;
+        let x0 = 8;
+        let y0 = 8;
+        let mut plane = vec![0u8; stride * 32];
+        // 设置上方 8 个参考像素均为 16 (无滤波时 DC = (8*16+4)>>3 = 16)
+        // 经过低通滤波后值不变 (相邻值相同)
+        for dx in 0..8 {
+            plane[(y0 - 1) * stride + x0 + dx] = 16;
+        }
+        // 需要左上角为 16 (has_topleft=true 情况下)
+        plane[(y0 - 1) * stride + x0 - 1] = 16;
+
+        super::predict_8x8(
+            &mut plane,
+            stride,
+            x0,
+            y0,
+            2,
+            &super::I8x8Avail {
+                has_left: false,
+                has_top: true,
+                has_topleft: true,
+                has_topright: false,
+            },
+        );
+        let got = read_block_8x8_intra(&plane, stride, x0, y0);
+        // 滤波后所有 t[] = 16, DC = (8*16+4)>>3 = 16
+        for row in &got {
+            for &v in row {
+                assert_eq!(v, 16, "DC 预测: 仅上方可用时应填充上方均值");
+            }
+        }
+    }
+
+    #[test]
+    fn test_intra8x8_mode0_vertical_copies_top() {
+        // 模式 0 (垂直): 各列从上方样本复制
+        let stride = 32;
+        let x0 = 8;
+        let y0 = 8;
+        let mut plane = vec![0u8; stride * 32];
+        let top_row: [u8; 10] = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+        for dx in 0..10 {
+            plane[(y0 - 1) * stride + x0 + dx - 1] = top_row[dx];
+        }
+
+        super::predict_8x8(
+            &mut plane,
+            stride,
+            x0,
+            y0,
+            0,
+            &super::I8x8Avail {
+                has_left: false,
+                has_top: true,
+                has_topleft: true,
+                has_topright: true,
+            },
+        );
+        let got = read_block_8x8_intra(&plane, stride, x0, y0);
+
+        // 验证每列的值应来自上方 (经过滤波)
+        // 至少首行所有列值应相同 (来自 top)
+        let first_row = got[0];
+        for row in got[1..].iter() {
+            assert_eq!(*row, first_row, "垂直预测: 每行应与第一行相同");
+        }
+    }
+
+    #[test]
+    fn test_intra8x8_mode1_horizontal_copies_left() {
+        // 模式 1 (水平): 各行从左侧样本复制
+        let stride = 32;
+        let x0 = 8;
+        let y0 = 8;
+        let mut plane = vec![0u8; stride * 32];
+        for dy in 0..9 {
+            plane[(y0 + dy - 1) * stride + x0 - 1] = (dy * 10) as u8;
+        }
+
+        super::predict_8x8(
+            &mut plane,
+            stride,
+            x0,
+            y0,
+            1,
+            &super::I8x8Avail {
+                has_left: true,
+                has_top: false,
+                has_topleft: false,
+                has_topright: false,
+            },
+        );
+        let got = read_block_8x8_intra(&plane, stride, x0, y0);
+
+        // 水平预测: 每行所有像素相同 (来自左侧)
+        for row in &got {
+            let v = row[0];
+            for &p in row {
+                assert_eq!(p, v, "水平预测: 每行内所有像素应相同");
+            }
+        }
+    }
+
+    #[test]
+    fn test_intra8x8_no_top_falls_back_for_mode0() {
+        // 模式 0 (垂直): 无上方时回退为 128
+        let stride = 16;
+        let x0 = 0;
+        let y0 = 0;
+        let mut plane = vec![99u8; stride * 16];
+
+        super::predict_8x8(
+            &mut plane,
+            stride,
+            x0,
+            y0,
+            0,
+            &super::I8x8Avail {
+                has_left: false,
+                has_top: false,
+                has_topleft: false,
+                has_topright: false,
+            },
+        );
+        let got = read_block_8x8_intra(&plane, stride, x0, y0);
+        for row in &got {
+            assert_eq!(row, &[128u8; 8], "无上方邻居时垂直预测应回退为 128");
+        }
+    }
+
+    #[test]
+    fn test_intra8x8_dispatch_covers_all_modes() {
+        // 覆盖测试: 所有 9 种模式均可调用, 无崩溃
+        let stride = 32;
+        let x0 = 8;
+        let y0 = 8;
+        for mode in 0u8..9 {
+            let mut plane = vec![128u8; stride * 32];
+            // 设置充分的边界参考
+            for dx in 0..16 {
+                plane[(y0 - 1) * stride + x0 + dx] = 100 + dx as u8;
+            }
+            for dy in 0..8 {
+                plane[(y0 + dy) * stride + x0 - 1] = 50 + dy as u8;
+            }
+            plane[(y0 - 1) * stride + x0 - 1] = 80;
+            super::predict_8x8(
+                &mut plane,
+                stride,
+                x0,
+                y0,
+                mode,
+                &super::I8x8Avail {
+                    has_left: true,
+                    has_top: true,
+                    has_topleft: true,
+                    has_topright: true,
+                },
+            );
+            // 仅验证不崩溃且输出范围合法
+            let got = read_block_8x8_intra(&plane, stride, x0, y0);
+            for row in &got {
+                // u8 值始终在 [0,255] 范围内, 此处仅验证函数正常运行不崩溃
+                let _ = row;
+            }
+        }
     }
 }

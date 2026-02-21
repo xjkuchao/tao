@@ -143,6 +143,9 @@ pub fn build_test_decoder() -> H264Decoder {
         cbf_chroma_dc_u: Vec::new(),
         cbf_chroma_dc_v: Vec::new(),
         i4x4_modes: Vec::new(),
+        nz_count_luma: Vec::new(),
+        nz_count_chroma_u: Vec::new(),
+        nz_count_chroma_v: Vec::new(),
         prev_qp_delta_nz: false,
         mv_l0_x: Vec::new(),
         mv_l0_y: Vec::new(),
@@ -473,6 +476,40 @@ pub fn build_rbsp_from_exp_golomb(values: &[ExpGolombValue]) -> Vec<u8> {
             ExpGolombValue::Se(v) => write_se(&mut bits, *v),
         }
     }
+    bits_to_bytes(&bits)
+}
+
+/// 在 exp_golomb 序列后追加若干比特再转为 RBSP 字节 (用于在 Inter MB 后接 I_4x4 尾等).
+pub fn build_rbsp_from_exp_golomb_with_tail(
+    values: &[ExpGolombValue],
+    tail_bits: &[bool],
+) -> Vec<u8> {
+    let mut bits = Vec::new();
+    for value in values {
+        match value {
+            ExpGolombValue::Ue(v) => write_ue(&mut bits, *v),
+            ExpGolombValue::Se(v) => write_se(&mut bits, *v),
+        }
+    }
+    bits.extend(tail_bits);
+    bits_to_bytes(&bits)
+}
+
+/// I_16x16 无残差时的最小尾比特 (raw_mb_type=1: pred_mode=0, cbp_chroma=0, cbp_luma=0):
+/// intra_chroma_pred_mode ue(0), mb_qp_delta se(0), luma DC 块 coeff_token 全零 "1".
+pub fn i16x16_minimal_tail_bits() -> Vec<bool> {
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 0);
+    write_se(&mut bits, 0);
+    bits.push(true); // coeff_token nC=0 total_coeff=0
+    bits
+}
+
+/// I-slice 单宏块最小路径: 一个 I_16x16 宏块 (mb_type=1) 且无残差, 使 mb_types[0]=1.
+pub fn build_rbsp_i_slice_one_i16x16_minimal() -> Vec<u8> {
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 1);
+    bits.extend(i16x16_minimal_tail_bits());
     bits_to_bytes(&bits)
 }
 

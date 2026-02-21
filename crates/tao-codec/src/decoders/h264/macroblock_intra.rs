@@ -192,20 +192,32 @@ impl H264Decoder {
 
         // 5. 应用真正的预测 (根据预测模式)
         if use_8x8 {
-            for block_y in 0..2 {
-                for block_x in 0..2 {
+            for block_y in 0..2usize {
+                for block_x in 0..2usize {
                     let mode = pred_modes_8x8[block_y * 2 + block_x];
-                    for sub_y in 0..2 {
-                        for sub_x in 0..2 {
-                            intra::predict_4x4(
-                                &mut self.ref_y,
-                                self.stride_y,
-                                mb_x * 16 + (block_x * 2 + sub_x) * 4,
-                                mb_y * 16 + (block_y * 2 + sub_y) * 4,
-                                mode,
-                            );
-                        }
-                    }
+                    let px = mb_x * 16 + block_x * 8;
+                    let py = mb_y * 16 + block_y * 8;
+                    let avail = intra::I8x8Avail {
+                        has_left: mb_x > 0 || block_x > 0,
+                        has_top: mb_y > 0 || block_y > 0,
+                        // 左上角: 同宏块内有上方块时可用, 或来自上方宏块
+                        has_topleft: if block_x == 0 && block_y == 0 {
+                            mb_x > 0 && mb_y > 0
+                        } else if block_x > 0 && block_y == 0 {
+                            mb_y > 0
+                        } else if block_x == 0 && block_y > 0 {
+                            mb_x > 0
+                        } else {
+                            true // 右下块: 左上角是本宏块内部
+                        },
+                        // 右上角: 同行内右侧 8x8 块存在, 或来自上方宏块右上
+                        has_topright: if block_y == 0 {
+                            mb_y > 0 && block_x == 0
+                        } else {
+                            block_x == 0
+                        },
+                    };
+                    intra::predict_8x8(&mut self.ref_y, self.stride_y, px, py, mode, &avail);
                 }
             }
         }

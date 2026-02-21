@@ -1,6 +1,7 @@
 # H264 解码器 -- 功能开发计划
 
 > 关联文档:
+>
 > - 精度收敛: `decoder_accuracy.md`
 > - 性能优化: `decoder_perf.md`
 > - 诊断日志: `diagnosis_log.md`
@@ -21,7 +22,8 @@ crates/tao-codec/src/decoders/h264/
 ├── cabac.rs             # CABAC 引擎
 ├── cabac_init_ext.rs    # CABAC 扩展初始化表(ctxIdx 460-1011)
 ├── cabac_init_pb.rs     # CABAC P/B-slice 初始化表
-├── cavlc.rs             # CAVLC 残差系数解码(待新建)
+├── cavlc.rs             # CAVLC 残差系数解码
+├── cavlc_mb.rs          # CAVLC 宏块级语法与残差解码
 ├── common.rs            # 通用工具(Exp-Golomb/QP/采样)
 ├── config.rs            # avcC 配置解析
 ├── deblock.rs           # 去块滤波
@@ -108,7 +110,7 @@ crates/tao-codec/src/decoders/h264/
     - [ ] `I_16x16`: DC(cat=0, Hadamard) + AC(cat=1, 15 系数), 对齐子块遍历顺序.
     - [ ] `I_PCM`: 字节对齐 + 像素读取 + CABAC 重启.
     - [ ] coded_block_pattern: luma(4b) + chroma(2b) + 邻居上下文.
-    - [ ] mb_qp_delta: 一元编码(上限 2*QP_MAX) + prev 上下文.
+    - [ ] mb_qp_delta: 一元编码(上限 2\*QP_MAX) + prev 上下文.
     - [ ] intra_chroma_pred_mode: 截断一元(0-3) + 邻居上下文.
     - [ ] I-slice 全类型 CABAC 单测.
 - [ ] P-slice 完整语法.
@@ -137,19 +139,21 @@ crates/tao-codec/src/decoders/h264/
 
 - [x] 宏块级语法(mb_skip_run/mb_type/sub_mb_type/ref_idx/mvd).
 - [x] P-slice 全类型 + B-slice 全类型.
-- [ ] 残差系数解码.
-    - [ ] coeff_token(nC 上下文 + VLC 查表, 含 chroma DC 专用表).
-    - [ ] trailing_ones_sign_flag.
-    - [ ] level 系数码(前缀/后缀 + suffixLength 自适应).
-    - [ ] total_zeros(VLC 查表, 含 chroma DC 专用表).
-    - [ ] run_before(VLC 查表).
-    - [ ] 反扫描重建(Zig-Zag 4x4/8x8).
-    - [ ] 反量化 + IDCT 接入.
-    - [ ] 残差系数解码单测(DC/AC/8x8).
-- [ ] CAVLC coded_block_pattern(Intra/Inter 两套 VLC 映射).
-- [ ] CAVLC mb_qp_delta(有符号 Exp-Golomb).
-- [ ] CAVLC intra_chroma_pred_mode(无符号 Exp-Golomb).
-- [ ] CAVLC transform_size_8x8_flag(单 bit).
+- [x] 残差系数解码.
+    - [x] coeff_token(nC 上下文 + VLC 查表, 含 chroma DC 专用表).
+    - [x] trailing_ones_sign_flag.
+    - [x] level 系数码(前缀/后缀 + suffixLength 自适应).
+    - [x] total_zeros(VLC 查表, 含 chroma DC 专用表).
+    - [x] run_before(VLC 查表).
+    - [x] 反扫描重建(Zig-Zag 4x4).
+    - [x] 反量化 + IDCT 接入.
+    - [x] 残差系数解码单测(coeff_token/total_zeros/run_before/level_prefix/残差块).
+- [x] CAVLC coded_block_pattern(Intra/Inter 两套 VLC 映射).
+- [x] CAVLC mb_qp_delta(有符号 Exp-Golomb).
+- [x] CAVLC intra_chroma_pred_mode(无符号 Exp-Golomb).
+- [ ] CAVLC transform_size_8x8_flag(单 bit, 待 Intra 8x8 完善后接入).
+- [x] CAVLC I/P/B 路径残差接入(I_4x4/I_16x16/I_PCM/Inter 全类型).
+- [ ] CAVLC 8x8 反扫描 + 残差(待 Intra 8x8 完善后接入).
 - 验收: CABAC/CAVLC 双模式下 I/P/B 均完整重建, 无占位回退.
 
 #### P3.4 残差逆变换/反量化
@@ -306,18 +310,18 @@ crates/tao-codec/src/decoders/h264/
 
 ### 目标范围
 
-| 功能 | 说明 |
-| --- | --- |
-| Profile | Constrained Baseline / Main / High |
-| 色度 | 4:2:0 + 8-bit |
-| Slice | I/P/B 含 Skip/Direct |
-| 熵编码 | CABAC + CAVLC 完整 |
-| 帧内 | 4x4(9) + 8x8(9) + 16x16(4) + 色度(4) |
-| 帧间 | 全分区 + Direct(Spatial+Temporal) + 隐式/显式加权 |
-| 变换 | 4x4/8x8 IDCT + Hadamard + 自定义量化矩阵 |
-| 去块 | 完整 BS(4x4 级) + alpha/beta/tc0 |
-| DPB | type0/1/2 + MMCO(含 op5) + 滑动窗口 |
-| SEI | recovery_point / pic_timing / buffering_period |
+| 功能    | 说明                                              |
+| ------- | ------------------------------------------------- |
+| Profile | Constrained Baseline / Main / High                |
+| 色度    | 4:2:0 + 8-bit                                     |
+| Slice   | I/P/B 含 Skip/Direct                              |
+| 熵编码  | CABAC + CAVLC 完整                                |
+| 帧内    | 4x4(9) + 8x8(9) + 16x16(4) + 色度(4)              |
+| 帧间    | 全分区 + Direct(Spatial+Temporal) + 隐式/显式加权 |
+| 变换    | 4x4/8x8 IDCT + Hadamard + 自定义量化矩阵          |
+| 去块    | 完整 BS(4x4 级) + alpha/beta/tc0                  |
+| DPB     | type0/1/2 + MMCO(含 op5) + 滑动窗口               |
+| SEI     | recovery_point / pic_timing / buffering_period    |
 
 ### 非目标(与 FFmpeg 一致)
 

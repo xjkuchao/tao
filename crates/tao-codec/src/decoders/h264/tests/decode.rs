@@ -435,8 +435,11 @@ fn test_decode_cavlc_slice_data_p_non_skip_intra_mb_type() {
     header.slice_type = 0; // P slice
     header.data_bit_offset = 0;
 
-    // mb_skip_run = 0, mb_type = 5(I_4x4 in P-slice domain)
-    let rbsp = build_rbsp_from_ues(&[0, 5]);
+    // mb_skip_run = 0, mb_type = 6(I_16x16 in P-slice domain), 后接 I_16x16 最小尾
+    let rbsp = build_rbsp_from_exp_golomb_with_tail(
+        &[ExpGolombValue::Ue(0), ExpGolombValue::Ue(6)],
+        &i16x16_minimal_tail_bits(),
+    );
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(
         dec.mb_types[0], 1,
@@ -481,9 +484,21 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_ref_idx_l0_mvd_alignment() {
     header.data_bit_offset = 0;
     header.num_ref_idx_l0 = 2;
 
-    // mb0: skip_run=0, mb_type=0(P_L0_16x16), ref_idx_l0=1, mvd=(0,0)
-    // mb1: skip_run=0, mb_type=5(I 宏块), 用于验证 mvd 语法消费对齐。
-    let rbsp = build_rbsp_from_exp_golomb(&[Ue(0), Ue(0), Ue(1), Se(0), Se(0), Ue(0), Ue(5)]);
+    // mb0: skip_run=0, mb_type=0(P_L0_16x16), ref_idx_l0=1, mvd=(0,0), CBP=0
+    // mb1: skip_run=0, mb_type=6(I_16x16), 后接 I_16x16 最小尾, 用于验证 mvd 语法消费对齐。
+    let rbsp = build_rbsp_from_exp_golomb_with_tail(
+        &[
+            Ue(0),
+            Ue(0),
+            Ue(1),
+            Se(0),
+            Se(0),
+            Ue(0), // CBP=0
+            Ue(0),
+            Ue(6),
+        ],
+        &i16x16_minimal_tail_bits(),
+    );
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(dec.ref_y[0], 90, "P_L0_16x16 应按 ref_idx_l0 选择参考帧");
     assert_eq!(dec.mb_types[1], 1, "第二个宏块应解析为帧内宏块");
@@ -648,30 +663,33 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_ref_idx_and_alignment() {
     header.num_ref_idx_l0 = 2;
 
     // mb0: skip_run=0, mb_type=3(P_8x8), 四个 sub_mb_type=0, ref_idx=[0,1,1,0]
-    // 并为每个子分区提供 mvd=(0,0), 验证语法消费顺序。
-    // mb1: skip_run=0, mb_type=5(I 宏块), 用于验证前一宏块语法消费对齐正确。
-    let rbsp = build_rbsp_from_exp_golomb(&[
-        Ue(0),
-        Ue(3),
-        Ue(0),
-        Ue(0),
-        Ue(0),
-        Ue(0),
-        Ue(0),
-        Ue(1),
-        Ue(1),
-        Ue(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Ue(0),
-        Ue(5),
-    ]);
+    // 并为每个子分区提供 mvd=(0,0), CBP=0; mb1: skip_run=0, mb_type=6(I_16x16), 后接 I_16x16 最小尾.
+    let rbsp = build_rbsp_from_exp_golomb_with_tail(
+        &[
+            Ue(0),
+            Ue(3),
+            Ue(0),
+            Ue(0),
+            Ue(0),
+            Ue(0),
+            Ue(0),
+            Ue(1),
+            Ue(1),
+            Ue(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Ue(0), // CBP=0
+            Ue(0),
+            Ue(6),
+        ],
+        &i16x16_minimal_tail_bits(),
+    );
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(dec.mb_types[0], 203, "P_8x8 宏块应标记为互预测类型");
@@ -744,26 +762,29 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8ref0_no_ref_idx_parse() {
     header.num_ref_idx_l0 = 2;
 
     // mb0: skip_run=0, mb_type=4(P_8x8ref0), 四个 sub_mb_type=0, 不应读取 ref_idx
-    // 仍需读取每个子分区 mvd=(0,0), 用于验证语法对齐。
-    // mb1: skip_run=0, mb_type=5(I 宏块), 用于验证语法对齐。
-    let rbsp = build_rbsp_from_exp_golomb(&[
-        Ue(0),
-        Ue(4),
-        Ue(0),
-        Ue(0),
-        Ue(0),
-        Ue(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Ue(0),
-        Ue(5),
-    ]);
+    // 仍需读取每个子分区 mvd=(0,0), CBP=0; mb1: skip_run=0, mb_type=6(I_16x16), 后接 I_16x16 最小尾.
+    let rbsp = build_rbsp_from_exp_golomb_with_tail(
+        &[
+            Ue(0),
+            Ue(4),
+            Ue(0),
+            Ue(0),
+            Ue(0),
+            Ue(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Ue(0), // CBP=0
+            Ue(0),
+            Ue(6),
+        ],
+        &i16x16_minimal_tail_bits(),
+    );
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(dec.mb_types[0], 203, "P_8x8ref0 宏块应标记为互预测类型");
@@ -793,8 +814,8 @@ fn test_decode_cavlc_slice_data_i_minimal_intra_predict() {
     header.slice_type = 2; // I slice
     header.data_bit_offset = 0;
 
-    // mb_type = ue(0), 最小 I 宏块路径
-    let rbsp = build_rbsp_from_ues(&[0]);
+    // mb_type = ue(1) (I_16x16), 后接最小 I_16x16 语法: chroma ue(0), qp_delta se(0), luma DC 全零
+    let rbsp = build_rbsp_i_slice_one_i16x16_minimal();
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(dec.ref_y[0], 128, "I-slice 最小路径应执行帧内预测");
     assert_eq!(dec.mb_types[0], 1, "I-slice 最小路径应标记为帧内宏块");

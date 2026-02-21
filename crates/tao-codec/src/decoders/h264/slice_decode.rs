@@ -272,39 +272,18 @@ impl H264Decoder {
 
         let is_i = header.slice_type == 2 || header.slice_type == 4;
         let is_b = header.slice_type == 1;
+        let mut cur_qp = header.slice_qp;
+        self.prev_qp_delta_nz = false;
         if is_i {
             for mb_idx in first..total_mbs {
                 self.mark_mb_slice_first_mb(mb_idx, header.first_mb);
-                let _mb_type = read_ue(&mut br).unwrap_or(0);
-                self.mb_types[mb_idx] = 1;
-                self.mb_cbp[mb_idx] = 0;
+                if !has_more_rbsp_data(&mut br) {
+                    break;
+                }
+                let mb_type = read_ue(&mut br).unwrap_or(0) as u32;
                 let mb_x = mb_idx % self.mb_width;
                 let mb_y = mb_idx / self.mb_width;
-                intra::predict_16x16(
-                    &mut self.ref_y,
-                    self.stride_y,
-                    mb_x * 16,
-                    mb_y * 16,
-                    2,
-                    mb_x > 0,
-                    mb_y > 0,
-                );
-                intra::predict_chroma_dc(
-                    &mut self.ref_u,
-                    self.stride_c,
-                    mb_x * 8,
-                    mb_y * 8,
-                    mb_x > 0,
-                    mb_y > 0,
-                );
-                intra::predict_chroma_dc(
-                    &mut self.ref_v,
-                    self.stride_c,
-                    mb_x * 8,
-                    mb_y * 8,
-                    mb_x > 0,
-                    mb_y > 0,
-                );
+                self.decode_cavlc_i_mb(&mut br, mb_x, mb_y, mb_type, &mut cur_qp);
             }
             return;
         }
@@ -645,6 +624,8 @@ impl H264Decoder {
                                 }
                             }
                         }
+                        // B_8x8 Inter 残差
+                        self.decode_cavlc_mb_residual(&mut br, mb_x, mb_y, &mut cur_qp, false);
                         continue;
                     }
 
@@ -780,6 +761,8 @@ impl H264Decoder {
                                 16,
                             );
                         }
+                        // B_16x8/B_8x16 Inter 残差
+                        self.decode_cavlc_mb_residual(&mut br, mb_x, mb_y, &mut cur_qp, false);
                         continue;
                     }
 
@@ -840,65 +823,20 @@ impl H264Decoder {
                         16,
                         16,
                     );
+                    // B_Direct/B_L0/B_L1/B_Bi 16x16 Inter 残差
+                    self.decode_cavlc_mb_residual(&mut br, mb_x, mb_y, &mut cur_qp, false);
                 } else {
-                    self.mb_types[mb_idx] = 1;
-                    self.mb_cbp[mb_idx] = 0;
-                    intra::predict_16x16(
-                        &mut self.ref_y,
-                        self.stride_y,
-                        mb_x * 16,
-                        mb_y * 16,
-                        2,
-                        mb_x > 0,
-                        mb_y > 0,
-                    );
-                    intra::predict_chroma_dc(
-                        &mut self.ref_u,
-                        self.stride_c,
-                        mb_x * 8,
-                        mb_y * 8,
-                        mb_x > 0,
-                        mb_y > 0,
-                    );
-                    intra::predict_chroma_dc(
-                        &mut self.ref_v,
-                        self.stride_c,
-                        mb_x * 8,
-                        mb_y * 8,
-                        mb_x > 0,
-                        mb_y > 0,
-                    );
+                    // B-slice 中的 Intra MB: mb_type - 23 映射到 I mb_type
+                    let i_mb_type = mb_type - 23;
+                    self.decode_cavlc_i_mb(&mut br, mb_x, mb_y, i_mb_type, &mut cur_qp);
                 }
                 continue;
             }
             self.mb_cbp[mb_idx] = 0;
             if mb_type >= 5 {
-                self.mb_types[mb_idx] = 1;
-                intra::predict_16x16(
-                    &mut self.ref_y,
-                    self.stride_y,
-                    mb_x * 16,
-                    mb_y * 16,
-                    2,
-                    mb_x > 0,
-                    mb_y > 0,
-                );
-                intra::predict_chroma_dc(
-                    &mut self.ref_u,
-                    self.stride_c,
-                    mb_x * 8,
-                    mb_y * 8,
-                    mb_x > 0,
-                    mb_y > 0,
-                );
-                intra::predict_chroma_dc(
-                    &mut self.ref_v,
-                    self.stride_c,
-                    mb_x * 8,
-                    mb_y * 8,
-                    mb_x > 0,
-                    mb_y > 0,
-                );
+                // P-slice 中的 Intra MB: mb_type - 5 映射到 I mb_type
+                let i_mb_type = mb_type - 5;
+                self.decode_cavlc_i_mb(&mut br, mb_x, mb_y, i_mb_type, &mut cur_qp);
             } else {
                 self.mb_types[mb_idx] = 200u8.saturating_add((mb_type as u8).min(3));
                 let base_x = mb_x * 16;
@@ -1356,6 +1294,8 @@ impl H264Decoder {
                 self.mv_l0_x[mb_idx] = final_mv_x.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
                 self.mv_l0_y[mb_idx] = final_mv_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
                 self.ref_idx_l0[mb_idx] = final_ref_idx.min(i8::MAX as u32) as i8;
+                // Inter MB 残差解码
+                self.decode_cavlc_mb_residual(&mut br, mb_x, mb_y, &mut cur_qp, false);
             }
         }
     }

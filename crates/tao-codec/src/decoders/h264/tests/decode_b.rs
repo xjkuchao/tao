@@ -88,6 +88,7 @@ fn test_decode_cavlc_slice_data_b_skip_run_uses_predicted_mv_from_left_neighbor(
         Ue(1), // mb0: mb_type=1(B_L0_16x16)
         Se(4),
         Se(0), // mb0: mvd=(+1px,0)
+        Ue(0), // mb0: CBP=0
         Ue(1), // mb1: skip_run=1
     ]);
     dec.decode_cavlc_slice_data(&rbsp, &header);
@@ -122,9 +123,10 @@ fn test_decode_cavlc_slice_data_b_non_skip_direct_uses_predicted_mv_from_left_ne
         Ue(1), // mb0: mb_type=1(B_L0_16x16)
         Se(4),
         Se(0), // mb0: mvd=(+1px,0)
+        Ue(0), // mb0: CBP=0
         Ue(0), // mb1: skip_run=0
         Ue(0), // mb1: mb_type=0(B_Direct_16x16)
-        Ue(0), // 占位尾码, 避免 mb_type=0 的单比特编码被误判为 rbsp_trailing_bits
+        Ue(0), // mb1: CBP=0
     ]);
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
@@ -351,20 +353,24 @@ fn test_decode_cavlc_slice_data_b_non_skip_bi_16x16_ref_idx_alignment() {
     header.num_ref_idx_l0 = 2;
     header.num_ref_idx_l1 = 2;
 
-    // mb0: skip_run=0, mb_type=3(B_Bi_16x16), ref_idx_l0=1, ref_idx_l1=1, mvd_l0/mvd_l1 均为 0
-    // mb1: skip_run=0, mb_type=23(intra), 用于验证语法消费对齐。
-    let rbsp = build_rbsp_from_exp_golomb(&[
-        Ue(0),
-        Ue(3),
-        Ue(1),
-        Ue(1),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Ue(0),
-        Ue(23),
-    ]);
+    // mb0: skip_run=0, mb_type=3(B_Bi_16x16), ref_idx_l0=1, ref_idx_l1=1, mvd_l0/mvd_l1 均为 0, CBP=0
+    // mb1: skip_run=0, mb_type=23(intra), 后接 I_4x4 最小尾.
+    let rbsp = build_rbsp_from_exp_golomb_with_tail(
+        &[
+            Ue(0),
+            Ue(3),
+            Ue(1),
+            Ue(1),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Ue(0), // CBP=0
+            Ue(0),
+            Ue(24),
+        ],
+        &i16x16_minimal_tail_bits(),
+    );
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(dec.ref_y[0], 99, "首个 B_Bi_16x16 应按 ref_idx 选择参考");
     assert_eq!(dec.mb_types[1], 1, "第二个宏块应解析为帧内宏块");
@@ -388,20 +394,24 @@ fn test_decode_cavlc_slice_data_b_non_skip_bi_16x16_mvd_alignment() {
     header.num_ref_idx_l0 = 2;
     header.num_ref_idx_l1 = 2;
 
-    // mb0: skip_run=0, mb_type=3(B_Bi_16x16), ref_idx_l0=1, ref_idx_l1=1, mvd_l0=(2,-1), mvd_l1=(-2,1)
-    // mb1: skip_run=0, mb_type=23(intra), 用于验证 mvd 语法消费对齐。
-    let rbsp = build_rbsp_from_exp_golomb(&[
-        Ue(0),
-        Ue(3),
-        Ue(1),
-        Ue(1),
-        Se(2),
-        Se(-1),
-        Se(-2),
-        Se(1),
-        Ue(0),
-        Ue(23),
-    ]);
+    // mb0: skip_run=0, mb_type=3(B_Bi_16x16), ref_idx_l0=1, ref_idx_l1=1, mvd_l0=(2,-1), mvd_l1=(-2,1), CBP=0
+    // mb1: skip_run=0, mb_type=23(intra), 后接 I_4x4 最小尾.
+    let rbsp = build_rbsp_from_exp_golomb_with_tail(
+        &[
+            Ue(0),
+            Ue(3),
+            Ue(1),
+            Ue(1),
+            Se(2),
+            Se(-1),
+            Se(-2),
+            Se(1),
+            Ue(0), // CBP=0
+            Ue(0),
+            Ue(24),
+        ],
+        &i16x16_minimal_tail_bits(),
+    );
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(dec.ref_y[0], 99, "B_Bi_16x16 应按 ref_idx 选择参考帧");
@@ -426,20 +436,24 @@ fn test_decode_cavlc_slice_data_b_non_skip_b_l0_l1_16x8_ref_idx_alignment() {
     header.num_ref_idx_l0 = 2;
     header.num_ref_idx_l1 = 2;
 
-    // mb0: skip_run=0, mb_type=8(B_L0_L1_16x8), top(ref_idx_l0=0,mvd=0), bottom(ref_idx_l1=0,mvd=0)
-    // mb1: skip_run=0, mb_type=23(intra), 用于验证语法消费对齐。
-    let rbsp = build_rbsp_from_exp_golomb(&[
-        Ue(0),
-        Ue(8),
-        Ue(0),
-        Ue(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Ue(0),
-        Ue(23),
-    ]);
+    // mb0: skip_run=0, mb_type=8(B_L0_L1_16x8), top(ref_idx_l0=0,mvd=0), bottom(ref_idx_l1=0,mvd=0), CBP=0
+    // mb1: skip_run=0, mb_type=23(intra), 后接 I_4x4 最小尾.
+    let rbsp = build_rbsp_from_exp_golomb_with_tail(
+        &[
+            Ue(0),
+            Ue(8),
+            Ue(0),
+            Ue(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Ue(0), // CBP=0
+            Ue(0),
+            Ue(24),
+        ],
+        &i16x16_minimal_tail_bits(),
+    );
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(dec.ref_y[0], 20, "上半分区应使用 L0 ref_idx=0");
@@ -475,20 +489,24 @@ fn test_decode_cavlc_slice_data_b_non_skip_b_l0_l1_16x8_mvd_alignment() {
     header.num_ref_idx_l0 = 2;
     header.num_ref_idx_l1 = 2;
 
-    // mb0: skip_run=0, mb_type=8(B_L0_L1_16x8), top(ref_idx_l0=0,mvd=(1,0)), bottom(ref_idx_l1=0,mvd=(-1,0))
-    // mb1: skip_run=0, mb_type=23(intra), 用于验证 mvd 语法消费对齐。
-    let rbsp = build_rbsp_from_exp_golomb(&[
-        Ue(0),
-        Ue(8),
-        Ue(0),
-        Ue(0),
-        Se(1),
-        Se(0),
-        Se(-1),
-        Se(0),
-        Ue(0),
-        Ue(23),
-    ]);
+    // mb0: skip_run=0, mb_type=8(B_L0_L1_16x8), top(ref_idx_l0=0,mvd=(1,0)), bottom(ref_idx_l1=0,mvd=(-1,0)), CBP=0
+    // mb1: skip_run=0, mb_type=23(intra), 后接 I_4x4 最小尾.
+    let rbsp = build_rbsp_from_exp_golomb_with_tail(
+        &[
+            Ue(0),
+            Ue(8),
+            Ue(0),
+            Ue(0),
+            Se(1),
+            Se(0),
+            Se(-1),
+            Se(0),
+            Ue(0), // CBP=0
+            Ue(0),
+            Ue(24),
+        ],
+        &i16x16_minimal_tail_bits(),
+    );
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(dec.ref_y[0], 20, "上半分区应使用 L0 ref_idx=0");
@@ -518,22 +536,24 @@ fn test_decode_cavlc_slice_data_b_non_skip_b_l0_l1_16x8_grouped_syntax_alignment
     header.num_ref_idx_l0 = 2;
     header.num_ref_idx_l1 = 2;
 
-    // mb0: skip_run=0, mb_type=8(B_L0_L1_16x8)
-    // 语法顺序要求: ref_idx_l0(part0) -> ref_idx_l1(part1) -> mvd_l0(part0) -> mvd_l1(part1)。
-    // 这里将 bottom 的 ref_idx_l1 设为 1, 若顺序错误会被 mvd 码字污染并落回错误参考帧。
-    // mb1: skip_run=0, mb_type=23(intra), 用于验证位流仍保持对齐。
-    let rbsp = build_rbsp_from_exp_golomb(&[
-        Ue(0),
-        Ue(8),
-        Ue(0),
-        Ue(1),
-        Se(2),
-        Se(0),
-        Se(0),
-        Se(0),
-        Ue(0),
-        Ue(23),
-    ]);
+    // mb0: skip_run=0, mb_type=8(B_L0_L1_16x8), 语法顺序 ref_idx_l0 -> ref_idx_l1 -> mvd_l0 -> mvd_l1, CBP=0
+    // mb1: skip_run=0, mb_type=24(I_16x16), 后接 I_16x16 最小尾.
+    let rbsp = build_rbsp_from_exp_golomb_with_tail(
+        &[
+            Ue(0),
+            Ue(8),
+            Ue(0),
+            Ue(1),
+            Se(2),
+            Se(0),
+            Se(0),
+            Se(0),
+            Ue(0), // CBP=0
+            Ue(0),
+            Ue(24),
+        ],
+        &i16x16_minimal_tail_bits(),
+    );
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(dec.ref_y[0], 20, "上半分区应使用 L0 ref_idx=0");
@@ -563,20 +583,24 @@ fn test_decode_cavlc_slice_data_b_non_skip_b_l0_l1_8x16_ref_idx_alignment() {
     header.num_ref_idx_l0 = 2;
     header.num_ref_idx_l1 = 2;
 
-    // mb0: skip_run=0, mb_type=9(B_L0_L1_8x16), left(ref_idx_l0=0,mvd=0), right(ref_idx_l1=0,mvd=0)
-    // mb1: skip_run=0, mb_type=23(intra), 用于验证语法消费对齐。
-    let rbsp = build_rbsp_from_exp_golomb(&[
-        Ue(0),
-        Ue(9),
-        Ue(0),
-        Ue(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Ue(0),
-        Ue(23),
-    ]);
+    // mb0: skip_run=0, mb_type=9(B_L0_L1_8x16), left(ref_idx_l0=0,mvd=0), right(ref_idx_l1=0,mvd=0), CBP=0
+    // mb1: skip_run=0, mb_type=23(intra), 后接 I_4x4 最小尾.
+    let rbsp = build_rbsp_from_exp_golomb_with_tail(
+        &[
+            Ue(0),
+            Ue(9),
+            Ue(0),
+            Ue(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Ue(0), // CBP=0
+            Ue(0),
+            Ue(24),
+        ],
+        &i16x16_minimal_tail_bits(),
+    );
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(dec.ref_y[0], 20, "左半分区应使用 L0 ref_idx=0");
@@ -612,22 +636,24 @@ fn test_decode_cavlc_slice_data_b_non_skip_b_l0_l1_8x16_grouped_syntax_alignment
     header.num_ref_idx_l0 = 2;
     header.num_ref_idx_l1 = 2;
 
-    // mb0: skip_run=0, mb_type=9(B_L0_L1_8x16)
-    // 语法顺序要求: ref_idx_l0(part0) -> ref_idx_l1(part1) -> mvd_l0(part0) -> mvd_l1(part1)。
-    // 将右分区 ref_idx_l1 设为 1, 若顺序错误会读到 mvd 码字并回退到错误参考帧。
-    // mb1: skip_run=0, mb_type=23(intra), 用于验证位流仍保持对齐。
-    let rbsp = build_rbsp_from_exp_golomb(&[
-        Ue(0),
-        Ue(9),
-        Ue(0),
-        Ue(1),
-        Se(2),
-        Se(0),
-        Se(0),
-        Se(0),
-        Ue(0),
-        Ue(23),
-    ]);
+    // mb0: skip_run=0, mb_type=9(B_L0_L1_8x16), 语法顺序 ref_idx_l0 -> ref_idx_l1 -> mvd_l0 -> mvd_l1, CBP=0
+    // mb1: skip_run=0, mb_type=23(intra), 后接 I_4x4 最小尾.
+    let rbsp = build_rbsp_from_exp_golomb_with_tail(
+        &[
+            Ue(0),
+            Ue(9),
+            Ue(0),
+            Ue(1),
+            Se(2),
+            Se(0),
+            Se(0),
+            Se(0),
+            Ue(0), // CBP=0
+            Ue(0),
+            Ue(24),
+        ],
+        &i16x16_minimal_tail_bits(),
+    );
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(dec.ref_y[0], 20, "左分区应使用 L0 ref_idx=0");
@@ -653,30 +679,34 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l0_ref_idx_alignment() {
     header.num_ref_idx_l0 = 2;
     header.num_ref_idx_l1 = 2;
 
-    // mb0: skip_run=0, mb_type=22(B_8x8), sub_mb_type 全为 1(L0_8x8), ref_idx_l0=[0,1,1,0], mvd 全 0
-    // mb1: skip_run=0, mb_type=23(intra), 用于验证位流消费对齐。
-    let rbsp = build_rbsp_from_exp_golomb(&[
-        Ue(0),
-        Ue(22),
-        Ue(1),
-        Ue(1),
-        Ue(1),
-        Ue(1),
-        Ue(0),
-        Ue(1),
-        Ue(1),
-        Ue(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Ue(0),
-        Ue(23),
-    ]);
+    // mb0: skip_run=0, mb_type=22(B_8x8), sub_mb_type 全为 1(L0_8x8), ref_idx_l0=[0,1,1,0], mvd 全 0, CBP=0
+    // mb1: skip_run=0, mb_type=23(intra), 后接 I_4x4 最小尾.
+    let rbsp = build_rbsp_from_exp_golomb_with_tail(
+        &[
+            Ue(0),
+            Ue(22),
+            Ue(1),
+            Ue(1),
+            Ue(1),
+            Ue(1),
+            Ue(0),
+            Ue(1),
+            Ue(1),
+            Ue(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Ue(0), // CBP=0
+            Ue(0),
+            Ue(24),
+        ],
+        &i16x16_minimal_tail_bits(),
+    );
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(dec.ref_y[0], 20, "左上 8x8 应使用 L0 ref_idx=0");
@@ -712,30 +742,34 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l1_ref_idx_alignment() {
     header.num_ref_idx_l0 = 2;
     header.num_ref_idx_l1 = 2;
 
-    // mb0: skip_run=0, mb_type=22(B_8x8), sub_mb_type 全为 2(L1_8x8), ref_idx_l1=[0,1,1,0], mvd 全 0
-    // mb1: skip_run=0, mb_type=23(intra), 用于验证位流消费对齐。
-    let rbsp = build_rbsp_from_exp_golomb(&[
-        Ue(0),
-        Ue(22),
-        Ue(2),
-        Ue(2),
-        Ue(2),
-        Ue(2),
-        Ue(0),
-        Ue(1),
-        Ue(1),
-        Ue(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Ue(0),
-        Ue(23),
-    ]);
+    // mb0: skip_run=0, mb_type=22(B_8x8), sub_mb_type 全为 2(L1_8x8), ref_idx_l1=[0,1,1,0], mvd 全 0, CBP=0
+    // mb1: skip_run=0, mb_type=23(intra), 后接 I_4x4 最小尾.
+    let rbsp = build_rbsp_from_exp_golomb_with_tail(
+        &[
+            Ue(0),
+            Ue(22),
+            Ue(2),
+            Ue(2),
+            Ue(2),
+            Ue(2),
+            Ue(0),
+            Ue(1),
+            Ue(1),
+            Ue(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Ue(0), // CBP=0
+            Ue(0),
+            Ue(24),
+        ],
+        &i16x16_minimal_tail_bits(),
+    );
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(dec.ref_y[0], 100, "左上 8x8 应使用 L1 ref_idx=0");
@@ -774,60 +808,60 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_mixed_sub_mb_types_alignment() {
     // mb0: skip_run=0, mb_type=22(B_8x8)
     // sub_mb_type: [4(L0_8x4), 6(L1_8x4), 8(Bi_8x4), 12(Bi_4x4)]
     // ref_idx 顺序按规范分组: L0[sub0,sub2,sub3]=[1,0,1], L1[sub1,sub2,sub3]=[1,1,0]
-    // mvd 顺序按规范分组: 先 L0(2+2+4 子分区), 再 L1(2+2+4 子分区), 全部取 0.
-    // mb1: skip_run=0, mb_type=23(intra), 用于验证语法消费对齐。
-    let rbsp = build_rbsp_from_exp_golomb(&[
-        Ue(0),
-        Ue(22),
-        Ue(4),
-        Ue(6),
-        Ue(8),
-        Ue(12),
-        // L0 ref_idx: sub0, sub2, sub3
-        Ue(1),
-        Ue(0),
-        Ue(1),
-        // L1 ref_idx: sub1, sub2, sub3
-        Ue(1),
-        Ue(1),
-        Ue(0),
-        // L0 mvd: sub0(2), sub2(2), sub3(4)
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        // L1 mvd: sub1(2), sub2(2), sub3(4)
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Se(0),
-        Ue(0),
-        Ue(23),
-    ]);
+    // mvd 顺序按规范分组: 先 L0(2+2+4 子分区), 再 L1(2+2+4 子分区), 全部取 0, CBP=0
+    // mb1: skip_run=0, mb_type=23(intra), 后接 I_4x4 最小尾.
+    let rbsp = build_rbsp_from_exp_golomb_with_tail(
+        &[
+            Ue(0),
+            Ue(22),
+            Ue(4),
+            Ue(6),
+            Ue(8),
+            Ue(12),
+            Ue(1),
+            Ue(0),
+            Ue(1),
+            Ue(1),
+            Ue(1),
+            Ue(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Se(0),
+            Ue(0), // CBP=0
+            Ue(0),
+            Ue(24),
+        ],
+        &i16x16_minimal_tail_bits(),
+    );
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(dec.ref_y[0], 100, "左上 8x8 应使用 L0 ref_idx=1");
@@ -857,9 +891,22 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_direct_no_ref_idx_parse() {
     header.num_ref_idx_l0 = 2;
     header.num_ref_idx_l1 = 2;
 
-    // mb0: skip_run=0, mb_type=22(B_8x8), sub_mb_type 全为 0(Direct_8x8), 不应读取 ref_idx
-    // mb1: skip_run=0, mb_type=23(intra), 用于验证语法消费对齐。
-    let rbsp = build_rbsp_from_ues(&[0, 22, 0, 0, 0, 0, 0, 23]);
+    // mb0: skip_run=0, mb_type=22(B_8x8), sub_mb_type 全为 0(Direct_8x8), 不应读取 ref_idx, CBP=0
+    // mb1: skip_run=0, mb_type=24(I_16x16), 后接 I_16x16 最小尾.
+    let rbsp = build_rbsp_from_exp_golomb_with_tail(
+        &[
+            ExpGolombValue::Ue(0),
+            ExpGolombValue::Ue(22),
+            ExpGolombValue::Ue(0),
+            ExpGolombValue::Ue(0),
+            ExpGolombValue::Ue(0),
+            ExpGolombValue::Ue(0),
+            ExpGolombValue::Ue(0), // CBP=0
+            ExpGolombValue::Ue(0),
+            ExpGolombValue::Ue(24),
+        ],
+        &i16x16_minimal_tail_bits(),
+    );
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(dec.ref_y[0], 60, "Direct_8x8 最小路径应使用双向融合");

@@ -302,8 +302,7 @@ fn open_h264_decoder_for_sample(url: &str) -> OpenH264DecoderResult {
 #[test]
 #[ignore]
 fn test_h264_functional_sample1_10_frames() {
-    let decoded =
-        decode_h264_frames(H264_SAMPLE_MOV, 10).expect("MOV 样本功能自测失败");
+    let decoded = decode_h264_frames(H264_SAMPLE_MOV, 10).expect("MOV 样本功能自测失败");
     assert!(
         decoded >= 10,
         "MOV 样本功能自测失败: 解码帧不足, 期望>=10, 实际={}",
@@ -314,8 +313,7 @@ fn test_h264_functional_sample1_10_frames() {
 #[test]
 #[ignore]
 fn test_h264_functional_sample2_10_frames() {
-    let decoded =
-        decode_h264_frames(H264_SAMPLE_MKV, 10).expect("MKV 样本功能自测失败");
+    let decoded = decode_h264_frames(H264_SAMPLE_MKV, 10).expect("MKV 样本功能自测失败");
     assert!(
         decoded >= 10,
         "MKV 样本功能自测失败: 解码帧不足, 期望>=10, 实际={}",
