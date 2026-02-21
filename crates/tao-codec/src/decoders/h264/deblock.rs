@@ -2,7 +2,8 @@
 //!
 //! 当前实现基于 `slice_qp + alpha/beta offset` 与边界强度(`bs`)执行最小规范化滤波:
 //! - 亮度按 4x4 边界处理, 色度按 2x2 边界处理.
-//! - 宏块边界按 `intra/cbp/ref_idx/mv` 估算强弱(`bs=4/2/1/0`), 非宏块边界走弱滤波(`bs=1`).
+//! - 宏块边界按 `intra/cbp/ref_idx/mv` 估算强弱(`bs=4/2/1/0`).
+//! - 亮度 4x4 内部边界按 `cbf/ref_idx/mv` 估算强弱(`bs=2/1/0`).
 //! - 弱滤波使用 `tc0` 约束, 强滤波使用更强的 `p0/q0` 更新.
 
 /// 去块滤波输入参数.
@@ -22,6 +23,10 @@ pub(super) struct DeblockSliceParams<'a> {
     pub(super) mv_l0_x: Option<&'a [i16]>,
     pub(super) mv_l0_y: Option<&'a [i16]>,
     pub(super) ref_idx_l0: Option<&'a [i8]>,
+    pub(super) cbf_luma: Option<&'a [bool]>,
+    pub(super) mv_l0_x_4x4: Option<&'a [i16]>,
+    pub(super) mv_l0_y_4x4: Option<&'a [i16]>,
+    pub(super) ref_idx_l0_4x4: Option<&'a [i8]>,
 }
 
 /// 对 YUV420 帧执行带 slice 参数的去块滤波.
@@ -46,6 +51,10 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
         mv_l0_x,
         mv_l0_y,
         ref_idx_l0,
+        cbf_luma,
+        mv_l0_x_4x4,
+        mv_l0_y_4x4,
+        ref_idx_l0_4x4,
     } = params;
     if width == 0 || height == 0 {
         return;
@@ -71,6 +80,10 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
                     mv_l0_x,
                     mv_l0_y,
                     ref_idx_l0,
+                    cbf_luma,
+                    mv_l0_x_4x4,
+                    mv_l0_y_4x4,
+                    ref_idx_l0_4x4,
                 })
             }
         })
@@ -123,6 +136,10 @@ struct DeblockMbContext<'a> {
     mv_l0_x: Option<&'a [i16]>,
     mv_l0_y: Option<&'a [i16]>,
     ref_idx_l0: Option<&'a [i8]>,
+    cbf_luma: Option<&'a [bool]>,
+    mv_l0_x_4x4: Option<&'a [i16]>,
+    mv_l0_y_4x4: Option<&'a [i16]>,
+    ref_idx_l0_4x4: Option<&'a [i8]>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -269,7 +286,7 @@ fn boundary_strength_vertical(
     if x % mb_step != 0 {
         let mb_x = x / mb_step;
         let mb_y = y / mb_step;
-        return boundary_strength_within_mb(mb_ctx, mb_x, mb_y);
+        return boundary_strength_within_mb_vertical(x, y, mb_step, mb_ctx, mb_x, mb_y);
     }
     let Some(ctx) = mb_ctx else {
         return 2;
@@ -292,7 +309,7 @@ fn boundary_strength_horizontal(
     if y % mb_step != 0 {
         let mb_x = x / mb_step;
         let mb_y = y / mb_step;
-        return boundary_strength_within_mb(mb_ctx, mb_x, mb_y);
+        return boundary_strength_within_mb_horizontal(x, y, mb_step, mb_ctx, mb_x, mb_y);
     }
     let Some(ctx) = mb_ctx else {
         return 2;
@@ -328,10 +345,36 @@ fn boundary_strength_between_mb(
     motion_boundary_strength(ctx, i_a, i_b)
 }
 
-fn boundary_strength_within_mb(
+fn boundary_strength_within_mb_vertical(
+    x: usize,
+    y: usize,
+    mb_step: usize,
     mb_ctx: Option<&DeblockMbContext<'_>>,
     mb_x: usize,
     mb_y: usize,
+) -> u8 {
+    boundary_strength_within_mb_common(x, y, mb_step, mb_ctx, mb_x, mb_y, true)
+}
+
+fn boundary_strength_within_mb_horizontal(
+    x: usize,
+    y: usize,
+    mb_step: usize,
+    mb_ctx: Option<&DeblockMbContext<'_>>,
+    mb_x: usize,
+    mb_y: usize,
+) -> u8 {
+    boundary_strength_within_mb_common(x, y, mb_step, mb_ctx, mb_x, mb_y, false)
+}
+
+fn boundary_strength_within_mb_common(
+    x: usize,
+    y: usize,
+    mb_step: usize,
+    mb_ctx: Option<&DeblockMbContext<'_>>,
+    mb_x: usize,
+    mb_y: usize,
+    vertical: bool,
 ) -> u8 {
     let Some(ctx) = mb_ctx else {
         return 2;
@@ -344,6 +387,34 @@ fn boundary_strength_within_mb(
         return 3;
     }
     let cbp = *ctx.mb_cbp.get(idx).unwrap_or(&0);
+    if mb_step == 16 {
+        let x4_a;
+        let y4_a;
+        let x4_b;
+        let y4_b;
+        if vertical {
+            x4_a = (x - 1) / 4;
+            y4_a = y / 4;
+            x4_b = x / 4;
+            y4_b = y / 4;
+        } else {
+            x4_a = x / 4;
+            y4_a = (y - 1) / 4;
+            x4_b = x / 4;
+            y4_b = y / 4;
+        }
+
+        if luma_cbf_non_zero_across_boundary(ctx, x4_a, y4_a, x4_b, y4_b) {
+            return 2;
+        }
+        if let Some(bs) = motion_boundary_strength_4x4(ctx, x4_a, y4_a, x4_b, y4_b) {
+            return bs;
+        }
+        if cbp != 0 {
+            return 2;
+        }
+        return 1;
+    }
     if cbp != 0 {
         return 2;
     }
@@ -369,6 +440,67 @@ fn motion_boundary_strength(ctx: &DeblockMbContext<'_>, idx_a: usize, idx_b: usi
         return 1;
     }
     0
+}
+
+fn luma4x4_index(mb_width: usize, mb_height: usize, x4: usize, y4: usize) -> Option<usize> {
+    let stride = mb_width.checked_mul(4)?;
+    let h4 = mb_height.checked_mul(4)?;
+    if stride == 0 || x4 >= stride || y4 >= h4 {
+        return None;
+    }
+    y4.checked_mul(stride)?.checked_add(x4)
+}
+
+fn luma_cbf_non_zero_across_boundary(
+    ctx: &DeblockMbContext<'_>,
+    x4_a: usize,
+    y4_a: usize,
+    x4_b: usize,
+    y4_b: usize,
+) -> bool {
+    let Some(cbf) = ctx.cbf_luma else {
+        return false;
+    };
+    let idx_a = luma4x4_index(ctx.mb_width, ctx.mb_height, x4_a, y4_a);
+    let idx_b = luma4x4_index(ctx.mb_width, ctx.mb_height, x4_b, y4_b);
+    let Some(i_a) = idx_a else {
+        return false;
+    };
+    let Some(i_b) = idx_b else {
+        return false;
+    };
+    cbf.get(i_a).copied().unwrap_or(false) || cbf.get(i_b).copied().unwrap_or(false)
+}
+
+fn motion_boundary_strength_4x4(
+    ctx: &DeblockMbContext<'_>,
+    x4_a: usize,
+    y4_a: usize,
+    x4_b: usize,
+    y4_b: usize,
+) -> Option<u8> {
+    let (Some(ref_idx), Some(mv_x), Some(mv_y)) =
+        (ctx.ref_idx_l0_4x4, ctx.mv_l0_x_4x4, ctx.mv_l0_y_4x4)
+    else {
+        return None;
+    };
+    let idx_a = luma4x4_index(ctx.mb_width, ctx.mb_height, x4_a, y4_a)?;
+    let idx_b = luma4x4_index(ctx.mb_width, ctx.mb_height, x4_b, y4_b)?;
+    if idx_a >= ref_idx.len() || idx_b >= ref_idx.len() {
+        return None;
+    }
+    if idx_a >= mv_x.len() || idx_b >= mv_x.len() || idx_a >= mv_y.len() || idx_b >= mv_y.len() {
+        return None;
+    }
+    if ref_idx[idx_a] != ref_idx[idx_b] {
+        return Some(1);
+    }
+    let mv_dx = (i32::from(mv_x[idx_a]) - i32::from(mv_x[idx_b])).abs();
+    let mv_dy = (i32::from(mv_y[idx_a]) - i32::from(mv_y[idx_b])).abs();
+    if mv_dx >= 4 || mv_dy >= 4 {
+        return Some(1);
+    }
+    Some(0)
 }
 
 fn mb_index(mb_width: usize, mb_height: usize, mb_x: usize, mb_y: usize) -> Option<usize> {
@@ -501,6 +633,10 @@ mod tests {
                 mv_l0_x: None,
                 mv_l0_y: None,
                 ref_idx_l0: None,
+                cbf_luma: None,
+                mv_l0_x_4x4: None,
+                mv_l0_y_4x4: None,
+                ref_idx_l0_4x4: None,
             },
         );
 
@@ -526,6 +662,10 @@ mod tests {
                 mv_l0_x: None,
                 mv_l0_y: None,
                 ref_idx_l0: None,
+                cbf_luma: None,
+                mv_l0_x_4x4: None,
+                mv_l0_y_4x4: None,
+                ref_idx_l0_4x4: None,
             },
         );
 
@@ -591,6 +731,10 @@ mod tests {
                 mv_l0_x: None,
                 mv_l0_y: None,
                 ref_idx_l0: None,
+                cbf_luma: None,
+                mv_l0_x_4x4: None,
+                mv_l0_y_4x4: None,
+                ref_idx_l0_4x4: None,
             },
         );
 
@@ -611,6 +755,10 @@ mod tests {
             mv_l0_x: None,
             mv_l0_y: None,
             ref_idx_l0: None,
+            cbf_luma: None,
+            mv_l0_x_4x4: None,
+            mv_l0_y_4x4: None,
+            ref_idx_l0_4x4: None,
         };
         let bs = boundary_strength_vertical(16, 0, 16, Some(&ctx));
         assert_eq!(bs, 4, "宏块边界任一侧为帧内宏块时应走强滤波");
@@ -631,6 +779,10 @@ mod tests {
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
+            cbf_luma: None,
+            mv_l0_x_4x4: None,
+            mv_l0_y_4x4: None,
+            ref_idx_l0_4x4: None,
         };
         let bs = boundary_strength_vertical(16, 0, 16, Some(&ctx));
         assert_eq!(bs, 0, "同参考且运动向量接近时应允许跳过滤波");
@@ -651,9 +803,111 @@ mod tests {
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
+            cbf_luma: None,
+            mv_l0_x_4x4: None,
+            mv_l0_y_4x4: None,
+            ref_idx_l0_4x4: None,
         };
         let bs = boundary_strength_vertical(16, 0, 16, Some(&ctx));
         assert_eq!(bs, 1, "跨宏块参考索引不一致时应保留弱滤波");
+    }
+
+    #[test]
+    fn test_boundary_strength_vertical_within_mb_cbf_non_zero_is_two() {
+        let mb_types = [255u8];
+        let mb_cbp = [0u8];
+        let mut cbf_luma = vec![false; 16];
+        cbf_luma[1] = true;
+        let mv_l0_x_4x4 = [0i16; 16];
+        let mv_l0_y_4x4 = [0i16; 16];
+        let ref_idx_l0_4x4 = [0i8; 16];
+        let ctx = DeblockMbContext {
+            mb_width: 1,
+            mb_height: 1,
+            mb_types: &mb_types,
+            mb_cbp: &mb_cbp,
+            mv_l0_x: None,
+            mv_l0_y: None,
+            ref_idx_l0: None,
+            cbf_luma: Some(&cbf_luma),
+            mv_l0_x_4x4: Some(&mv_l0_x_4x4),
+            mv_l0_y_4x4: Some(&mv_l0_y_4x4),
+            ref_idx_l0_4x4: Some(&ref_idx_l0_4x4),
+        };
+        let bs = boundary_strength_vertical(4, 2, 16, Some(&ctx));
+        assert_eq!(bs, 2, "4x4 内部边界任一侧 cbf!=0 时应返回 bs=2");
+    }
+
+    #[test]
+    fn test_boundary_strength_vertical_within_mb_ref_or_mv_mismatch_is_one() {
+        let mb_types = [255u8];
+        let mb_cbp = [0u8];
+        let cbf_luma = [false; 16];
+
+        let mv_l0_x_4x4_ref_mismatch = [0i16; 16];
+        let mv_l0_y_4x4_ref_mismatch = [0i16; 16];
+        let mut ref_idx_l0_4x4_ref_mismatch = [0i8; 16];
+        ref_idx_l0_4x4_ref_mismatch[1] = 1;
+        let ctx_ref = DeblockMbContext {
+            mb_width: 1,
+            mb_height: 1,
+            mb_types: &mb_types,
+            mb_cbp: &mb_cbp,
+            mv_l0_x: None,
+            mv_l0_y: None,
+            ref_idx_l0: None,
+            cbf_luma: Some(&cbf_luma),
+            mv_l0_x_4x4: Some(&mv_l0_x_4x4_ref_mismatch),
+            mv_l0_y_4x4: Some(&mv_l0_y_4x4_ref_mismatch),
+            ref_idx_l0_4x4: Some(&ref_idx_l0_4x4_ref_mismatch),
+        };
+        let bs_ref = boundary_strength_vertical(4, 2, 16, Some(&ctx_ref));
+        assert_eq!(bs_ref, 1, "4x4 内部边界 ref_idx 不同应返回 bs=1");
+
+        let mut mv_l0_x_4x4_mv_mismatch = [0i16; 16];
+        mv_l0_x_4x4_mv_mismatch[1] = 4;
+        let mv_l0_y_4x4_mv_mismatch = [0i16; 16];
+        let ref_idx_l0_4x4_mv_mismatch = [0i8; 16];
+        let ctx_mv = DeblockMbContext {
+            mb_width: 1,
+            mb_height: 1,
+            mb_types: &mb_types,
+            mb_cbp: &mb_cbp,
+            mv_l0_x: None,
+            mv_l0_y: None,
+            ref_idx_l0: None,
+            cbf_luma: Some(&cbf_luma),
+            mv_l0_x_4x4: Some(&mv_l0_x_4x4_mv_mismatch),
+            mv_l0_y_4x4: Some(&mv_l0_y_4x4_mv_mismatch),
+            ref_idx_l0_4x4: Some(&ref_idx_l0_4x4_mv_mismatch),
+        };
+        let bs_mv = boundary_strength_vertical(4, 2, 16, Some(&ctx_mv));
+        assert_eq!(bs_mv, 1, "4x4 内部边界 MV 差>=4 时应返回 bs=1");
+    }
+
+    #[test]
+    fn test_boundary_strength_vertical_within_mb_aligned_motion_is_zero() {
+        let mb_types = [255u8];
+        let mb_cbp = [0u8];
+        let cbf_luma = [false; 16];
+        let mv_l0_x_4x4 = [0i16; 16];
+        let mv_l0_y_4x4 = [0i16; 16];
+        let ref_idx_l0_4x4 = [0i8; 16];
+        let ctx = DeblockMbContext {
+            mb_width: 1,
+            mb_height: 1,
+            mb_types: &mb_types,
+            mb_cbp: &mb_cbp,
+            mv_l0_x: None,
+            mv_l0_y: None,
+            ref_idx_l0: None,
+            cbf_luma: Some(&cbf_luma),
+            mv_l0_x_4x4: Some(&mv_l0_x_4x4),
+            mv_l0_y_4x4: Some(&mv_l0_y_4x4),
+            ref_idx_l0_4x4: Some(&ref_idx_l0_4x4),
+        };
+        let bs = boundary_strength_vertical(4, 2, 16, Some(&ctx));
+        assert_eq!(bs, 0, "4x4 内部边界同参考且 MV 接近时应返回 bs=0");
     }
 
     #[test]

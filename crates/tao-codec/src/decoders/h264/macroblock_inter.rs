@@ -626,6 +626,9 @@ impl H264Decoder {
         luma_log2_weight_denom: u8,
         chroma_log2_weight_denom: u8,
     ) {
+        let ref_idx_i8 = ref_idx.min(i8::MAX as u32) as i8;
+        self.set_l0_motion_block_4x4(dst_x, dst_y, w, h, mv_x_qpel, mv_y_qpel, ref_idx_i8);
+
         let fallback = self.zero_reference_planes();
         let ref_src = if let Ok(ref_idx_i8) = i8::try_from(ref_idx) {
             if let Some(found) = select_ref_planes(ref_l0_list, ref_idx_i8) {
@@ -1618,6 +1621,7 @@ impl H264Decoder {
                         m1.mv_y,
                     );
                 }
+                self.set_l0_motion_block_4x4(dst_x, dst_y, w, h, m0.mv_x, m0.mv_y, m0.ref_idx);
                 (m0.mv_x, m0.mv_y, m0.ref_idx)
             }
             (Some(m0), None) => {
@@ -1656,6 +1660,7 @@ impl H264Decoder {
                     luma_log2_weight_denom,
                     chroma_log2_weight_denom,
                 );
+                self.set_l0_motion_block_4x4(dst_x, dst_y, w, h, m0.mv_x, m0.mv_y, m0.ref_idx);
                 (m0.mv_x, m0.mv_y, m0.ref_idx)
             }
             (None, Some(m1)) => {
@@ -1694,9 +1699,13 @@ impl H264Decoder {
                     luma_log2_weight_denom,
                     chroma_log2_weight_denom,
                 );
+                self.set_l0_motion_block_4x4(dst_x, dst_y, w, h, 0, 0, -1);
                 (m1.mv_x, m1.mv_y, m1.ref_idx)
             }
-            (None, None) => (0, 0, 0),
+            (None, None) => {
+                self.set_l0_motion_block_4x4(dst_x, dst_y, w, h, 0, 0, -1);
+                (0, 0, 0)
+            }
         }
     }
 

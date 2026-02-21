@@ -262,7 +262,7 @@ crates/tao-codec/src/decoders/h264/
 
 - [x] 基础 in-loop + idc 开关 + 参数化阈值 + tc0 约束 + 宏块边界 BS.
 - [ ] 4x4 子块内部边界 BS:
-    - [ ] cbf!=0 -> bs=2; 不同 ref -> bs=1; MV 差>=4 -> bs=1.
+    - [x] cbf!=0 -> bs=2; 不同 ref -> bs=1; MV 差>=4 -> bs=1.
     - [ ] 对齐 FFmpeg 4x4 级 BS.
 - [ ] 强滤波(bs=4): 亮度 4 像素 + 色度 2 像素, 对齐规范公式.
 - [ ] idc=2: 不跨 slice 边界(first_mb 边界检测).
