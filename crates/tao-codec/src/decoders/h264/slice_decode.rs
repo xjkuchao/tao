@@ -625,6 +625,12 @@ impl H264Decoder {
                         )));
                     }
                     let long_term_pic_num = read_ue(br)?;
+                    if long_term_pic_num > max_long_term_frame_idx {
+                        return Err(TaoError::InvalidData(format!(
+                            "H264: MMCO2 long_term_pic_num 超范围, value={}, max={}",
+                            long_term_pic_num, max_long_term_frame_idx
+                        )));
+                    }
                     marking.ops.push(MmcoOp::ForgetLong { long_term_pic_num });
                 }
                 3 => {

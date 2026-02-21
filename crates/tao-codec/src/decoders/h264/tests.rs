@@ -911,6 +911,36 @@ fn test_parse_dec_ref_pic_marking_reject_too_many_mmco_ops() {
 }
 
 #[test]
+fn test_parse_dec_ref_pic_marking_reject_mmco2_long_term_pic_num_out_of_range() {
+    let dec = build_test_decoder();
+    let nalu = NalUnit::parse(&[0x61]).expect("测试构造非 IDR slice NAL 失败");
+
+    let mut bits = Vec::new();
+    bits.push(true); // adaptive_ref_pic_marking_mode_flag
+    write_ue(&mut bits, 2); // MMCO2
+    write_ue(&mut bits, 4); // long_term_pic_num, 超过 max=3
+    write_ue(&mut bits, 0); // 结束符
+    let rbsp = bits_to_bytes(&bits);
+    let mut br = BitReader::new(&rbsp);
+
+    let err = match dec.parse_dec_ref_pic_marking(&mut br, &nalu) {
+        Ok(_) => panic!("MMCO2 超范围应失败"),
+        Err(err) => err,
+    };
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("MMCO2"),
+        "错误信息应包含 MMCO2, actual={}",
+        msg
+    );
+    assert!(
+        msg.contains("超范围"),
+        "错误信息应提示超范围, actual={}",
+        msg
+    );
+}
+
+#[test]
 fn test_parse_dec_ref_pic_marking_reject_mmco4_max_long_term_idx_out_of_range() {
     let dec = build_test_decoder();
     let nalu = NalUnit::parse(&[0x61]).expect("测试构造非 IDR slice NAL 失败");
