@@ -21,6 +21,10 @@ pub struct BlockCat {
     pub abs_offset: usize,
     /// 最大系数数量
     pub max_coeff: usize,
+    /// 是否跳过 coded_block_flag 解码.
+    pub skip_cbf: bool,
+    /// 是否使用 8x8 专用显著性上下文映射.
+    pub use_sig_map_8x8: bool,
 }
 
 /// Luma DC (I_16x16), 块类别 0
@@ -30,42 +34,76 @@ pub const CAT_LUMA_DC: BlockCat = BlockCat {
     last_offset: 166,
     abs_offset: 227,
     max_coeff: 16,
+    skip_cbf: false,
+    use_sig_map_8x8: false,
 };
 
 /// Luma AC (I_16x16), 块类别 1
 pub const CAT_LUMA_AC: BlockCat = BlockCat {
     cbf_offset: 89,
-    sig_offset: 105,
-    last_offset: 166,
-    abs_offset: 232,
+    sig_offset: 120,
+    last_offset: 181,
+    abs_offset: 237,
     max_coeff: 15,
+    skip_cbf: false,
+    use_sig_map_8x8: false,
 };
 
 /// Chroma DC (4:2:0), 块类别 2
 pub const CAT_CHROMA_DC: BlockCat = BlockCat {
     cbf_offset: 97,
-    sig_offset: 120,
-    last_offset: 181,
-    abs_offset: 237,
+    sig_offset: 149,
+    last_offset: 210,
+    abs_offset: 257,
     max_coeff: 4,
+    skip_cbf: false,
+    use_sig_map_8x8: false,
 };
 
 /// Chroma AC, 块类别 3
 pub const CAT_CHROMA_AC: BlockCat = BlockCat {
     cbf_offset: 101,
-    sig_offset: 105,
-    last_offset: 166,
-    abs_offset: 242,
+    sig_offset: 152,
+    last_offset: 213,
+    abs_offset: 266,
     max_coeff: 15,
+    skip_cbf: false,
+    use_sig_map_8x8: false,
 };
 
 /// Luma 4x4 (I_4x4), 块类别 4
 pub const CAT_LUMA_4X4: BlockCat = BlockCat {
-    cbf_offset: 85,
-    sig_offset: 105,
-    last_offset: 166,
-    abs_offset: 227,
+    cbf_offset: 93,
+    sig_offset: 134,
+    last_offset: 195,
+    abs_offset: 247,
     max_coeff: 16,
+    skip_cbf: false,
+    use_sig_map_8x8: false,
+};
+
+/// Luma 8x8 块类别.
+pub const CAT_LUMA_8X8: BlockCat = BlockCat {
+    cbf_offset: 1012,
+    sig_offset: 402,
+    last_offset: 417,
+    abs_offset: 426,
+    max_coeff: 64,
+    skip_cbf: false,
+    use_sig_map_8x8: true,
+};
+
+/// Luma 8x8 近似块类别.
+///
+/// 仅用于诊断时跳过 coded_block_flag.
+pub const CAT_LUMA_8X8_FALLBACK: BlockCat = BlockCat {
+    cbf_offset: 1012,
+    sig_offset: 402,
+    last_offset: 417,
+    abs_offset: 426,
+    max_coeff: 64,
+    skip_cbf: true,
+    use_sig_map_8x8: true,
 };
 
 // ============================================================
@@ -85,20 +123,51 @@ pub fn decode_residual_block(
     let n = cat.max_coeff;
     let mut coeffs = vec![0i32; n];
 
-    // 解码 coded_block_flag
-    let cbf_idx = cat.cbf_offset + cbf_ctx_inc.min(3);
-    let cbf = cabac.decode_decision(&mut ctxs[cbf_idx]);
-    if cbf == 0 {
-        return coeffs;
+    if !cat.skip_cbf {
+        // 解码 coded_block_flag
+        let cbf_idx = cat.cbf_offset + cbf_ctx_inc.min(3);
+        let cbf = cabac.decode_decision(&mut ctxs[cbf_idx]);
+        if cbf == 0 {
+            return coeffs;
+        }
     }
 
     // 找出非零系数位置
-    let sig_positions = decode_significance_map(cabac, ctxs, cat);
+    let sig_positions = if cat.use_sig_map_8x8 {
+        decode_significance_map_8x8(cabac, ctxs, cat)
+    } else {
+        decode_significance_map(cabac, ctxs, cat)
+    };
 
     // 解码系数值 (从最后一个非零系数开始, 反向解码)
     decode_coeff_values(cabac, ctxs, cat, &sig_positions, &mut coeffs);
 
     coeffs
+}
+
+/// 8x8 变换块的显著性图解码.
+fn decode_significance_map_8x8(
+    cabac: &mut CabacDecoder,
+    ctxs: &mut [CabacCtx],
+    cat: &BlockCat,
+) -> Vec<usize> {
+    let mut positions = Vec::new();
+    for i in 0..63usize {
+        let sig_idx = cat.sig_offset + usize::from(SIG_COEFF_FLAG_OFFSET_8X8[i]);
+        let sig = cabac.decode_decision(&mut ctxs[sig_idx]);
+        if sig == 1 {
+            positions.push(i);
+            let last_idx = cat.last_offset + usize::from(LAST_COEFF_FLAG_OFFSET_8X8[i]);
+            let last = cabac.decode_decision(&mut ctxs[last_idx]);
+            if last == 1 {
+                positions.reverse();
+                return positions;
+            }
+        }
+    }
+    positions.push(63);
+    positions.reverse();
+    positions
 }
 
 /// 解码显著性图: 返回非零系数的扫描位置 (降序排列)
@@ -137,23 +206,17 @@ fn decode_coeff_values(
     positions: &[usize],
     coeffs: &mut [i32],
 ) {
-    let mut num_eq1 = 0u32;
-    let mut num_gt1 = 0u32;
+    // 与 FFmpeg 一致的节点上下文状态机.
+    let mut node_ctx = 0usize;
 
     for &pos in positions {
-        let level = decode_abs_level(cabac, ctxs, cat, num_eq1, num_gt1);
+        let level = decode_abs_level(cabac, ctxs, cat, &mut node_ctx);
         let sign = cabac.decode_bypass();
         coeffs[pos] = if sign == 1 {
             -(level as i32)
         } else {
             level as i32
         };
-
-        if level == 1 {
-            num_eq1 += 1;
-        } else {
-            num_gt1 += 1;
-        }
     }
 }
 
@@ -162,70 +225,50 @@ fn decode_abs_level(
     cabac: &mut CabacDecoder,
     ctxs: &mut [CabacCtx],
     cat: &BlockCat,
-    num_eq1: u32,
-    num_gt1: u32,
+    node_ctx: &mut usize,
 ) -> u32 {
-    // 前缀: 截断一元码, 最大值 14
-    let ctx_inc_0 = if num_gt1 > 0 {
-        0
-    } else {
-        (1 + num_eq1).min(4) as usize
-    };
-    let prefix = decode_abs_prefix(cabac, ctxs, cat, ctx_inc_0, num_gt1);
+    const COEFF_ABS_LEVEL1_CTX: [usize; 8] = [1, 2, 3, 4, 0, 0, 0, 0];
+    const COEFF_ABS_LEVELGT1_CTX: [usize; 8] = [5, 5, 5, 5, 6, 7, 8, 9];
+    const TRANS_EQ1: [usize; 8] = [1, 2, 3, 3, 4, 5, 6, 7];
+    const TRANS_GT1: [usize; 8] = [4, 4, 4, 4, 5, 6, 7, 7];
 
-    if prefix < 14 {
-        return prefix + 1;
+    let idx_level1 = cat.abs_offset + COEFF_ABS_LEVEL1_CTX[*node_ctx];
+    if cabac.decode_decision(&mut ctxs[idx_level1]) == 0 {
+        *node_ctx = TRANS_EQ1[*node_ctx];
+        return 1;
     }
 
-    // 后缀: Exp-Golomb k=0 旁路解码
-    let suffix = decode_eg0_bypass(cabac);
-    prefix + 1 + suffix
+    let idx_level_gt1 = cat.abs_offset + COEFF_ABS_LEVELGT1_CTX[*node_ctx];
+    *node_ctx = TRANS_GT1[*node_ctx];
+
+    let mut coeff_abs = 2u32;
+    while coeff_abs < 15 && cabac.decode_decision(&mut ctxs[idx_level_gt1]) == 1 {
+        coeff_abs += 1;
+    }
+
+    if coeff_abs >= 15 {
+        coeff_abs = decode_abs_suffix_bypass(cabac) + 14;
+    }
+    coeff_abs
 }
 
-/// 解码系数绝对值的截断一元前缀
-fn decode_abs_prefix(
-    cabac: &mut CabacDecoder,
-    ctxs: &mut [CabacCtx],
-    cat: &BlockCat,
-    ctx_inc_0: usize,
-    num_gt1: u32,
-) -> u32 {
-    // binIdx == 0
-    let idx0 = cat.abs_offset + ctx_inc_0;
-    let bin0 = cabac.decode_decision(&mut ctxs[idx0]);
-    if bin0 == 0 {
-        return 0;
+/// 系数绝对值扩展后缀旁路解码.
+///
+/// 返回值等价于 FFmpeg 中的 `coeff_abs` 初值, 上层需再加 14.
+fn decode_abs_suffix_bypass(cabac: &mut CabacDecoder) -> u32 {
+    let mut j = 0u32;
+    while {
+        let bit = cabac.decode_bypass();
+        bit == 1 && j < 23
+    } {
+        j += 1;
     }
 
-    // binIdx >= 1: 使用不同的上下文
-    let ctx_inc_n = 5 + num_gt1.min(4) as usize;
-    let idx_n = cat.abs_offset + ctx_inc_n;
-
-    for i in 1..14u32 {
-        let bin = cabac.decode_decision(&mut ctxs[idx_n]);
-        if bin == 0 {
-            return i;
-        }
+    let mut coeff_abs = 1u32;
+    for _ in 0..j {
+        coeff_abs = coeff_abs + coeff_abs + cabac.decode_bypass();
     }
-    14
-}
-
-/// Exp-Golomb k=0 旁路解码
-fn decode_eg0_bypass(cabac: &mut CabacDecoder) -> u32 {
-    let mut k = 0u32;
-    // 读取前缀 (连续 1 的数量)
-    while cabac.decode_bypass() == 1 {
-        k += 1;
-        if k >= 16 {
-            break;
-        }
-    }
-    // 读取后缀
-    let mut val = 0u32;
-    for _ in 0..k {
-        val = (val << 1) | cabac.decode_bypass();
-    }
-    (1 << k) - 1 + val
+    coeff_abs
 }
 
 // ============================================================
@@ -324,7 +367,13 @@ pub fn dequant_4x4_ac(coeffs: &mut [i32; 16], qp: i32) {
         let (row, col) = ZIGZAG_4X4[i];
         let si = scale_index(row, col);
         let scale = LEVEL_SCALE[qp_rem as usize][si];
-        *c = (*c * scale) << qp_per;
+        let scaled = *c * scale;
+        if qp_per >= 4 {
+            *c = scaled << (qp_per - 4);
+        } else {
+            let shift = 4 - qp_per;
+            *c = (scaled + (1 << (shift - 1))) >> shift;
+        }
     }
 }
 
@@ -407,6 +456,14 @@ pub const ZIGZAG_4X4: [(usize, usize); 16] = [
     (3, 3),
 ];
 
+/// 8x8 zigzag 扫描顺序 (帧编码): scan_pos -> raster_idx.
+#[allow(dead_code)]
+pub const ZIGZAG_8X8: [usize; 64] = [
+    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
+    13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,
+    52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
+];
+
 /// 2x2 chroma DC 扫描顺序
 #[allow(dead_code)]
 pub const SCAN_CHROMA_DC: [(usize, usize); 4] = [(0, 0), (0, 1), (1, 0), (1, 1)];
@@ -425,23 +482,44 @@ const LEVEL_SCALE: [[i32; 3]; 6] = [
     [16, 20, 25],
     [18, 23, 29],
 ];
+
+/// 8x8 significant_coeff_flag 的上下文偏移映射 (frame).
+const SIG_COEFF_FLAG_OFFSET_8X8: [u8; 63] = [
+    0, 1, 2, 3, 4, 5, 5, 4, 4, 3, 3, 4, 4, 4, 5, 5, 4, 4, 4, 4, 3, 3, 6, 7, 7, 7, 8, 9, 10, 9, 8,
+    7, 7, 6, 11, 12, 13, 11, 6, 7, 8, 9, 14, 10, 9, 8, 6, 11, 12, 13, 11, 6, 9, 14, 10, 9, 11, 12,
+    13, 11, 14, 10, 12,
+];
+
+/// 8x8 last_significant_coeff_flag 的上下文偏移映射.
+const LAST_COEFF_FLAG_OFFSET_8X8: [u8; 63] = [
+    0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8,
+];
 // ============================================================
 // 量化反演和应用
 // ============================================================
 
-/// 将 4x4 AC 残差块应用到平面上 (逐像素加法)
+/// 将 4x4 残差块应用到平面上 (反扫描 + IDCT + 逐像素加法)
 pub fn apply_4x4_ac_residual(
     plane: &mut [u8],
     stride: usize,
     x0: usize,
     y0: usize,
-    coeffs: &[i32; 16],
+    coeffs_scan: &[i32; 16],
 ) {
+    let mut coeffs_raster = [0i32; 16];
+    for (scan_pos, &(row, col)) in ZIGZAG_4X4.iter().enumerate() {
+        coeffs_raster[row * 4 + col] = coeffs_scan[scan_pos];
+    }
+
+    let mut spatial = [0i32; 16];
+    idct_4x4(&coeffs_raster, &mut spatial);
+
     for dy in 0..4 {
         for dx in 0..4 {
             let idx = (y0 + dy) * stride + x0 + dx;
             if idx < plane.len() {
-                let coeff = coeffs[dy * 4 + dx];
+                let coeff = spatial[dy * 4 + dx];
                 let val = plane[idx] as i32 + coeff;
                 plane[idx] = val.clamp(0, 255) as u8;
             }

@@ -437,7 +437,11 @@ fn remove_emulation_prevention(data: &[u8]) -> Vec<u8> {
     let mut i = 0;
 
     while i < data.len() {
-        if i + 2 < data.len() && data[i] == 0x00 && data[i + 1] == 0x00 && data[i + 2] == 0x03 {
+        // 对齐 FFmpeg: 只要命中 `00 00 03` 序列就移除中间 0x03.
+        // 这是 H264 NAL 到 RBSP 的标准去防竞争字节行为.
+        let is_emulation_prevention =
+            i + 2 < data.len() && data[i] == 0x00 && data[i + 1] == 0x00 && data[i + 2] == 0x03;
+        if is_emulation_prevention {
             rbsp.push(0x00);
             rbsp.push(0x00);
             i += 3; // 跳过 0x03
@@ -604,6 +608,22 @@ mod tests {
     }
 
     #[test]
+    fn test_emulation_prevention_remove_when_next_gt_03() {
+        // 对齐 FFmpeg: `00 00 03` 统一移除, 即使后一个字节 > 0x03.
+        let data = [0x11, 0x00, 0x00, 0x03, 0x04, 0x22];
+        let rbsp = remove_emulation_prevention(&data);
+        assert_eq!(rbsp, vec![0x11, 0x00, 0x00, 0x04, 0x22]);
+    }
+
+    #[test]
+    fn test_emulation_prevention_remove_when_next_lte_03() {
+        // `00 00 03 03` 中的 0x03 为防竞争字节, 需要删除.
+        let data = [0x00, 0x00, 0x03, 0x03, 0x80];
+        let rbsp = remove_emulation_prevention(&data);
+        assert_eq!(rbsp, vec![0x00, 0x00, 0x03, 0x80]);
+    }
+
+    #[test]
     fn test_avcc_config_parse() {
         // 构造 AVCDecoderConfigurationRecord
         let sps = vec![0x67, 0x42, 0x00, 0x1E, 0xAB];
@@ -628,10 +648,10 @@ mod tests {
     #[test]
     fn test_rbsp_extract() {
         // SPS header + emulation prevention
-        let data = [0x67, 0x42, 0x00, 0x00, 0x03, 0x1E];
+        let data = [0x67, 0x42, 0x00, 0x00, 0x03, 0x01, 0xAA];
         let nalu = NalUnit::parse(&data).unwrap();
         let rbsp = nalu.rbsp();
         // 移除头部 (0x67) 和 emulation prevention
-        assert_eq!(rbsp, vec![0x42, 0x00, 0x00, 0x1E]);
+        assert_eq!(rbsp, vec![0x42, 0x00, 0x00, 0x01, 0xAA]);
     }
 }

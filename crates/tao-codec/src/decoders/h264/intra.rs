@@ -159,6 +159,31 @@ pub fn predict_chroma_dc(
     fill_block(plane, stride, x0, y0, 8, 8, dc);
 }
 
+/// 色度 8x8 预测分发.
+///
+/// 模式:
+/// - 0: DC
+/// - 1: Horizontal
+/// - 2: Vertical
+/// - 3: Plane
+pub fn predict_chroma_8x8(
+    plane: &mut [u8],
+    stride: usize,
+    x0: usize,
+    y0: usize,
+    mode: u8,
+    has_left: bool,
+    has_top: bool,
+) {
+    match mode {
+        0 => predict_chroma_dc(plane, stride, x0, y0, has_left, has_top),
+        1 => predict_chroma_horizontal(plane, stride, x0, y0, has_left),
+        2 => predict_chroma_vertical(plane, stride, x0, y0, has_top),
+        3 => predict_chroma_plane(plane, stride, x0, y0, has_left, has_top),
+        _ => predict_chroma_dc(plane, stride, x0, y0, has_left, has_top),
+    }
+}
+
 /// 计算 8x8 块的 DC 值
 fn compute_dc_8x8(
     plane: &[u8],
@@ -184,6 +209,78 @@ fn compute_dc_8x8(
         }
     }
     if count > 0 { (sum / count) as u8 } else { 128 }
+}
+
+/// 色度模式 1: Horizontal.
+fn predict_chroma_horizontal(
+    plane: &mut [u8],
+    stride: usize,
+    x0: usize,
+    y0: usize,
+    has_left: bool,
+) {
+    if !has_left || x0 == 0 {
+        fill_block(plane, stride, x0, y0, 8, 8, 128);
+        return;
+    }
+    for dy in 0..8 {
+        let left = plane[(y0 + dy) * stride + x0 - 1];
+        for dx in 0..8 {
+            plane[(y0 + dy) * stride + x0 + dx] = left;
+        }
+    }
+}
+
+/// 色度模式 2: Vertical.
+fn predict_chroma_vertical(plane: &mut [u8], stride: usize, x0: usize, y0: usize, has_top: bool) {
+    if !has_top || y0 == 0 {
+        fill_block(plane, stride, x0, y0, 8, 8, 128);
+        return;
+    }
+    for dy in 0..8 {
+        for dx in 0..8 {
+            plane[(y0 + dy) * stride + x0 + dx] = plane[(y0 - 1) * stride + x0 + dx];
+        }
+    }
+}
+
+/// 色度模式 3: Plane.
+fn predict_chroma_plane(
+    plane: &mut [u8],
+    stride: usize,
+    x0: usize,
+    y0: usize,
+    has_left: bool,
+    has_top: bool,
+) {
+    if !has_left || !has_top || x0 == 0 || y0 == 0 {
+        predict_chroma_dc(plane, stride, x0, y0, has_left, has_top);
+        return;
+    }
+
+    let p = |x: usize, y: usize| -> i32 { plane[y * stride + x] as i32 };
+
+    let mut h_val = 0i32;
+    for i in 0..4 {
+        let w = i as i32 + 1;
+        h_val += w * (p(x0 + 4 + i, y0 - 1) - p(x0 + 2 - i, y0 - 1));
+    }
+    let mut v_val = 0i32;
+    for i in 0..4 {
+        let w = i as i32 + 1;
+        v_val += w * (p(x0 - 1, y0 + 4 + i) - p(x0 - 1, y0 + 2 - i));
+    }
+
+    let a = 16 * (p(x0 - 1, y0 + 7) + p(x0 + 7, y0 - 1));
+    let b = (17 * h_val + 16) >> 5;
+    let c = (17 * v_val + 16) >> 5;
+
+    for dy in 0..8i32 {
+        for dx in 0..8i32 {
+            let val = (a + b * (dx - 3) + c * (dy - 3) + 16) >> 5;
+            plane[(y0 + dy as usize) * stride + x0 + dx as usize] = val.clamp(0, 255) as u8;
+        }
+    }
 }
 
 /// 4x4 块预测分发函数 (9 种模式)
@@ -333,12 +430,28 @@ fn predict_4x4_diagonal_down_right(plane: &mut [u8], stride: usize, x0: usize, y
         }
     }
 
+    let get_top = |idx: isize| -> u8 {
+        if (0..=4).contains(&idx) {
+            ref_top[idx as usize]
+        } else {
+            128
+        }
+    };
+    let get_left = |idx: isize| -> u8 {
+        if (0..=4).contains(&idx) {
+            ref_left[idx as usize]
+        } else {
+            128
+        }
+    };
+
     for dy in 0..4 {
         for dx in 0..4 {
             let val = if dy > dx {
-                let a = ref_left[dy - dx];
-                let b = ref_left[dy - dx + 1];
-                let c = ref_left.get(dy - dx + 2).copied().unwrap_or(128);
+                let base = (dy as isize) - (dx as isize);
+                let a = get_left(base);
+                let b = get_left(base + 1);
+                let c = get_left(base + 2);
                 ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
             } else if dy == dx {
                 let a = ref_left[0];
@@ -346,9 +459,10 @@ fn predict_4x4_diagonal_down_right(plane: &mut [u8], stride: usize, x0: usize, y
                 let c = ref_top[1];
                 ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
             } else {
-                let a = ref_top[dx - dy];
-                let b = ref_top[dx - dy + 1];
-                let c = ref_top.get(dx - dy + 2).copied().unwrap_or(128);
+                let base = (dx as isize) - (dy as isize);
+                let a = get_top(base);
+                let b = get_top(base + 1);
+                let c = get_top(base + 2);
                 ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
             };
             let idx = (y0 + dy) * stride + x0 + dx;
@@ -387,12 +501,28 @@ fn predict_4x4_vertical_right(plane: &mut [u8], stride: usize, x0: usize, y0: us
         }
     }
 
+    let get_top = |idx: isize| -> u8 {
+        if (0..=4).contains(&idx) {
+            ref_top[idx as usize]
+        } else {
+            128
+        }
+    };
+    let get_left = |idx: isize| -> u8 {
+        if (0..=4).contains(&idx) {
+            ref_left[idx as usize]
+        } else {
+            128
+        }
+    };
+
     for dy in 0..4 {
         for dx in 0..4 {
             let val = if 2 * dx < dy {
-                let a = ref_left[dy - dx - 1];
-                let b = ref_left[dy - dx];
-                let c = ref_left.get(dy - dx + 1).copied().unwrap_or(128);
+                let base = (dy as isize) - (dx as isize) - 1;
+                let a = get_left(base);
+                let b = get_left(base + 1);
+                let c = get_left(base + 2);
                 ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
             } else if dy == 2 * dx {
                 let a = ref_left[0];
@@ -400,9 +530,10 @@ fn predict_4x4_vertical_right(plane: &mut [u8], stride: usize, x0: usize, y0: us
                 let c = ref_top[1];
                 ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
             } else {
-                let a = ref_top[2 * dx - dy];
-                let b = ref_top[2 * dx - dy + 1];
-                let c = ref_top.get(2 * dx - dy + 2).copied().unwrap_or(128);
+                let base = (2 * dx) as isize - (dy as isize);
+                let a = get_top(base);
+                let b = get_top(base + 1);
+                let c = get_top(base + 2);
                 ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
             };
             let idx = (y0 + dy) * stride + x0 + dx;
@@ -441,22 +572,39 @@ fn predict_4x4_horizontal_down(plane: &mut [u8], stride: usize, x0: usize, y0: u
         }
     }
 
+    let get_top = |idx: isize| -> u8 {
+        if (0..=4).contains(&idx) {
+            ref_top[idx as usize]
+        } else {
+            128
+        }
+    };
+    let get_left = |idx: isize| -> u8 {
+        if (0..=4).contains(&idx) {
+            ref_left[idx as usize]
+        } else {
+            128
+        }
+    };
+
     for dy in 0..4 {
         for dx in 0..4 {
             let val = if 2 * dy < dx {
-                let a = ref_top[dy + dx];
-                let b = ref_top[dy + dx + 1];
-                let c = ref_top.get(dy + dx + 2).copied().unwrap_or(128);
+                let base = (dy + dx) as isize;
+                let a = get_top(base);
+                let b = get_top(base + 1);
+                let c = get_top(base + 2);
                 ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
             } else if dx == 2 * dy {
-                let a = ref_left[dy];
+                let a = get_left(dy as isize);
                 let b = ref_top[0];
                 let c = ref_top[1];
                 ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
             } else {
-                let a = ref_left[dy - dx];
-                let b = ref_left[dy - dx + 1];
-                let c = ref_left.get(dy - dx + 2).copied().unwrap_or(128);
+                let base = (dy as isize) - (dx as isize);
+                let a = get_left(base);
+                let b = get_left(base + 1);
+                let c = get_left(base + 2);
                 ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
             };
             let idx = (y0 + dy) * stride + x0 + dx;
@@ -579,27 +727,6 @@ pub fn fill_block(
         let end = start + w;
         if end <= plane.len() {
             plane[start..end].fill(val);
-        }
-    }
-}
-
-/// 将残差值加到平面上 (用于 DC 残差叠加)
-pub fn add_residual_to_block(
-    plane: &mut [u8],
-    stride: usize,
-    x0: usize,
-    y0: usize,
-    w: usize,
-    h: usize,
-    residual: i32,
-) {
-    for dy in 0..h {
-        for dx in 0..w {
-            let idx = (y0 + dy) * stride + x0 + dx;
-            if idx < plane.len() {
-                let val = plane[idx] as i32 + residual;
-                plane[idx] = val.clamp(0, 255) as u8;
-            }
         }
     }
 }

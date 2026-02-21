@@ -65,6 +65,14 @@ pub struct Sps {
     pub poc_type: u32,
     /// log2(max_pic_order_cnt_lsb) = log2_max_pic_order_cnt_lsb_minus4 + 4 (仅 poc_type==0)
     pub log2_max_poc_lsb: u32,
+    /// `poc_type==1` 时的 delta_pic_order_always_zero_flag.
+    pub delta_pic_order_always_zero_flag: bool,
+    /// `poc_type==1` 时的 offset_for_non_ref_pic.
+    pub offset_for_non_ref_pic: i32,
+    /// `poc_type==1` 时的 offset_for_top_to_bottom_field.
+    pub offset_for_top_to_bottom_field: i32,
+    /// `poc_type==1` 时的 offset_for_ref_frame 列表.
+    pub offset_for_ref_frame: Vec<i32>,
 }
 
 /// 预定义的 SAR 表 (ITU-T H.264 表 E-1)
@@ -104,19 +112,44 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
     let level_idc = br.read_bits(8)? as u8;
     // seq_parameter_set_id
     let sps_id = read_ue(&mut br)?;
+    if sps_id > 31 {
+        return Err(TaoError::InvalidData(format!(
+            "H.264: sps_id 超出范围, sps_id={}",
+            sps_id
+        )));
+    }
 
     let mut chroma_format_idc = 1; // 默认 4:2:0
+    let mut separate_colour_plane_flag = false;
     let mut bit_depth_luma = 8;
     let mut bit_depth_chroma = 8;
 
     // High profile 及以上有额外字段
     if is_high_profile(profile_idc) {
         chroma_format_idc = read_ue(&mut br)?;
+        if chroma_format_idc > 3 {
+            return Err(TaoError::InvalidData(format!(
+                "H.264: chroma_format_idc 非法, value={}",
+                chroma_format_idc
+            )));
+        }
         if chroma_format_idc == 3 {
-            br.skip_bits(1)?; // separate_colour_plane_flag
+            separate_colour_plane_flag = br.read_bit()? == 1;
         }
         bit_depth_luma = read_ue(&mut br)? + 8;
         bit_depth_chroma = read_ue(&mut br)? + 8;
+        if !(8..=14).contains(&bit_depth_luma) {
+            return Err(TaoError::InvalidData(format!(
+                "H.264: bit_depth_luma 非法, value={}",
+                bit_depth_luma
+            )));
+        }
+        if !(8..=14).contains(&bit_depth_chroma) {
+            return Err(TaoError::InvalidData(format!(
+                "H.264: bit_depth_chroma 非法, value={}",
+                bit_depth_chroma
+            )));
+        }
         br.skip_bits(1)?; // qpprime_y_zero_transform_bypass_flag
 
         // seq_scaling_matrix_present_flag
@@ -128,27 +161,65 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
     }
 
     // log2_max_frame_num_minus4
-    let log2_max_frame_num = read_ue(&mut br)? + 4;
+    let log2_max_frame_num_minus4 = read_ue(&mut br)?;
+    if log2_max_frame_num_minus4 > 12 {
+        return Err(TaoError::InvalidData(format!(
+            "H.264: log2_max_frame_num_minus4 超出范围, value={}",
+            log2_max_frame_num_minus4
+        )));
+    }
+    let log2_max_frame_num = log2_max_frame_num_minus4 + 4;
+
     // pic_order_cnt_type
     let poc_type = read_ue(&mut br)?;
+    if poc_type > 2 {
+        return Err(TaoError::InvalidData(format!(
+            "H.264: pic_order_cnt_type 非法, value={}",
+            poc_type
+        )));
+    }
     let mut log2_max_poc_lsb = 0u32;
+    let mut delta_pic_order_always_zero_flag = false;
+    let mut offset_for_non_ref_pic = 0i32;
+    let mut offset_for_top_to_bottom_field = 0i32;
+    let mut offset_for_ref_frame = Vec::new();
     match poc_type {
         0 => {
-            log2_max_poc_lsb = read_ue(&mut br)? + 4;
+            let log2_max_poc_lsb_minus4 = read_ue(&mut br)?;
+            if log2_max_poc_lsb_minus4 > 12 {
+                return Err(TaoError::InvalidData(format!(
+                    "H.264: log2_max_pic_order_cnt_lsb_minus4 超出范围, value={}",
+                    log2_max_poc_lsb_minus4
+                )));
+            }
+            log2_max_poc_lsb = log2_max_poc_lsb_minus4 + 4;
         }
         1 => {
-            br.skip_bits(1)?; // delta_pic_order_always_zero_flag
-            let _offset_for_non_ref = read_se(&mut br)?;
-            let _offset_for_top = read_se(&mut br)?;
+            delta_pic_order_always_zero_flag = br.read_bit()? == 1;
+            offset_for_non_ref_pic = read_se(&mut br)?;
+            offset_for_top_to_bottom_field = read_se(&mut br)?;
             let num_ref_in_poc = read_ue(&mut br)?;
+            if num_ref_in_poc > 255 {
+                return Err(TaoError::InvalidData(format!(
+                    "H.264: num_ref_frames_in_pic_order_cnt_cycle 超出范围, value={}",
+                    num_ref_in_poc
+                )));
+            }
             for _ in 0..num_ref_in_poc {
-                let _offset = read_se(&mut br)?;
+                let offset = read_se(&mut br)?;
+                offset_for_ref_frame.push(offset);
             }
         }
         _ => {} // poc_type == 2: 无额外字段
     }
 
     let max_num_ref_frames = read_ue(&mut br)?;
+    if max_num_ref_frames > 16 {
+        return Err(TaoError::InvalidData(format!(
+            "H.264: max_num_ref_frames 超出范围, value={}",
+            max_num_ref_frames
+        )));
+    }
     let _gaps_in_frame_num_allowed = br.read_bit()?;
 
     // 图像尺寸 (宏块单位)
@@ -179,10 +250,43 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
     }
 
     // 计算像素尺寸
-    let (crop_unit_x, crop_unit_y) = cropping_unit(chroma_format_idc, frame_mbs_only);
-    let width = pic_width_in_mbs * 16 - (crop_left + crop_right) * crop_unit_x;
-    let height = pic_height_in_map_units * 16 * (if frame_mbs_only { 1 } else { 2 })
-        - (crop_top + crop_bottom) * crop_unit_y;
+    let chroma_array_type = if separate_colour_plane_flag {
+        0
+    } else {
+        chroma_format_idc
+    };
+    let (crop_unit_x, crop_unit_y) = cropping_unit(chroma_array_type, frame_mbs_only);
+    let raw_width = pic_width_in_mbs
+        .checked_mul(16)
+        .ok_or_else(|| TaoError::InvalidData("H.264: 计算宽度时发生溢出".into()))?;
+    let frame_height_in_mbs = pic_height_in_map_units
+        .checked_mul(if frame_mbs_only { 1 } else { 2 })
+        .ok_or_else(|| TaoError::InvalidData("H.264: 计算高度时发生溢出".into()))?;
+    let raw_height = frame_height_in_mbs
+        .checked_mul(16)
+        .ok_or_else(|| TaoError::InvalidData("H.264: 计算高度时发生溢出".into()))?;
+    let crop_x = crop_left
+        .checked_add(crop_right)
+        .and_then(|v| v.checked_mul(crop_unit_x))
+        .ok_or_else(|| TaoError::InvalidData("H.264: 计算水平裁剪时发生溢出".into()))?;
+    let crop_y = crop_top
+        .checked_add(crop_bottom)
+        .and_then(|v| v.checked_mul(crop_unit_y))
+        .ok_or_else(|| TaoError::InvalidData("H.264: 计算垂直裁剪时发生溢出".into()))?;
+    if crop_x >= raw_width || crop_y >= raw_height {
+        return Err(TaoError::InvalidData(format!(
+            "H.264: 裁剪参数非法, raw={}x{}, crop_x={}, crop_y={}",
+            raw_width, raw_height, crop_x, crop_y
+        )));
+    }
+    let width = raw_width - crop_x;
+    let height = raw_height - crop_y;
+    if width == 0 || height == 0 {
+        return Err(TaoError::InvalidData(format!(
+            "H.264: 图像尺寸非法, width={}, height={}",
+            width, height
+        )));
+    }
 
     // VUI 参数
     let mut vui_present = false;
@@ -221,6 +325,10 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
         log2_max_frame_num,
         poc_type,
         log2_max_poc_lsb,
+        delta_pic_order_always_zero_flag,
+        offset_for_non_ref_pic,
+        offset_for_top_to_bottom_field,
+        offset_for_ref_frame,
     })
 }
 
@@ -330,14 +438,23 @@ fn parse_vui(br: &mut BitReader) -> TaoResult<(Rational, Option<Rational>)> {
             // Extended_SAR
             let sar_w = br.read_bits(16)?;
             let sar_h = br.read_bits(16)?;
-            if sar_w > 0 && sar_h > 0 {
-                sar = Rational::new(sar_w as i32, sar_h as i32);
+            if sar_w == 0 || sar_h == 0 {
+                return Err(TaoError::InvalidData(format!(
+                    "H.264: VUI Extended_SAR 非法, sar_w={}, sar_h={}",
+                    sar_w, sar_h
+                )));
             }
+            sar = Rational::new(sar_w as i32, sar_h as i32);
         } else if ar_idc < SAR_TABLE.len() {
             let (w, h) = SAR_TABLE[ar_idc];
             if w > 0 && h > 0 {
                 sar = Rational::new(w as i32, h as i32);
             }
+        } else {
+            return Err(TaoError::InvalidData(format!(
+                "H.264: VUI aspect_ratio_idc 非法, value={}",
+                ar_idc
+            )));
         }
     }
 
@@ -371,12 +488,20 @@ fn parse_vui(br: &mut BitReader) -> TaoResult<(Rational, Option<Rational>)> {
         let time_scale = br.read_bits(32)?;
         let fixed_rate = br.read_bit()?;
 
-        if num_units > 0 && time_scale > 0 {
-            // H.264 定义: fps = time_scale / (2 * num_units_in_tick)
-            // fixed_frame_rate_flag 表示每个 AU 都是固定帧率
-            let _ = fixed_rate;
-            fps = Some(Rational::new(time_scale as i32, (num_units * 2) as i32));
+        if num_units == 0 {
+            return Err(TaoError::InvalidData(
+                "H.264: VUI num_units_in_tick 不能为 0".into(),
+            ));
         }
+        if time_scale == 0 {
+            return Err(TaoError::InvalidData(
+                "H.264: VUI time_scale 不能为 0".into(),
+            ));
+        }
+        // H.264 定义: fps = time_scale / (2 * num_units_in_tick)
+        // fixed_frame_rate_flag 表示每个 AU 都是固定帧率
+        let _ = fixed_rate;
+        fps = Some(Rational::new(time_scale as i32, (num_units * 2) as i32));
     }
 
     Ok((sar, fps))
@@ -486,6 +611,143 @@ mod tests {
     #[test]
     fn test_sps_rbsp_too_short() {
         assert!(parse_sps(&[0x42]).is_err());
+    }
+
+    #[test]
+    fn test_sps_reject_sps_id_out_of_range() {
+        let rbsp = build_test_sps_rbsp_custom(32, 0, 4);
+        let err = parse_sps(&rbsp).expect_err("sps_id 超范围应失败");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("sps_id"),
+            "错误信息应包含 sps_id, actual={}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_sps_reject_invalid_poc_type() {
+        let rbsp = build_test_sps_rbsp_custom(0, 3, 4);
+        let err = parse_sps(&rbsp).expect_err("poc_type 非法应失败");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("pic_order_cnt_type"),
+            "错误信息应包含 pic_order_cnt_type, actual={}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_sps_reject_too_many_ref_frames() {
+        let rbsp = build_test_sps_rbsp_custom(0, 0, 17);
+        let err = parse_sps(&rbsp).expect_err("max_num_ref_frames 超范围应失败");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("max_num_ref_frames"),
+            "错误信息应包含 max_num_ref_frames, actual={}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_sps_reject_invalid_chroma_format_idc() {
+        let rbsp = build_test_high_profile_sps_with_chroma(4);
+        let err = parse_sps(&rbsp).expect_err("chroma_format_idc 非法应失败");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("chroma_format_idc"),
+            "错误信息应包含 chroma_format_idc, actual={}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_sps_reject_too_many_poc_cycle_offsets() {
+        let rbsp = build_test_sps_poc_type1_with_cycle(256);
+        let err = parse_sps(&rbsp).expect_err("num_ref_frames_in_pic_order_cnt_cycle 超范围应失败");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("num_ref_frames_in_pic_order_cnt_cycle"),
+            "错误信息应包含 num_ref_frames_in_pic_order_cnt_cycle, actual={}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_sps_reject_invalid_vui_aspect_ratio_idc() {
+        let rbsp = build_test_sps_with_custom_vui(17, None, Some((1001, 60000)));
+        let err = parse_sps(&rbsp).expect_err("非法 aspect_ratio_idc 应失败");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("aspect_ratio_idc"),
+            "错误信息应包含 aspect_ratio_idc, actual={}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_sps_reject_invalid_extended_sar() {
+        let rbsp = build_test_sps_with_custom_vui(255, Some((0, 1)), Some((1001, 60000)));
+        let err = parse_sps(&rbsp).expect_err("Extended_SAR 为 0 应失败");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("Extended_SAR"),
+            "错误信息应包含 Extended_SAR, actual={}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_sps_reject_zero_num_units_in_tick() {
+        let rbsp = build_test_sps_with_custom_vui(1, None, Some((0, 60000)));
+        let err = parse_sps(&rbsp).expect_err("num_units_in_tick=0 应失败");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("num_units_in_tick"),
+            "错误信息应包含 num_units_in_tick, actual={}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_sps_reject_zero_time_scale() {
+        let rbsp = build_test_sps_with_custom_vui(1, None, Some((1001, 0)));
+        let err = parse_sps(&rbsp).expect_err("time_scale=0 应失败");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("time_scale"),
+            "错误信息应包含 time_scale, actual={}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_sps_parse_poc_type1_fields() {
+        let rbsp = build_test_sps_poc_type1_with_cycle(2);
+        let sps = parse_sps(&rbsp).expect("poc_type1 SPS 解析失败");
+        assert_eq!(sps.poc_type, 1, "poc_type 应为 1");
+        assert!(
+            !sps.delta_pic_order_always_zero_flag,
+            "delta_pic_order_always_zero_flag 解析错误"
+        );
+        assert_eq!(
+            sps.offset_for_non_ref_pic, 0,
+            "offset_for_non_ref_pic 解析错误"
+        );
+        assert_eq!(
+            sps.offset_for_top_to_bottom_field, 0,
+            "offset_for_top_to_bottom_field 解析错误"
+        );
+        assert_eq!(
+            sps.offset_for_ref_frame.len(),
+            2,
+            "offset_for_ref_frame 长度错误"
+        );
+        assert_eq!(
+            sps.offset_for_ref_frame,
+            vec![0, 0],
+            "offset_for_ref_frame 解析错误"
+        );
     }
 
     // ============================================================
@@ -607,6 +869,115 @@ mod tests {
         bits_to_bytes(&bits)
     }
 
+    /// 构造带自定义 `sps_id/poc_type/max_num_ref_frames` 的最小 SPS RBSP.
+    fn build_test_sps_rbsp_custom(sps_id: u32, poc_type: u32, max_num_ref_frames: u32) -> Vec<u8> {
+        let mut bits = Vec::new();
+
+        // profile_idc=66(Baseline), constraints=0, level=30
+        for i in (0..8).rev() {
+            bits.push(((66u8 >> i) & 1) != 0);
+        }
+        bits.extend(std::iter::repeat_n(false, 8));
+        for i in (0..8).rev() {
+            bits.push(((30u8 >> i) & 1) != 0);
+        }
+
+        write_ue(&mut bits, sps_id);
+        write_ue(&mut bits, 0); // log2_max_frame_num_minus4
+        write_ue(&mut bits, poc_type);
+        if poc_type == 0 {
+            write_ue(&mut bits, 0); // log2_max_pic_order_cnt_lsb_minus4
+        } else if poc_type == 1 {
+            bits.push(false); // delta_pic_order_always_zero_flag
+            write_ue(&mut bits, 0); // offset_for_non_ref_pic(se=0)
+            write_ue(&mut bits, 0); // offset_for_top_to_bottom_field(se=0)
+            write_ue(&mut bits, 0); // num_ref_frames_in_pic_order_cnt_cycle
+        }
+
+        write_ue(&mut bits, max_num_ref_frames);
+        bits.push(false); // gaps_in_frame_num_value_allowed_flag
+        write_ue(&mut bits, 19); // width: (19+1)*16 = 320
+        write_ue(&mut bits, 14); // height: (14+1)*16 = 240
+        bits.push(true); // frame_mbs_only_flag
+        bits.push(false); // direct_8x8_inference_flag
+        bits.push(false); // frame_cropping_flag
+        bits.push(false); // vui_parameters_present_flag
+
+        bits_to_bytes(&bits)
+    }
+
+    /// 构造高 profile SPS, 用于测试 `chroma_format_idc` 校验.
+    fn build_test_high_profile_sps_with_chroma(chroma_format_idc: u32) -> Vec<u8> {
+        let mut bits = Vec::new();
+
+        // profile_idc=100(High), constraints=0, level=40
+        for i in (0..8).rev() {
+            bits.push(((100u8 >> i) & 1) != 0);
+        }
+        bits.extend(std::iter::repeat_n(false, 8));
+        for i in (0..8).rev() {
+            bits.push(((40u8 >> i) & 1) != 0);
+        }
+
+        write_ue(&mut bits, 0); // sps_id
+        write_ue(&mut bits, chroma_format_idc);
+        if chroma_format_idc == 3 {
+            bits.push(false); // separate_colour_plane_flag
+        }
+        write_ue(&mut bits, 0); // bit_depth_luma_minus8
+        write_ue(&mut bits, 0); // bit_depth_chroma_minus8
+        bits.push(false); // qpprime_y_zero_transform_bypass_flag
+        bits.push(false); // seq_scaling_matrix_present_flag
+
+        write_ue(&mut bits, 0); // log2_max_frame_num_minus4
+        write_ue(&mut bits, 0); // pic_order_cnt_type
+        write_ue(&mut bits, 0); // log2_max_pic_order_cnt_lsb_minus4
+        write_ue(&mut bits, 4); // max_num_ref_frames
+        bits.push(false); // gaps_in_frame_num_value_allowed_flag
+        write_ue(&mut bits, 19); // width=320
+        write_ue(&mut bits, 14); // height=240
+        bits.push(true); // frame_mbs_only_flag
+        bits.push(false); // direct_8x8_inference_flag
+        bits.push(false); // frame_cropping_flag
+        bits.push(false); // vui_parameters_present_flag
+
+        bits_to_bytes(&bits)
+    }
+
+    fn build_test_sps_poc_type1_with_cycle(num_ref_in_cycle: u32) -> Vec<u8> {
+        let mut bits = Vec::new();
+
+        // profile_idc=66(Baseline), constraints=0, level=30
+        for i in (0..8).rev() {
+            bits.push(((66u8 >> i) & 1) != 0);
+        }
+        bits.extend(std::iter::repeat_n(false, 8));
+        for i in (0..8).rev() {
+            bits.push(((30u8 >> i) & 1) != 0);
+        }
+
+        write_ue(&mut bits, 0); // sps_id
+        write_ue(&mut bits, 0); // log2_max_frame_num_minus4
+        write_ue(&mut bits, 1); // pic_order_cnt_type
+        bits.push(false); // delta_pic_order_always_zero_flag
+        write_ue(&mut bits, 0); // offset_for_non_ref_pic(se=0)
+        write_ue(&mut bits, 0); // offset_for_top_to_bottom_field(se=0)
+        write_ue(&mut bits, num_ref_in_cycle);
+        for _ in 0..num_ref_in_cycle {
+            write_ue(&mut bits, 0); // offset_for_ref_frame[i]
+        }
+        write_ue(&mut bits, 4); // max_num_ref_frames
+        bits.push(false); // gaps_in_frame_num_value_allowed_flag
+        write_ue(&mut bits, 19); // width=320
+        write_ue(&mut bits, 14); // height=240
+        bits.push(true); // frame_mbs_only_flag
+        bits.push(false); // direct_8x8_inference_flag
+        bits.push(false); // frame_cropping_flag
+        bits.push(false); // vui_parameters_present_flag
+
+        bits_to_bytes(&bits)
+    }
+
     /// 构造带 VUI timing_info 的 SPS RBSP
     fn build_test_sps_with_vui(
         profile: u8,
@@ -681,6 +1052,77 @@ mod tests {
         }
         // fixed_frame_rate_flag = 1
         bits.push(true);
+
+        bits_to_bytes(&bits)
+    }
+
+    fn build_test_sps_with_custom_vui(
+        aspect_ratio_idc: u8,
+        extended_sar: Option<(u32, u32)>,
+        timing_info: Option<(u32, u32)>,
+    ) -> Vec<u8> {
+        let mut bits = Vec::new();
+
+        // profile_idc=66, constraints=0, level=30
+        for i in (0..8).rev() {
+            bits.push(((66u8 >> i) & 1) != 0);
+        }
+        bits.extend(std::iter::repeat_n(false, 8));
+        for i in (0..8).rev() {
+            bits.push(((30u8 >> i) & 1) != 0);
+        }
+
+        // 最小 SPS 主体
+        write_ue(&mut bits, 0); // sps_id
+        write_ue(&mut bits, 0); // log2_max_frame_num_minus4
+        write_ue(&mut bits, 0); // pic_order_cnt_type
+        write_ue(&mut bits, 0); // log2_max_pic_order_cnt_lsb_minus4
+        write_ue(&mut bits, 4); // max_num_ref_frames
+        bits.push(false); // gaps
+        write_ue(&mut bits, 19); // width=320
+        write_ue(&mut bits, 14); // height=240
+        bits.push(true); // frame_mbs_only
+        bits.push(false); // direct_8x8
+        bits.push(false); // frame_cropping_flag
+
+        // vui_parameters_present_flag = 1
+        bits.push(true);
+
+        // aspect_ratio_info_present_flag = 1
+        bits.push(true);
+        for i in (0..8).rev() {
+            bits.push(((aspect_ratio_idc >> i) & 1) != 0);
+        }
+        if aspect_ratio_idc == 255 {
+            let (sar_w, sar_h) = extended_sar.unwrap_or((1, 1));
+            for i in (0..16).rev() {
+                bits.push(((sar_w >> i) & 1) != 0);
+            }
+            for i in (0..16).rev() {
+                bits.push(((sar_h >> i) & 1) != 0);
+            }
+        }
+
+        // overscan_info_present_flag = 0
+        bits.push(false);
+        // video_signal_type_present_flag = 0
+        bits.push(false);
+        // chroma_loc_info_present_flag = 0
+        bits.push(false);
+
+        // timing_info_present_flag
+        if let Some((num_units, time_scale)) = timing_info {
+            bits.push(true);
+            for i in (0..32).rev() {
+                bits.push(((num_units >> i) & 1) != 0);
+            }
+            for i in (0..32).rev() {
+                bits.push(((time_scale >> i) & 1) != 0);
+            }
+            bits.push(true); // fixed_frame_rate_flag
+        } else {
+            bits.push(false);
+        }
 
         bits_to_bytes(&bits)
     }

@@ -17,3 +17,7 @@ pub mod vorbis;
 #[cfg(test)]
 #[path = "../plans/tao-codec/audio/wav/decoder_compare.rs"]
 pub mod wav;
+
+#[cfg(test)]
+#[path = "../plans/tao-codec/video/h264/decoder_compare.rs"]
+pub mod h264;

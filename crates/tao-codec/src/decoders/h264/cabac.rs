@@ -2,6 +2,9 @@
 //!
 //! 实现 H.264 CABAC 二进制算术解码的核心逻辑.
 
+use super::cabac_init_ext::{CABAC_INIT_I_EXT_460_1011, CABAC_INIT_PB0_EXT_460_1011};
+use super::cabac_init_pb::{CABAC_INIT_PB1, CABAC_INIT_PB2};
+
 /// CABAC 上下文模型
 #[derive(Clone, Copy)]
 pub struct CabacCtx {
@@ -14,49 +17,69 @@ pub struct CabacCtx {
 /// CABAC 解码器
 pub struct CabacDecoder<'a> {
     data: &'a [u8],
-    pos: usize,
-    range: u32,
-    offset: u32,
-    bits_needed: i32,
+    bit_pos: usize,
+    raw_pos: usize,
+    cod_i_range: u32,
+    cod_i_offset: u32,
 }
 
 impl<'a> CabacDecoder<'a> {
+    fn read_input_bit(&mut self) -> u32 {
+        let byte = self.data.get(self.bit_pos >> 3).copied().unwrap_or(0);
+        let shift = 7usize.saturating_sub(self.bit_pos & 7);
+        self.bit_pos = self.bit_pos.saturating_add(1);
+        u32::from((byte >> shift) & 1)
+    }
+
+    fn read_input_bits(&mut self, n: usize) -> u32 {
+        let mut out = 0u32;
+        for _ in 0..n {
+            out = (out << 1) | self.read_input_bit();
+        }
+        out
+    }
+
+    fn renormalize(&mut self) {
+        while self.cod_i_range < 256 {
+            self.cod_i_range <<= 1;
+            self.cod_i_offset = (self.cod_i_offset << 1) | self.read_input_bit();
+        }
+    }
+
+    fn init_decoder_from(&mut self, start_byte: usize) {
+        self.bit_pos = start_byte.saturating_mul(8);
+        self.raw_pos = start_byte;
+        self.cod_i_range = 510;
+        self.cod_i_offset = self.read_input_bits(9);
+    }
+
     /// 从字节切片初始化 CABAC 解码器
     pub fn new(data: &'a [u8]) -> Self {
-        if data.len() < 2 {
-            return Self {
-                data,
-                pos: data.len(),
-                range: 510,
-                offset: 0,
-                bits_needed: 0,
-            };
-        }
-        let offset = ((data[0] as u32) << 9) | ((data[1] as u32) << 1);
-        Self {
+        let mut out = Self {
             data,
-            pos: 2,
-            range: 510,
-            offset,
-            bits_needed: -7,
-        }
+            bit_pos: 0,
+            raw_pos: 0,
+            cod_i_range: 510,
+            cod_i_offset: 0,
+        };
+        out.init_decoder_from(0);
+        out
     }
 
     /// 带上下文模型的算术解码 (regular mode)
     pub fn decode_decision(&mut self, ctx: &mut CabacCtx) -> u32 {
-        let q_idx = ((self.range >> 6) & 3) as usize;
+        let q_idx = ((self.cod_i_range >> 6) & 3) as usize;
         let s = ctx.state as usize;
         let range_lps = RANGE_TAB_LPS[s][q_idx] as u32;
-        let range_mps = self.range - range_lps;
+        self.cod_i_range -= range_lps;
 
-        if self.offset < range_mps {
-            self.range = range_mps;
+        if self.cod_i_offset < self.cod_i_range {
             ctx.state = TRANS_IDX_MPS[s];
             self.renormalize();
             ctx.mps as u32
         } else {
-            self.offset -= range_mps;
-            self.range = range_lps;
+            self.cod_i_offset -= self.cod_i_range;
+            self.cod_i_range = range_lps;
             let symbol = 1 - ctx.mps as u32;
             if ctx.state == 0 {
                 ctx.mps = 1 - ctx.mps;
@@ -69,13 +92,9 @@ impl<'a> CabacDecoder<'a> {
 
     /// 旁路模式解码 (等概率)
     pub fn decode_bypass(&mut self) -> u32 {
-        self.offset <<= 1;
-        self.bits_needed += 1;
-        if self.bits_needed >= 0 {
-            self.load_byte();
-        }
-        if self.offset >= self.range {
-            self.offset -= self.range;
+        self.cod_i_offset = (self.cod_i_offset << 1) | self.read_input_bit();
+        if self.cod_i_offset >= self.cod_i_range {
+            self.cod_i_offset -= self.cod_i_range;
             1
         } else {
             0
@@ -84,8 +103,8 @@ impl<'a> CabacDecoder<'a> {
 
     /// 终止模式解码 (end_of_slice_flag)
     pub fn decode_terminate(&mut self) -> u32 {
-        self.range -= 2;
-        if self.offset >= self.range {
+        self.cod_i_range = self.cod_i_range.saturating_sub(2);
+        if self.cod_i_offset >= self.cod_i_range {
             1
         } else {
             self.renormalize();
@@ -93,25 +112,64 @@ impl<'a> CabacDecoder<'a> {
         }
     }
 
-    /// 重归一化
-    fn renormalize(&mut self) {
-        while self.range < 256 {
-            self.range <<= 1;
-            self.offset <<= 1;
-            self.bits_needed += 1;
-            if self.bits_needed >= 0 {
-                self.load_byte();
-            }
+    /// 对齐到 I_PCM 原始样本起点
+    pub fn align_to_byte_boundary(&mut self) {
+        // 对齐语义对齐 FFmpeg:
+        // ptr = bytestream; if (low & 1) ptr--;
+        // 这里以当前按字节消费位置为基准, 必要时回退 1 字节.
+        let mut ptr = self.bit_pos >> 3;
+        if (self.cod_i_offset & 1) != 0 {
+            ptr = ptr.saturating_sub(1);
         }
+        self.raw_pos = ptr;
     }
 
-    /// 加载下一个字节到 offset
-    fn load_byte(&mut self) {
-        if self.pos < self.data.len() {
-            self.offset |= self.data[self.pos] as u32;
-            self.pos += 1;
-        }
-        self.bits_needed = -8;
+    /// 在 I_PCM 调试阶段对原始读取指针做偏移.
+    pub fn adjust_raw_pos(&mut self, delta: isize) {
+        let base = self.raw_pos as isize;
+        self.raw_pos = base.saturating_add(delta).max(0) as usize;
+    }
+
+    /// 读取原始字节 (用于 I_PCM 样本读取)
+    pub fn read_raw_byte(&mut self) -> u8 {
+        let out = self.data.get(self.raw_pos).copied().unwrap_or(0);
+        self.raw_pos = self.raw_pos.saturating_add(1);
+        out
+    }
+
+    /// I_PCM 结束后重启 CABAC 引擎
+    pub fn restart_engine(&mut self) {
+        self.init_decoder_from(self.raw_pos);
+    }
+
+    /// 当前已消费的底层比特位置 (调试用)
+    pub fn bit_pos(&self) -> usize {
+        self.bit_pos
+    }
+
+    /// 当前 CABAC 数据总比特数 (调试用)
+    pub fn total_bits(&self) -> usize {
+        self.data.len() * 8
+    }
+
+    /// 当前 CABAC bytestream 读指针 (调试用).
+    pub fn bytestream_pos(&self) -> usize {
+        self.bit_pos >> 3
+    }
+
+    /// 当前 I_PCM 原始读取指针 (调试用).
+    pub fn raw_pos(&self) -> usize {
+        self.raw_pos
+    }
+
+    /// 当前算术寄存器 low (调试用).
+    pub fn low(&self) -> u32 {
+        self.cod_i_offset
+    }
+
+    /// 当前算术寄存器 range (调试用).
+    pub fn range(&self) -> u32 {
+        self.cod_i_range
     }
 }
 
@@ -123,15 +181,72 @@ pub fn init_contexts_i_slice(qp: i32) -> Vec<CabacCtx> {
             ctxs[i] = init_single_ctx(m, n, qp);
         }
     }
+    for (i, &(m, n)) in CABAC_INIT_I_EXT_277_459.iter().enumerate() {
+        let idx = 277 + i;
+        if idx < ctxs.len() {
+            ctxs[idx] = init_single_ctx(m, n, qp);
+        }
+    }
+    for (i, &(m, n)) in CABAC_INIT_I_EXT_460_1011.iter().enumerate() {
+        let idx = 460 + i;
+        if idx < ctxs.len() {
+            ctxs[idx] = init_single_ctx(m, n, qp);
+        }
+    }
+    for (i, &(m, n)) in CABAC_INIT_I_EXT_1012_1023.iter().enumerate() {
+        let idx = 1012 + i;
+        if idx < ctxs.len() {
+            ctxs[idx] = init_single_ctx(m, n, qp);
+        }
+    }
     ctxs
 }
 
-/// 初始化 CABAC 上下文模型数组 (P-slice, cabac_init_idc=0)
-pub fn init_contexts_p_slice(qp: i32) -> Vec<CabacCtx> {
+/// 初始化 CABAC 上下文模型数组 (P/B-slice, cabac_init_idc=0/1/2)
+pub fn init_contexts_pb_slice(qp: i32, cabac_init_idc: u8) -> Vec<CabacCtx> {
+    let idc = cabac_init_idc.min(2);
+
+    if idc == 1 {
+        let mut ctxs = vec![CabacCtx { state: 0, mps: 0 }; 1024];
+        for (i, &(m, n)) in CABAC_INIT_PB1.iter().enumerate() {
+            if i < ctxs.len() {
+                ctxs[i] = init_single_ctx(m, n, qp);
+            }
+        }
+        return ctxs;
+    }
+    if idc == 2 {
+        let mut ctxs = vec![CabacCtx { state: 0, mps: 0 }; 1024];
+        for (i, &(m, n)) in CABAC_INIT_PB2.iter().enumerate() {
+            if i < ctxs.len() {
+                ctxs[i] = init_single_ctx(m, n, qp);
+            }
+        }
+        return ctxs;
+    }
+
     let mut ctxs = vec![CabacCtx { state: 0, mps: 0 }; 1024];
     for (i, &(m, n)) in CABAC_INIT_PB0.iter().enumerate() {
         if i < ctxs.len() {
             ctxs[i] = init_single_ctx(m, n, qp);
+        }
+    }
+    for (i, &(m, n)) in CABAC_INIT_PB0_EXT_277_459.iter().enumerate() {
+        let idx = 277 + i;
+        if idx < ctxs.len() {
+            ctxs[idx] = init_single_ctx(m, n, qp);
+        }
+    }
+    for (i, &(m, n)) in CABAC_INIT_PB0_EXT_460_1011.iter().enumerate() {
+        let idx = 460 + i;
+        if idx < ctxs.len() {
+            ctxs[idx] = init_single_ctx(m, n, qp);
+        }
+    }
+    for (i, &(m, n)) in CABAC_INIT_PB0_EXT_1012_1023.iter().enumerate() {
+        let idx = 1012 + i;
+        if idx < ctxs.len() {
+            ctxs[idx] = init_single_ctx(m, n, qp);
         }
     }
     ctxs
@@ -307,3 +422,127 @@ const CABAC_INIT_PB0: [(i8, i8); 277] = [
     // 276
     (0,0),
 ];
+
+/// I-slice 上下文初始化扩展表 (ctxIdx 277..459).
+///
+/// 取自 FFmpeg `cabac_context_init_I`.
+#[rustfmt::skip]
+const CABAC_INIT_I_EXT_277_459: [(i8, i8); 183] = [
+    (-6,93), (-6,84), (-8,79), (0,66), (-1,71), (0,62), (-2,60), (-2,59),
+    (-5,75), (-3,62), (-4,58), (-9,66), (-1,79), (0,71), (3,68), (10,44),
+    (-7,62), (15,36), (14,40), (16,27), (12,29), (1,44), (20,36), (18,32),
+    (5,42), (1,48), (10,62), (17,46), (9,64), (-12,104), (-11,97), (-16,96),
+    (-7,88), (-8,85), (-7,85), (-9,85), (-13,88), (4,66), (-3,77), (-3,76),
+    (-6,76), (10,58), (-1,76), (-1,83), (-7,99), (-14,95), (2,95), (0,76),
+    (-5,74), (0,70), (-11,75), (1,68), (0,65), (-14,73), (3,62), (4,62),
+    (-1,68), (-13,75), (11,55), (5,64), (12,70), (15,6), (6,19), (7,16),
+    (12,14), (18,13), (13,11), (13,15), (15,16), (12,23), (13,23), (15,20),
+    (14,26), (14,44), (17,40), (17,47), (24,17), (21,21), (25,22), (31,27),
+    (22,29), (19,35), (14,50), (10,57), (7,63), (-2,77), (-4,82), (-3,94),
+    (9,69), (-12,109), (36,-35), (36,-34), (32,-26), (37,-30), (44,-32), (34,-18),
+    (34,-15), (40,-15), (33,-7), (35,-5), (33,0), (38,2), (33,13), (23,35),
+    (13,58), (29,-3), (26,0), (22,30), (31,-7), (35,-15), (34,-3), (34,3),
+    (36,-1), (34,5), (32,11), (35,5), (34,12), (39,11), (30,29), (34,26),
+    (29,39), (19,66), (31,21), (31,31), (25,50), (-17,120), (-20,112), (-18,114),
+    (-11,85), (-15,92), (-14,89), (-26,71), (-15,81), (-14,80), (0,68), (-14,70),
+    (-24,56), (-23,68), (-24,50), (-11,74), (23,-13), (26,-13), (40,-15), (49,-14),
+    (44,3), (45,6), (44,34), (33,54), (19,82), (-3,75), (-1,23), (1,34),
+    (1,43), (0,54), (-2,55), (0,61), (1,64), (0,68), (-9,92), (-14,106),
+    (-13,97), (-15,90), (-12,90), (-18,88), (-10,73), (-9,79), (-14,86), (-10,73),
+    (-10,70), (-10,69), (-5,66), (-9,64), (-5,58), (2,59), (21,-10), (24,-11),
+    (28,-8), (28,-1), (29,3), (29,9), (35,20), (29,36), (14,67),
+];
+
+/// P-slice(cabac_init_idc=0) 上下文初始化扩展表 (ctxIdx 277..459).
+///
+/// 取自 FFmpeg `cabac_context_init_PB[0]`.
+#[rustfmt::skip]
+const CABAC_INIT_PB0_EXT_277_459: [(i8, i8); 183] = [
+    (-13,106), (-16,106), (-10,87), (-21,114), (-18,110), (-14,98), (-22,110), (-21,106),
+    (-18,103), (-21,107), (-23,108), (-26,112), (-10,96), (-12,95), (-5,91), (-9,93),
+    (-22,94), (-5,86), (9,67), (-4,80), (-10,85), (-1,70), (7,60), (9,58),
+    (5,61), (12,50), (15,50), (18,49), (17,54), (10,41), (7,46), (-1,51),
+    (7,49), (8,52), (9,41), (6,47), (2,55), (13,41), (10,44), (6,50),
+    (5,53), (13,49), (4,63), (6,64), (-2,69), (-2,59), (6,70), (10,44),
+    (9,31), (12,43), (3,53), (14,34), (10,38), (-3,52), (13,40), (17,32),
+    (7,44), (7,38), (13,50), (10,57), (26,43), (14,11), (11,14), (9,11),
+    (18,11), (21,9), (23,-2), (32,-15), (32,-15), (34,-21), (39,-23), (42,-33),
+    (41,-31), (46,-28), (38,-12), (21,29), (45,-24), (53,-45), (48,-26), (65,-43),
+    (43,-19), (39,-10), (30,9), (18,26), (20,27), (0,57), (-14,82), (-5,75),
+    (-19,97), (-35,125), (27,0), (28,0), (31,-4), (27,6), (34,8), (30,10),
+    (24,22), (33,19), (22,32), (26,31), (21,41), (26,44), (23,47), (16,65),
+    (14,71), (8,60), (6,63), (17,65), (21,24), (23,20), (26,23), (27,32),
+    (28,23), (28,24), (23,40), (24,32), (28,29), (23,42), (19,57), (22,53),
+    (22,61), (11,86), (12,40), (11,51), (14,59), (-4,79), (-7,71), (-5,69),
+    (-9,70), (-8,66), (-10,68), (-19,73), (-12,69), (-16,70), (-15,67), (-20,62),
+    (-19,70), (-16,66), (-22,65), (-20,63), (9,-2), (26,-9), (33,-9), (39,-7),
+    (41,-2), (45,3), (49,9), (45,27), (36,59), (-6,66), (-7,35), (-7,42),
+    (-8,45), (-5,48), (-12,56), (-6,60), (-5,62), (-8,66), (-8,76), (-5,85),
+    (-6,81), (-10,77), (-7,81), (-17,80), (-18,73), (-4,74), (-10,83), (-9,71),
+    (-9,67), (-1,61), (-8,66), (-14,66), (0,59), (2,59), (21,-13), (33,-14),
+    (39,-7), (46,-2), (51,2), (60,6), (61,17), (55,34), (42,62),
+];
+
+/// I-slice 扩展上下文 (ctxIdx 1012..1023).
+///
+/// 取自 FFmpeg `cabac_context_init_I` 尾部 8x8 CBF 上下文.
+#[rustfmt::skip]
+const CABAC_INIT_I_EXT_1012_1023: [(i8, i8); 12] = [
+    (-3, 70), (-8, 93), (-10, 90), (-30, 127),
+    (-3, 70), (-8, 93), (-10, 90), (-30, 127),
+    (-3, 70), (-8, 93), (-10, 90), (-30, 127),
+];
+
+/// P-slice(cabac_init_idc=0) 扩展上下文 (ctxIdx 1012..1023).
+///
+/// 取自 FFmpeg `cabac_context_init_PB[0]` 尾部 8x8 CBF 上下文.
+#[rustfmt::skip]
+const CABAC_INIT_PB0_EXT_1012_1023: [(i8, i8); 12] = [
+    (-3, 74), (-9, 92), (-8, 87), (-23, 126),
+    (-3, 74), (-9, 92), (-8, 87), (-23, 126),
+    (-3, 74), (-9, 92), (-8, 87), (-23, 126),
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_init_contexts_pb_slice_selects_cabac_init_idc() {
+        let qp = 26;
+        let idx = 11usize;
+
+        let ctx0 = init_contexts_pb_slice(qp, 0);
+        let ctx1 = init_contexts_pb_slice(qp, 1);
+        let ctx2 = init_contexts_pb_slice(qp, 2);
+        let ctx_over = init_contexts_pb_slice(qp, 9);
+
+        let expected0 = init_single_ctx(23, 33, qp);
+        let expected1 = init_single_ctx(22, 25, qp);
+        let expected2 = init_single_ctx(29, 16, qp);
+
+        assert_eq!(
+            ctx0[idx].state, expected0.state,
+            "cabac_init_idc=0 的 state 错误"
+        );
+        assert_eq!(ctx0[idx].mps, expected0.mps, "cabac_init_idc=0 的 mps 错误");
+        assert_eq!(
+            ctx1[idx].state, expected1.state,
+            "cabac_init_idc=1 的 state 错误"
+        );
+        assert_eq!(ctx1[idx].mps, expected1.mps, "cabac_init_idc=1 的 mps 错误");
+        assert_eq!(
+            ctx2[idx].state, expected2.state,
+            "cabac_init_idc=2 的 state 错误"
+        );
+        assert_eq!(ctx2[idx].mps, expected2.mps, "cabac_init_idc=2 的 mps 错误");
+        assert_eq!(
+            ctx_over[idx].state, expected2.state,
+            "cabac_init_idc 越界时应按 2 处理(state)"
+        );
+        assert_eq!(
+            ctx_over[idx].mps, expected2.mps,
+            "cabac_init_idc 越界时应按 2 处理(mps)"
+        );
+    }
+}
