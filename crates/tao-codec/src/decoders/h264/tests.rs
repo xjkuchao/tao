@@ -2500,6 +2500,45 @@ fn test_decode_slice_data_records_drop_when_cavlc_bit_offset_out_of_range() {
 }
 
 #[test]
+fn test_decode_slice_data_records_drop_when_first_mb_out_of_range_cabac() {
+    let mut dec = build_test_decoder();
+    install_basic_parameter_sets(&mut dec, 1);
+    let before = dec.malformed_nal_drops;
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.pps_id = 0;
+    header.first_mb = (dec.mb_width * dec.mb_height) as u32; // 越界
+    header.cabac_start_byte = 0;
+
+    dec.decode_slice_data(&[0x00], &header);
+
+    assert_eq!(
+        dec.malformed_nal_drops,
+        before + 1,
+        "CABAC first_mb 越界时应记录坏 NAL 丢弃计数"
+    );
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_records_drop_when_first_mb_out_of_range() {
+    let mut dec = build_test_decoder();
+    let before = dec.malformed_nal_drops;
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 2;
+    header.first_mb = (dec.mb_width * dec.mb_height) as u32; // 越界
+    header.data_bit_offset = 0;
+
+    dec.decode_cavlc_slice_data(&[0x00], &header);
+
+    assert_eq!(
+        dec.malformed_nal_drops,
+        before + 1,
+        "CAVLC first_mb 越界时应记录坏 NAL 丢弃计数"
+    );
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_p_non_skip_intra_mb_type() {
     let mut dec = build_test_decoder();
     push_custom_reference(&mut dec, 3, 3, 77, None);

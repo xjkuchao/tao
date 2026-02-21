@@ -801,6 +801,14 @@ impl H264Decoder {
 
         let total_mbs = self.mb_width * self.mb_height;
         let first = header.first_mb as usize;
+        if first >= total_mbs {
+            let msg = format!(
+                "H264: first_mb 越界, first_mb={}, total_mbs={}",
+                first, total_mbs
+            );
+            self.record_malformed_nal_drop("slice_first_mb_oob", &msg);
+            return;
+        }
 
         if is_i {
             self.decode_i_slice_mbs(&mut cabac, &mut ctxs, first, total_mbs, header.slice_qp);
@@ -930,6 +938,11 @@ impl H264Decoder {
         let total_mbs = self.mb_width * self.mb_height;
         let first = header.first_mb as usize;
         if first >= total_mbs {
+            let msg = format!(
+                "H264: CAVLC first_mb 越界, first_mb={}, total_mbs={}",
+                first, total_mbs
+            );
+            self.record_malformed_nal_drop("slice_cavlc_first_mb_oob", &msg);
             return;
         }
 
