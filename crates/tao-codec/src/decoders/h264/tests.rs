@@ -202,6 +202,28 @@ fn push_custom_reference(
     });
 }
 
+fn push_horizontal_gradient_reference(
+    dec: &mut H264Decoder,
+    frame_num: u32,
+    poc: i32,
+    long_term_frame_idx: Option<u32>,
+) {
+    let mut y = vec![0u8; dec.ref_y.len()];
+    for row in 0..dec.height as usize {
+        for col in 0..dec.width as usize {
+            y[row * dec.stride_y + col] = col.min(u8::MAX as usize) as u8;
+        }
+    }
+    dec.reference_frames.push_back(ReferencePicture {
+        y,
+        u: vec![128u8; dec.ref_u.len()],
+        v: vec![128u8; dec.ref_v.len()],
+        frame_num,
+        poc,
+        long_term_frame_idx,
+    });
+}
+
 fn build_constant_ref_planes(dec: &H264Decoder, y: u8, u: u8, v: u8) -> RefPlanes {
     RefPlanes {
         y: vec![y; dec.ref_y.len()],
@@ -1730,6 +1752,49 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_ref_idx_l0() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_p_non_skip_inter_ref_idx_l0_mvd_alignment() {
+    use ExpGolombValue::{Se, Ue};
+
+    let mut dec = build_test_decoder();
+    let sps_resize = build_sps_nalu(0, 32, 16);
+    dec.handle_sps(&sps_resize);
+    push_custom_reference(&mut dec, 3, 3, 20, None);
+    push_custom_reference(&mut dec, 2, 2, 90, None);
+
+    let mut header = build_test_slice_header(4, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.data_bit_offset = 0;
+    header.num_ref_idx_l0 = 2;
+
+    // mb0: skip_run=0, mb_type=0(P_L0_16x16), ref_idx_l0=1, mvd=(0,0)
+    // mb1: skip_run=0, mb_type=5(I 宏块), 用于验证 mvd 语法消费对齐。
+    let rbsp = build_rbsp_from_exp_golomb(&[Ue(0), Ue(0), Ue(1), Se(0), Se(0), Ue(0), Ue(5)]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+    assert_eq!(dec.ref_y[0], 90, "P_L0_16x16 应按 ref_idx_l0 选择参考帧");
+    assert_eq!(dec.mb_types[1], 1, "第二个宏块应解析为帧内宏块");
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_p_non_skip_inter_mvd_affects_prediction() {
+    use ExpGolombValue::{Se, Ue};
+
+    let mut dec = build_test_decoder();
+    dec.reference_frames.clear();
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.data_bit_offset = 0;
+
+    // mb0: skip_run=0, mb_type=0(P_L0_16x16), mvd_l0=(4,0), 对应亮度右移 1 像素.
+    let rbsp = build_rbsp_from_exp_golomb(&[Ue(0), Ue(0), Se(4), Se(0)]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    assert_eq!(dec.ref_y[0], 1, "mvd_l0=(4,0) 应使首像素向右采样 1 像素");
+    assert_eq!(dec.mb_types[0], 200, "P_L0_16x16 应标记为互预测宏块");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_p_non_skip_inter_16x8_partition_ref_idx() {
     let mut dec = build_test_decoder();
     push_custom_reference(&mut dec, 3, 3, 20, None);
@@ -1771,6 +1836,8 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_8x16_partition_ref_idx() {
 
 #[test]
 fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_ref_idx_and_alignment() {
+    use ExpGolombValue::{Se, Ue};
+
     let mut dec = build_test_decoder();
     let sps_resize = build_sps_nalu(0, 32, 16);
     dec.handle_sps(&sps_resize);
@@ -1783,8 +1850,30 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_ref_idx_and_alignment() {
     header.num_ref_idx_l0 = 2;
 
     // mb0: skip_run=0, mb_type=3(P_8x8), 四个 sub_mb_type=0, ref_idx=[0,1,1,0]
+    // 并为每个子分区提供 mvd=(0,0), 验证语法消费顺序。
     // mb1: skip_run=0, mb_type=5(I 宏块), 用于验证前一宏块语法消费对齐正确。
-    let rbsp = build_rbsp_from_ues(&[0, 3, 0, 0, 0, 0, 0, 1, 1, 0, 0, 5]);
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0),
+        Ue(3),
+        Ue(0),
+        Ue(0),
+        Ue(0),
+        Ue(0),
+        Ue(0),
+        Ue(1),
+        Ue(1),
+        Ue(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Ue(0),
+        Ue(5),
+    ]);
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(dec.mb_types[0], 203, "P_8x8 宏块应标记为互预测类型");
@@ -1801,6 +1890,8 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_ref_idx_and_alignment() {
 
 #[test]
 fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8ref0_no_ref_idx_parse() {
+    use ExpGolombValue::{Se, Ue};
+
     let mut dec = build_test_decoder();
     let sps_resize = build_sps_nalu(0, 32, 16);
     dec.handle_sps(&sps_resize);
@@ -1813,8 +1904,26 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8ref0_no_ref_idx_parse() {
     header.num_ref_idx_l0 = 2;
 
     // mb0: skip_run=0, mb_type=4(P_8x8ref0), 四个 sub_mb_type=0, 不应读取 ref_idx
+    // 仍需读取每个子分区 mvd=(0,0), 用于验证语法对齐。
     // mb1: skip_run=0, mb_type=5(I 宏块), 用于验证语法对齐。
-    let rbsp = build_rbsp_from_ues(&[0, 4, 0, 0, 0, 0, 0, 5]);
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0),
+        Ue(4),
+        Ue(0),
+        Ue(0),
+        Ue(0),
+        Ue(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Ue(0),
+        Ue(5),
+    ]);
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(dec.mb_types[0], 203, "P_8x8ref0 宏块应标记为互预测类型");

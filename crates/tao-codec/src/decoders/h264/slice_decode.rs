@@ -1367,6 +1367,8 @@ impl H264Decoder {
                         if header.num_ref_idx_l0 > 1 {
                             ref_idx_l0 = read_ue(&mut br).unwrap_or(0);
                         }
+                        let mv_x = read_se(&mut br).unwrap_or(0);
+                        let mv_y = read_se(&mut br).unwrap_or(0);
                         self.apply_inter_block_l0(
                             &ref_l0_list,
                             ref_idx_l0,
@@ -1374,8 +1376,8 @@ impl H264Decoder {
                             base_y,
                             16,
                             16,
-                            0,
-                            0,
+                            mv_x,
+                            mv_y,
                             &header.l0_weights,
                             header.luma_log2_weight_denom,
                             header.chroma_log2_weight_denom,
@@ -1388,6 +1390,10 @@ impl H264Decoder {
                             ref_idx_top = read_ue(&mut br).unwrap_or(0);
                             ref_idx_bottom = read_ue(&mut br).unwrap_or(0);
                         }
+                        let mv_top_x = read_se(&mut br).unwrap_or(0);
+                        let mv_top_y = read_se(&mut br).unwrap_or(0);
+                        let mv_bottom_x = read_se(&mut br).unwrap_or(0);
+                        let mv_bottom_y = read_se(&mut br).unwrap_or(0);
                         self.apply_inter_block_l0(
                             &ref_l0_list,
                             ref_idx_top,
@@ -1395,8 +1401,8 @@ impl H264Decoder {
                             base_y,
                             16,
                             8,
-                            0,
-                            0,
+                            mv_top_x,
+                            mv_top_y,
                             &header.l0_weights,
                             header.luma_log2_weight_denom,
                             header.chroma_log2_weight_denom,
@@ -1408,8 +1414,8 @@ impl H264Decoder {
                             base_y + 8,
                             16,
                             8,
-                            0,
-                            0,
+                            mv_bottom_x,
+                            mv_bottom_y,
                             &header.l0_weights,
                             header.luma_log2_weight_denom,
                             header.chroma_log2_weight_denom,
@@ -1422,6 +1428,10 @@ impl H264Decoder {
                             ref_idx_left = read_ue(&mut br).unwrap_or(0);
                             ref_idx_right = read_ue(&mut br).unwrap_or(0);
                         }
+                        let mv_left_x = read_se(&mut br).unwrap_or(0);
+                        let mv_left_y = read_se(&mut br).unwrap_or(0);
+                        let mv_right_x = read_se(&mut br).unwrap_or(0);
+                        let mv_right_y = read_se(&mut br).unwrap_or(0);
                         self.apply_inter_block_l0(
                             &ref_l0_list,
                             ref_idx_left,
@@ -1429,8 +1439,8 @@ impl H264Decoder {
                             base_y,
                             8,
                             16,
-                            0,
-                            0,
+                            mv_left_x,
+                            mv_left_y,
                             &header.l0_weights,
                             header.luma_log2_weight_denom,
                             header.chroma_log2_weight_denom,
@@ -1442,8 +1452,8 @@ impl H264Decoder {
                             base_y,
                             8,
                             16,
-                            0,
-                            0,
+                            mv_right_x,
+                            mv_right_y,
                             &header.l0_weights,
                             header.luma_log2_weight_denom,
                             header.chroma_log2_weight_denom,
@@ -1462,6 +1472,20 @@ impl H264Decoder {
                             }
                         }
 
+                        let mut sub_mv_x = [[0i32; 4]; 4];
+                        let mut sub_mv_y = [[0i32; 4]; 4];
+                        for sub_idx in 0..4usize {
+                            let sub_part_count = match sub_mb_types[sub_idx] {
+                                1 | 2 => 2usize,
+                                3 => 4usize,
+                                _ => 1usize,
+                            };
+                            for part_idx in 0..sub_part_count {
+                                sub_mv_x[sub_idx][part_idx] = read_se(&mut br).unwrap_or(0);
+                                sub_mv_y[sub_idx][part_idx] = read_se(&mut br).unwrap_or(0);
+                            }
+                        }
+
                         for sub_idx in 0..4usize {
                             let sub_x = base_x + (sub_idx % 2) * 8;
                             let sub_y = base_y + (sub_idx / 2) * 8;
@@ -1475,8 +1499,8 @@ impl H264Decoder {
                                         sub_y,
                                         8,
                                         8,
-                                        0,
-                                        0,
+                                        sub_mv_x[sub_idx][0],
+                                        sub_mv_y[sub_idx][0],
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
@@ -1490,8 +1514,8 @@ impl H264Decoder {
                                         sub_y,
                                         8,
                                         4,
-                                        0,
-                                        0,
+                                        sub_mv_x[sub_idx][0],
+                                        sub_mv_y[sub_idx][0],
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
@@ -1503,8 +1527,8 @@ impl H264Decoder {
                                         sub_y + 4,
                                         8,
                                         4,
-                                        0,
-                                        0,
+                                        sub_mv_x[sub_idx][1],
+                                        sub_mv_y[sub_idx][1],
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
@@ -1518,8 +1542,8 @@ impl H264Decoder {
                                         sub_y,
                                         4,
                                         8,
-                                        0,
-                                        0,
+                                        sub_mv_x[sub_idx][0],
+                                        sub_mv_y[sub_idx][0],
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
@@ -1531,8 +1555,8 @@ impl H264Decoder {
                                         sub_y,
                                         4,
                                         8,
-                                        0,
-                                        0,
+                                        sub_mv_x[sub_idx][1],
+                                        sub_mv_y[sub_idx][1],
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
@@ -1546,8 +1570,8 @@ impl H264Decoder {
                                         sub_y,
                                         4,
                                         4,
-                                        0,
-                                        0,
+                                        sub_mv_x[sub_idx][0],
+                                        sub_mv_y[sub_idx][0],
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
@@ -1559,8 +1583,8 @@ impl H264Decoder {
                                         sub_y,
                                         4,
                                         4,
-                                        0,
-                                        0,
+                                        sub_mv_x[sub_idx][1],
+                                        sub_mv_y[sub_idx][1],
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
@@ -1572,8 +1596,8 @@ impl H264Decoder {
                                         sub_y + 4,
                                         4,
                                         4,
-                                        0,
-                                        0,
+                                        sub_mv_x[sub_idx][2],
+                                        sub_mv_y[sub_idx][2],
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
@@ -1585,8 +1609,8 @@ impl H264Decoder {
                                         sub_y + 4,
                                         4,
                                         4,
-                                        0,
-                                        0,
+                                        sub_mv_x[sub_idx][3],
+                                        sub_mv_y[sub_idx][3],
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
@@ -1600,8 +1624,8 @@ impl H264Decoder {
                                         sub_y,
                                         8,
                                         8,
-                                        0,
-                                        0,
+                                        sub_mv_x[sub_idx][0],
+                                        sub_mv_y[sub_idx][0],
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
