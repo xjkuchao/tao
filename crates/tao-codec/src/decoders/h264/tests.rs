@@ -2136,6 +2136,43 @@ fn test_activate_sps_reorder_depth_override_has_priority() {
 }
 
 #[test]
+fn test_derive_level_max_dpb_frames_limits_large_picture() {
+    let mut sps = build_test_sps(5);
+    sps.level_idc = 10;
+    sps.width = 1280;
+    sps.height = 720;
+    sps.pic_width_in_mbs = 80;
+    sps.pic_height_in_map_units = 45;
+
+    assert_eq!(
+        H264Decoder::derive_level_max_dpb_frames(&sps),
+        1,
+        "Level 1.0 下 1280x720 应被限制为至少 1 帧 DPB"
+    );
+}
+
+#[test]
+fn test_activate_sps_caps_max_reference_frames_by_level_limit() {
+    let mut dec = build_test_decoder();
+    let mut sps = build_test_sps(6);
+    sps.level_idc = 10;
+    sps.max_num_ref_frames = 16;
+    sps.width = 1280;
+    sps.height = 720;
+    sps.pic_width_in_mbs = 80;
+    sps.pic_height_in_map_units = 45;
+    dec.sps_map.insert(6, sps);
+
+    dec.activate_sps(6);
+
+    assert_eq!(dec.active_sps_id, Some(6), "SPS 应激活成功");
+    assert_eq!(
+        dec.max_reference_frames, 1,
+        "应按 level 限制将 max_reference_frames 收敛到 max_dpb_frames"
+    );
+}
+
+#[test]
 fn test_store_reference_with_marking_mmco_forget_short_and_long() {
     let mut dec = build_test_decoder();
     push_dummy_reference(&mut dec, 1);

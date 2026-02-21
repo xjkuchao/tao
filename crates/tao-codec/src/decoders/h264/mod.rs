@@ -544,6 +544,40 @@ impl H264Decoder {
             .unwrap_or(2)
     }
 
+    fn max_dpb_mbs_by_level(level_idc: u8) -> usize {
+        match level_idc {
+            10 => 396,
+            11 => 900,
+            12 | 13 | 20 => 2_376,
+            21 => 4_752,
+            22 | 30 => 8_100,
+            31 => 18_000,
+            32 => 20_480,
+            40 | 41 => 32_768,
+            42 => 34_816,
+            50 => 110_400,
+            51 | 52 => 184_320,
+            60..=62 => 696_320,
+            _ => 696_320,
+        }
+    }
+
+    fn derive_level_max_dpb_frames(sps: &Sps) -> usize {
+        let frame_height_in_mbs = if sps.frame_mbs_only {
+            sps.pic_height_in_map_units
+        } else {
+            sps.pic_height_in_map_units.saturating_mul(2)
+        };
+        let pic_size_in_mbs = u64::from(sps.pic_width_in_mbs) * u64::from(frame_height_in_mbs);
+        if pic_size_in_mbs == 0 {
+            return 16;
+        }
+
+        let max_dpb_mbs = Self::max_dpb_mbs_by_level(sps.level_idc) as u64;
+        let frames = (max_dpb_mbs / pic_size_in_mbs).clamp(1, 16);
+        frames as usize
+    }
+
     fn refresh_reorder_depth(&mut self) {
         self.reorder_depth = self
             .reorder_depth_override
@@ -560,7 +594,9 @@ impl H264Decoder {
         }
         let sps_changed = self.active_sps_id != Some(sps_id);
         let size_changed = self.width != sps.width || self.height != sps.height;
-        self.max_reference_frames = sps.max_num_ref_frames.clamp(1, 16) as usize;
+        let level_max_dpb_frames = Self::derive_level_max_dpb_frames(&sps);
+        self.max_reference_frames =
+            (sps.max_num_ref_frames.clamp(1, 16) as usize).min(level_max_dpb_frames);
         self.width = sps.width;
         self.height = sps.height;
         self.active_sps_id = Some(sps_id);
