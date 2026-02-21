@@ -5161,6 +5161,58 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_direct_uses_predicted_mv_from_le
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_b_non_skip_b8x8_direct_right_sub_block_respects_inference_flag() {
+    use ExpGolombValue::{Se, Ue};
+
+    fn decode_with_inference_flag(flag: bool) -> u8 {
+        let mut dec = build_test_decoder();
+        let sps_resize = build_sps_nalu(0, 32, 16);
+        dec.handle_sps(&sps_resize);
+        if let Some(sps) = dec.sps.as_mut() {
+            sps.direct_8x8_inference_flag = flag;
+        }
+        if let Some(sps) = dec.sps_map.get_mut(&0) {
+            sps.direct_8x8_inference_flag = flag;
+        }
+        dec.last_slice_type = 1;
+        dec.last_poc = 5;
+        push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+        // 左邻宏块提供 +1px 的 L0 预测输入.
+        dec.set_l0_motion_block_4x4(0, 0, 16, 16, 4, 0, 0);
+
+        let mut header = build_test_slice_header(0, 1, false, None);
+        header.slice_type = 1;
+        header.first_mb = 1; // 仅解码右侧宏块.
+        header.data_bit_offset = 0;
+        header.direct_spatial_mv_pred_flag = false;
+        header.num_ref_idx_l0 = 1;
+        header.num_ref_idx_l1 = 1;
+
+        // mb1: mb_type=22(B_8x8), sub_mb_type=[2(L1_8x8),0(Direct),0(Direct),0(Direct)].
+        // 仅 sub0 读取 L1 mvd(0,0), 其它 direct 子块不读取 mvd/ref_idx.
+        let rbsp =
+            build_rbsp_from_exp_golomb(&[Ue(0), Ue(22), Ue(2), Ue(0), Ue(0), Ue(0), Se(0), Se(0)]);
+        dec.decode_cavlc_slice_data(&rbsp, &header);
+
+        // 右上 8x8 左上角像素(x=24,y=0): 用于观测 sub1(Direct) 的预测差异.
+        dec.ref_y[24]
+    }
+
+    let pixel_true = decode_with_inference_flag(true);
+    let pixel_false = decode_with_inference_flag(false);
+
+    assert_eq!(
+        pixel_true, 25,
+        "direct_8x8_inference_flag=1 时, 右上 direct 子块应复用 8x8 预测 MV(+1px)"
+    );
+    assert_eq!(
+        pixel_false, 24,
+        "direct_8x8_inference_flag=0 时, 右上 direct 子块应按 4x4 粒度独立预测并回落到零 MV"
+    );
+}
+
+#[test]
 fn test_apply_b_direct_sub_8x8_respects_direct_8x8_inference_flag() {
     fn apply_with_direct_8x8_inference_flag(flag: bool) -> (u8, i16) {
         let mut dec = build_test_decoder();
