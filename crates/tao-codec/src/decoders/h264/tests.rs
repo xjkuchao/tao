@@ -4917,6 +4917,44 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_direct_no_ref_idx_parse() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_b_non_skip_b8x8_direct_uses_predicted_mv_from_left_neighbor() {
+    use ExpGolombValue::{Se, Ue};
+
+    let mut dec = build_test_decoder();
+    let sps_resize = build_sps_nalu(0, 32, 16);
+    dec.handle_sps(&sps_resize);
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+    header.direct_spatial_mv_pred_flag = false;
+
+    // mb0: skip_run=0, mb_type=1(B_L0_16x16), mvd=(+1px,0)
+    // mb1: skip_run=0, mb_type=22(B_8x8), sub_mb_type 全为 0(Direct_8x8)
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0),
+        Ue(1),
+        Se(4),
+        Se(0),
+        Ue(0),
+        Ue(22),
+        Ue(0),
+        Ue(0),
+        Ue(0),
+        Ue(0),
+    ]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    assert_eq!(dec.ref_y[16], 17, "Direct_8x8 左上块应复用左邻 MVP");
+    assert_eq!(dec.ref_y[24], 25, "Direct_8x8 右上块应复用左邻 MVP");
+    assert_eq!(dec.mv_l0_x[1], 4, "Direct_8x8 宏块应写入预测后的 MV(x)");
+    assert_eq!(dec.mv_l0_y[1], 0, "Direct_8x8 宏块应写入预测后的 MV(y)");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_b_skip_run_explicit_weighted() {
     let mut dec = build_test_decoder();
     dec.last_slice_type = 1;
