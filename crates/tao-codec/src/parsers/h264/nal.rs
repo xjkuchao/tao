@@ -221,6 +221,10 @@ pub fn split_annex_b(data: &[u8]) -> Vec<NalUnit> {
 ///
 /// `length_size` 通常为 4 (来自 AVCDecoderConfigurationRecord 的 lengthSizeMinusOne + 1)
 pub fn split_avcc(data: &[u8], length_size: usize) -> Vec<NalUnit> {
+    if !(1..=4).contains(&length_size) {
+        return Vec::new();
+    }
+
     let mut nalus = Vec::new();
     let mut pos = 0;
 
@@ -605,6 +609,18 @@ mod tests {
         assert_eq!(nalus.len(), 2);
         assert_eq!(nalus[0].nal_type, NalUnitType::Sps);
         assert_eq!(nalus[1].nal_type, NalUnitType::Pps);
+    }
+
+    #[test]
+    fn test_avcc_split_reject_invalid_length_size() {
+        let data = [0x00, 0x00, 0x00, 0x02, 0x67, 0xAA];
+        let nalus_zero = split_avcc(&data, 0);
+        let nalus_too_large = split_avcc(&data, 5);
+        assert!(
+            nalus_zero.is_empty(),
+            "length_size=0 应直接返回空结果, 避免死循环"
+        );
+        assert!(nalus_too_large.is_empty(), "length_size>4 应直接返回空结果");
     }
 
     #[test]
