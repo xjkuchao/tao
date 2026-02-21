@@ -888,7 +888,14 @@ impl H264Decoder {
         }
 
         if is_i {
-            self.decode_i_slice_mbs(&mut cabac, &mut ctxs, first, total_mbs, header.slice_qp);
+            self.decode_i_slice_mbs(
+                &mut cabac,
+                &mut ctxs,
+                first,
+                total_mbs,
+                header.slice_qp,
+                header.first_mb,
+            );
             return;
         }
 
@@ -904,6 +911,7 @@ impl H264Decoder {
                 first,
                 total_mbs,
                 header.slice_qp,
+                header.first_mb,
                 header.num_ref_idx_l0,
                 &header.l0_weights,
                 header.luma_log2_weight_denom,
@@ -929,6 +937,7 @@ impl H264Decoder {
             first,
             total_mbs,
             header.slice_qp,
+            header.first_mb,
             header.num_ref_idx_l0,
             header.num_ref_idx_l1,
             header.direct_spatial_mv_pred_flag,
@@ -1040,6 +1049,7 @@ impl H264Decoder {
         let is_b = header.slice_type == 1;
         if is_i {
             for mb_idx in first..total_mbs {
+                self.mark_mb_slice_first_mb(mb_idx, header.first_mb);
                 let _mb_type = read_ue(&mut br).unwrap_or(0);
                 self.mb_types[mb_idx] = 1;
                 self.mb_cbp[mb_idx] = 0;
@@ -1094,6 +1104,7 @@ impl H264Decoder {
             .unwrap_or_else(|| self.zero_reference_planes());
         let mut skip_run_left = 0u32;
         for mb_idx in first..total_mbs {
+            self.mark_mb_slice_first_mb(mb_idx, header.first_mb);
             if skip_run_left == 0 {
                 skip_run_left = read_ue(&mut br).unwrap_or(0);
             }

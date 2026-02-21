@@ -276,6 +276,8 @@ pub struct H264Decoder {
     mv_l0_y_4x4: Vec<i16>,
     /// 每个 luma 4x4 块 list0 参考索引 (-1 表示不可用)
     ref_idx_l0_4x4: Vec<i8>,
+    /// 每个宏块所属 slice 的 first_mb 标识, 用于 idc=2 去块边界判断.
+    mb_slice_first_mb: Vec<u32>,
     /// 最近一次成功解析的 slice_type
     last_slice_type: u32,
     /// 最近一次成功解析的 frame_num.
@@ -364,6 +366,7 @@ impl H264Decoder {
             mv_l0_x_4x4: Vec::new(),
             mv_l0_y_4x4: Vec::new(),
             ref_idx_l0_4x4: Vec::new(),
+            mb_slice_first_mb: Vec::new(),
             last_slice_type: 0,
             last_frame_num: 0,
             last_nal_ref_idc: 0,
@@ -423,6 +426,7 @@ impl H264Decoder {
         self.mv_l0_x_4x4 = vec![0i16; self.mb_width * 4 * self.mb_height * 4];
         self.mv_l0_y_4x4 = vec![0i16; self.mb_width * 4 * self.mb_height * 4];
         self.ref_idx_l0_4x4 = vec![-1i8; self.mb_width * 4 * self.mb_height * 4];
+        self.mb_slice_first_mb = vec![u32::MAX; total_mb];
     }
 
     /// 处理 SPS NAL 单元
@@ -539,7 +543,15 @@ impl H264Decoder {
         self.mv_l0_x_4x4.fill(0);
         self.mv_l0_y_4x4.fill(0);
         self.ref_idx_l0_4x4.fill(-1);
+        self.mb_slice_first_mb.fill(u32::MAX);
         self.prev_qp_delta_nz = false;
+    }
+
+    /// 记录宏块所属 slice 的 first_mb 标识, 用于 idc=2 边界过滤约束.
+    fn mark_mb_slice_first_mb(&mut self, mb_idx: usize, first_mb: u32) {
+        if let Some(slot) = self.mb_slice_first_mb.get_mut(mb_idx) {
+            *slot = first_mb;
+        }
     }
 
     fn record_malformed_nal_drop(&mut self, scene: &str, err: &dyn std::fmt::Display) {
@@ -990,5 +1002,6 @@ impl Decoder for H264Decoder {
         self.mv_l0_x_4x4.fill(0);
         self.mv_l0_y_4x4.fill(0);
         self.ref_idx_l0_4x4.fill(-1);
+        self.mb_slice_first_mb.fill(u32::MAX);
     }
 }

@@ -35,6 +35,7 @@ impl H264Decoder {
         first: usize,
         total: usize,
         slice_qp: i32,
+        slice_first_mb: u32,
         num_ref_idx_l0: u32,
         l0_weights: &[PredWeightL0],
         luma_log2_weight_denom: u8,
@@ -49,6 +50,7 @@ impl H264Decoder {
         let mut decoded = 0usize;
 
         for mb_idx in first..total {
+            self.mark_mb_slice_first_mb(mb_idx, slice_first_mb);
             let mb_x = mb_idx % self.mb_width;
             let mb_y = mb_idx / self.mb_width;
             let skip = self.decode_p_mb_skip_flag(cabac, ctxs, mb_x, mb_y);
@@ -1330,6 +1332,7 @@ impl H264Decoder {
         first: usize,
         total: usize,
         slice_qp: i32,
+        slice_first_mb: u32,
         num_ref_idx_l0: u32,
         num_ref_idx_l1: u32,
         direct_spatial_mv_pred_flag: bool,
@@ -1348,6 +1351,7 @@ impl H264Decoder {
         let mut decoded = 0usize;
 
         for mb_idx in first..total {
+            self.mark_mb_slice_first_mb(mb_idx, slice_first_mb);
             let mb_x = mb_idx % self.mb_width;
             let mb_y = mb_idx / self.mb_width;
             let skip = self.decode_b_mb_skip_flag(cabac, ctxs, mb_x, mb_y);

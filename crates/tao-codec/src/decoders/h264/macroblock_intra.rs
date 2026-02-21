@@ -114,6 +114,7 @@ impl H264Decoder {
         first: usize,
         total: usize,
         slice_qp: i32,
+        slice_first_mb: u32,
     ) {
         let debug_mb = std::env::var("TAO_H264_DEBUG_MB")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -126,6 +127,7 @@ impl H264Decoder {
         let mut decoded = 0usize;
 
         for mb_idx in first..total {
+            self.mark_mb_slice_first_mb(mb_idx, slice_first_mb);
             let mb_x = mb_idx % self.mb_width;
             let mb_y = mb_idx / self.mb_width;
 

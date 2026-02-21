@@ -14,12 +14,14 @@ pub(super) struct DeblockSliceParams<'a> {
     pub(super) width: usize,
     pub(super) height: usize,
     pub(super) slice_qp: i32,
+    pub(super) disable_deblocking_filter_idc: u32,
     pub(super) alpha_offset_div2: i32,
     pub(super) beta_offset_div2: i32,
     pub(super) mb_width: usize,
     pub(super) mb_height: usize,
     pub(super) mb_types: Option<&'a [u8]>,
     pub(super) mb_cbp: Option<&'a [u8]>,
+    pub(super) mb_slice_first_mb: Option<&'a [u32]>,
     pub(super) mv_l0_x: Option<&'a [i16]>,
     pub(super) mv_l0_y: Option<&'a [i16]>,
     pub(super) ref_idx_l0: Option<&'a [i8]>,
@@ -42,12 +44,14 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
         width,
         height,
         slice_qp,
+        disable_deblocking_filter_idc,
         alpha_offset_div2,
         beta_offset_div2,
         mb_width,
         mb_height,
         mb_types,
         mb_cbp,
+        mb_slice_first_mb,
         mv_l0_x,
         mv_l0_y,
         ref_idx_l0,
@@ -72,11 +76,15 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
             if need == 0 || types.len() < need || cbp.len() < need {
                 None
             } else {
+                let mb_slice_first_mb =
+                    mb_slice_first_mb.filter(|slice_map| slice_map.len() >= need);
                 Some(DeblockMbContext {
                     mb_width,
                     mb_height,
                     mb_types: types,
                     mb_cbp: cbp,
+                    mb_slice_first_mb,
+                    disable_cross_slice_boundary_filter: disable_deblocking_filter_idc == 2,
                     mv_l0_x,
                     mv_l0_y,
                     ref_idx_l0,
@@ -133,6 +141,8 @@ struct DeblockMbContext<'a> {
     mb_height: usize,
     mb_types: &'a [u8],
     mb_cbp: &'a [u8],
+    mb_slice_first_mb: Option<&'a [u32]>,
+    disable_cross_slice_boundary_filter: bool,
     mv_l0_x: Option<&'a [i16]>,
     mv_l0_y: Option<&'a [i16]>,
     ref_idx_l0: Option<&'a [i8]>,
@@ -414,6 +424,9 @@ fn boundary_strength_between_mb(
     let (Some(i_a), Some(i_b)) = (idx_a, idx_b) else {
         return 2;
     };
+    if cross_slice_boundary_is_disabled(ctx, i_a, i_b) {
+        return 0;
+    }
     let ty_a = *ctx.mb_types.get(i_a).unwrap_or(&255);
     let ty_b = *ctx.mb_types.get(i_b).unwrap_or(&255);
     if is_intra_mb(ty_a) || is_intra_mb(ty_b) {
@@ -537,6 +550,9 @@ fn boundary_strength_between_mb_vertical_4x4(
     let (Some(i_a), Some(i_b)) = (idx_a, idx_b) else {
         return 2;
     };
+    if cross_slice_boundary_is_disabled(ctx, i_a, i_b) {
+        return 0;
+    }
     let ty_a = *ctx.mb_types.get(i_a).unwrap_or(&255);
     let ty_b = *ctx.mb_types.get(i_b).unwrap_or(&255);
     if is_intra_mb(ty_a) || is_intra_mb(ty_b) {
@@ -574,6 +590,9 @@ fn boundary_strength_between_mb_horizontal_4x4(
     let (Some(i_a), Some(i_b)) = (idx_a, idx_b) else {
         return 2;
     };
+    if cross_slice_boundary_is_disabled(ctx, i_a, i_b) {
+        return 0;
+    }
     let ty_a = *ctx.mb_types.get(i_a).unwrap_or(&255);
     let ty_b = *ctx.mb_types.get(i_b).unwrap_or(&255);
     if is_intra_mb(ty_a) || is_intra_mb(ty_b) {
@@ -605,6 +624,22 @@ fn luma4x4_index(mb_width: usize, mb_height: usize, x4: usize, y4: usize) -> Opt
         return None;
     }
     y4.checked_mul(stride)?.checked_add(x4)
+}
+
+fn cross_slice_boundary_is_disabled(
+    ctx: &DeblockMbContext<'_>,
+    idx_a: usize,
+    idx_b: usize,
+) -> bool {
+    if !ctx.disable_cross_slice_boundary_filter {
+        return false;
+    }
+    let Some(slice_map) = ctx.mb_slice_first_mb else {
+        return false;
+    };
+    let sid_a = slice_map.get(idx_a).copied().unwrap_or(u32::MAX);
+    let sid_b = slice_map.get(idx_b).copied().unwrap_or(u32::MAX);
+    sid_a != u32::MAX && sid_b != u32::MAX && sid_a != sid_b
 }
 
 fn luma_cbf_non_zero_across_boundary(
@@ -780,12 +815,14 @@ mod tests {
                 width,
                 height,
                 slice_qp: 20,
+                disable_deblocking_filter_idc: 0,
                 alpha_offset_div2: 0,
                 beta_offset_div2: 0,
                 mb_width: 0,
                 mb_height: 0,
                 mb_types: None,
                 mb_cbp: None,
+                mb_slice_first_mb: None,
                 mv_l0_x: None,
                 mv_l0_y: None,
                 ref_idx_l0: None,
@@ -809,12 +846,14 @@ mod tests {
                 width,
                 height,
                 slice_qp: 20,
+                disable_deblocking_filter_idc: 0,
                 alpha_offset_div2: 3,
                 beta_offset_div2: 0,
                 mb_width: 0,
                 mb_height: 0,
                 mb_types: None,
                 mb_cbp: None,
+                mb_slice_first_mb: None,
                 mv_l0_x: None,
                 mv_l0_y: None,
                 ref_idx_l0: None,
@@ -878,12 +917,14 @@ mod tests {
                 width,
                 height,
                 slice_qp: 26,
+                disable_deblocking_filter_idc: 0,
                 alpha_offset_div2: 0,
                 beta_offset_div2: 0,
                 mb_width: 0,
                 mb_height: 0,
                 mb_types: None,
                 mb_cbp: None,
+                mb_slice_first_mb: None,
                 mv_l0_x: None,
                 mv_l0_y: None,
                 ref_idx_l0: None,
@@ -908,6 +949,8 @@ mod tests {
             mb_height: 1,
             mb_types: &mb_types,
             mb_cbp: &mb_cbp,
+            mb_slice_first_mb: None,
+            disable_cross_slice_boundary_filter: false,
             mv_l0_x: None,
             mv_l0_y: None,
             ref_idx_l0: None,
@@ -932,6 +975,8 @@ mod tests {
             mb_height: 1,
             mb_types: &mb_types,
             mb_cbp: &mb_cbp,
+            mb_slice_first_mb: None,
+            disable_cross_slice_boundary_filter: false,
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
@@ -956,6 +1001,8 @@ mod tests {
             mb_height: 1,
             mb_types: &mb_types,
             mb_cbp: &mb_cbp,
+            mb_slice_first_mb: None,
+            disable_cross_slice_boundary_filter: false,
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
@@ -966,6 +1013,50 @@ mod tests {
         };
         let bs = boundary_strength_vertical(16, 0, 16, Some(&ctx));
         assert_eq!(bs, 1, "跨宏块参考索引不一致时应保留弱滤波");
+    }
+
+    #[test]
+    fn test_boundary_strength_vertical_idc2_cross_slice_boundary_is_zero() {
+        let mb_types = [255u8, 255u8];
+        let mb_cbp = [0u8, 0u8];
+        let mv_l0_x = [0i16, 0i16];
+        let mv_l0_y = [0i16, 0i16];
+        let ref_idx_l0 = [0i8, 1i8];
+        let mb_slice_first_mb = [0u32, 1u32];
+        let ctx_idc0 = DeblockMbContext {
+            mb_width: 2,
+            mb_height: 1,
+            mb_types: &mb_types,
+            mb_cbp: &mb_cbp,
+            mb_slice_first_mb: Some(&mb_slice_first_mb),
+            disable_cross_slice_boundary_filter: false,
+            mv_l0_x: Some(&mv_l0_x),
+            mv_l0_y: Some(&mv_l0_y),
+            ref_idx_l0: Some(&ref_idx_l0),
+            cbf_luma: None,
+            mv_l0_x_4x4: None,
+            mv_l0_y_4x4: None,
+            ref_idx_l0_4x4: None,
+        };
+        let ctx_idc2 = DeblockMbContext {
+            mb_width: 2,
+            mb_height: 1,
+            mb_types: &mb_types,
+            mb_cbp: &mb_cbp,
+            mb_slice_first_mb: Some(&mb_slice_first_mb),
+            disable_cross_slice_boundary_filter: true,
+            mv_l0_x: Some(&mv_l0_x),
+            mv_l0_y: Some(&mv_l0_y),
+            ref_idx_l0: Some(&ref_idx_l0),
+            cbf_luma: None,
+            mv_l0_x_4x4: None,
+            mv_l0_y_4x4: None,
+            ref_idx_l0_4x4: None,
+        };
+        let bs_idc0 = boundary_strength_vertical(16, 0, 16, Some(&ctx_idc0));
+        let bs_idc2 = boundary_strength_vertical(16, 0, 16, Some(&ctx_idc2));
+        assert_eq!(bs_idc0, 1, "idc!=2 时跨 slice 边界应按常规 BS 规则计算");
+        assert_eq!(bs_idc2, 0, "idc=2 时跨 slice 宏块边界应禁止去块");
     }
 
     #[test]
@@ -989,6 +1080,8 @@ mod tests {
             mb_height: 1,
             mb_types: &mb_types,
             mb_cbp: &mb_cbp,
+            mb_slice_first_mb: None,
+            disable_cross_slice_boundary_filter: false,
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
@@ -1021,6 +1114,8 @@ mod tests {
             mb_height: 1,
             mb_types: &mb_types,
             mb_cbp: &mb_cbp,
+            mb_slice_first_mb: None,
+            disable_cross_slice_boundary_filter: false,
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
@@ -1055,6 +1150,8 @@ mod tests {
             mb_height: 2,
             mb_types: &mb_types,
             mb_cbp: &mb_cbp,
+            mb_slice_first_mb: None,
+            disable_cross_slice_boundary_filter: false,
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
@@ -1084,6 +1181,8 @@ mod tests {
             mb_height: 1,
             mb_types: &mb_types,
             mb_cbp: &mb_cbp,
+            mb_slice_first_mb: None,
+            disable_cross_slice_boundary_filter: false,
             mv_l0_x: None,
             mv_l0_y: None,
             ref_idx_l0: None,
@@ -1111,6 +1210,8 @@ mod tests {
             mb_height: 1,
             mb_types: &mb_types,
             mb_cbp: &mb_cbp,
+            mb_slice_first_mb: None,
+            disable_cross_slice_boundary_filter: false,
             mv_l0_x: None,
             mv_l0_y: None,
             ref_idx_l0: None,
@@ -1131,6 +1232,8 @@ mod tests {
             mb_height: 1,
             mb_types: &mb_types,
             mb_cbp: &mb_cbp,
+            mb_slice_first_mb: None,
+            disable_cross_slice_boundary_filter: false,
             mv_l0_x: None,
             mv_l0_y: None,
             ref_idx_l0: None,
@@ -1156,6 +1259,8 @@ mod tests {
             mb_height: 1,
             mb_types: &mb_types,
             mb_cbp: &mb_cbp,
+            mb_slice_first_mb: None,
+            disable_cross_slice_boundary_filter: false,
             mv_l0_x: None,
             mv_l0_y: None,
             ref_idx_l0: None,

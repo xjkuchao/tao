@@ -154,6 +154,7 @@ fn build_test_decoder() -> H264Decoder {
         mv_l0_x_4x4: Vec::new(),
         mv_l0_y_4x4: Vec::new(),
         ref_idx_l0_4x4: Vec::new(),
+        mb_slice_first_mb: Vec::new(),
         last_slice_type: 0,
         last_frame_num: 0,
         last_nal_ref_idc: 0,
