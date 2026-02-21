@@ -599,21 +599,40 @@ impl H264Decoder {
             return Ok(marking);
         }
 
+        const MAX_MMCO_OPS: usize = 64;
         loop {
             let op = read_ue(br)?;
             match op {
                 0 => break,
                 1 => {
+                    if marking.ops.len() >= MAX_MMCO_OPS {
+                        return Err(TaoError::InvalidData(format!(
+                            "H264: MMCO 操作数量过多, max={}",
+                            MAX_MMCO_OPS
+                        )));
+                    }
                     let difference = read_ue(br)?;
                     marking.ops.push(MmcoOp::ForgetShort {
                         difference_of_pic_nums_minus1: difference,
                     });
                 }
                 2 => {
+                    if marking.ops.len() >= MAX_MMCO_OPS {
+                        return Err(TaoError::InvalidData(format!(
+                            "H264: MMCO 操作数量过多, max={}",
+                            MAX_MMCO_OPS
+                        )));
+                    }
                     let long_term_pic_num = read_ue(br)?;
                     marking.ops.push(MmcoOp::ForgetLong { long_term_pic_num });
                 }
                 3 => {
+                    if marking.ops.len() >= MAX_MMCO_OPS {
+                        return Err(TaoError::InvalidData(format!(
+                            "H264: MMCO 操作数量过多, max={}",
+                            MAX_MMCO_OPS
+                        )));
+                    }
                     let difference = read_ue(br)?;
                     let long_term_frame_idx = read_ue(br)?;
                     marking.ops.push(MmcoOp::ConvertShortToLong {
@@ -622,13 +641,33 @@ impl H264Decoder {
                     });
                 }
                 4 => {
+                    if marking.ops.len() >= MAX_MMCO_OPS {
+                        return Err(TaoError::InvalidData(format!(
+                            "H264: MMCO 操作数量过多, max={}",
+                            MAX_MMCO_OPS
+                        )));
+                    }
                     let max_long_term_frame_idx_plus1 = read_ue(br)?;
                     marking.ops.push(MmcoOp::TrimLong {
                         max_long_term_frame_idx_plus1,
                     });
                 }
-                5 => marking.ops.push(MmcoOp::ClearAll),
+                5 => {
+                    if marking.ops.len() >= MAX_MMCO_OPS {
+                        return Err(TaoError::InvalidData(format!(
+                            "H264: MMCO 操作数量过多, max={}",
+                            MAX_MMCO_OPS
+                        )));
+                    }
+                    marking.ops.push(MmcoOp::ClearAll)
+                }
                 6 => {
+                    if marking.ops.len() >= MAX_MMCO_OPS {
+                        return Err(TaoError::InvalidData(format!(
+                            "H264: MMCO 操作数量过多, max={}",
+                            MAX_MMCO_OPS
+                        )));
+                    }
                     let long_term_frame_idx = read_ue(br)?;
                     marking.ops.push(MmcoOp::MarkCurrentLong {
                         long_term_frame_idx,

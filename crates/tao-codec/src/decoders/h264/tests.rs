@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use tao_core::Rational;
+use tao_core::bitreader::BitReader;
 
 use crate::frame::Frame;
 
@@ -856,6 +857,55 @@ fn test_parse_slice_header_reject_invalid_cabac_init_idc() {
     assert!(
         msg.contains("cabac_init_idc"),
         "错误信息应包含 cabac_init_idc, actual={}",
+        msg
+    );
+}
+
+#[test]
+fn test_parse_dec_ref_pic_marking_idr_flags() {
+    let dec = build_test_decoder();
+    let nalu = NalUnit::parse(&[0x65]).expect("测试构造 IDR NAL 失败");
+
+    let bits = vec![true, false];
+    let rbsp = bits_to_bytes(&bits);
+    let mut br = BitReader::new(&rbsp);
+    let marking = dec
+        .parse_dec_ref_pic_marking(&mut br, &nalu)
+        .expect("IDR dec_ref_pic_marking 应可解析");
+
+    assert!(marking.is_idr, "IDR NAL 应标记 is_idr=true");
+    assert!(
+        marking.no_output_of_prior_pics,
+        "第一个标志位应映射 no_output_of_prior_pics"
+    );
+    assert!(
+        !marking.long_term_reference_flag,
+        "第二个标志位应映射 long_term_reference_flag"
+    );
+}
+
+#[test]
+fn test_parse_dec_ref_pic_marking_reject_too_many_mmco_ops() {
+    let dec = build_test_decoder();
+    let nalu = NalUnit::parse(&[0x61]).expect("测试构造非 IDR slice NAL 失败");
+
+    let mut bits = Vec::new();
+    bits.push(true); // adaptive_ref_pic_marking_mode_flag
+    for _ in 0..65 {
+        write_ue(&mut bits, 5); // MMCO5: ClearAll
+    }
+    write_ue(&mut bits, 0); // 结束符
+    let rbsp = bits_to_bytes(&bits);
+    let mut br = BitReader::new(&rbsp);
+
+    let err = match dec.parse_dec_ref_pic_marking(&mut br, &nalu) {
+        Ok(_) => panic!("超过上限的 MMCO 操作应失败"),
+        Err(err) => err,
+    };
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("MMCO 操作数量过多"),
+        "错误信息应包含 MMCO 上限提示, actual={}",
         msg
     );
 }
