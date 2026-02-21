@@ -1109,6 +1109,16 @@ impl H264Decoder {
                     break;
                 }
                 let Ok(skip_run) = read_ue(&mut br) else {
+                    let err = format!(
+                        "H264: CAVLC 宏块 skip_run 解码失败, mb_idx={}, first_mb={}",
+                        mb_idx, header.first_mb
+                    );
+                    self.record_mb_decode_error(
+                        mb_idx,
+                        header.first_mb,
+                        "slice_cavlc_mb_skip_run",
+                        &err,
+                    );
                     break;
                 };
                 skip_run_left = skip_run;
@@ -1146,6 +1156,11 @@ impl H264Decoder {
                 break;
             }
             let Ok(mb_type) = read_ue(&mut br) else {
+                let err = format!(
+                    "H264: CAVLC 宏块 mb_type 解码失败, mb_idx={}, first_mb={}",
+                    mb_idx, header.first_mb
+                );
+                self.record_mb_decode_error(mb_idx, header.first_mb, "slice_cavlc_mb_type", &err);
                 break;
             };
             if is_b {

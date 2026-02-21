@@ -3280,7 +3280,8 @@ fn test_decode_cavlc_slice_data_p_skip_run_copy_reference() {
     header.data_bit_offset = 0;
 
     // mb_skip_run = 1, 覆盖单宏块帧
-    let rbsp = build_rbsp_from_ues(&[1]);
+    // ue(1)=010 + rbsp_trailing_bits=1 => 0101_0000
+    let rbsp = [0x50u8];
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(dec.ref_y[0], 77, "P-slice skip 宏块应复制参考帧像素");
     assert_eq!(dec.mb_types[0], 255, "P-slice skip 宏块应标记为 skip");
@@ -3522,6 +3523,74 @@ fn test_decode_cavlc_slice_data_records_drop_when_first_mb_out_of_range() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_marks_mb_error_and_skips_following_when_skip_run_truncated() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 16;
+    dec.init_buffers();
+    let before = dec.malformed_nal_drops;
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.data_bit_offset = 0;
+    header.first_mb = 0;
+
+    // 全 0 位流会导致第一个 skip_run ue 解码失败.
+    dec.decode_cavlc_slice_data(&[0x00], &header);
+
+    assert_eq!(
+        dec.malformed_nal_drops,
+        before + 1,
+        "宏块 skip_run 解码失败应计入坏 NAL 丢弃统计"
+    );
+    assert_eq!(dec.mb_types[0], 252, "出错宏块应标记为错误态 mb_type=252");
+    assert_eq!(dec.mb_types[1], 0, "异常后应停止本 slice 后续宏块解码");
+    assert_eq!(
+        dec.mb_slice_first_mb[0], 0,
+        "出错宏块应记录所属 slice first_mb"
+    );
+    assert_eq!(
+        dec.mb_slice_first_mb[1],
+        u32::MAX,
+        "跳过的后续宏块不应被写入 slice first_mb 标记"
+    );
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_marks_mb_error_and_skips_following_when_mb_type_truncated() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 16;
+    dec.init_buffers();
+    let before = dec.malformed_nal_drops;
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.data_bit_offset = 0;
+    header.first_mb = 0;
+
+    // skip_run=0 后剩余全 0, 会在 mb_type ue 解码阶段失败.
+    dec.decode_cavlc_slice_data(&[0x80, 0x00], &header);
+
+    assert_eq!(
+        dec.malformed_nal_drops,
+        before + 1,
+        "宏块 mb_type 解码失败应计入坏 NAL 丢弃统计"
+    );
+    assert_eq!(dec.mb_types[0], 252, "出错宏块应标记为错误态 mb_type=252");
+    assert_eq!(dec.mb_types[1], 0, "异常后应停止本 slice 后续宏块解码");
+    assert_eq!(
+        dec.mb_slice_first_mb[0], 0,
+        "出错宏块应记录所属 slice first_mb"
+    );
+    assert_eq!(
+        dec.mb_slice_first_mb[1],
+        u32::MAX,
+        "跳过的后续宏块不应被写入 slice first_mb 标记"
+    );
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_stops_at_rbsp_trailing_bits_for_partial_slice() {
     let mut dec = build_test_decoder();
     dec.width = 32;
@@ -3535,8 +3604,8 @@ fn test_decode_cavlc_slice_data_stops_at_rbsp_trailing_bits_for_partial_slice() 
     header.data_bit_offset = 0;
     header.first_mb = 0;
 
-    // 仅包含一个 mb_skip_run=1, 用于覆盖 mb0.
-    let rbsp = build_rbsp_from_ues(&[1]);
+    // ue(1)=010 + rbsp_trailing_bits=1 => 0101_0000
+    let rbsp = [0x50u8];
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     let mb0_luma = dec.ref_y[0];
@@ -3570,13 +3639,14 @@ fn test_decode_cavlc_slice_data_merges_multi_slice_by_first_mb_offset() {
     header0.slice_type = 0; // P slice
     header0.data_bit_offset = 0;
     header0.first_mb = 0;
-    dec.decode_cavlc_slice_data(&build_rbsp_from_ues(&[1]), &header0);
+    // ue(1)=010 + rbsp_trailing_bits=1 => 0101_0000
+    dec.decode_cavlc_slice_data(&[0x50], &header0);
 
     let mut header1 = build_test_slice_header(0, 1, false, None);
     header1.slice_type = 0; // P slice
     header1.data_bit_offset = 0;
     header1.first_mb = 1;
-    dec.decode_cavlc_slice_data(&build_rbsp_from_ues(&[1]), &header1);
+    dec.decode_cavlc_slice_data(&[0x50], &header1);
 
     assert_eq!(dec.ref_y[0], 66, "第一个 slice 应覆盖 mb0");
     assert_eq!(dec.ref_y[16], 66, "第二个 slice 应按 first_mb=1 覆盖 mb1");

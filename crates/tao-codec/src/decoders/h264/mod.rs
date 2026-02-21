@@ -596,6 +596,26 @@ impl H264Decoder {
         }
     }
 
+    /// 记录宏块级解码异常并标记当前宏块为错误态.
+    ///
+    /// 约定 `mb_type=252` 表示该宏块在语法解码阶段发生异常.
+    fn record_mb_decode_error(
+        &mut self,
+        mb_idx: usize,
+        slice_first_mb: u32,
+        scene: &str,
+        err: &dyn std::fmt::Display,
+    ) {
+        self.mark_mb_slice_first_mb(mb_idx, slice_first_mb);
+        if let Some(mb_type) = self.mb_types.get_mut(mb_idx) {
+            *mb_type = 252;
+        }
+        if let Some(cbp) = self.mb_cbp.get_mut(mb_idx) {
+            *cbp = 0;
+        }
+        self.record_malformed_nal_drop(scene, err);
+    }
+
     fn derive_reorder_depth_from_sps(sps: Option<&Sps>) -> usize {
         sps.map(|cur| {
             let by_ref = cur.max_num_ref_frames.saturating_sub(1).min(16) as usize;
