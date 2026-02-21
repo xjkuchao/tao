@@ -95,6 +95,7 @@ struct SliceHeader {
     luma_log2_weight_denom: u8,
     chroma_log2_weight_denom: u8,
     l0_weights: Vec<PredWeightL0>,
+    l1_weights: Vec<PredWeightL0>,
     data_bit_offset: usize,
     cabac_start_byte: usize,
     nal_ref_idc: u8,

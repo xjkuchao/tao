@@ -124,7 +124,7 @@ impl H264Decoder {
 
         let (ref_pic_list_mod_l0, ref_pic_list_mod_l1) =
             self.parse_ref_pic_list_mod(&mut br, slice_type, num_ref_idx_l0, num_ref_idx_l1)?;
-        let (luma_log2_weight_denom, chroma_log2_weight_denom, l0_weights) = self
+        let (luma_log2_weight_denom, chroma_log2_weight_denom, l0_weights, l1_weights) = self
             .parse_pred_weight_table(
                 &mut br,
                 sps,
@@ -231,6 +231,7 @@ impl H264Decoder {
             luma_log2_weight_denom,
             chroma_log2_weight_denom,
             l0_weights,
+            l1_weights,
             data_bit_offset,
             cabac_start_byte: cabac_start,
             nal_ref_idc: nalu.ref_idc,
@@ -438,11 +439,11 @@ impl H264Decoder {
         slice_type: u32,
         num_ref_idx_l0: u32,
         num_ref_idx_l1: u32,
-    ) -> TaoResult<(u8, u8, Vec<PredWeightL0>)> {
+    ) -> TaoResult<(u8, u8, Vec<PredWeightL0>, Vec<PredWeightL0>)> {
         let use_weight_l0 = pps.weighted_pred && (slice_type == 0 || slice_type == 3);
         let use_weight_l1 = pps.weighted_bipred_idc == 1 && slice_type == 1;
         if !use_weight_l0 && !use_weight_l1 {
-            return Ok((0, 0, Vec::new()));
+            return Ok((0, 0, Vec::new(), Vec::new()));
         }
 
         let luma_log2_weight_denom_raw = read_ue(br)?;
@@ -515,27 +516,32 @@ impl H264Decoder {
                         }
                     }
                 }
-                if use_weight_l0 {
-                    l0_weights.push(w);
-                }
+                l0_weights.push(w);
             }
         }
+        let mut l1_weights = Vec::new();
         if use_weight_l1 {
             for _ in 0..num_ref_idx_l1 {
+                let mut w = PredWeightL0 {
+                    luma_weight: 1 << luma_log2_weight_denom,
+                    luma_offset: 0,
+                    chroma_weight: [1 << chroma_log2_weight_denom; 2],
+                    chroma_offset: [0, 0],
+                };
                 let luma_weight_flag = br.read_bit()?;
                 if luma_weight_flag == 1 {
-                    let luma_weight = read_se(br)?;
-                    let luma_offset = read_se(br)?;
-                    if !(-128..=127).contains(&luma_weight) {
+                    w.luma_weight = read_se(br)?;
+                    w.luma_offset = read_se(br)?;
+                    if !(-128..=127).contains(&w.luma_weight) {
                         return Err(TaoError::InvalidData(format!(
                             "H264: luma_weight_l1 超出范围, value={}",
-                            luma_weight
+                            w.luma_weight
                         )));
                     }
-                    if !(-128..=127).contains(&luma_offset) {
+                    if !(-128..=127).contains(&w.luma_offset) {
                         return Err(TaoError::InvalidData(format!(
                             "H264: luma_offset_l1 超出范围, value={}",
-                            luma_offset
+                            w.luma_offset
                         )));
                     }
                 }
@@ -543,26 +549,32 @@ impl H264Decoder {
                     let chroma_weight_flag = br.read_bit()?;
                     if chroma_weight_flag == 1 {
                         for c in 0..2 {
-                            let chroma_weight = read_se(br)?;
-                            let chroma_offset = read_se(br)?;
-                            if !(-128..=127).contains(&chroma_weight) {
+                            w.chroma_weight[c] = read_se(br)?;
+                            w.chroma_offset[c] = read_se(br)?;
+                            if !(-128..=127).contains(&w.chroma_weight[c]) {
                                 return Err(TaoError::InvalidData(format!(
                                     "H264: chroma_weight_l1[{}] 超出范围, value={}",
-                                    c, chroma_weight
+                                    c, w.chroma_weight[c]
                                 )));
                             }
-                            if !(-128..=127).contains(&chroma_offset) {
+                            if !(-128..=127).contains(&w.chroma_offset[c]) {
                                 return Err(TaoError::InvalidData(format!(
                                     "H264: chroma_offset_l1[{}] 超出范围, value={}",
-                                    c, chroma_offset
+                                    c, w.chroma_offset[c]
                                 )));
                             }
                         }
                     }
                 }
+                l1_weights.push(w);
             }
         }
-        Ok((luma_log2_weight_denom, chroma_log2_weight_denom, l0_weights))
+        Ok((
+            luma_log2_weight_denom,
+            chroma_log2_weight_denom,
+            l0_weights,
+            l1_weights,
+        ))
     }
 
     /// 解析 dec_ref_pic_marking 语法.
@@ -711,6 +723,10 @@ impl H264Decoder {
             header.slice_qp,
             header.num_ref_idx_l0,
             header.num_ref_idx_l1,
+            &header.l0_weights,
+            &header.l1_weights,
+            header.luma_log2_weight_denom,
+            header.chroma_log2_weight_denom,
             &ref_l0_list,
             &ref_l1_list,
         );

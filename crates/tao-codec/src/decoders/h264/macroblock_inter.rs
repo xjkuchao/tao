@@ -1099,6 +1099,10 @@ impl H264Decoder {
         slice_qp: i32,
         num_ref_idx_l0: u32,
         num_ref_idx_l1: u32,
+        _l0_weights: &[PredWeightL0],
+        _l1_weights: &[PredWeightL0],
+        _luma_log2_weight_denom: u8,
+        _chroma_log2_weight_denom: u8,
         ref_l0_list: &[RefPlanes],
         ref_l1_list: &[RefPlanes],
     ) {
