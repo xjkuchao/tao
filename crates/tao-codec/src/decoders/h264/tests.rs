@@ -172,6 +172,19 @@ fn build_test_decoder() -> H264Decoder {
     dec
 }
 
+fn install_basic_parameter_sets(dec: &mut H264Decoder, entropy_coding_mode: u8) {
+    let sps = build_test_sps(0);
+    let mut pps = build_test_pps();
+    pps.entropy_coding_mode = entropy_coding_mode;
+
+    dec.sps_map.insert(0, sps.clone());
+    dec.pps_map.insert(0, pps.clone());
+    dec.sps = Some(sps);
+    dec.pps = Some(pps);
+    dec.active_sps_id = Some(0);
+    dec.active_pps_id = Some(0);
+}
+
 fn push_dummy_reference(dec: &mut H264Decoder, frame_num: u32) {
     push_dummy_reference_with_long_term(dec, frame_num, None);
 }
@@ -2426,6 +2439,64 @@ fn test_send_packet_without_valid_nal_records_malformed_nal_drop() {
         before + 1,
         "无法拆出有效 NAL 时应记录坏 NAL 丢弃计数"
     );
+}
+
+#[test]
+fn test_decode_slice_data_records_drop_when_activate_parameter_sets_failed() {
+    let mut dec = build_test_decoder();
+    let before = dec.malformed_nal_drops;
+    let header = build_test_slice_header(0, 1, false, None);
+
+    dec.decode_slice_data(&[0x00], &header);
+
+    assert_eq!(
+        dec.malformed_nal_drops,
+        before + 1,
+        "参数集激活失败时应记录坏 NAL 丢弃计数"
+    );
+}
+
+#[test]
+fn test_decode_slice_data_records_drop_when_cabac_start_out_of_range() {
+    let mut dec = build_test_decoder();
+    install_basic_parameter_sets(&mut dec, 1);
+    let before = dec.malformed_nal_drops;
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.pps_id = 0;
+    header.cabac_start_byte = 1; // rbsp.len() == 1, 越界
+
+    dec.decode_slice_data(&[0x00], &header);
+
+    assert_eq!(
+        dec.malformed_nal_drops,
+        before + 1,
+        "CABAC 起始越界时应记录坏 NAL 丢弃计数"
+    );
+}
+
+#[test]
+fn test_decode_slice_data_records_drop_when_cavlc_bit_offset_out_of_range() {
+    let mut dec = build_test_decoder();
+    install_basic_parameter_sets(&mut dec, 0);
+    let before = dec.malformed_nal_drops;
+    dec.ref_y.fill(0);
+    dec.ref_u.fill(0);
+    dec.ref_v.fill(0);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.pps_id = 0;
+    header.slice_type = 2; // I slice, 触发 CAVLC fallback
+    header.data_bit_offset = 99_999;
+
+    dec.decode_slice_data(&[0x00], &header);
+
+    assert_eq!(
+        dec.malformed_nal_drops,
+        before + 1,
+        "CAVLC bit_offset 越界时应记录坏 NAL 丢弃计数"
+    );
+    assert_eq!(dec.ref_y[0], 128, "CAVLC 越界时应触发 DC fallback 亮度");
 }
 
 #[test]

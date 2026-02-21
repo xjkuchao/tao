@@ -763,7 +763,8 @@ impl H264Decoder {
 
     /// 解码 slice 数据 (MB 循环)
     pub(super) fn decode_slice_data(&mut self, rbsp: &[u8], header: &SliceHeader) {
-        if self.activate_parameter_sets(header.pps_id).is_err() {
+        if let Err(err) = self.activate_parameter_sets(header.pps_id) {
+            self.record_malformed_nal_drop("slice_activate_parameter_sets", &err);
             return;
         }
         let entropy_coding_mode = match &self.pps {
@@ -778,6 +779,12 @@ impl H264Decoder {
 
         let cabac_start_byte = header.cabac_start_byte;
         if cabac_start_byte >= rbsp.len() {
+            let msg = format!(
+                "H264: CABAC 起始字节越界, cabac_start_byte={}, rbsp_len={}",
+                cabac_start_byte,
+                rbsp.len()
+            );
+            self.record_malformed_nal_drop("slice_cabac_start_oob", &msg);
             return;
         }
 
@@ -928,6 +935,12 @@ impl H264Decoder {
 
         let mut br = BitReader::new(rbsp);
         if br.skip_bits(header.data_bit_offset as u32).is_err() {
+            let msg = format!(
+                "H264: CAVLC data_bit_offset 越界, data_bit_offset={}, rbsp_bits={}",
+                header.data_bit_offset,
+                rbsp.len().saturating_mul(8)
+            );
+            self.record_malformed_nal_drop("slice_cavlc_bit_offset_oob", &msg);
             self.apply_dc_fallback();
             return;
         }
