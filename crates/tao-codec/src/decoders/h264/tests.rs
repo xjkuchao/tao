@@ -3046,6 +3046,30 @@ fn test_implicit_bi_weights_from_poc_distance() {
 }
 
 #[test]
+fn test_temporal_direct_dist_scale_factor_matches_h264_formula() {
+    let mut dec = build_test_decoder();
+    dec.last_poc = 6;
+
+    let dsf = dec
+        .temporal_direct_dist_scale_factor(0, 8)
+        .expect("td 非 0 时应计算 dist_scale_factor");
+    assert_eq!(dsf, 192, "dist_scale_factor 应按 tb/td 公式推导");
+
+    let dsf_none = dec.temporal_direct_dist_scale_factor(5, 5);
+    assert!(dsf_none.is_none(), "td=0 时不应返回可用的缩放系数");
+}
+
+#[test]
+fn test_scale_temporal_direct_mv_component_rounding_and_sign() {
+    let dec = build_test_decoder();
+    let scaled_pos = dec.scale_temporal_direct_mv_component(16, 192);
+    assert_eq!(scaled_pos, 12, "正向 MV 应按 ((dsf*mv+128)>>8) 缩放");
+
+    let scaled_neg = dec.scale_temporal_direct_mv_component(-16, 192);
+    assert_eq!(scaled_neg, -12, "负向 MV 应保持符号并按同一公式缩放");
+}
+
+#[test]
 fn test_apply_b_prediction_block_implicit_bi_weighted() {
     let mut dec = build_test_decoder();
     let mut pps = build_test_pps();

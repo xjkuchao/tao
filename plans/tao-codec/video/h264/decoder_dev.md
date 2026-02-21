@@ -224,7 +224,7 @@ crates/tao-codec/src/decoders/h264/
     - [x] Spatial Direct 单测: 补齐 helper 与 CAVLC B_8x8 direct 粒度开关覆盖.
     - [x] CAVLC B_Direct_16x16 单测: 覆盖零 MV 条件与 L1 独立邻居预测.
 - [ ] Temporal Direct:
-    - [ ] 共定位 MV 缩放(td/tb).
+    - [x] 共定位 MV 缩放(td/tb): 接入 dist_scale_factor 与分量缩放函数 + 单测.
     - [ ] 共定位宏块定位.
     - [ ] L0/L1 分别缩放.
     - [ ] Temporal Direct 单测.

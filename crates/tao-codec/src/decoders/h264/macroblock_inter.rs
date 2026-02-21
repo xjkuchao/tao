@@ -124,7 +124,11 @@ impl H264Decoder {
                     self.predict_spatial_direct_mv_for_list(mb_x, mb_y, true, mv_x, mv_y);
                 (l0_mv_x, l0_mv_y, l1_mv_x, l1_mv_y)
             } else {
-                (mv_x, mv_y, mv_x, mv_y)
+                // Temporal Direct 的共定位 td/tb 缩放尚未完成接入.
+                // 先通过 dist_scale_factor=256 走统一缩放路径, 保持当前最小行为不变.
+                let l0_mv_x = self.scale_temporal_direct_mv_component(mv_x, 256);
+                let l0_mv_y = self.scale_temporal_direct_mv_component(mv_y, 256);
+                (l0_mv_x, l0_mv_y, l0_mv_x, l0_mv_y)
             };
         let motion_l0 = Some(BMotion {
             mv_x: direct_l0_mv_x,
@@ -1025,19 +1029,39 @@ impl H264Decoder {
         if ref_l0_is_long_term || ref_l1_is_long_term {
             return (32, 32);
         }
-        let td = (ref_l1_poc - ref_l0_poc).clamp(-128, 127);
-        if td == 0 {
+        let Some(dist_scale_factor) =
+            self.temporal_direct_dist_scale_factor(ref_l0_poc, ref_l1_poc)
+        else {
             return (32, 32);
-        }
-        let tb = (self.last_poc - ref_l0_poc).clamp(-128, 127);
-        let tx = (16384 + (td.abs() >> 1)) / td;
-        let dist_scale_factor = ((tb * tx + 32) >> 6).clamp(-1024, 1023);
+        };
         let w1 = dist_scale_factor >> 2;
         if (-64..=128).contains(&w1) {
             (64 - w1, w1)
         } else {
             (32, 32)
         }
+    }
+
+    pub(super) fn temporal_direct_dist_scale_factor(
+        &self,
+        ref_l0_poc: i32,
+        ref_l1_poc: i32,
+    ) -> Option<i32> {
+        let td = (ref_l1_poc - ref_l0_poc).clamp(-128, 127);
+        if td == 0 {
+            return None;
+        }
+        let tb = (self.last_poc - ref_l0_poc).clamp(-128, 127);
+        let tx = (16384 + (td.abs() >> 1)) / td;
+        Some(((tb * tx + 32) >> 6).clamp(-1024, 1023))
+    }
+
+    pub(super) fn scale_temporal_direct_mv_component(
+        &self,
+        col_mv_qpel: i32,
+        dist_scale_factor: i32,
+    ) -> i32 {
+        ((dist_scale_factor * col_mv_qpel + 128) >> 8).clamp(i16::MIN as i32, i16::MAX as i32)
     }
 
     #[allow(clippy::too_many_arguments)]
