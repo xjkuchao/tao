@@ -335,28 +335,41 @@ fn predict_4x4_horizontal(plane: &mut [u8], stride: usize, x0: usize, y0: usize)
 
 /// 模式 2: DC - 邻居平均值
 pub fn predict_4x4_dc(plane: &mut [u8], stride: usize, x0: usize, y0: usize) {
-    let mut sum = 0u32;
-    let mut count = 0u32;
-
-    if y0 > 0 {
-        for dx in 0..4 {
+    let top_available = y0 > 0
+        && (0..4).all(|dx| {
             let idx = (y0 - 1) * stride + x0 + dx;
-            if idx < plane.len() {
-                sum += plane[idx] as u32;
-                count += 1;
-            }
-        }
-    }
-    if x0 > 0 {
-        for dy in 0..4 {
+            idx < plane.len()
+        });
+    let left_available = x0 > 0
+        && (0..4).all(|dy| {
             let idx = (y0 + dy) * stride + x0 - 1;
-            if idx < plane.len() {
-                sum += plane[idx] as u32;
-                count += 1;
-            }
-        }
-    }
-    let dc = if count > 0 { (sum / count) as u8 } else { 128 };
+            idx < plane.len()
+        });
+
+    let sum_top = if top_available {
+        (0..4)
+            .map(|dx| plane[(y0 - 1) * stride + x0 + dx] as u32)
+            .sum::<u32>()
+    } else {
+        0
+    };
+    let sum_left = if left_available {
+        (0..4)
+            .map(|dy| plane[(y0 + dy) * stride + x0 - 1] as u32)
+            .sum::<u32>()
+    } else {
+        0
+    };
+
+    let dc = if top_available && left_available {
+        ((sum_top + sum_left + 4) >> 3) as u8
+    } else if top_available {
+        ((sum_top + 2) >> 2) as u8
+    } else if left_available {
+        ((sum_left + 2) >> 2) as u8
+    } else {
+        128
+    };
     fill_block(plane, stride, x0, y0, 4, 4, dc);
 }
 
@@ -967,5 +980,89 @@ mod tests {
         let expect = [[128u8; 4]; 4];
 
         assert_eq!(got, expect, "模式8在缺少左参考时应回退为128填充");
+    }
+
+    #[test]
+    fn test_intra4x4_mode2_dc_both_neighbors_uses_rounding_rule() {
+        let stride = 16;
+        let x0 = 4;
+        let y0 = 4;
+        let mut plane = vec![0u8; stride * stride];
+
+        let top = [1u8, 2, 3, 4];
+        for (i, val) in top.iter().enumerate() {
+            plane[(y0 - 1) * stride + x0 + i] = *val;
+        }
+        let left = [5u8, 6, 7, 8];
+        for (i, val) in left.iter().enumerate() {
+            plane[(y0 + i) * stride + x0 - 1] = *val;
+        }
+
+        predict_4x4(&mut plane, stride, x0, y0, 2);
+        let got = read_block_4x4(&plane, stride, x0, y0);
+        let expect = [[5u8; 4]; 4];
+
+        assert_eq!(
+            got, expect,
+            "模式2在上左都可用时应使用(sum_top+sum_left+4)>>3"
+        );
+    }
+
+    #[test]
+    fn test_intra4x4_mode2_dc_left_only_variant() {
+        let stride = 16;
+        let x0 = 4;
+        let y0 = 0;
+        let mut plane = vec![0u8; stride * stride];
+
+        let left = [1u8, 2, 3, 4];
+        for (i, val) in left.iter().enumerate() {
+            plane[(y0 + i) * stride + x0 - 1] = *val;
+        }
+
+        predict_4x4(&mut plane, stride, x0, y0, 2);
+        let got = read_block_4x4(&plane, stride, x0, y0);
+        let expect = [[3u8; 4]; 4];
+
+        assert_eq!(
+            got, expect,
+            "模式2在仅左可用时应使用Left-DC变体(sum_left+2)>>2"
+        );
+    }
+
+    #[test]
+    fn test_intra4x4_mode2_dc_top_only_variant() {
+        let stride = 16;
+        let x0 = 0;
+        let y0 = 4;
+        let mut plane = vec![0u8; stride * stride];
+
+        let top = [1u8, 2, 3, 4];
+        for (i, val) in top.iter().enumerate() {
+            plane[(y0 - 1) * stride + x0 + i] = *val;
+        }
+
+        predict_4x4(&mut plane, stride, x0, y0, 2);
+        let got = read_block_4x4(&plane, stride, x0, y0);
+        let expect = [[3u8; 4]; 4];
+
+        assert_eq!(
+            got, expect,
+            "模式2在仅上可用时应使用Top-DC变体(sum_top+2)>>2"
+        );
+    }
+
+    #[test]
+    fn test_intra4x4_mode2_dc_none_variant_128() {
+        let stride = 16;
+        let x0 = 0;
+        let y0 = 0;
+        let mut plane = vec![99u8; stride * stride];
+
+        predict_4x4(&mut plane, stride, x0, y0, 2);
+        let got = read_block_4x4(&plane, stride, x0, y0);
+        let expect = [[128u8; 4]; 4];
+
+        assert_eq!(got, expect, "模式2在上左都不可用时应使用DC-128变体");
     }
 }
