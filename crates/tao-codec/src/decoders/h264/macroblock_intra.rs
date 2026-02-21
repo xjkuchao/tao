@@ -424,6 +424,7 @@ impl H264Decoder {
         pred_modes: &[u8; 16],
     ) {
         let (mb_x, mb_y) = mb_pos;
+        let luma_scaling_4x4 = self.active_luma_scaling_list_4x4(true);
         // 先清空当前宏块的 luma CBF 状态.
         for sub_y in 0..4 {
             for sub_x in 0..4 {
@@ -472,7 +473,7 @@ impl H264Decoder {
 
                 let mut coeffs_arr = [0i32; 16];
                 coeffs_arr.copy_from_slice(&raw_coeffs[..16]);
-                residual::dequant_4x4_ac(&mut coeffs_arr, qp);
+                residual::dequant_4x4_ac_with_scaling(&mut coeffs_arr, qp, &luma_scaling_4x4);
                 residual::apply_4x4_ac_residual(
                     &mut self.ref_y,
                     self.stride_y,
@@ -497,6 +498,7 @@ impl H264Decoder {
         qp: i32,
         intra_defaults: bool,
     ) {
+        let luma_scaling_8x8 = self.active_luma_scaling_list_8x8(intra_defaults);
         for sub_y in 0..4 {
             for sub_x in 0..4 {
                 self.set_luma_cbf(mb_x * 4 + sub_x, mb_y * 4 + sub_y, false);
@@ -537,13 +539,14 @@ impl H264Decoder {
 
             let px = mb_x * 16 + x8x8 * 8;
             let py = mb_y * 16 + y8x8 * 8;
-            residual::apply_8x8_ac_residual(
+            residual::apply_8x8_ac_residual_with_scaling(
                 &mut self.ref_y,
                 self.stride_y,
                 px,
                 py,
                 &coeffs_scan,
                 qp,
+                &luma_scaling_8x8,
             );
         }
     }
@@ -646,6 +649,7 @@ impl H264Decoder {
         mb_y: usize,
         slice_qp: i32,
     ) -> [i32; 16] {
+        let luma_scaling_4x4 = self.active_luma_scaling_list_4x4(true);
         // 解码 DC 系数
         let cbf_inc = self.get_dc_cbf_inc(mb_x, mb_y, true);
         let raw_coeffs = decode_residual_block(cabac, ctxs, &CAT_LUMA_DC, cbf_inc);
@@ -659,7 +663,7 @@ impl H264Decoder {
             }
         }
         inverse_hadamard_4x4(&mut dc_block);
-        dequant_luma_dc(&mut dc_block, slice_qp);
+        residual::dequant_luma_dc_with_scaling(&mut dc_block, slice_qp, &luma_scaling_4x4);
         dc_block
     }
 
@@ -674,6 +678,7 @@ impl H264Decoder {
         has_luma_ac: bool,
     ) {
         let (mb_x, mb_y) = mb_pos;
+        let luma_scaling_4x4 = self.active_luma_scaling_list_4x4(true);
         // 对齐 FFmpeg scan8 的 i4x4 索引顺序:
         // i4x4=0..15 对应 8x8 分组遍历, 而非纯行优先遍历.
         const I4X4_SCAN_ORDER: [(usize, usize); 16] = [
@@ -724,7 +729,7 @@ impl H264Decoder {
             } else {
                 self.set_luma_cbf(x4, y4, false);
             }
-            residual::dequant_4x4_ac(&mut coeffs_scan, qp);
+            residual::dequant_4x4_ac_with_scaling(&mut coeffs_scan, qp, &luma_scaling_4x4);
             coeffs_scan[0] = dc_coeffs[block_idx];
 
             let px = mb_x * 16 + sub_x * 4;
@@ -750,6 +755,8 @@ impl H264Decoder {
         intra_defaults: bool,
     ) {
         let (mb_x, mb_y) = mb_pos;
+        let u_scaling_4x4 = self.active_chroma_scaling_list_4x4(intra_defaults, false);
+        let v_scaling_4x4 = self.active_chroma_scaling_list_4x4(intra_defaults, true);
         // 色度 QP 映射(按 PPS 中的 Cb/Cr 偏移分别计算).
         let (chroma_off_u, chroma_off_v) = self
             .pps
@@ -768,7 +775,7 @@ impl H264Decoder {
             u_dc[i] = c;
         }
         inverse_hadamard_2x2(&mut u_dc);
-        dequant_chroma_dc(&mut u_dc, chroma_qp_u);
+        residual::dequant_chroma_dc_with_scaling(&mut u_dc, chroma_qp_u, &u_scaling_4x4);
 
         // V 通道
         let chroma_dc_cbf_inc_v = self.chroma_dc_v_cbf_ctx_inc(mb_x, mb_y, intra_defaults);
@@ -779,7 +786,7 @@ impl H264Decoder {
             v_dc[i] = c;
         }
         inverse_hadamard_2x2(&mut v_dc);
-        dequant_chroma_dc(&mut v_dc, chroma_qp_v);
+        residual::dequant_chroma_dc_with_scaling(&mut v_dc, chroma_qp_v, &v_scaling_4x4);
 
         // H.264 语法顺序: 先完整解码 U 的 4 个 AC 块, 再完整解码 V 的 4 个 AC 块.
         let mut u_scans = [[0i32; 16]; 4];
@@ -833,12 +840,12 @@ impl H264Decoder {
             let py = mb_y * 8 + sub_y * 4;
 
             let mut u_scan = u_scans[block_idx];
-            residual::dequant_4x4_ac(&mut u_scan, chroma_qp_u);
+            residual::dequant_4x4_ac_with_scaling(&mut u_scan, chroma_qp_u, &u_scaling_4x4);
             u_scan[0] = u_dc[block_idx];
             residual::apply_4x4_ac_residual(&mut self.ref_u, self.stride_c, px, py, &u_scan);
 
             let mut v_scan = v_scans[block_idx];
-            residual::dequant_4x4_ac(&mut v_scan, chroma_qp_v);
+            residual::dequant_4x4_ac_with_scaling(&mut v_scan, chroma_qp_v, &v_scaling_4x4);
             v_scan[0] = v_dc[block_idx];
             residual::apply_4x4_ac_residual(&mut self.ref_v, self.stride_c, px, py, &v_scan);
         }

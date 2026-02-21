@@ -42,7 +42,7 @@ use crate::parsers::h264::{
 use cabac::{CabacCtx, CabacDecoder, init_contexts_i_slice, init_contexts_pb_slice};
 use residual::{
     CAT_CHROMA_AC, CAT_CHROMA_DC, CAT_LUMA_8X8, CAT_LUMA_AC, CAT_LUMA_DC, decode_residual_block,
-    dequant_chroma_dc, dequant_luma_dc, inverse_hadamard_2x2, inverse_hadamard_4x4,
+    inverse_hadamard_2x2, inverse_hadamard_4x4,
 };
 
 // ============================================================
@@ -638,6 +638,64 @@ impl H264Decoder {
         self.active_pps_id = Some(pps_id);
         self.pps = Some(pps);
         Ok(())
+    }
+
+    fn active_scaling_list_4x4(&self, idx: usize) -> [u8; 16] {
+        if let Some(pps_lists) = self
+            .pps
+            .as_ref()
+            .and_then(|pps| pps.scaling_list_4x4.as_ref())
+            && let Some(list) = pps_lists.get(idx)
+        {
+            return *list;
+        }
+
+        if let Some(sps) = self.sps.as_ref()
+            && let Some(list) = sps.scaling_list_4x4.get(idx)
+        {
+            return *list;
+        }
+
+        [16; 16]
+    }
+
+    fn active_scaling_list_8x8(&self, idx: usize) -> [u8; 64] {
+        if let Some(pps_lists) = self
+            .pps
+            .as_ref()
+            .and_then(|pps| pps.scaling_list_8x8.as_ref())
+            && let Some(list) = pps_lists.get(idx)
+        {
+            return *list;
+        }
+
+        if let Some(sps) = self.sps.as_ref()
+            && let Some(list) = sps.scaling_list_8x8.get(idx)
+        {
+            return *list;
+        }
+
+        [16; 64]
+    }
+
+    fn active_luma_scaling_list_4x4(&self, intra: bool) -> [u8; 16] {
+        let list_idx = if intra { 0 } else { 3 };
+        self.active_scaling_list_4x4(list_idx)
+    }
+
+    fn active_chroma_scaling_list_4x4(&self, intra: bool, is_v_plane: bool) -> [u8; 16] {
+        let list_idx = match (intra, is_v_plane) {
+            (true, false) => 1,
+            (true, true) => 2,
+            (false, false) => 4,
+            (false, true) => 5,
+        };
+        self.active_scaling_list_4x4(list_idx)
+    }
+
+    fn active_luma_scaling_list_8x8(&self, intra: bool) -> [u8; 64] {
+        let list_idx = if intra { 0 } else { 1 };
+        self.active_scaling_list_8x8(list_idx)
     }
 
     fn pps_rebuild_action(old: &Pps, new: &Pps) -> ParameterSetRebuildAction {

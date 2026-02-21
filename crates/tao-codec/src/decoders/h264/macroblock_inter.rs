@@ -1945,6 +1945,7 @@ impl H264Decoder {
         mb_y: usize,
         qp: i32,
     ) {
+        let luma_scaling_4x4 = self.active_luma_scaling_list_4x4(false);
         for sub_y in 0..4 {
             for sub_x in 0..4 {
                 self.set_luma_cbf(mb_x * 4 + sub_x, mb_y * 4 + sub_y, false);
@@ -1984,7 +1985,7 @@ impl H264Decoder {
 
                 let mut coeffs_arr = [0i32; 16];
                 coeffs_arr.copy_from_slice(&raw_coeffs[..16]);
-                residual::dequant_4x4_ac(&mut coeffs_arr, qp);
+                residual::dequant_4x4_ac_with_scaling(&mut coeffs_arr, qp, &luma_scaling_4x4);
                 residual::apply_4x4_ac_residual(
                     &mut self.ref_y,
                     self.stride_y,

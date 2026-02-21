@@ -860,6 +860,85 @@ fn test_pps_rebuild_action_full_on_sps_change() {
 }
 
 #[test]
+fn test_active_luma_scaling_list_prefers_pps_override() {
+    let mut dec = build_test_decoder();
+    let mut sps = build_test_sps(0);
+    sps.scaling_list_4x4[0] = [11; 16];
+    sps.scaling_list_4x4[3] = [13; 16];
+    sps.scaling_list_8x8[0] = [12; 64];
+    sps.scaling_list_8x8[1] = [14; 64];
+
+    let mut pps = build_test_pps();
+    let mut pps_4x4 = [[16u8; 16]; 6];
+    pps_4x4[0] = [21; 16];
+    pps_4x4[3] = [23; 16];
+    let pps_8x8 = vec![[22u8; 64], [24u8; 64]];
+    pps.scaling_list_4x4 = Some(pps_4x4);
+    pps.scaling_list_8x8 = Some(pps_8x8);
+
+    dec.sps = Some(sps);
+    dec.pps = Some(pps);
+
+    assert_eq!(
+        dec.active_luma_scaling_list_4x4(true)[0],
+        21,
+        "Luma Intra 4x4 应优先使用 PPS 覆盖"
+    );
+    assert_eq!(
+        dec.active_luma_scaling_list_4x4(false)[0],
+        23,
+        "Luma Inter 4x4 应优先使用 PPS 覆盖"
+    );
+    assert_eq!(
+        dec.active_luma_scaling_list_8x8(true)[0],
+        22,
+        "Luma Intra 8x8 应优先使用 PPS 覆盖"
+    );
+    assert_eq!(
+        dec.active_luma_scaling_list_8x8(false)[0],
+        24,
+        "Luma Inter 8x8 应优先使用 PPS 覆盖"
+    );
+}
+
+#[test]
+fn test_active_chroma_scaling_list_fallback_to_sps_when_pps_absent() {
+    let mut dec = build_test_decoder();
+    let mut sps = build_test_sps(0);
+    sps.scaling_list_4x4[1] = [31; 16];
+    sps.scaling_list_4x4[2] = [32; 16];
+    sps.scaling_list_4x4[4] = [34; 16];
+    sps.scaling_list_4x4[5] = [35; 16];
+
+    let mut pps = build_test_pps();
+    pps.scaling_list_4x4 = None;
+
+    dec.sps = Some(sps);
+    dec.pps = Some(pps);
+
+    assert_eq!(
+        dec.active_chroma_scaling_list_4x4(true, false)[0],
+        31,
+        "Chroma U Intra 4x4 应回退到 SPS 矩阵"
+    );
+    assert_eq!(
+        dec.active_chroma_scaling_list_4x4(true, true)[0],
+        32,
+        "Chroma V Intra 4x4 应回退到 SPS 矩阵"
+    );
+    assert_eq!(
+        dec.active_chroma_scaling_list_4x4(false, false)[0],
+        34,
+        "Chroma U Inter 4x4 应回退到 SPS 矩阵"
+    );
+    assert_eq!(
+        dec.active_chroma_scaling_list_4x4(false, true)[0],
+        35,
+        "Chroma V Inter 4x4 应回退到 SPS 矩阵"
+    );
+}
+
+#[test]
 fn test_activate_parameter_sets_runtime_only_keeps_references() {
     let mut dec = build_test_decoder();
     let sps0 = build_test_sps(0);

@@ -308,13 +308,27 @@ pub fn inverse_hadamard_2x2(block: &mut [i32; 4]) {
 // 反量化
 // ============================================================
 
+const FLAT_SCALING_LIST_4X4: [u8; 16] = [16; 16];
+#[allow(dead_code)]
+const FLAT_SCALING_LIST_8X8: [u8; 64] = [16; 64];
+
+fn apply_scaling_weight(base_scale: i32, weight: u8) -> i32 {
+    (base_scale * i32::from(weight) + 8) >> 4
+}
+
 /// Luma DC 系数反量化 (I_16x16)
 ///
 /// 对 Hadamard 变换后的 DC 系数进行反量化
+#[allow(dead_code)]
 pub fn dequant_luma_dc(coeffs: &mut [i32; 16], qp: i32) {
+    dequant_luma_dc_with_scaling(coeffs, qp, &FLAT_SCALING_LIST_4X4);
+}
+
+/// Luma DC 系数反量化 (I_16x16), 支持自定义 4x4 scaling_list.
+pub fn dequant_luma_dc_with_scaling(coeffs: &mut [i32; 16], qp: i32, scaling_list: &[u8; 16]) {
     let qp_per = qp / 6;
     let qp_rem = qp % 6;
-    let scale = LEVEL_SCALE[qp_rem as usize][0];
+    let scale = apply_scaling_weight(LEVEL_SCALE[qp_rem as usize][0], scaling_list[0]);
 
     for c in coeffs.iter_mut() {
         if qp_per >= 2 {
@@ -326,10 +340,16 @@ pub fn dequant_luma_dc(coeffs: &mut [i32; 16], qp: i32) {
 }
 
 /// Chroma DC 系数反量化 (4:2:0)
+#[allow(dead_code)]
 pub fn dequant_chroma_dc(coeffs: &mut [i32; 4], qp: i32) {
+    dequant_chroma_dc_with_scaling(coeffs, qp, &FLAT_SCALING_LIST_4X4);
+}
+
+/// Chroma DC 系数反量化 (4:2:0), 支持自定义 4x4 scaling_list.
+pub fn dequant_chroma_dc_with_scaling(coeffs: &mut [i32; 4], qp: i32, scaling_list: &[u8; 16]) {
     let qp_per = qp / 6;
     let qp_rem = qp % 6;
-    let scale = LEVEL_SCALE[qp_rem as usize][0];
+    let scale = apply_scaling_weight(LEVEL_SCALE[qp_rem as usize][0], scaling_list[0]);
 
     for c in coeffs.iter_mut() {
         if qp_per >= 1 {
@@ -343,6 +363,12 @@ pub fn dequant_chroma_dc(coeffs: &mut [i32; 4], qp: i32) {
 /// 4x4 AC 系数反量化 (通用, AC 残差解码时使用)
 #[allow(dead_code)]
 pub fn dequant_4x4_ac(coeffs: &mut [i32; 16], qp: i32) {
+    dequant_4x4_ac_with_scaling(coeffs, qp, &FLAT_SCALING_LIST_4X4);
+}
+
+/// 4x4 AC 系数反量化, 支持自定义 4x4 scaling_list.
+#[allow(dead_code)]
+pub fn dequant_4x4_ac_with_scaling(coeffs: &mut [i32; 16], qp: i32, scaling_list: &[u8; 16]) {
     let qp_per = qp / 6;
     let qp_rem = qp % 6;
 
@@ -353,7 +379,8 @@ pub fn dequant_4x4_ac(coeffs: &mut [i32; 16], qp: i32) {
         // 位置索引 → 缩放因子类别
         let (row, col) = ZIGZAG_4X4[i];
         let si = scale_index(row, col);
-        let scale = LEVEL_SCALE[qp_rem as usize][si];
+        let base_scale = LEVEL_SCALE[qp_rem as usize][si];
+        let scale = apply_scaling_weight(base_scale, scaling_list[i]);
         let scaled = *c * scale;
         if qp_per >= 4 {
             *c = scaled << (qp_per - 4);
@@ -421,7 +448,19 @@ pub fn idct_4x4(coeffs: &[i32; 16], out: &mut [i32; 16]) {
 /// 8x8 AC 系数反量化.
 ///
 /// 输入系数需为 raster 顺序.
+#[allow(dead_code)]
 pub fn dequant_8x8_ac(coeffs: &mut [i32; 64], qp: i32) {
+    dequant_8x8_ac_with_scaling(coeffs, qp, &FLAT_SCALING_LIST_8X8);
+}
+
+/// 8x8 AC 系数反量化, 支持自定义 8x8 scaling_list.
+///
+/// `scaling_list_raster` 需为 raster 顺序.
+pub fn dequant_8x8_ac_with_scaling(
+    coeffs: &mut [i32; 64],
+    qp: i32,
+    scaling_list_raster: &[u8; 64],
+) {
     let qp_per = qp / 6;
     let qp_rem = qp % 6;
     let rem_idx = qp_rem as usize;
@@ -432,7 +471,8 @@ pub fn dequant_8x8_ac(coeffs: &mut [i32; 64], qp: i32) {
         }
 
         let scale_idx = DEQUANT_8X8_SCALE_INDEX[idx];
-        let scale = LEVEL_SCALE_8X8[rem_idx][scale_idx];
+        let base_scale = LEVEL_SCALE_8X8[rem_idx][scale_idx];
+        let scale = apply_scaling_weight(base_scale, scaling_list_raster[idx]);
         let scaled = *coeff * scale;
         if qp_per >= 6 {
             *coeff = scaled << (qp_per - 6);
@@ -621,6 +661,7 @@ pub fn apply_4x4_ac_residual(
 }
 
 /// 将 8x8 残差块应用到平面上 (反扫描 + 反量化 + IDCT + 逐像素加法)
+#[allow(dead_code)]
 pub fn apply_8x8_ac_residual(
     plane: &mut [u8],
     stride: usize,
@@ -629,12 +670,37 @@ pub fn apply_8x8_ac_residual(
     coeffs_scan: &[i32; 64],
     qp: i32,
 ) {
+    apply_8x8_ac_residual_with_scaling(
+        plane,
+        stride,
+        x0,
+        y0,
+        coeffs_scan,
+        qp,
+        &FLAT_SCALING_LIST_8X8,
+    );
+}
+
+/// 将 8x8 残差块应用到平面上 (反扫描 + 反量化 + IDCT + 逐像素加法), 支持自定义 scaling_list.
+///
+/// `scaling_list_scan` 需为 zig-zag 扫描顺序.
+pub fn apply_8x8_ac_residual_with_scaling(
+    plane: &mut [u8],
+    stride: usize,
+    x0: usize,
+    y0: usize,
+    coeffs_scan: &[i32; 64],
+    qp: i32,
+    scaling_list_scan: &[u8; 64],
+) {
     let mut coeffs_raster = [0i32; 64];
+    let mut scaling_raster = [16u8; 64];
     for (scan_pos, &raster_idx) in ZIGZAG_8X8.iter().enumerate() {
         coeffs_raster[raster_idx] = coeffs_scan[scan_pos];
+        scaling_raster[raster_idx] = scaling_list_scan[scan_pos];
     }
 
-    dequant_8x8_ac(&mut coeffs_raster, qp);
+    dequant_8x8_ac_with_scaling(&mut coeffs_raster, qp, &scaling_raster);
 
     let mut spatial = [0i32; 64];
     idct_8x8(&coeffs_raster, &mut spatial);
@@ -701,6 +767,70 @@ mod tests {
         assert!(
             changed(8, 8) > 0,
             "右下 4x4 子块应有变化, 证明非 4x4 独立近似"
+        );
+    }
+
+    #[test]
+    fn test_dequant_4x4_ac_with_custom_scaling_takes_effect() {
+        let mut default_coeffs = [0i32; 16];
+        default_coeffs[0] = 4;
+        let mut custom_coeffs = default_coeffs;
+        let mut scaling = [16u8; 16];
+        scaling[0] = 32;
+
+        dequant_4x4_ac(&mut default_coeffs, 24);
+        dequant_4x4_ac_with_scaling(&mut custom_coeffs, 24, &scaling);
+
+        assert_eq!(
+            custom_coeffs[0],
+            default_coeffs[0] * 2,
+            "自定义 4x4 矩阵应影响反量化幅度"
+        );
+    }
+
+    #[test]
+    fn test_dequant_8x8_ac_with_custom_scaling_takes_effect() {
+        let mut default_coeffs = [0i32; 64];
+        default_coeffs[0] = 4;
+        let mut custom_coeffs = default_coeffs;
+        let mut scaling = [16u8; 64];
+        scaling[0] = 32;
+
+        dequant_8x8_ac(&mut default_coeffs, 36);
+        dequant_8x8_ac_with_scaling(&mut custom_coeffs, 36, &scaling);
+
+        assert_eq!(
+            custom_coeffs[0],
+            default_coeffs[0] * 2,
+            "自定义 8x8 矩阵应影响反量化幅度"
+        );
+    }
+
+    #[test]
+    fn test_apply_8x8_ac_residual_with_custom_scaling_takes_effect() {
+        let mut plane_default = vec![128u8; 16 * 16];
+        let mut plane_custom = vec![128u8; 16 * 16];
+        let mut coeffs_scan = [0i32; 64];
+        coeffs_scan[0] = 32;
+        let mut scaling = [16u8; 64];
+        scaling[0] = 32;
+
+        apply_8x8_ac_residual(&mut plane_default, 16, 4, 4, &coeffs_scan, 26);
+        apply_8x8_ac_residual_with_scaling(&mut plane_custom, 16, 4, 4, &coeffs_scan, 26, &scaling);
+
+        let diff_sum = |plane: &[u8]| -> i32 {
+            let mut sum = 0i32;
+            for y in 4..12 {
+                for x in 4..12 {
+                    sum += (plane[y * 16 + x] as i32 - 128).abs();
+                }
+            }
+            sum
+        };
+
+        assert!(
+            diff_sum(&plane_custom) > diff_sum(&plane_default),
+            "自定义 8x8 矩阵应增大残差注入幅度"
         );
     }
 }
