@@ -922,49 +922,81 @@ impl H264Decoder {
                         for slot in &mut sub_mb_types {
                             *slot = read_ue(&mut br).unwrap_or(0);
                         }
+                        let mut use_l0 = [false; 4];
+                        let mut use_l1 = [false; 4];
+                        let mut sub_part_count = [1usize; 4];
                         for (sub_idx, sub_mb_type) in sub_mb_types.iter().copied().enumerate() {
-                            let sub_x = mb_x * 16 + (sub_idx % 2) * 8;
-                            let sub_y = mb_y * 16 + (sub_idx / 2) * 8;
-                            let use_l0 = matches!(sub_mb_type, 1 | 3 | 4 | 5 | 8 | 9 | 10 | 12);
-                            let use_l1 = matches!(sub_mb_type, 2 | 3 | 6 | 7 | 8 | 9 | 11 | 12);
-
-                            let sub_part_count = match sub_mb_type {
+                            use_l0[sub_idx] =
+                                matches!(sub_mb_type, 1 | 3 | 4 | 5 | 8 | 9 | 10 | 12);
+                            use_l1[sub_idx] =
+                                matches!(sub_mb_type, 2 | 3 | 6 | 7 | 8 | 9 | 11 | 12);
+                            sub_part_count[sub_idx] = match sub_mb_type {
                                 4..=9 => 2usize,
                                 10..=12 => 4usize,
                                 _ => 1usize,
                             };
-                            let mut ref_idx_l0 = 0usize;
-                            let mut ref_idx_l1 = 0usize;
-                            if use_l0 && header.num_ref_idx_l0 > 1 {
-                                ref_idx_l0 = read_ue(&mut br).unwrap_or(0) as usize;
-                            }
-                            if use_l1 && header.num_ref_idx_l1 > 1 {
-                                ref_idx_l1 = read_ue(&mut br).unwrap_or(0) as usize;
-                            }
+                        }
 
+                        let mut ref_idx_l0 = [0usize; 4];
+                        let mut ref_idx_l1 = [0usize; 4];
+                        if header.num_ref_idx_l0 > 1 {
+                            for sub_idx in 0..4usize {
+                                if use_l0[sub_idx] {
+                                    ref_idx_l0[sub_idx] = read_ue(&mut br).unwrap_or(0) as usize;
+                                }
+                            }
+                        }
+                        if header.num_ref_idx_l1 > 1 {
+                            for sub_idx in 0..4usize {
+                                if use_l1[sub_idx] {
+                                    ref_idx_l1[sub_idx] = read_ue(&mut br).unwrap_or(0) as usize;
+                                }
+                            }
+                        }
+
+                        let mut l0_mv_x = [[0i32; 4]; 4];
+                        let mut l0_mv_y = [[0i32; 4]; 4];
+                        let mut l1_mv_x = [[0i32; 4]; 4];
+                        let mut l1_mv_y = [[0i32; 4]; 4];
+                        for sub_idx in 0..4usize {
+                            if use_l0[sub_idx] {
+                                for part_idx in 0..sub_part_count[sub_idx] {
+                                    l0_mv_x[sub_idx][part_idx] = read_se(&mut br).unwrap_or(0);
+                                    l0_mv_y[sub_idx][part_idx] = read_se(&mut br).unwrap_or(0);
+                                }
+                            }
+                        }
+                        for sub_idx in 0..4usize {
+                            if use_l1[sub_idx] {
+                                for part_idx in 0..sub_part_count[sub_idx] {
+                                    l1_mv_x[sub_idx][part_idx] = read_se(&mut br).unwrap_or(0);
+                                    l1_mv_y[sub_idx][part_idx] = read_se(&mut br).unwrap_or(0);
+                                }
+                            }
+                        }
+
+                        for (sub_idx, sub_mb_type) in sub_mb_types.iter().copied().enumerate() {
+                            let sub_x = mb_x * 16 + (sub_idx % 2) * 8;
+                            let sub_y = mb_y * 16 + (sub_idx / 2) * 8;
                             let mut l0_motions = [None; 4];
                             let mut l1_motions = [None; 4];
-                            for part_idx in 0..sub_part_count {
-                                if use_l0 {
-                                    let mv_x = read_se(&mut br).unwrap_or(0);
-                                    let mv_y = read_se(&mut br).unwrap_or(0);
+                            for part_idx in 0..sub_part_count[sub_idx] {
+                                if use_l0[sub_idx] {
                                     l0_motions[part_idx] = Some(BMotion {
-                                        mv_x,
-                                        mv_y,
-                                        ref_idx: ref_idx_l0.min(i8::MAX as usize) as i8,
+                                        mv_x: l0_mv_x[sub_idx][part_idx],
+                                        mv_y: l0_mv_y[sub_idx][part_idx],
+                                        ref_idx: ref_idx_l0[sub_idx].min(i8::MAX as usize) as i8,
                                     });
                                 }
-                                if use_l1 {
-                                    let mv_x = read_se(&mut br).unwrap_or(0);
-                                    let mv_y = read_se(&mut br).unwrap_or(0);
+                                if use_l1[sub_idx] {
                                     l1_motions[part_idx] = Some(BMotion {
-                                        mv_x,
-                                        mv_y,
-                                        ref_idx: ref_idx_l1.min(i8::MAX as usize) as i8,
+                                        mv_x: l1_mv_x[sub_idx][part_idx],
+                                        mv_y: l1_mv_y[sub_idx][part_idx],
+                                        ref_idx: ref_idx_l1[sub_idx].min(i8::MAX as usize) as i8,
                                     });
                                 }
                             }
-                            if !use_l0 && !use_l1 {
+                            if !use_l0[sub_idx] && !use_l1[sub_idx] {
                                 l0_motions[0] = Some(BMotion {
                                     mv_x: 0,
                                     mv_y: 0,
