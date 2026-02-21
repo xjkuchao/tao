@@ -240,7 +240,7 @@ crates/tao-codec/src/decoders/h264/
 - [x] MMCO op5(清除全部 + frame_num 重置 + POC 重置).
 - [x] 滑动窗口(超 max_num_ref_frames 自动淘汰, 规范 8.2.5.3).
 - [x] 帧号间隙(gaps_in_frame_num_allowed_flag, 插入"不存在"参考帧).
-- [ ] op5 + 滑动窗口 + 帧号间隙单测.
+- [x] op5 + 滑动窗口 + 帧号间隙单测.
 
 - 验收: 帧间完整重建, Direct/隐式加权/Skip MV 对齐规范, 无占位近似.
 

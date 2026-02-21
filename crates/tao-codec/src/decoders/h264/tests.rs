@@ -2351,6 +2351,75 @@ fn test_fill_frame_num_gaps_if_needed_skips_when_flag_disabled() {
 }
 
 #[test]
+fn test_mmco5_sliding_window_and_frame_num_gaps_combined() {
+    let mut dec = build_test_decoder();
+    install_basic_parameter_sets(&mut dec, 1);
+    dec.max_reference_frames = 2;
+    push_dummy_reference(&mut dec, 2);
+    push_dummy_reference(&mut dec, 6);
+
+    let mut sps = build_test_sps(0);
+    sps.gaps_in_frame_num_value_allowed_flag = true;
+    dec.sps = Some(sps.clone());
+    dec.sps_map.insert(0, sps);
+
+    dec.last_slice_type = 0;
+    dec.last_nal_ref_idc = 1;
+    dec.last_frame_num = 11;
+    dec.last_poc = 22;
+    dec.last_dec_ref_pic_marking = DecRefPicMarking {
+        is_idr: false,
+        no_output_of_prior_pics: false,
+        long_term_reference_flag: false,
+        adaptive: true,
+        ops: vec![MmcoOp::ClearAll],
+    };
+
+    dec.store_reference_with_marking();
+    assert_eq!(dec.reference_frames.len(), 1, "MMCO5 后仅应保留当前参考帧");
+    assert_eq!(
+        dec.reference_frames[0].frame_num, 0,
+        "MMCO5 后保留帧的 frame_num 应重置为 0"
+    );
+
+    let gap_header = build_test_slice_header(2, 1, false, None);
+    let prev_for_poc = dec.fill_frame_num_gaps_if_needed(&gap_header, dec.last_frame_num);
+    assert_eq!(
+        prev_for_poc, 1,
+        "gaps 填补后应将 prev_frame_num 推进到 current-1"
+    );
+    assert!(
+        dec.reference_frames.iter().any(|pic| pic.frame_num == 1),
+        "gaps 填补应插入 frame_num=1 的不存在参考帧"
+    );
+
+    dec.last_slice_type = 0;
+    dec.last_nal_ref_idc = 1;
+    dec.last_frame_num = 2;
+    dec.last_poc = 2;
+    dec.last_dec_ref_pic_marking = DecRefPicMarking::default();
+    dec.store_reference_with_marking();
+
+    assert_eq!(
+        dec.reference_frames.len(),
+        2,
+        "滑动窗口后参考帧容量应保持为 2"
+    );
+    assert!(
+        dec.reference_frames.iter().all(|pic| pic.frame_num != 0),
+        "当前 frame_num=2 入队时应淘汰 frame_num_wrap 最小的旧帧(frame_num=0)"
+    );
+    assert!(
+        dec.reference_frames.iter().any(|pic| pic.frame_num == 1),
+        "应保留 gaps 插入的 frame_num=1 参考帧"
+    );
+    assert!(
+        dec.reference_frames.iter().any(|pic| pic.frame_num == 2),
+        "应保留当前 frame_num=2 参考帧"
+    );
+}
+
+#[test]
 fn test_reference_list_l0_short_term_before_long_term() {
     let mut dec = build_test_decoder();
     dec.last_slice_type = 0; // P slice
