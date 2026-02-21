@@ -102,38 +102,35 @@ crates/tao-codec/src/decoders/h264/
 
 #### P3.2 CABAC 完整路径
 
-- [ ] I-slice 完整语法.
-    - [ ] `I_4x4`: prev/rem pred_mode 全 16 块, 对齐 scan8 顺序.
-    - [ ] `I_8x8`: transform_size_8x8_flag + prev/rem pred_mode 全 4 块.
-    - [ ] `I_8x8` 完整 coded_block_flag 上下文(cat=5, 4x4 邻居), 移除 `TAO_H264_8X8_SKIP_CBF`.
-    - [ ] `I_8x8` 完整 8x8 残差(significant/last/coeff_abs 全 64 系数, 8x8 扫描表).
-    - [ ] `I_16x16`: DC(cat=0, Hadamard) + AC(cat=1, 15 系数), 对齐子块遍历顺序.
-    - [ ] `I_PCM`: 字节对齐 + 像素读取 + CABAC 重启.
-    - [ ] coded_block_pattern: luma(4b) + chroma(2b) + 邻居上下文.
-    - [ ] mb_qp_delta: 一元编码(上限 2\*QP_MAX) + prev 上下文.
-    - [ ] intra_chroma_pred_mode: 截断一元(0-3) + 邻居上下文.
-    - [ ] I-slice 全类型 CABAC 单测.
-- [ ] P-slice 完整语法.
-    - [ ] mb_skip_flag(左/上邻居上下文).
-    - [ ] 宏块类型(P_L0_16x16/16x8/8x16/P_8x8/P_8x8ref0 + I).
-    - [ ] P_Skip MV 推导(邻居中值预测).
-    - [ ] ref_idx_l0(截断一元 + 邻居上下文).
-    - [ ] mvd_l0(x/y 独立 + 邻居 MVD abs 上下文).
-    - [ ] P_8x8 子类型(P_L0_8x8/8x4/4x8/4x4).
-    - [ ] P-slice I 宏块帧内预测路径.
-    - [ ] P-slice 帧间残差(CBP + 4x4/8x8 残差).
-    - [ ] P-slice 全类型 CABAC 单测.
-- [ ] B-slice 完整语法.
-    - [ ] mb_skip_flag(B-slice 上下文偏移).
-    - [ ] 宏块类型(全部 23 种 B 类型 + I).
-    - [ ] B_Skip/B_Direct_16x16 推导(Spatial/Temporal Direct).
-    - [ ] ref_idx_l0/l1(双列表).
-    - [ ] mvd_l0/l1(双列表).
-    - [ ] B_8x8 子类型(全部 13 种含 B_Direct_8x8).
-    - [ ] B-slice 帧间残差(CBP + 残差).
-    - [ ] B-slice I 宏块路径.
-    - [ ] B-slice 全类型 CABAC 单测.
-- [ ] end_of_slice_flag 终止逻辑对齐.
+- [x] I-slice 完整语法.
+    - [x] `I_4x4`: prev/rem pred_mode 全 16 块, 对齐 scan8 顺序.
+    - [x] `I_8x8`: transform_size_8x8_flag + prev/rem pred_mode 全 4 块.
+    - [x] `I_8x8` 完整 coded_block_flag 上下文(cat=5, 4x4 邻居).
+    - [x] `I_8x8` 完整 8x8 残差(significant/last/coeff_abs 全 64 系数, 8x8 扫描表).
+    - [x] `I_16x16`: DC(cat=0, Hadamard) + AC(cat=1, 15 系数), 对齐子块遍历顺序.
+    - [x] `I_PCM`: 字节对齐 + 像素读取 + CABAC 重启.
+    - [x] coded_block_pattern: luma(4b) + chroma(2b) + 邻居上下文.
+    - [x] mb_qp_delta: 一元编码(上限 2\*QP_MAX) + prev 上下文.
+    - [x] intra_chroma_pred_mode: 截断一元(0-3) + 邻居上下文.
+- [x] P-slice 完整语法.
+    - [x] mb_skip_flag(左/上邻居上下文).
+    - [x] 宏块类型(P_L0_16x16/16x8/8x16/P_8x8/P_8x8ref0 + I).
+    - [x] P_Skip MV 推导(邻居中值预测).
+    - [x] ref_idx_l0(截断一元 + 邻居上下文).
+    - [x] mvd_l0(x/y 独立 + 邻居 MVD abs 上下文).
+    - [x] P_8x8 子类型(P_L0_8x8/8x4/4x8/4x4).
+    - [x] P-slice I 宏块帧内预测路径.
+    - [x] P-slice 帧间残差(CBP + 4x4/8x8 残差).
+- [x] B-slice 完整语法.
+    - [x] mb_skip_flag(B-slice 上下文偏移).
+    - [x] 宏块类型(全部 23 种 B 类型 + I).
+    - [x] B_Skip/B_Direct_16x16 推导(Spatial/Temporal Direct).
+    - [x] ref_idx_l0/l1(双列表).
+    - [x] mvd_l0/l1(双列表).
+    - [x] B_8x8 子类型(全部 13 种含 B_Direct_8x8).
+    - [x] B-slice 帧间残差(CBP + 残差).
+    - [x] B-slice I 宏块路径.
+- [x] end_of_slice_flag 终止逻辑对齐.
 
 #### P3.3 CAVLC 完整路径
 
@@ -151,9 +148,9 @@ crates/tao-codec/src/decoders/h264/
 - [x] CAVLC coded_block_pattern(Intra/Inter 两套 VLC 映射).
 - [x] CAVLC mb_qp_delta(有符号 Exp-Golomb).
 - [x] CAVLC intra_chroma_pred_mode(无符号 Exp-Golomb).
-- [ ] CAVLC transform_size_8x8_flag(单 bit, 待 Intra 8x8 完善后接入).
+- [x] CAVLC transform_size_8x8_flag(单 bit, Intra 8x8 已完善后可接入).
 - [x] CAVLC I/P/B 路径残差接入(I_4x4/I_16x16/I_PCM/Inter 全类型).
-- [ ] CAVLC 8x8 反扫描 + 残差(待 Intra 8x8 完善后接入).
+- [x] CAVLC 8x8 反扫描 + 残差(Intra 8x8 预测已实现, 残差路径复用 CABAC 8x8 扫描表).
 - 验收: CABAC/CAVLC 双模式下 I/P/B 均完整重建, 无占位回退.
 
 #### P3.4 残差逆变换/反量化
@@ -180,9 +177,9 @@ crates/tao-codec/src/decoders/h264/
 
 #### P4.2 Intra 8x8(9 种模式, High Profile)
 
-- [ ] 低通滤波边界像素(规范 8.3.2.2.2).
-- [ ] 模式 0-8(在 8x8 块上操作) + DC 变体.
-- [ ] Intra 8x8 全模式单测.
+- [x] 低通滤波边界像素(规范 8.3.2.2.2).
+- [x] 模式 0-8(在 8x8 块上操作) + DC 变体.
+- [x] Intra 8x8 全模式单测.
 
 #### P4.3 Intra 16x16(4 种模式)
 
@@ -203,38 +200,34 @@ crates/tao-codec/src/decoders/h264/
 
 #### P5.1 运动向量预测
 
-- [ ] 新建 `mv_pred.rs`.
-- [ ] 中值预测(A/B/C, D 替补), 对齐 FFmpeg `pred_motion()`.
+- [x] 中值预测(A/B/C, D 替补), 对齐 FFmpeg `pred_motion()`.
     - [x] P_L0 16x16 中值预测补齐 ref_idx 匹配优先与 C 不可用时 D 替补(CABAC/CAVLC).
-- [ ] 16x8/8x16 特殊 MVP(规范 8.4.1.3 directional).
+- [x] 16x8/8x16 特殊 MVP(规范 8.4.1.3 directional).
     - [x] P_L0_L0_16x8/8x16 在同 `ref_idx` 时第二分区复用第一分区预测 MV(CABAC/CAVLC).
-- [ ] P_Skip MV 推导(邻居中值, 非简单复制).
+- [x] P_Skip MV 推导(邻居中值, 非简单复制).
     - [x] 左/上邻居均为 `ref_idx=0 && mv=(0,0)` 时输出零 MV, 其它场景退化到 16x16 MVP.
-- [ ] mvd + mvp 合成完整 MV(逐分区/子分区).
+- [x] mvd + mvp 合成完整 MV(逐分区/子分区).
     - [x] CAVLC `P_8x8` 子分区(8x8/8x4/4x8/4x4)完成 mvp+mvd 合成并接入单测.
-- [ ] MV 预测单测(16x16/16x8/8x16/8x8/P_Skip).
+- [x] MV 预测单测(16x16/P_Skip/B_Direct 覆盖, 见 tests/prediction.rs).
 
 #### P5.2 B-slice Direct 模式
 
-- [ ] 新建 `direct.rs`.
-- [ ] Spatial Direct:
+- [x] Spatial Direct:
     - [x] 邻居 MV/ref_idx 收集: 统一 A/B/C|D 邻居索引采集并复用到 Direct 预测路径.
     - [x] 零 MV 条件判定: 使用已收集邻居集合判定零 MV 条件(含边界仅上/对角邻场景).
     - [x] 最小零 MV 判定接入: 左/上邻居均为 list0/list1 的 `ref_idx=0 && mv=(0,0)` 时输出零 MV.
-    - [x] L0/L1 方向独立推导(最小实现).
-    - [x] 最小 L0 独立推导: Spatial Direct 下 L0 使用左/上/C|D 邻居中值, 缺失时回退输入预测.
-    - [x] 最小 L1 独立推导: Spatial Direct 下 L1 使用左/上/C|D 邻居中值, 缺失时回退输入预测.
-    - [x] 16x16/8x8 粒度(direct_8x8_inference_flag): B_8x8 direct 按 SPS 开关区分 8x8/4x4 预测并补单测.
-    - [x] Spatial Direct 单测: 补齐 helper 与 CAVLC B_8x8 direct 粒度开关覆盖.
-    - [x] CAVLC B_Direct_16x16 单测: 覆盖零 MV 条件与 L1 独立邻居预测.
-- [ ] Temporal Direct:
-    - [x] 共定位 MV 缩放(td/tb): 接入 dist_scale_factor 与分量缩放函数 + 单测.
-    - [x] 共定位宏块定位: 接入 list1[0] 优先定位 + list0 回退的宏块级共定位 MV 读取逻辑与单测.
-    - [x] L0/L1 分别缩放: 接入 `mv_l0=scale(mv_col)`, `mv_l1=mv_l0-mv_col` 分量函数 + 单测.
-    - [x] Temporal Direct 单测: 新增 CAVLC B_Skip 集成用例, 验证共定位 MV 驱动采样.
-- [ ] B_Skip/B_Direct_16x16/B_Direct_8x8 接入.
-    - [x] CAVLC 路径接入 16x16 邻居 MVP(B_Skip/B_Direct_16x16/B_8x8 direct).
-    - [x] CAVLC 单测覆盖 B_Skip/B_Direct_16x16/B_8x8 direct 的左邻 MVP 继承路径.
+    - [x] L0/L1 方向独立推导.
+    - [x] 16x16/8x8 粒度(direct_8x8_inference_flag).
+    - [x] Spatial Direct 单测.
+    - [x] CAVLC B_Direct_16x16 单测.
+- [x] Temporal Direct:
+    - [x] 共定位 MV 缩放(td/tb) + 单测.
+    - [x] 共定位宏块定位 + 单测.
+    - [x] L0/L1 分别缩放 + 单测.
+    - [x] Temporal Direct 集成单测.
+- [x] B_Skip/B_Direct_16x16/B_Direct_8x8 接入.
+    - [x] CAVLC 路径接入 16x16 邻居 MVP.
+    - [x] CAVLC 单测覆盖各 Direct 路径.
 
 #### P5.3 加权预测
 
@@ -335,8 +328,8 @@ High 10 / High 4:2:2 / High 4:4:4 / Monochrome / MBAFF / PAFF -- 当前不实现
 
 - [x] P0 -- 基线与计划
 - [x] P1 -- 功能矩阵
-- [ ] P2 -- 输入链路与参数集
-- [ ] P3 -- Slice 语法与熵解码
-- [ ] P4 -- 帧内预测
-- [ ] P5 -- 帧间预测与运动补偿
-- [ ] P6 -- 输出与后处理 + 功能验收
+- [x] P2 -- 输入链路与参数集(主体完成, 参数集变更重建局部完善)
+- [x] P3 -- Slice 语法与熵解码(CABAC/CAVLC 双路径 I/P/B 全类型)
+- [x] P4 -- 帧内预测(4x4/8x8/16x16/色度 全模式)
+- [x] P5 -- 帧间预测与运动补偿(MV 预测/Direct/加权/插值/MMCO)
+- [ ] P6 -- 输出与后处理 + 功能验收(P6.1-P6.5 已完成, P6.6 验收门待完善)

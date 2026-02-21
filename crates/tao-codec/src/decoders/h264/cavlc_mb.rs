@@ -420,6 +420,117 @@ impl H264Decoder {
         }
     }
 
+    /// CAVLC 解码 Inter 8x8 变换的 luma 残差.
+    ///
+    /// 每个 8x8 块由 4 个 4x4 CAVLC 块组成 (每块最多 16 系数),
+    /// 按 H.264 规范 8x8 扫描表重建后送入 8x8 IDCT.
+    /// 对应 FFmpeg `decode_luma_residual` 中 `IS_8x8DCT(mb_type)` 分支.
+    fn decode_cavlc_inter_luma_8x8_residual(
+        &mut self,
+        br: &mut BitReader,
+        luma_cbp: u8,
+        mb_x: usize,
+        mb_y: usize,
+        qp: i32,
+    ) {
+        let luma_scaling_8x8 = self.active_luma_scaling_list_8x8(false);
+        let transform_bypass = self.is_transform_bypass_active(qp);
+
+        for sub_y in 0..4 {
+            for sub_x in 0..4 {
+                self.set_luma_cbf(mb_x * 4 + sub_x, mb_y * 4 + sub_y, false);
+                self.set_nz_count_luma(mb_x * 4 + sub_x, mb_y * 4 + sub_y, 0);
+            }
+        }
+        self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
+
+        // H.264 CAVLC 8x8 扫描顺序 (zigzag_scan8x8_cavlc, 对应 FFmpeg 的相同顺序)
+        // 每个 8x8 块分为 4 个 4x4 子扫描, 子块内部用 4x4 扫描
+        // 最终合并为完整 8x8 系数数组
+        const CAVLC_8X8_SCAN: [[usize; 16]; 4] = [
+            // 子块 0: 左上 4x4 (x=0..4, y=0..4)
+            [0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5],
+            // 子块 1: 右上 4x4 (x=4..8, y=0..4)
+            [12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28],
+            // 子块 2: 左下 4x4 (x=0..4, y=4..8)
+            [
+                35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51,
+            ],
+            // 子块 3: 右下 4x4 (x=4..8, y=4..8)
+            [
+                58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
+            ],
+        ];
+
+        for i8x8 in 0..4u8 {
+            let x8x8 = (i8x8 & 1) as usize;
+            let y8x8 = (i8x8 >> 1) as usize;
+            let x8 = mb_x * 2 + x8x8;
+            let y8 = mb_y * 2 + y8x8;
+
+            if luma_cbp & (1 << i8x8) == 0 {
+                self.set_luma_8x8_cbf(x8, y8, false);
+                // 更新 4 个 4x4 子块
+                for sub_y in 0..2 {
+                    for sub_x in 0..2 {
+                        let x4 = mb_x * 4 + x8x8 * 2 + sub_x;
+                        let y4 = mb_y * 4 + y8x8 * 2 + sub_y;
+                        self.set_nz_count_luma(x4, y4, 0);
+                        self.set_luma_cbf(x4, y4, false);
+                    }
+                }
+                continue;
+            }
+
+            // 解码 4 个 4x4 CAVLC 子块 (共 64 系数)
+            let mut coeffs_8x8 = [0i32; 64];
+            let mut total_nz = 0u8;
+            for (sub_idx, scan) in CAVLC_8X8_SCAN.iter().enumerate() {
+                let sub_x = sub_idx & 1;
+                let sub_y = sub_idx >> 1;
+                let x4 = mb_x * 4 + x8x8 * 2 + sub_x;
+                let y4 = mb_y * 4 + y8x8 * 2 + sub_y;
+                let nc = self.calc_luma_nc(x4, y4);
+                let mut sub_coeffs = [0i32; 16];
+                let tc =
+                    cavlc::decode_cavlc_residual_block(br, nc, 16, &mut sub_coeffs).unwrap_or(0);
+                self.set_nz_count_luma(x4, y4, tc);
+                self.set_luma_cbf(x4, y4, tc > 0);
+                total_nz += tc;
+                // 按扫描顺序填入 64 系数数组
+                for (coeff_i, &pos) in scan.iter().enumerate() {
+                    coeffs_8x8[pos] = sub_coeffs[coeff_i];
+                }
+            }
+            let coded = total_nz > 0;
+            self.set_luma_8x8_cbf(x8, y8, coded);
+
+            if coded {
+                let px = mb_x * 16 + x8x8 * 8;
+                let py = mb_y * 16 + y8x8 * 8;
+                if transform_bypass {
+                    residual::apply_8x8_bypass_residual(
+                        &mut self.ref_y,
+                        self.stride_y,
+                        px,
+                        py,
+                        &coeffs_8x8,
+                    );
+                } else {
+                    residual::apply_8x8_ac_residual_with_scaling(
+                        &mut self.ref_y,
+                        self.stride_y,
+                        px,
+                        py,
+                        &coeffs_8x8,
+                        qp,
+                        &luma_scaling_8x8,
+                    );
+                }
+            }
+        }
+    }
+
     /// CAVLC 解码 Inter 宏块的 luma 残差 (I_4x4 式逐块解码, 无预测重建).
     pub(super) fn decode_cavlc_inter_luma_residual(
         &mut self,
@@ -643,10 +754,26 @@ impl H264Decoder {
             *cur_qp = wrap_qp((*cur_qp + qp_delta) as i64);
         }
 
+        // Inter 宏块: 若 PPS 允许 8x8 变换且 luma_cbp != 0, 读取 transform_size_8x8_flag
+        let use_8x8 = if !is_intra && luma_cbp != 0 {
+            let pps_8x8 = self
+                .pps
+                .as_ref()
+                .map(|p| p.transform_8x8_mode)
+                .unwrap_or(false);
+            if pps_8x8 {
+                br.read_bit().unwrap_or(0) == 1
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        self.set_transform_8x8_flag(mb_x, mb_y, use_8x8);
+
         if luma_cbp != 0 {
-            if is_intra {
-                // I_4x4 路径: 在调用方已完成预测, 此处仅解码残差并应用
-                self.decode_cavlc_inter_luma_residual(br, luma_cbp, mb_x, mb_y, *cur_qp);
+            if use_8x8 {
+                self.decode_cavlc_inter_luma_8x8_residual(br, luma_cbp, mb_x, mb_y, *cur_qp);
             } else {
                 self.decode_cavlc_inter_luma_residual(br, luma_cbp, mb_x, mb_y, *cur_qp);
             }
