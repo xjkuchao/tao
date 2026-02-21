@@ -1766,8 +1766,19 @@ impl H264Decoder {
                             let sub_x = base_x + (sub_idx % 2) * 8;
                             let sub_y = base_y + (sub_idx / 2) * 8;
                             let ref_idx = sub_ref_idx[sub_idx];
+                            let ref_idx_i8 = ref_idx.min(i8::MAX as u32) as i8;
                             match sub_mb_types[sub_idx] {
                                 0 => {
+                                    let (pred_mv_x, pred_mv_y) = self.predict_mv_l0_partition(
+                                        mb_x,
+                                        mb_y,
+                                        sub_x / 4,
+                                        sub_y / 4,
+                                        2,
+                                        ref_idx_i8,
+                                    );
+                                    let mv_x = pred_mv_x + sub_mv_x[sub_idx][0];
+                                    let mv_y = pred_mv_y + sub_mv_y[sub_idx][0];
                                     self.apply_inter_block_l0(
                                         &ref_l0_list,
                                         ref_idx,
@@ -1775,17 +1786,27 @@ impl H264Decoder {
                                         sub_y,
                                         8,
                                         8,
-                                        sub_mv_x[sub_idx][0],
-                                        sub_mv_y[sub_idx][0],
+                                        mv_x,
+                                        mv_y,
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
                                     );
-                                    final_mv_x = sub_mv_x[sub_idx][0];
-                                    final_mv_y = sub_mv_y[sub_idx][0];
+                                    final_mv_x = mv_x;
+                                    final_mv_y = mv_y;
                                     final_ref_idx = ref_idx;
                                 }
                                 1 => {
+                                    let (pred_top_x, pred_top_y) = self.predict_mv_l0_partition(
+                                        mb_x,
+                                        mb_y,
+                                        sub_x / 4,
+                                        sub_y / 4,
+                                        2,
+                                        ref_idx_i8,
+                                    );
+                                    let top_mv_x = pred_top_x + sub_mv_x[sub_idx][0];
+                                    let top_mv_y = pred_top_y + sub_mv_y[sub_idx][0];
                                     self.apply_inter_block_l0(
                                         &ref_l0_list,
                                         ref_idx,
@@ -1793,12 +1814,23 @@ impl H264Decoder {
                                         sub_y,
                                         8,
                                         4,
-                                        sub_mv_x[sub_idx][0],
-                                        sub_mv_y[sub_idx][0],
+                                        top_mv_x,
+                                        top_mv_y,
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
                                     );
+                                    let (pred_bottom_x, pred_bottom_y) = self
+                                        .predict_mv_l0_partition(
+                                            mb_x,
+                                            mb_y,
+                                            sub_x / 4,
+                                            sub_y / 4 + 1,
+                                            2,
+                                            ref_idx_i8,
+                                        );
+                                    let bottom_mv_x = pred_bottom_x + sub_mv_x[sub_idx][1];
+                                    let bottom_mv_y = pred_bottom_y + sub_mv_y[sub_idx][1];
                                     self.apply_inter_block_l0(
                                         &ref_l0_list,
                                         ref_idx,
@@ -1806,17 +1838,27 @@ impl H264Decoder {
                                         sub_y + 4,
                                         8,
                                         4,
-                                        sub_mv_x[sub_idx][1],
-                                        sub_mv_y[sub_idx][1],
+                                        bottom_mv_x,
+                                        bottom_mv_y,
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
                                     );
-                                    final_mv_x = sub_mv_x[sub_idx][1];
-                                    final_mv_y = sub_mv_y[sub_idx][1];
+                                    final_mv_x = bottom_mv_x;
+                                    final_mv_y = bottom_mv_y;
                                     final_ref_idx = ref_idx;
                                 }
                                 2 => {
+                                    let (pred_left_x, pred_left_y) = self.predict_mv_l0_partition(
+                                        mb_x,
+                                        mb_y,
+                                        sub_x / 4,
+                                        sub_y / 4,
+                                        1,
+                                        ref_idx_i8,
+                                    );
+                                    let left_mv_x = pred_left_x + sub_mv_x[sub_idx][0];
+                                    let left_mv_y = pred_left_y + sub_mv_y[sub_idx][0];
                                     self.apply_inter_block_l0(
                                         &ref_l0_list,
                                         ref_idx,
@@ -1824,12 +1866,23 @@ impl H264Decoder {
                                         sub_y,
                                         4,
                                         8,
-                                        sub_mv_x[sub_idx][0],
-                                        sub_mv_y[sub_idx][0],
+                                        left_mv_x,
+                                        left_mv_y,
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
                                     );
+                                    let (pred_right_x, pred_right_y) = self
+                                        .predict_mv_l0_partition(
+                                            mb_x,
+                                            mb_y,
+                                            sub_x / 4 + 1,
+                                            sub_y / 4,
+                                            1,
+                                            ref_idx_i8,
+                                        );
+                                    let right_mv_x = pred_right_x + sub_mv_x[sub_idx][1];
+                                    let right_mv_y = pred_right_y + sub_mv_y[sub_idx][1];
                                     self.apply_inter_block_l0(
                                         &ref_l0_list,
                                         ref_idx,
@@ -1837,17 +1890,27 @@ impl H264Decoder {
                                         sub_y,
                                         4,
                                         8,
-                                        sub_mv_x[sub_idx][1],
-                                        sub_mv_y[sub_idx][1],
+                                        right_mv_x,
+                                        right_mv_y,
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
                                     );
-                                    final_mv_x = sub_mv_x[sub_idx][1];
-                                    final_mv_y = sub_mv_y[sub_idx][1];
+                                    final_mv_x = right_mv_x;
+                                    final_mv_y = right_mv_y;
                                     final_ref_idx = ref_idx;
                                 }
                                 3 => {
+                                    let (pred00_x, pred00_y) = self.predict_mv_l0_partition(
+                                        mb_x,
+                                        mb_y,
+                                        sub_x / 4,
+                                        sub_y / 4,
+                                        1,
+                                        ref_idx_i8,
+                                    );
+                                    let mv00_x = pred00_x + sub_mv_x[sub_idx][0];
+                                    let mv00_y = pred00_y + sub_mv_y[sub_idx][0];
                                     self.apply_inter_block_l0(
                                         &ref_l0_list,
                                         ref_idx,
@@ -1855,12 +1918,22 @@ impl H264Decoder {
                                         sub_y,
                                         4,
                                         4,
-                                        sub_mv_x[sub_idx][0],
-                                        sub_mv_y[sub_idx][0],
+                                        mv00_x,
+                                        mv00_y,
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
                                     );
+                                    let (pred10_x, pred10_y) = self.predict_mv_l0_partition(
+                                        mb_x,
+                                        mb_y,
+                                        sub_x / 4 + 1,
+                                        sub_y / 4,
+                                        1,
+                                        ref_idx_i8,
+                                    );
+                                    let mv10_x = pred10_x + sub_mv_x[sub_idx][1];
+                                    let mv10_y = pred10_y + sub_mv_y[sub_idx][1];
                                     self.apply_inter_block_l0(
                                         &ref_l0_list,
                                         ref_idx,
@@ -1868,12 +1941,22 @@ impl H264Decoder {
                                         sub_y,
                                         4,
                                         4,
-                                        sub_mv_x[sub_idx][1],
-                                        sub_mv_y[sub_idx][1],
+                                        mv10_x,
+                                        mv10_y,
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
                                     );
+                                    let (pred01_x, pred01_y) = self.predict_mv_l0_partition(
+                                        mb_x,
+                                        mb_y,
+                                        sub_x / 4,
+                                        sub_y / 4 + 1,
+                                        1,
+                                        ref_idx_i8,
+                                    );
+                                    let mv01_x = pred01_x + sub_mv_x[sub_idx][2];
+                                    let mv01_y = pred01_y + sub_mv_y[sub_idx][2];
                                     self.apply_inter_block_l0(
                                         &ref_l0_list,
                                         ref_idx,
@@ -1881,12 +1964,22 @@ impl H264Decoder {
                                         sub_y + 4,
                                         4,
                                         4,
-                                        sub_mv_x[sub_idx][2],
-                                        sub_mv_y[sub_idx][2],
+                                        mv01_x,
+                                        mv01_y,
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
                                     );
+                                    let (pred11_x, pred11_y) = self.predict_mv_l0_partition(
+                                        mb_x,
+                                        mb_y,
+                                        sub_x / 4 + 1,
+                                        sub_y / 4 + 1,
+                                        1,
+                                        ref_idx_i8,
+                                    );
+                                    let mv11_x = pred11_x + sub_mv_x[sub_idx][3];
+                                    let mv11_y = pred11_y + sub_mv_y[sub_idx][3];
                                     self.apply_inter_block_l0(
                                         &ref_l0_list,
                                         ref_idx,
@@ -1894,17 +1987,27 @@ impl H264Decoder {
                                         sub_y + 4,
                                         4,
                                         4,
-                                        sub_mv_x[sub_idx][3],
-                                        sub_mv_y[sub_idx][3],
+                                        mv11_x,
+                                        mv11_y,
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
                                     );
-                                    final_mv_x = sub_mv_x[sub_idx][3];
-                                    final_mv_y = sub_mv_y[sub_idx][3];
+                                    final_mv_x = mv11_x;
+                                    final_mv_y = mv11_y;
                                     final_ref_idx = ref_idx;
                                 }
                                 _ => {
+                                    let (pred_mv_x, pred_mv_y) = self.predict_mv_l0_partition(
+                                        mb_x,
+                                        mb_y,
+                                        sub_x / 4,
+                                        sub_y / 4,
+                                        2,
+                                        ref_idx_i8,
+                                    );
+                                    let mv_x = pred_mv_x + sub_mv_x[sub_idx][0];
+                                    let mv_y = pred_mv_y + sub_mv_y[sub_idx][0];
                                     self.apply_inter_block_l0(
                                         &ref_l0_list,
                                         ref_idx,
@@ -1912,14 +2015,14 @@ impl H264Decoder {
                                         sub_y,
                                         8,
                                         8,
-                                        sub_mv_x[sub_idx][0],
-                                        sub_mv_y[sub_idx][0],
+                                        mv_x,
+                                        mv_y,
                                         &header.l0_weights,
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
                                     );
-                                    final_mv_x = sub_mv_x[sub_idx][0];
-                                    final_mv_y = sub_mv_y[sub_idx][0];
+                                    final_mv_x = mv_x;
+                                    final_mv_y = mv_y;
                                     final_ref_idx = ref_idx;
                                 }
                             }

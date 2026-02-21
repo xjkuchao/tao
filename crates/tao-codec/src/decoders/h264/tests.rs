@@ -4018,6 +4018,48 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_ref_idx_and_alignment() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_uses_mvp_from_left_neighbor() {
+    use ExpGolombValue::{Se, Ue};
+
+    let mut dec = build_test_decoder();
+    dec.reference_frames.clear();
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.data_bit_offset = 0;
+
+    // mb0: skip_run=0, mb_type=3(P_8x8), sub_mb_type=[2,0,0,0].
+    // 对 sub0(4x8): 左半 mvd=(4,0), 右半 mvd=(0,0), 右半应继承左半 MVP.
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0),
+        Ue(3),
+        Ue(2),
+        Ue(0),
+        Ue(0),
+        Ue(0),
+        Se(4),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+    ]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    assert_eq!(
+        dec.ref_y[0], 1,
+        "4x8 左半分区应按 mvd=(4,0) 向右偏移 1 像素"
+    );
+    assert_eq!(dec.ref_y[4], 5, "4x8 右半分区应在 mvd=0 时继承左半 MVP");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8ref0_no_ref_idx_parse() {
     use ExpGolombValue::{Se, Ue};
 

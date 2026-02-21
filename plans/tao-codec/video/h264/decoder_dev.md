@@ -205,6 +205,7 @@ crates/tao-codec/src/decoders/h264/
     - [x] P_L0_L0_16x8/8x16 在同 `ref_idx` 时第二分区复用第一分区预测 MV(CABAC/CAVLC).
 - [ ] P_Skip MV 推导(邻居中值, 非简单复制).
 - [ ] mvd + mvp 合成完整 MV(逐分区/子分区).
+    - [x] CAVLC `P_8x8` 子分区(8x8/8x4/4x8/4x4)完成 mvp+mvd 合成并接入单测.
 - [ ] MV 预测单测(16x16/16x8/8x16/8x8/P_Skip).
 
 #### P5.2 B-slice Direct 模式
