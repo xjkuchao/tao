@@ -2312,6 +2312,52 @@ fn test_decode_cavlc_slice_data_p_skip_run_copy_reference() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_p_skip_run_missing_reference_fallback() {
+    let mut dec = build_test_decoder();
+    let before = dec.missing_reference_fallbacks;
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.data_bit_offset = 0;
+
+    // mb_skip_run = 1, 触发 skip 宏块路径, 此时 reference_frames 为空
+    let rbsp = build_rbsp_from_ues(&[1]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    assert_eq!(dec.ref_y[0], 128, "缺参考帧时应回退零参考亮度");
+    assert_eq!(dec.ref_u[0], 128, "缺参考帧时应回退零参考 U");
+    assert_eq!(dec.ref_v[0], 128, "缺参考帧时应回退零参考 V");
+    assert_eq!(dec.mb_types[0], 255, "P-slice skip 宏块应标记为 skip");
+    assert!(
+        dec.missing_reference_fallbacks > before,
+        "缺参考帧时应记录回退计数"
+    );
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_b_skip_run_missing_reference_fallback() {
+    let mut dec = build_test_decoder();
+    let before = dec.missing_reference_fallbacks;
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+
+    // mb_skip_run = 1, 触发 B-skip 路径, L0/L1 均无参考
+    let rbsp = build_rbsp_from_ues(&[1]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    assert_eq!(dec.ref_y[0], 128, "B-slice 缺参考帧时应回退零参考亮度");
+    assert_eq!(dec.ref_u[0], 128, "B-slice 缺参考帧时应回退零参考 U");
+    assert_eq!(dec.ref_v[0], 128, "B-slice 缺参考帧时应回退零参考 V");
+    assert_eq!(dec.mb_types[0], 254, "B-slice skip 宏块应标记为 B-skip");
+    assert!(
+        dec.missing_reference_fallbacks >= before + 2,
+        "B-slice L0/L1 均缺参考时应至少记录两次回退"
+    );
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_p_non_skip_intra_mb_type() {
     let mut dec = build_test_decoder();
     push_custom_reference(&mut dec, 3, 3, 77, None);
