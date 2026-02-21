@@ -1,6 +1,32 @@
 use super::*;
 
 impl H264Decoder {
+    /// 构建 B-slice Direct 预测的最小运动信息.
+    ///
+    /// 目前 temporal direct 路径先复用 list0 预测, spatial direct 路径使用 list0/list1 双向预测.
+    pub(super) fn build_b_direct_motion(
+        &self,
+        mv_x: i32,
+        mv_y: i32,
+        direct_spatial_mv_pred_flag: bool,
+    ) -> (Option<BMotion>, Option<BMotion>) {
+        let motion_l0 = Some(BMotion {
+            mv_x,
+            mv_y,
+            ref_idx: 0,
+        });
+        let motion_l1 = if direct_spatial_mv_pred_flag {
+            Some(BMotion {
+                mv_x,
+                mv_y,
+                ref_idx: 0,
+            })
+        } else {
+            None
+        };
+        (motion_l0, motion_l1)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_p_slice_mbs(
         &mut self,
@@ -1294,6 +1320,7 @@ impl H264Decoder {
         slice_qp: i32,
         num_ref_idx_l0: u32,
         num_ref_idx_l1: u32,
+        direct_spatial_mv_pred_flag: bool,
         l0_weights: &[PredWeightL0],
         l1_weights: &[PredWeightL0],
         luma_log2_weight_denom: u8,
@@ -1323,17 +1350,11 @@ impl H264Decoder {
                 self.reset_chroma_cbf_mb(mb_x, mb_y);
                 self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
                 let (pred_x, pred_y) = self.predict_mv_l0_16x16(mb_x, mb_y);
+                let (motion_l0, motion_l1) =
+                    self.build_b_direct_motion(pred_x, pred_y, direct_spatial_mv_pred_flag);
                 let (mv_x, mv_y, ref_idx) = self.apply_b_prediction_block(
-                    Some(BMotion {
-                        mv_x: pred_x,
-                        mv_y: pred_y,
-                        ref_idx: 0,
-                    }),
-                    Some(BMotion {
-                        mv_x: pred_x,
-                        mv_y: pred_y,
-                        ref_idx: 0,
-                    }),
+                    motion_l0,
+                    motion_l1,
                     l0_weights,
                     l1_weights,
                     luma_log2_weight_denom,
@@ -1385,6 +1406,7 @@ impl H264Decoder {
                             mb_x,
                             mb_y,
                             None,
+                            direct_spatial_mv_pred_flag,
                             &mut cur_qp,
                             num_ref_idx_l0,
                             num_ref_idx_l1,
@@ -1403,6 +1425,7 @@ impl H264Decoder {
                             mb_x,
                             mb_y,
                             Some(mb_type_idx),
+                            direct_spatial_mv_pred_flag,
                             &mut cur_qp,
                             num_ref_idx_l0,
                             num_ref_idx_l1,
@@ -1671,6 +1694,7 @@ impl H264Decoder {
         mb_x: usize,
         mb_y: usize,
         mb_type_idx: Option<u8>,
+        direct_spatial_mv_pred_flag: bool,
         cur_qp: &mut i32,
         num_ref_idx_l0: u32,
         num_ref_idx_l1: u32,
@@ -1695,17 +1719,11 @@ impl H264Decoder {
         match mb_type_idx {
             None => {
                 self.mb_types[mb_idx] = 254;
+                let (motion_l0, motion_l1) =
+                    self.build_b_direct_motion(pred_mv_x, pred_mv_y, direct_spatial_mv_pred_flag);
                 let (mv_x, mv_y, ref_idx) = self.apply_b_prediction_block(
-                    Some(BMotion {
-                        mv_x: pred_mv_x,
-                        mv_y: pred_mv_y,
-                        ref_idx: 0,
-                    }),
-                    Some(BMotion {
-                        mv_x: pred_mv_x,
-                        mv_y: pred_mv_y,
-                        ref_idx: 0,
-                    }),
+                    motion_l0,
+                    motion_l1,
                     l0_weights,
                     l1_weights,
                     luma_log2_weight_denom,

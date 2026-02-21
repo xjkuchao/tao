@@ -122,11 +122,13 @@
     - [x] 补齐 `ref_pic_list_modification` 语法边界校验(`abs_diff_pic_num_minus1`/`long_term_pic_num`)并新增超范围失败单测。
     - [x] 补齐 `pred_weight_table` 合法性校验(`luma/chroma_log2_weight_denom <= 7`, `luma/chroma weight/offset` 范围)并新增权重表解析单测。
     - [x] B-slice `pred_weight_table` 补齐 `list1` 权重解析与存储(`l1_weights`), 并新增对应单测。
+    - [x] B-slice `direct_spatial_mv_pred_flag` 与 `redundant_pic_cnt` 字段解析落地并补充解析单测。
 - [ ] CABAC 完整路径可用。
 - [ ] CAVLC 完整路径可用。
     - [x] 接入最小 CAVLC slice 数据路径: `mb_skip_run/mb_type` 基础语法消费 + I 宏块基础帧内预测 + P/B 宏块参考复制。
     - [x] 补齐 CAVLC 最小路径单元测试(I-slice 最小路径, P-slice skip_run 参考复制)。
     - [x] CAVLC B-slice 最小路径接入 list0/list1 预测融合(含显式加权), 并补 skip_run 单元测试。
+    - [x] CAVLC B-slice `Direct/Skip` 接入 `direct_spatial_mv_pred_flag` 分流最小路径(`spatial=双向`, `temporal=L0`), 并补单元测试。
     - [x] CAVLC B-slice 非 skip `mb_type=1/2` 接入 `L0-only/L1-only` 方向选择, 并补单元测试。
     - [x] CAVLC B-slice 非 skip `mb_type=1/2` 接入 `ref_idx_l0/ref_idx_l1` 语法消费与参考帧选择, 并补单元测试。
     - [x] CAVLC B-slice 非 skip `mb_type=3(B_Bi_16x16)` 接入 `ref_idx_l0/ref_idx_l1` 语法消费与对齐单元测试。

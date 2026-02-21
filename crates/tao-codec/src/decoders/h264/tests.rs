@@ -83,6 +83,8 @@ fn build_test_slice_header(
         frame_num,
         slice_qp: 26,
         cabac_init_idc: 0,
+        direct_spatial_mv_pred_flag: true,
+        redundant_pic_cnt: 0,
         num_ref_idx_l0: 1,
         num_ref_idx_l1: 1,
         ref_pic_list_mod_l0: Vec::new(),
@@ -552,6 +554,7 @@ struct BWeightTableRbspSpec {
     pps_id: u32,
     frame_num: u32,
     poc_lsb: u32,
+    direct_spatial_mv_pred_flag: bool,
     cabac_init_idc: u32,
     qp_delta: i32,
     disable_deblocking_filter_idc: u32,
@@ -570,7 +573,7 @@ fn build_b_slice_header_rbsp_with_weight_table(spec: BWeightTableRbspSpec) -> Ve
     write_ue(&mut bits, spec.pps_id);
     push_bits_fixed(&mut bits, spec.frame_num, 4);
     push_bits_fixed(&mut bits, spec.poc_lsb, 4);
-    bits.push(true); // direct_spatial_mv_pred_flag
+    bits.push(spec.direct_spatial_mv_pred_flag); // direct_spatial_mv_pred_flag
     bits.push(false); // num_ref_idx_active_override_flag
     bits.push(false); // ref_pic_list_modification_flag_l0
     bits.push(false); // ref_pic_list_modification_flag_l1
@@ -617,6 +620,57 @@ fn build_b_slice_header_rbsp_with_weight_table(spec: BWeightTableRbspSpec) -> Ve
         write_se(&mut bits, 0);
         write_se(&mut bits, 0);
     }
+    bits.push(true); // rbsp_trailing_bits stop bit
+    while bits.len() % 8 != 0 {
+        bits.push(false);
+    }
+    bits_to_bytes(&bits)
+}
+
+fn build_b_slice_header_rbsp_with_direct_flag(
+    pps_id: u32,
+    frame_num: u32,
+    poc_lsb: u32,
+    direct_spatial_mv_pred_flag: bool,
+) -> Vec<u8> {
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 0); // first_mb_in_slice
+    write_ue(&mut bits, 1); // slice_type=B
+    write_ue(&mut bits, pps_id);
+    push_bits_fixed(&mut bits, frame_num, 4);
+    push_bits_fixed(&mut bits, poc_lsb, 4);
+    bits.push(direct_spatial_mv_pred_flag);
+    bits.push(false); // num_ref_idx_active_override_flag
+    bits.push(false); // ref_pic_list_modification_flag_l0
+    bits.push(false); // ref_pic_list_modification_flag_l1
+    write_ue(&mut bits, 0); // cabac_init_idc
+    write_se(&mut bits, 0); // slice_qp_delta
+    write_ue(&mut bits, 1); // disable_deblocking_filter_idc
+    bits.push(true); // rbsp_trailing_bits stop bit
+    while bits.len() % 8 != 0 {
+        bits.push(false);
+    }
+    bits_to_bytes(&bits)
+}
+
+fn build_p_slice_header_rbsp_with_redundant_pic_cnt(
+    pps_id: u32,
+    frame_num: u32,
+    poc_lsb: u32,
+    redundant_pic_cnt: u32,
+) -> Vec<u8> {
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 0); // first_mb_in_slice
+    write_ue(&mut bits, 0); // slice_type=P
+    write_ue(&mut bits, pps_id);
+    push_bits_fixed(&mut bits, frame_num, 4);
+    push_bits_fixed(&mut bits, poc_lsb, 4);
+    write_ue(&mut bits, redundant_pic_cnt);
+    bits.push(false); // num_ref_idx_active_override_flag
+    bits.push(false); // ref_pic_list_modification_flag_l0
+    write_ue(&mut bits, 0); // cabac_init_idc
+    write_se(&mut bits, 0); // slice_qp_delta
+    write_ue(&mut bits, 1); // disable_deblocking_filter_idc
     bits.push(true); // rbsp_trailing_bits stop bit
     while bits.len() % 8 != 0 {
         bits.push(false);
@@ -1294,6 +1348,49 @@ fn test_parse_slice_header_accept_deblocking_idc_1() {
 }
 
 #[test]
+fn test_parse_slice_header_store_b_direct_spatial_mv_pred_flag() {
+    let mut dec = build_test_decoder();
+    let sps0 = build_test_sps(0);
+    dec.sps_map.insert(0, sps0);
+
+    let pps0 = build_test_pps();
+    dec.pps_map.insert(0, pps0);
+
+    let rbsp = build_b_slice_header_rbsp_with_direct_flag(0, 0, 0, false);
+    let nalu = NalUnit::parse(&[0x01]).expect("测试构造 B-slice NAL 失败");
+    let header = dec
+        .parse_slice_header(&rbsp, &nalu)
+        .expect("B-slice direct_spatial_mv_pred_flag 应可解析");
+
+    assert!(
+        !header.direct_spatial_mv_pred_flag,
+        "slice header 应保存 direct_spatial_mv_pred_flag=false"
+    );
+}
+
+#[test]
+fn test_parse_slice_header_store_redundant_pic_cnt() {
+    let mut dec = build_test_decoder();
+    let sps0 = build_test_sps(0);
+    dec.sps_map.insert(0, sps0);
+
+    let mut pps0 = build_test_pps();
+    pps0.redundant_pic_cnt_present = true;
+    dec.pps_map.insert(0, pps0);
+
+    let rbsp = build_p_slice_header_rbsp_with_redundant_pic_cnt(0, 1, 2, 3);
+    let nalu = NalUnit::parse(&[0x01]).expect("测试构造 P-slice NAL 失败");
+    let header = dec
+        .parse_slice_header(&rbsp, &nalu)
+        .expect("带 redundant_pic_cnt 的 slice header 应可解析");
+
+    assert_eq!(
+        header.redundant_pic_cnt, 3,
+        "slice header 应保存 redundant_pic_cnt"
+    );
+}
+
+#[test]
 fn test_parse_slice_header_reject_alpha_offset_out_of_range() {
     let mut dec = build_test_decoder();
     let sps0 = build_test_sps(0);
@@ -1530,6 +1627,7 @@ fn test_parse_slice_header_store_l1_pred_weights_for_b_slice() {
         pps_id: 0,
         frame_num: 1,
         poc_lsb: 1,
+        direct_spatial_mv_pred_flag: true,
         cabac_init_idc: 0,
         qp_delta: 0,
         disable_deblocking_filter_idc: 1,
@@ -1581,6 +1679,7 @@ fn test_parse_slice_header_reject_l1_luma_weight_out_of_range() {
         pps_id: 0,
         frame_num: 0,
         poc_lsb: 0,
+        direct_spatial_mv_pred_flag: true,
         cabac_init_idc: 0,
         qp_delta: 0,
         disable_deblocking_filter_idc: 1,
@@ -2788,6 +2887,29 @@ fn test_decode_cavlc_slice_data_b_skip_run_blend_l0_l1() {
     let rbsp = build_rbsp_from_ues(&[1]);
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(dec.ref_y[0], 60, "B-slice skip 应融合 L0/L1 预测");
+    assert_eq!(dec.mb_types[0], 254, "B-slice skip 宏块应标记为 B skip");
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_b_skip_run_temporal_direct_uses_l0_only() {
+    let mut dec = build_test_decoder();
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_custom_reference(&mut dec, 1, 2, 20, None);
+    push_custom_reference(&mut dec, 2, 8, 100, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+    header.direct_spatial_mv_pred_flag = false;
+
+    // mb_skip_run = 1, 覆盖单宏块帧
+    let rbsp = build_rbsp_from_ues(&[1]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+    assert_eq!(
+        dec.ref_y[0], 20,
+        "B-slice temporal direct 最小路径应先按 L0 单向预测"
+    );
     assert_eq!(dec.mb_types[0], 254, "B-slice skip 宏块应标记为 B skip");
 }
 

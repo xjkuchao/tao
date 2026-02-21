@@ -86,6 +86,8 @@ struct SliceHeader {
     frame_num: u32,
     slice_qp: i32,
     cabac_init_idc: u8,
+    direct_spatial_mv_pred_flag: bool,
+    redundant_pic_cnt: u32,
     num_ref_idx_l0: u32,
     num_ref_idx_l1: u32,
     ref_pic_list_mod_l0: Vec<RefPicListMod>,

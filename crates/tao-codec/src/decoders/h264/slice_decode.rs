@@ -21,6 +21,12 @@ impl H264Decoder {
                 self.last_poc = self.compute_slice_poc(&header, prev_frame_num);
                 self.last_frame_num = header.frame_num;
                 self.last_dec_ref_pic_marking = header.dec_ref_pic_marking.clone();
+                if header.redundant_pic_cnt > 0 {
+                    log::debug!(
+                        "H264: 检测到冗余图像计数, redundant_pic_cnt={}",
+                        header.redundant_pic_cnt
+                    );
+                }
                 self.decode_slice_data(&rbsp, &header);
             }
             Err(err) => {
@@ -94,17 +100,19 @@ impl H264Decoder {
         }
 
         // 参考索引数量
+        let mut redundant_pic_cnt = 0u32;
         if pps.redundant_pic_cnt_present {
-            let _redundant_pic_cnt = read_ue(&mut br)?;
+            redundant_pic_cnt = read_ue(&mut br)?;
         }
         let mut num_ref_idx_l0 = pps.num_ref_idx_l0_default_active;
         let mut num_ref_idx_l1 = pps.num_ref_idx_l1_default_active;
 
         let is_b = slice_type == 1;
         let is_i = slice_type == 2 || slice_type == 4;
+        let mut direct_spatial_mv_pred_flag = true;
         if !is_i {
             if is_b {
-                let _direct_spatial_mv_pred_flag = br.read_bit()?;
+                direct_spatial_mv_pred_flag = br.read_bit()? == 1;
             }
             let override_refs = br.read_bit()? == 1;
             if override_refs {
@@ -229,6 +237,8 @@ impl H264Decoder {
             frame_num,
             slice_qp,
             cabac_init_idc,
+            direct_spatial_mv_pred_flag,
+            redundant_pic_cnt,
             num_ref_idx_l0,
             num_ref_idx_l1,
             ref_pic_list_mod_l0,
@@ -854,6 +864,7 @@ impl H264Decoder {
             header.slice_qp,
             header.num_ref_idx_l0,
             header.num_ref_idx_l1,
+            header.direct_spatial_mv_pred_flag,
             &header.l0_weights,
             &header.l1_weights,
             header.luma_log2_weight_denom,
@@ -1025,17 +1036,11 @@ impl H264Decoder {
                 self.mb_types[mb_idx] = if is_b { 254 } else { 255 };
                 self.mb_cbp[mb_idx] = 0;
                 if is_b {
+                    let (motion_l0, motion_l1) =
+                        self.build_b_direct_motion(0, 0, header.direct_spatial_mv_pred_flag);
                     let _ = self.apply_b_prediction_block(
-                        Some(BMotion {
-                            mv_x: 0,
-                            mv_y: 0,
-                            ref_idx: 0,
-                        }),
-                        Some(BMotion {
-                            mv_x: 0,
-                            mv_y: 0,
-                            ref_idx: 0,
-                        }),
+                        motion_l0,
+                        motion_l1,
                         &header.l0_weights,
                         &header.l1_weights,
                         header.luma_log2_weight_denom,
@@ -1139,16 +1144,13 @@ impl H264Decoder {
                                 }
                             }
                             if !use_l0[sub_idx] && !use_l1[sub_idx] {
-                                l0_motions[0] = Some(BMotion {
-                                    mv_x: 0,
-                                    mv_y: 0,
-                                    ref_idx: 0,
-                                });
-                                l1_motions[0] = Some(BMotion {
-                                    mv_x: 0,
-                                    mv_y: 0,
-                                    ref_idx: 0,
-                                });
+                                let (motion_l0, motion_l1) = self.build_b_direct_motion(
+                                    0,
+                                    0,
+                                    header.direct_spatial_mv_pred_flag,
+                                );
+                                l0_motions[0] = motion_l0;
+                                l1_motions[0] = motion_l1;
                             }
 
                             match sub_mb_type {
@@ -1429,16 +1431,8 @@ impl H264Decoder {
                     let mut l0_motion = None;
                     let mut l1_motion = None;
                     if mb_type == 0 {
-                        l0_motion = Some(BMotion {
-                            mv_x: 0,
-                            mv_y: 0,
-                            ref_idx: 0,
-                        });
-                        l1_motion = Some(BMotion {
-                            mv_x: 0,
-                            mv_y: 0,
-                            ref_idx: 0,
-                        });
+                        (l0_motion, l1_motion) =
+                            self.build_b_direct_motion(0, 0, header.direct_spatial_mv_pred_flag);
                     } else {
                         let use_l0 = mb_type == 1 || mb_type == 3;
                         let use_l1 = mb_type == 2 || mb_type == 3;
