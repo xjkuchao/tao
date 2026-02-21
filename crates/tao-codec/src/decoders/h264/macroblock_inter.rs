@@ -42,19 +42,14 @@ impl H264Decoder {
         chroma_log2_weight_denom: u8,
         ref_l0_list: &[RefPlanes],
     ) {
-        let debug_mb = std::env::var("TAO_H264_DEBUG_MB")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
         self.prev_qp_delta_nz = false;
         let mut cur_qp = slice_qp;
-        let mut decoded = 0usize;
 
         for mb_idx in first..total {
             self.mark_mb_slice_first_mb(mb_idx, slice_first_mb);
             let mb_x = mb_idx % self.mb_width;
             let mb_y = mb_idx / self.mb_width;
             let skip = self.decode_p_mb_skip_flag(cabac, ctxs, mb_x, mb_y);
-            decoded += 1;
 
             if skip {
                 self.mb_types[mb_idx] = 255;
@@ -118,31 +113,8 @@ impl H264Decoder {
             }
 
             if mb_idx + 1 < total && cabac.decode_terminate() == 1 {
-                if debug_mb {
-                    eprintln!(
-                        "[H264][P-slice] 提前结束: first_mb={}, total_mbs={}, decoded_mbs={}, last_mb=({}, {}), cabac_bits={}/{}",
-                        first,
-                        total,
-                        decoded,
-                        mb_x,
-                        mb_y,
-                        cabac.bit_pos(),
-                        cabac.total_bits()
-                    );
-                }
                 break;
             }
-        }
-
-        if debug_mb {
-            eprintln!(
-                "[H264][P-slice] 完成: first_mb={}, total_mbs={}, decoded_mbs={}, cabac_bits={}/{}",
-                first,
-                total,
-                decoded,
-                cabac.bit_pos(),
-                cabac.total_bits()
-            );
         }
     }
 
@@ -1343,19 +1315,14 @@ impl H264Decoder {
         ref_l0_list: &[RefPlanes],
         ref_l1_list: &[RefPlanes],
     ) {
-        let debug_mb = std::env::var("TAO_H264_DEBUG_MB")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
         self.prev_qp_delta_nz = false;
         let mut cur_qp = slice_qp;
-        let mut decoded = 0usize;
 
         for mb_idx in first..total {
             self.mark_mb_slice_first_mb(mb_idx, slice_first_mb);
             let mb_x = mb_idx % self.mb_width;
             let mb_y = mb_idx / self.mb_width;
             let skip = self.decode_b_mb_skip_flag(cabac, ctxs, mb_x, mb_y);
-            decoded += 1;
 
             if skip {
                 self.mb_types[mb_idx] = 254;
@@ -1457,31 +1424,8 @@ impl H264Decoder {
             }
 
             if mb_idx + 1 < total && cabac.decode_terminate() == 1 {
-                if debug_mb {
-                    eprintln!(
-                        "[H264][B-slice] 提前结束: first_mb={}, total_mbs={}, decoded_mbs={}, last_mb=({}, {}), cabac_bits={}/{}",
-                        first,
-                        total,
-                        decoded,
-                        mb_x,
-                        mb_y,
-                        cabac.bit_pos(),
-                        cabac.total_bits()
-                    );
-                }
                 break;
             }
-        }
-
-        if debug_mb {
-            eprintln!(
-                "[H264][B-slice] 完成: first_mb={}, total_mbs={}, decoded_mbs={}, cabac_bits={}/{}",
-                first,
-                total,
-                decoded,
-                cabac.bit_pos(),
-                cabac.total_bits()
-            );
         }
     }
 

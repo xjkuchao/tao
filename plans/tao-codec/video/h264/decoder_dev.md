@@ -286,7 +286,7 @@ crates/tao-codec/src/decoders/h264/
 
 - [ ] 功能矩阵关键项全部"完成+已验证".
 - [x] 双样本连续解码(sample1>=299, sample2>=300).
-- [ ] 移除全部 `TAO_H264_*` 临时开关.
+- [x] 移除全部 `TAO_H264_*` 临时开关.
 - [ ] 移除全部占位/回退路径(P_Skip 复制等).
 - [ ] 补充多样本覆盖(CABAC High/CAVLC Baseline/B密集/1080p+), 更新 `samples/SAMPLE_URLS.md`.
 - 前置条件: P2-P6.5 全部完成.

@@ -116,15 +116,8 @@ impl H264Decoder {
         slice_qp: i32,
         slice_first_mb: u32,
     ) {
-        let debug_mb = std::env::var("TAO_H264_DEBUG_MB")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let ignore_terminate = std::env::var("TAO_H264_IGNORE_TERMINATE")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
         self.prev_qp_delta_nz = false;
         let mut cur_qp = slice_qp;
-        let mut decoded = 0usize;
 
         for mb_idx in first..total {
             self.mark_mb_slice_first_mb(mb_idx, slice_first_mb);
@@ -133,57 +126,18 @@ impl H264Decoder {
 
             let mb_type = decode_i_mb_type(cabac, ctxs, &self.mb_types, self.mb_width, mb_x, mb_y);
             self.mb_types[mb_idx] = mb_type as u8;
-            decoded += 1;
-            if debug_mb && debug_mb_selected(mb_idx, mb_x, mb_y) {
-                eprintln!(
-                    "[H264][I-slice] mb=({}, {}), mb_type={}",
-                    mb_x, mb_y, mb_type
-                );
-            }
 
             if mb_type == 0 {
                 self.decode_i_4x4_mb(cabac, ctxs, mb_x, mb_y, &mut cur_qp);
             } else if mb_type <= 24 {
                 self.decode_i_16x16_mb(cabac, ctxs, mb_x, mb_y, mb_type, &mut cur_qp);
             } else if mb_type == 25 {
-                if debug_mb {
-                    eprintln!(
-                        "[H264][I-slice] I_PCM 命中: mb_idx={}, mb=({}, {})",
-                        mb_idx, mb_x, mb_y
-                    );
-                }
                 self.decode_i_pcm_mb(cabac, mb_x, mb_y);
                 self.prev_qp_delta_nz = false;
             }
-            if !ignore_terminate && mb_idx + 1 < total && cabac.decode_terminate() == 1 {
-                if debug_mb {
-                    eprintln!(
-                        "[H264][I-slice] 提前结束: first_mb={}, total_mbs={}, decoded_mbs={}, last_mb=({}, {}), cabac_bits={}/{}, range={}, low=0x{:x}",
-                        first,
-                        total,
-                        decoded,
-                        mb_x,
-                        mb_y,
-                        cabac.bit_pos(),
-                        cabac.total_bits(),
-                        cabac.range(),
-                        cabac.low()
-                    );
-                }
+            if mb_idx + 1 < total && cabac.decode_terminate() == 1 {
                 break;
             }
-        }
-        if debug_mb {
-            eprintln!(
-                "[H264][I-slice] 完成: first_mb={}, total_mbs={}, decoded_mbs={}, cabac_bits={}/{}, range={}, low=0x{:x}",
-                first,
-                total,
-                decoded,
-                cabac.bit_pos(),
-                cabac.total_bits(),
-                cabac.range(),
-                cabac.low()
-            );
         }
     }
 
@@ -196,23 +150,15 @@ impl H264Decoder {
         mb_y: usize,
         cur_qp: &mut i32,
     ) {
-        let debug_mb = std::env::var("TAO_H264_DEBUG_MB")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let mb_idx = mb_y * self.mb_width + mb_x;
         self.reset_chroma_cbf_mb(mb_x, mb_y);
         self.set_luma_dc_cbf(mb_x, mb_y, false);
         self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
         // 1. 可选 transform_size_8x8_flag + 预测模式
-        let force_4x4 = std::env::var("TAO_H264_FORCE_4X4")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let use_8x8 = !force_4x4
-            && self
-                .pps
-                .as_ref()
-                .map(|p| p.transform_8x8_mode)
-                .unwrap_or(false)
+        let use_8x8 = self
+            .pps
+            .as_ref()
+            .map(|p| p.transform_8x8_mode)
+            .unwrap_or(false)
             && self.decode_transform_size_8x8_flag(cabac, ctxs, mb_x, mb_y);
         self.set_transform_8x8_flag(mb_x, mb_y, use_8x8);
         let pred_modes_4x4 = if use_8x8 {
@@ -233,12 +179,6 @@ impl H264Decoder {
         // 3. 解码 coded_block_pattern
         let (luma_cbp, chroma_cbp) = self.decode_coded_block_pattern(cabac, ctxs, mb_x, mb_y, true);
         self.set_mb_cbp(mb_x, mb_y, luma_cbp | (chroma_cbp << 4));
-        if debug_mb && debug_mb_selected(mb_idx, mb_x, mb_y) {
-            eprintln!(
-                "[H264][I4x4] mb=({}, {}), use_8x8={}, chroma_mode={}, cbp_luma=0x{:x}, cbp_chroma={}",
-                mb_x, mb_y, use_8x8, chroma_mode, luma_cbp, chroma_cbp
-            );
-        }
 
         // 4. mb_qp_delta (仅当 CBP != 0)
         let has_residual = luma_cbp != 0 || chroma_cbp != 0;
@@ -309,32 +249,7 @@ impl H264Decoder {
 
     /// 解码 I_PCM 宏块: 字节对齐后直接读取原始样本
     pub(super) fn decode_i_pcm_mb(&mut self, cabac: &mut CabacDecoder, mb_x: usize, mb_y: usize) {
-        let debug_mb = std::env::var("TAO_H264_DEBUG_MB")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
         cabac.align_to_byte_boundary();
-        if debug_mb {
-            eprintln!(
-                "[H264][I_PCM] 对齐后: bytestream_pos={}, raw_pos={}, low=0x{:08x}",
-                cabac.bytestream_pos(),
-                cabac.raw_pos(),
-                cabac.low()
-            );
-        }
-        let ipcm_ptr_adjust = std::env::var("TAO_H264_IPCM_PTR_ADJUST")
-            .ok()
-            .and_then(|v| v.parse::<isize>().ok())
-            .unwrap_or(0);
-        if ipcm_ptr_adjust != 0 {
-            cabac.adjust_raw_pos(ipcm_ptr_adjust);
-            if debug_mb {
-                eprintln!(
-                    "[H264][I_PCM] 应用 TAO_H264_IPCM_PTR_ADJUST={} 后 raw_pos={}",
-                    ipcm_ptr_adjust,
-                    cabac.raw_pos()
-                );
-            }
-        }
         // I_PCM 按“全部块可用”更新邻居上下文缓存, 避免后续 CABAC 上下文漂移.
         self.set_mb_cbp(mb_x, mb_y, 0x2f);
         self.set_chroma_pred_mode(mb_x, mb_y, 0);
@@ -388,28 +303,6 @@ impl H264Decoder {
                 self.set_chroma_u_cbf(x2, y2, true);
                 self.set_chroma_v_cbf(x2, y2, true);
             }
-        }
-        let ipcm_restart_ptr_adjust = std::env::var("TAO_H264_IPCM_RESTART_PTR_ADJUST")
-            .ok()
-            .and_then(|v| v.parse::<isize>().ok())
-            .unwrap_or(0);
-        if ipcm_restart_ptr_adjust != 0 {
-            cabac.adjust_raw_pos(ipcm_restart_ptr_adjust);
-            if debug_mb {
-                eprintln!(
-                    "[H264][I_PCM] 应用 TAO_H264_IPCM_RESTART_PTR_ADJUST={} 后 raw_pos={}",
-                    ipcm_restart_ptr_adjust,
-                    cabac.raw_pos()
-                );
-            }
-        }
-        if debug_mb {
-            eprintln!(
-                "[H264][I_PCM] 重启前: bytestream_pos={}, raw_pos={}, low=0x{:08x}",
-                cabac.bytestream_pos(),
-                cabac.raw_pos(),
-                cabac.low()
-            );
         }
         // I_PCM 后需要重启 CABAC 引擎继续解码后续宏块.
         cabac.restart_engine();
@@ -585,10 +478,6 @@ impl H264Decoder {
         mb_type: u32,
         cur_qp: &mut i32,
     ) {
-        let debug_mb = std::env::var("TAO_H264_DEBUG_MB")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let mb_idx = mb_y * self.mb_width + mb_x;
         self.reset_chroma_cbf_mb(mb_x, mb_y);
         self.set_luma_dc_cbf(mb_x, mb_y, false);
         self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
@@ -600,12 +489,6 @@ impl H264Decoder {
         let cbp_luma_nz = (mb_type - 1) >= 12;
         let cbp_luma = if cbp_luma_nz { 0x0f } else { 0x00 };
         self.set_mb_cbp(mb_x, mb_y, cbp_luma | ((cbp_chroma as u8) << 4));
-        if debug_mb && debug_mb_selected(mb_idx, mb_x, mb_y) {
-            eprintln!(
-                "[H264][I16x16] mb=({}, {}), mb_type={}, pred_mode={}, cbp_luma=0x{:x}, cbp_chroma={}",
-                mb_x, mb_y, mb_type, pred_mode, cbp_luma, cbp_chroma
-            );
-        }
 
         // 1. 解码 intra_chroma_pred_mode (消耗 CABAC 比特)
         let chroma_mode = self.decode_chroma_pred_mode(cabac, ctxs, mb_x, mb_y);

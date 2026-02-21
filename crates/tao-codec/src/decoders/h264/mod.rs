@@ -332,7 +332,6 @@ pub struct H264Decoder {
     pending_recovery_point_frame_cnt: Option<u32>,
     output_queue: VecDeque<Frame>,
     reorder_buffer: Vec<ReorderFrameEntry>,
-    reorder_depth_override: Option<usize>,
     reorder_depth: usize,
     decode_order_counter: u64,
     pending_frame: Option<PendingFrameMeta>,
@@ -409,7 +408,6 @@ impl H264Decoder {
             pending_recovery_point_frame_cnt: None,
             output_queue: VecDeque::new(),
             reorder_buffer: Vec::new(),
-            reorder_depth_override: None,
             reorder_depth: 2,
             decode_order_counter: 0,
             pending_frame: None,
@@ -695,9 +693,7 @@ impl H264Decoder {
     }
 
     fn refresh_reorder_depth(&mut self) {
-        self.reorder_depth = self
-            .reorder_depth_override
-            .unwrap_or_else(|| Self::derive_reorder_depth_from_sps(self.sps.as_ref()));
+        self.reorder_depth = Self::derive_reorder_depth_from_sps(self.sps.as_ref());
     }
 
     fn activate_sps(&mut self, sps_id: u32) {
@@ -924,9 +920,6 @@ impl Decoder for H264Decoder {
         self.malformed_nal_drops = 0;
         self.last_sei_payloads.clear();
         self.pending_recovery_point_frame_cnt = None;
-        self.reorder_depth_override = std::env::var("TAO_H264_REORDER_DEPTH")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok());
 
         if !params.extra_data.is_empty() {
             let config = parse_avcc_config(&params.extra_data)?;
@@ -970,27 +963,6 @@ impl Decoder for H264Decoder {
         if nalus.is_empty() && !packet.data.is_empty() {
             let err = "输入包中未解析出有效 NAL";
             self.record_malformed_nal_drop("send_packet_split", &err);
-        }
-        let debug_packet = std::env::var("TAO_H264_DEBUG_PACKET")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        if debug_packet {
-            eprintln!(
-                "[H264][Packet] pts={}, dts={}, size={}, nalus={}",
-                packet.pts,
-                packet.dts,
-                packet.data.len(),
-                nalus.len()
-            );
-            for (i, nalu) in nalus.iter().enumerate() {
-                eprintln!(
-                    "[H264][Packet]   nalu[{}]: type={:?}, ref_idc={}, rbsp_len={}",
-                    i,
-                    nalu.nal_type,
-                    nalu.ref_idc,
-                    nalu.rbsp().len()
-                );
-            }
         }
         let mut idr_reset_done = false;
 

@@ -183,7 +183,6 @@ fn build_test_decoder() -> H264Decoder {
         pending_recovery_point_frame_cnt: None,
         output_queue: VecDeque::new(),
         reorder_buffer: Vec::new(),
-        reorder_depth_override: None,
         reorder_depth: 2,
         decode_order_counter: 0,
         pending_frame: None,
@@ -2121,7 +2120,6 @@ fn test_activate_sps_reject_unsupported_high_bit_depth() {
 #[test]
 fn test_activate_sps_updates_reorder_depth_from_sps_max_ref_frames() {
     let mut dec = build_test_decoder();
-    dec.reorder_depth_override = None;
     dec.reorder_depth = 9;
 
     let mut sps = build_test_sps(3);
@@ -2137,27 +2135,8 @@ fn test_activate_sps_updates_reorder_depth_from_sps_max_ref_frames() {
 }
 
 #[test]
-fn test_activate_sps_reorder_depth_override_has_priority() {
-    let mut dec = build_test_decoder();
-    dec.reorder_depth_override = Some(5);
-    dec.reorder_depth = 0;
-
-    let mut sps = build_test_sps(4);
-    sps.max_num_ref_frames = 1;
-    dec.sps_map.insert(4, sps);
-
-    dec.activate_sps(4);
-
-    assert_eq!(
-        dec.reorder_depth, 5,
-        "配置了 TAO_H264_REORDER_DEPTH 时应优先使用覆盖值"
-    );
-}
-
-#[test]
 fn test_activate_sps_reorder_depth_clamped_by_max_num_reorder_frames() {
     let mut dec = build_test_decoder();
-    dec.reorder_depth_override = None;
     dec.reorder_depth = 9;
 
     let mut sps = build_test_sps(7);

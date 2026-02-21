@@ -124,12 +124,6 @@ impl<'a> CabacDecoder<'a> {
         self.raw_pos = ptr;
     }
 
-    /// 在 I_PCM 调试阶段对原始读取指针做偏移.
-    pub fn adjust_raw_pos(&mut self, delta: isize) {
-        let base = self.raw_pos as isize;
-        self.raw_pos = base.saturating_add(delta).max(0) as usize;
-    }
-
     /// 读取原始字节 (用于 I_PCM 样本读取)
     pub fn read_raw_byte(&mut self) -> u8 {
         let out = self.data.get(self.raw_pos).copied().unwrap_or(0);
@@ -140,36 +134,6 @@ impl<'a> CabacDecoder<'a> {
     /// I_PCM 结束后重启 CABAC 引擎
     pub fn restart_engine(&mut self) {
         self.init_decoder_from(self.raw_pos);
-    }
-
-    /// 当前已消费的底层比特位置 (调试用)
-    pub fn bit_pos(&self) -> usize {
-        self.bit_pos
-    }
-
-    /// 当前 CABAC 数据总比特数 (调试用)
-    pub fn total_bits(&self) -> usize {
-        self.data.len() * 8
-    }
-
-    /// 当前 CABAC bytestream 读指针 (调试用).
-    pub fn bytestream_pos(&self) -> usize {
-        self.bit_pos >> 3
-    }
-
-    /// 当前 I_PCM 原始读取指针 (调试用).
-    pub fn raw_pos(&self) -> usize {
-        self.raw_pos
-    }
-
-    /// 当前算术寄存器 low (调试用).
-    pub fn low(&self) -> u32 {
-        self.cod_i_offset
-    }
-
-    /// 当前算术寄存器 range (调试用).
-    pub fn range(&self) -> u32 {
-        self.cod_i_range
     }
 }
 

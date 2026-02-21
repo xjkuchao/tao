@@ -65,16 +65,8 @@ pub(super) fn decode_intra_mb_type(
         return 0;
     }
 
-    let skip_ipcm_check = std::env::var("TAO_H264_SKIP_IPCM_CHECK")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    if !skip_ipcm_check && cabac.decode_terminate() == 1 {
-        let force_i16 = std::env::var("TAO_H264_FORCE_NO_IPCM")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        if !force_i16 {
-            return 25;
-        }
+    if cabac.decode_terminate() == 1 {
+        return 25;
     }
 
     decode_i_16x16_suffix_with_base(cabac, ctxs, state_base, intra_slice)

@@ -606,36 +606,6 @@ pub(super) fn weighted_copy_block_with_qpel_bilinear(
     }
 }
 
-/// 判断当前宏块是否命中调试输出范围.
-pub(super) fn debug_mb_selected(mb_idx: usize, mb_x: usize, mb_y: usize) -> bool {
-    if let Ok(spec) = std::env::var("TAO_H264_DEBUG_MB_RANGE") {
-        let spec = spec.trim();
-        if spec.is_empty() {
-            return false;
-        }
-        if let Some((start_s, end_s)) = spec.split_once(':')
-            && let (Ok(start), Ok(end)) = (
-                start_s.trim().parse::<usize>(),
-                end_s.trim().parse::<usize>(),
-            )
-        {
-            return (start..=end).contains(&mb_idx);
-        }
-        if let Ok(exact) = spec.parse::<usize>() {
-            return mb_idx == exact;
-        }
-        return false;
-    }
-
-    if mb_y <= 2 && mb_x < 80 {
-        return true;
-    }
-    if (620..=645).contains(&mb_idx) {
-        return true;
-    }
-    false
-}
-
 /// 读取无符号 Exp-Golomb
 pub(super) fn read_ue(br: &mut BitReader) -> TaoResult<u32> {
     let mut zeros = 0u32;

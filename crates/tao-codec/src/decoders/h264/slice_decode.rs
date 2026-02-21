@@ -278,23 +278,6 @@ impl H264Decoder {
         }
         let cabac_start = br.byte_position();
 
-        let debug_mb = std::env::var("TAO_H264_DEBUG_MB")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        if debug_mb {
-            eprintln!(
-                "[H264][SliceHeader] first_mb={}, pps_id={}, slice_type={}, frame_num={}, slice_qp={}, cabac_init_idc={}, cabac_start_byte={}, idr={}",
-                first_mb,
-                pps_id,
-                slice_type,
-                frame_num,
-                slice_qp,
-                cabac_init_idc,
-                cabac_start,
-                nalu.nal_type == NalUnitType::SliceIdr
-            );
-        }
-
         Ok(SliceHeader {
             first_mb,
             pps_id,
