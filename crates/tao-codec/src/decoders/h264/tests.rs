@@ -161,6 +161,7 @@ fn build_test_decoder() -> H264Decoder {
         malformed_nal_drops: 0,
         output_queue: VecDeque::new(),
         reorder_buffer: Vec::new(),
+        reorder_depth_override: None,
         reorder_depth: 2,
         decode_order_counter: 0,
         pending_frame: None,
@@ -1827,6 +1828,42 @@ fn test_activate_sps_reject_unsupported_high_bit_depth() {
     );
     assert_eq!(dec.width, 16, "不支持 SPS 不应修改解码宽度");
     assert_eq!(dec.height, 16, "不支持 SPS 不应修改解码高度");
+}
+
+#[test]
+fn test_activate_sps_updates_reorder_depth_from_sps_max_ref_frames() {
+    let mut dec = build_test_decoder();
+    dec.reorder_depth_override = None;
+    dec.reorder_depth = 9;
+
+    let mut sps = build_test_sps(3);
+    sps.max_num_ref_frames = 1;
+    dec.sps_map.insert(3, sps);
+
+    dec.activate_sps(3);
+
+    assert_eq!(
+        dec.reorder_depth, 0,
+        "未配置覆盖时, reorder_depth 应按 max_num_ref_frames-1 自适应"
+    );
+}
+
+#[test]
+fn test_activate_sps_reorder_depth_override_has_priority() {
+    let mut dec = build_test_decoder();
+    dec.reorder_depth_override = Some(5);
+    dec.reorder_depth = 0;
+
+    let mut sps = build_test_sps(4);
+    sps.max_num_ref_frames = 1;
+    dec.sps_map.insert(4, sps);
+
+    dec.activate_sps(4);
+
+    assert_eq!(
+        dec.reorder_depth, 5,
+        "配置了 TAO_H264_REORDER_DEPTH 时应优先使用覆盖值"
+    );
 }
 
 #[test]

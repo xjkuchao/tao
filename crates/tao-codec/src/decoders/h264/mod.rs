@@ -300,6 +300,7 @@ pub struct H264Decoder {
     malformed_nal_drops: u64,
     output_queue: VecDeque<Frame>,
     reorder_buffer: Vec<ReorderFrameEntry>,
+    reorder_depth_override: Option<usize>,
     reorder_depth: usize,
     decode_order_counter: u64,
     pending_frame: Option<PendingFrameMeta>,
@@ -364,6 +365,7 @@ impl H264Decoder {
             malformed_nal_drops: 0,
             output_queue: VecDeque::new(),
             reorder_buffer: Vec::new(),
+            reorder_depth_override: None,
             reorder_depth: 2,
             decode_order_counter: 0,
             pending_frame: None,
@@ -504,6 +506,17 @@ impl H264Decoder {
         }
     }
 
+    fn derive_reorder_depth_from_sps(sps: Option<&Sps>) -> usize {
+        sps.map(|cur| cur.max_num_ref_frames.saturating_sub(1).min(16) as usize)
+            .unwrap_or(2)
+    }
+
+    fn refresh_reorder_depth(&mut self) {
+        self.reorder_depth = self
+            .reorder_depth_override
+            .unwrap_or_else(|| Self::derive_reorder_depth_from_sps(self.sps.as_ref()));
+    }
+
     fn activate_sps(&mut self, sps_id: u32) {
         let Some(sps) = self.sps_map.get(&sps_id).cloned() else {
             return;
@@ -519,6 +532,7 @@ impl H264Decoder {
         self.height = sps.height;
         self.active_sps_id = Some(sps_id);
         self.sps = Some(sps);
+        self.refresh_reorder_depth();
         if size_changed && self.width > 0 && self.height > 0 {
             self.init_buffers();
             self.reset_reference_planes();
@@ -654,6 +668,9 @@ impl Decoder for H264Decoder {
         self.prev_frame_num_offset_type2 = 0;
         self.last_dec_ref_pic_marking = DecRefPicMarking::default();
         self.malformed_nal_drops = 0;
+        self.reorder_depth_override = std::env::var("TAO_H264_REORDER_DEPTH")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok());
 
         if !params.extra_data.is_empty() {
             let config = parse_avcc_config(&params.extra_data)?;
@@ -669,10 +686,7 @@ impl Decoder for H264Decoder {
         if self.width == 0 || self.height == 0 {
             return Err(TaoError::InvalidData("H264: 无法确定帧尺寸".into()));
         }
-        self.reorder_depth = std::env::var("TAO_H264_REORDER_DEPTH")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(2);
+        self.refresh_reorder_depth();
         self.init_buffers();
         self.output_queue.clear();
         self.reorder_buffer.clear();

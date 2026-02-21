@@ -162,6 +162,7 @@
 - [ ] POC 计算与显示顺序重排。
     - [x] 补齐 `POC type2` 计算路径(含 frame_num wrap 和非参考帧分支)并补充单元测试。
     - [x] 补齐 `POC type1` 基础计算路径(含 `delta_pic_order`、非参考帧分支、frame_num wrap、IDR reset)并补充单元测试。
+    - [x] `reorder_depth` 升级为“环境变量覆盖 + SPS(`max_num_ref_frames`)自适应”, 并补齐覆盖优先级与自适应策略单测。
 - [ ] DPB 管理(短期/长期参考)。
     - [x] 参考帧容量淘汰策略改为“短期帧按最小 `pic_num` 优先淘汰”, 并补齐“长期参考优先保留”单测。
 - [ ] 去块滤波。
