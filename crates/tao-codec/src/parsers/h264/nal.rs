@@ -809,6 +809,18 @@ mod tests {
     }
 
     #[test]
+    fn test_build_avcc_config_reject_empty_pps_payload() {
+        let sps = vec![0x67, 0x42, 0x00, 0x1E];
+        let err = build_avcc_config(&[sps], &[Vec::new()], 4).expect_err("空 PPS 应失败");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("PPS 数据为空"),
+            "错误信息应包含 PPS 数据为空, actual={}",
+            msg
+        );
+    }
+
+    #[test]
     fn test_parse_avcc_config_reject_truncated_sps_length_field() {
         // num_sps=1, 但 SPS 长度字段只有 1 字节.
         let data = [0x01, 0x64, 0x00, 0x1E, 0xFF, 0xE1, 0x00];
