@@ -121,6 +121,7 @@
     - [x] CAVLC B-slice 非 skip `mb_type=3(B_Bi_16x16)` 接入 `ref_idx_l0/ref_idx_l1` 语法消费与对齐单元测试。
     - [x] CAVLC B-slice 非 skip `mb_type=4..21(B_16x8/B_8x16)` 接入分区级 `ref_idx_l0/ref_idx_l1` 语法消费与最小分区重建, 并补对齐单测。
     - [x] CAVLC B-slice 非 skip `mb_type=3/4..21` 接入 `mvd_l0/mvd_l1` 语法消费与最小运动向量重建, 并补对齐单测。
+    - [x] CAVLC B-slice 非 skip `mb_type=4..21(B_16x8/B_8x16)` 按规范分组顺序消费语法(`ref_idx_l0 -> ref_idx_l1 -> mvd_l0 -> mvd_l1`), 并补对齐单测。
     - [x] CAVLC B-slice 非 skip `mb_type=22(B_8x8)` 接入 `sub_mb_type` + `ref_idx_l0/l1` 语法消费与最小子分区重建, 并补单元测试。
     - [x] CAVLC B-slice `mb_type=22(B_8x8)` 补齐分区级 `mvd_l0/mvd_l1` 语法消费(含 `8x8/8x4/4x8/4x4`), 并补对齐单测。
     - [x] CAVLC B-slice `B_8x8` 按 `sub_mb_type` 子分区几何(`8x4/4x8/4x4`)执行重建, 并补混合子类型/Direct 路径对齐单测。
