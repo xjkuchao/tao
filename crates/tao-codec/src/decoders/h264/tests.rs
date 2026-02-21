@@ -1910,6 +1910,50 @@ fn test_decode_cavlc_slice_data_b_non_skip_l1_only_ref_idx() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_b_non_skip_bi_16x16_ref_idx() {
+    let mut dec = build_test_decoder();
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_custom_reference(&mut dec, 1, 2, 20, None);
+    push_custom_reference(&mut dec, 2, 1, 99, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+    header.num_ref_idx_l0 = 2;
+    header.num_ref_idx_l1 = 2;
+
+    // mb_skip_run=0, mb_type=3(B_Bi_16x16), ref_idx_l0=1, ref_idx_l1=1
+    let rbsp = build_rbsp_from_ues(&[0, 3, 1, 1]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+    assert_eq!(dec.ref_y[0], 99, "B_Bi_16x16 应按 ref_idx_l0/l1 选择参考帧");
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_b_non_skip_bi_16x16_ref_idx_alignment() {
+    let mut dec = build_test_decoder();
+    let sps_resize = build_sps_nalu(0, 32, 16);
+    dec.handle_sps(&sps_resize);
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_custom_reference(&mut dec, 1, 2, 20, None);
+    push_custom_reference(&mut dec, 2, 1, 99, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+    header.num_ref_idx_l0 = 2;
+    header.num_ref_idx_l1 = 2;
+
+    // mb0: skip_run=0, mb_type=3(B_Bi_16x16), ref_idx_l0=1, ref_idx_l1=1
+    // mb1: skip_run=0, mb_type=23(intra), 用于验证语法消费对齐。
+    let rbsp = build_rbsp_from_ues(&[0, 3, 1, 1, 0, 23]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+    assert_eq!(dec.ref_y[0], 99, "首个 B_Bi_16x16 应按 ref_idx 选择参考");
+    assert_eq!(dec.mb_types[1], 1, "第二个宏块应解析为帧内宏块");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l0_ref_idx_alignment() {
     let mut dec = build_test_decoder();
     let sps_resize = build_sps_nalu(0, 32, 16);

@@ -1106,10 +1106,10 @@ impl H264Decoder {
 
                     let mut l0_ref_idx = 0usize;
                     let mut l1_ref_idx = 0usize;
-                    if mb_type == 1 && header.num_ref_idx_l0 > 1 {
+                    if (mb_type == 1 || mb_type == 3) && header.num_ref_idx_l0 > 1 {
                         l0_ref_idx = read_ue(&mut br).unwrap_or(0) as usize;
                     }
-                    if mb_type == 2 && header.num_ref_idx_l1 > 1 {
+                    if (mb_type == 2 || mb_type == 3) && header.num_ref_idx_l1 > 1 {
                         l1_ref_idx = read_ue(&mut br).unwrap_or(0) as usize;
                     }
                     let mut l0_motion = Some(BMotion {
