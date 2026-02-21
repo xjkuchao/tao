@@ -1177,6 +1177,7 @@ impl H264Decoder {
 
                         let mut ref_idx_l0 = [0usize; 2];
                         let mut ref_idx_l1 = [0usize; 2];
+                        // 按 H264 语法顺序分组消费: 先全部 ref_idx, 再全部 mvd。
                         if header.num_ref_idx_l0 > 1 {
                             for part_idx in 0..2usize {
                                 if part_use_l0[part_idx] {

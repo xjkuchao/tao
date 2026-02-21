@@ -2320,6 +2320,47 @@ fn test_decode_cavlc_slice_data_b_non_skip_b_l0_l1_8x16_ref_idx_alignment() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_b_non_skip_b_l0_l1_8x16_grouped_syntax_alignment() {
+    use ExpGolombValue::{Se, Ue};
+
+    let mut dec = build_test_decoder();
+    let sps_resize = build_sps_nalu(0, 32, 16);
+    dec.handle_sps(&sps_resize);
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_custom_reference(&mut dec, 1, 2, 20, None);
+    push_custom_reference(&mut dec, 2, 8, 100, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+    header.num_ref_idx_l0 = 2;
+    header.num_ref_idx_l1 = 2;
+
+    // mb0: skip_run=0, mb_type=9(B_L0_L1_8x16)
+    // 语法顺序要求: ref_idx_l0(part0) -> ref_idx_l1(part1) -> mvd_l0(part0) -> mvd_l1(part1)。
+    // 将右分区 ref_idx_l1 设为 1, 若顺序错误会读到 mvd 码字并回退到错误参考帧。
+    // mb1: skip_run=0, mb_type=23(intra), 用于验证位流仍保持对齐。
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0),
+        Ue(9),
+        Ue(0),
+        Ue(1),
+        Se(2),
+        Se(0),
+        Se(0),
+        Se(0),
+        Ue(0),
+        Ue(23),
+    ]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    assert_eq!(dec.ref_y[0], 20, "左分区应使用 L0 ref_idx=0");
+    assert_eq!(dec.ref_y[8], 20, "右分区应使用 L1 ref_idx=1 对应的参考帧");
+    assert_eq!(dec.mb_types[1], 1, "第二个宏块应解析为帧内宏块");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l0_ref_idx_alignment() {
     use ExpGolombValue::{Se, Ue};
 
