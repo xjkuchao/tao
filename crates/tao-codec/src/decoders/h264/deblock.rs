@@ -2,7 +2,7 @@
 //!
 //! 当前实现基于 `slice_qp + alpha/beta offset` 与边界强度(`bs`)执行最小规范化滤波:
 //! - 亮度按 4x4 边界处理, 色度按 2x2 边界处理.
-//! - 宏块边界按 `intra/cbp` 估算强弱(`bs=4/2`), 非宏块边界走弱滤波(`bs=1`).
+//! - 宏块边界按 `intra/cbp/ref_idx/mv` 估算强弱(`bs=4/2/1/0`), 非宏块边界走弱滤波(`bs=1`).
 //! - 弱滤波使用 `tc0` 约束, 强滤波使用更强的 `p0/q0` 更新.
 
 /// 去块滤波输入参数.
@@ -19,6 +19,9 @@ pub(super) struct DeblockSliceParams<'a> {
     pub(super) mb_height: usize,
     pub(super) mb_types: Option<&'a [u8]>,
     pub(super) mb_cbp: Option<&'a [u8]>,
+    pub(super) mv_l0_x: Option<&'a [i16]>,
+    pub(super) mv_l0_y: Option<&'a [i16]>,
+    pub(super) ref_idx_l0: Option<&'a [i8]>,
 }
 
 /// 对 YUV420 帧执行带 slice 参数的去块滤波.
@@ -40,6 +43,9 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
         mb_height,
         mb_types,
         mb_cbp,
+        mv_l0_x,
+        mv_l0_y,
+        ref_idx_l0,
     } = params;
     if width == 0 || height == 0 {
         return;
@@ -62,6 +68,9 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
                     mb_height,
                     mb_types: types,
                     mb_cbp: cbp,
+                    mv_l0_x,
+                    mv_l0_y,
+                    ref_idx_l0,
                 })
             }
         })
@@ -111,6 +120,9 @@ struct DeblockMbContext<'a> {
     mb_height: usize,
     mb_types: &'a [u8],
     mb_cbp: &'a [u8],
+    mv_l0_x: Option<&'a [i16]>,
+    mv_l0_y: Option<&'a [i16]>,
+    ref_idx_l0: Option<&'a [i8]>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -313,7 +325,7 @@ fn boundary_strength_between_mb(
     if cbp_a != 0 || cbp_b != 0 {
         return 2;
     }
-    1
+    motion_boundary_strength(ctx, i_a, i_b)
 }
 
 fn boundary_strength_within_mb(
@@ -336,6 +348,27 @@ fn boundary_strength_within_mb(
         return 2;
     }
     1
+}
+
+fn motion_boundary_strength(ctx: &DeblockMbContext<'_>, idx_a: usize, idx_b: usize) -> u8 {
+    let (Some(ref_idx), Some(mv_x), Some(mv_y)) = (ctx.ref_idx_l0, ctx.mv_l0_x, ctx.mv_l0_y) else {
+        return 1;
+    };
+    if idx_a >= ref_idx.len() || idx_b >= ref_idx.len() {
+        return 1;
+    }
+    if idx_a >= mv_x.len() || idx_b >= mv_x.len() || idx_a >= mv_y.len() || idx_b >= mv_y.len() {
+        return 1;
+    }
+    if ref_idx[idx_a] != ref_idx[idx_b] {
+        return 1;
+    }
+    let mv_dx = (i32::from(mv_x[idx_a]) - i32::from(mv_x[idx_b])).abs();
+    let mv_dy = (i32::from(mv_y[idx_a]) - i32::from(mv_y[idx_b])).abs();
+    if mv_dx >= 4 || mv_dy >= 4 {
+        return 1;
+    }
+    0
 }
 
 fn mb_index(mb_width: usize, mb_height: usize, mb_x: usize, mb_y: usize) -> Option<usize> {
@@ -465,6 +498,9 @@ mod tests {
                 mb_height: 0,
                 mb_types: None,
                 mb_cbp: None,
+                mv_l0_x: None,
+                mv_l0_y: None,
+                ref_idx_l0: None,
             },
         );
 
@@ -487,6 +523,9 @@ mod tests {
                 mb_height: 0,
                 mb_types: None,
                 mb_cbp: None,
+                mv_l0_x: None,
+                mv_l0_y: None,
+                ref_idx_l0: None,
             },
         );
 
@@ -549,6 +588,9 @@ mod tests {
                 mb_height: 0,
                 mb_types: None,
                 mb_cbp: None,
+                mv_l0_x: None,
+                mv_l0_y: None,
+                ref_idx_l0: None,
             },
         );
 
@@ -566,9 +608,52 @@ mod tests {
             mb_height: 1,
             mb_types: &mb_types,
             mb_cbp: &mb_cbp,
+            mv_l0_x: None,
+            mv_l0_y: None,
+            ref_idx_l0: None,
         };
         let bs = boundary_strength_vertical(16, 0, 16, Some(&ctx));
         assert_eq!(bs, 4, "宏块边界任一侧为帧内宏块时应走强滤波");
+    }
+
+    #[test]
+    fn test_boundary_strength_vertical_inter_mb_motion_aligned_can_be_zero() {
+        let mb_types = [255u8, 255u8];
+        let mb_cbp = [0u8, 0u8];
+        let mv_l0_x = [8i16, 9i16];
+        let mv_l0_y = [4i16, 5i16];
+        let ref_idx_l0 = [0i8, 0i8];
+        let ctx = DeblockMbContext {
+            mb_width: 2,
+            mb_height: 1,
+            mb_types: &mb_types,
+            mb_cbp: &mb_cbp,
+            mv_l0_x: Some(&mv_l0_x),
+            mv_l0_y: Some(&mv_l0_y),
+            ref_idx_l0: Some(&ref_idx_l0),
+        };
+        let bs = boundary_strength_vertical(16, 0, 16, Some(&ctx));
+        assert_eq!(bs, 0, "同参考且运动向量接近时应允许跳过滤波");
+    }
+
+    #[test]
+    fn test_boundary_strength_vertical_inter_mb_ref_mismatch_is_non_zero() {
+        let mb_types = [255u8, 255u8];
+        let mb_cbp = [0u8, 0u8];
+        let mv_l0_x = [8i16, 8i16];
+        let mv_l0_y = [4i16, 4i16];
+        let ref_idx_l0 = [0i8, 1i8];
+        let ctx = DeblockMbContext {
+            mb_width: 2,
+            mb_height: 1,
+            mb_types: &mb_types,
+            mb_cbp: &mb_cbp,
+            mv_l0_x: Some(&mv_l0_x),
+            mv_l0_y: Some(&mv_l0_y),
+            ref_idx_l0: Some(&ref_idx_l0),
+        };
+        let bs = boundary_strength_vertical(16, 0, 16, Some(&ctx));
+        assert_eq!(bs, 1, "跨宏块参考索引不一致时应保留弱滤波");
     }
 
     #[test]

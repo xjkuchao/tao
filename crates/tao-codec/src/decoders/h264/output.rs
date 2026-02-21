@@ -526,6 +526,9 @@ impl H264Decoder {
                     mb_height: self.mb_height,
                     mb_types: Some(&self.mb_types),
                     mb_cbp: Some(&self.mb_cbp),
+                    mv_l0_x: Some(&self.mv_l0_x),
+                    mv_l0_y: Some(&self.mv_l0_y),
+                    ref_idx_l0: Some(&self.ref_idx_l0),
                 },
             );
         }

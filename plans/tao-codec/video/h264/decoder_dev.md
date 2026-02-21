@@ -179,6 +179,7 @@
     - [x] 去块滤波按 `disable_deblocking_filter_idc` 生效, 并补状态单测。
     - [x] 接入 `slice_qp + slice_alpha_c0_offset_div2 + slice_beta_offset_div2` 参数化阈值路径, 并补偏移边界/强度单测。
     - [x] 接入 `tc0` 弱滤波约束与宏块边界强度分级(`intra/cbp -> bs=4/2`), 并补专项单测。
+    - [x] 宏块边界 `bs` 增加 `ref_idx_l0 + mv_l0` 运动一致性判定, 支持“同参考且运动接近时 `bs=0` 跳过滤波”, 并补专项单测。
 - [ ] 容错与边界保护(坏 NAL、缺参考帧、越界)。
     - [x] `dec_ref_pic_marking` 增加 MMCO 操作数量上限防护, 并补齐 IDR 标志位/超上限失败路径单测。
     - [x] `dec_ref_pic_marking` 增加 MMCO `op1/op3` 的 `difference_of_pic_nums_minus1` 范围校验, 并补齐超范围失败单测。
