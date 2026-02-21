@@ -4206,6 +4206,76 @@ fn test_decode_cavlc_slice_data_b_skip_run_temporal_direct_uses_l0_only() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_b_skip_run_uses_predicted_mv_from_left_neighbor() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 16;
+    dec.init_buffers();
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+    header.direct_spatial_mv_pred_flag = false;
+
+    use ExpGolombValue::{Se, Ue};
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0), // mb0: skip_run=0
+        Ue(1), // mb0: mb_type=1(B_L0_16x16)
+        Se(4),
+        Se(0), // mb0: mvd=(+1px,0)
+        Ue(1), // mb1: skip_run=1
+    ]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    assert_eq!(
+        dec.ref_y[16], 17,
+        "B_Skip 应使用左邻宏块预测 MV, 而非固定零向量"
+    );
+    assert_eq!(dec.mv_l0_x[1], 4, "B_Skip 应写入预测后的 MV(x)");
+    assert_eq!(dec.mv_l0_y[1], 0, "B_Skip 应写入预测后的 MV(y)");
+    assert_eq!(dec.mb_types[1], 254, "第二个宏块应按 B_Skip 路径解码");
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_b_non_skip_direct_uses_predicted_mv_from_left_neighbor() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 16;
+    dec.init_buffers();
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+    header.direct_spatial_mv_pred_flag = false;
+
+    use ExpGolombValue::{Se, Ue};
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0), // mb0: skip_run=0
+        Ue(1), // mb0: mb_type=1(B_L0_16x16)
+        Se(4),
+        Se(0), // mb0: mvd=(+1px,0)
+        Ue(0), // mb1: skip_run=0
+        Ue(0), // mb1: mb_type=0(B_Direct_16x16)
+        Ue(0), // 占位尾码, 避免 mb_type=0 的单比特编码被误判为 rbsp_trailing_bits
+    ]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    assert_eq!(
+        dec.ref_y[16], 17,
+        "B_Direct_16x16 应使用左邻宏块预测 MV, 而非固定零向量"
+    );
+    assert_eq!(dec.mv_l0_x[1], 4, "B_Direct_16x16 应写入预测后的 MV(x)");
+    assert_eq!(dec.mv_l0_y[1], 0, "B_Direct_16x16 应写入预测后的 MV(y)");
+    assert_eq!(dec.mb_types[1], 254, "第二个宏块应按 B_Direct 路径解码");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_b_non_skip_l0_only() {
     let mut dec = build_test_decoder();
     dec.last_slice_type = 1;

@@ -224,6 +224,7 @@ crates/tao-codec/src/decoders/h264/
     - [ ] L0/L1 分别缩放.
     - [ ] Temporal Direct 单测.
 - [ ] B_Skip/B_Direct_16x16/B_Direct_8x8 接入.
+    - [x] CAVLC 路径接入 16x16 邻居 MVP(B_Skip/B_Direct_16x16/B_8x8 direct).
 
 #### P5.3 加权预测
 

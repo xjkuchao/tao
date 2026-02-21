@@ -1068,12 +1068,20 @@ impl H264Decoder {
             self.mark_mb_slice_first_mb(mb_idx, header.first_mb);
             let mb_x = mb_idx % self.mb_width;
             let mb_y = mb_idx / self.mb_width;
+            let (b_pred_mv_x, b_pred_mv_y) = if is_b {
+                self.predict_mv_l0_16x16(mb_x, mb_y)
+            } else {
+                (0, 0)
+            };
             if skip_run_left > 0 {
                 self.mb_types[mb_idx] = if is_b { 254 } else { 255 };
                 self.mb_cbp[mb_idx] = 0;
                 if is_b {
-                    let (motion_l0, motion_l1) =
-                        self.build_b_direct_motion(0, 0, header.direct_spatial_mv_pred_flag);
+                    let (motion_l0, motion_l1) = self.build_b_direct_motion(
+                        b_pred_mv_x,
+                        b_pred_mv_y,
+                        header.direct_spatial_mv_pred_flag,
+                    );
                     let _ = self.apply_b_prediction_block(
                         motion_l0,
                         motion_l1,
@@ -1198,8 +1206,8 @@ impl H264Decoder {
                             }
                             if !use_l0[sub_idx] && !use_l1[sub_idx] {
                                 let (motion_l0, motion_l1) = self.build_b_direct_motion(
-                                    0,
-                                    0,
+                                    b_pred_mv_x,
+                                    b_pred_mv_y,
                                     header.direct_spatial_mv_pred_flag,
                                 );
                                 l0_motions[0] = motion_l0;
@@ -1484,8 +1492,11 @@ impl H264Decoder {
                     let mut l0_motion = None;
                     let mut l1_motion = None;
                     if mb_type == 0 {
-                        (l0_motion, l1_motion) =
-                            self.build_b_direct_motion(0, 0, header.direct_spatial_mv_pred_flag);
+                        (l0_motion, l1_motion) = self.build_b_direct_motion(
+                            b_pred_mv_x,
+                            b_pred_mv_y,
+                            header.direct_spatial_mv_pred_flag,
+                        );
                     } else {
                         let use_l0 = mb_type == 1 || mb_type == 3;
                         let use_l1 = mb_type == 2 || mb_type == 3;
