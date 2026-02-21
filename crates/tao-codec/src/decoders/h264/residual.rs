@@ -660,6 +660,30 @@ pub fn apply_4x4_ac_residual(
     }
 }
 
+/// 将 4x4 残差块以变换旁路方式应用到平面上 (仅反扫描 + 逐像素加法).
+pub fn apply_4x4_bypass_residual(
+    plane: &mut [u8],
+    stride: usize,
+    x0: usize,
+    y0: usize,
+    coeffs_scan: &[i32; 16],
+) {
+    let mut residual = [0i32; 16];
+    for (scan_pos, &(row, col)) in ZIGZAG_4X4.iter().enumerate() {
+        residual[row * 4 + col] = coeffs_scan[scan_pos];
+    }
+
+    for dy in 0..4 {
+        for dx in 0..4 {
+            let idx = (y0 + dy) * stride + x0 + dx;
+            if idx < plane.len() {
+                let val = plane[idx] as i32 + residual[dy * 4 + dx];
+                plane[idx] = val.clamp(0, 255) as u8;
+            }
+        }
+    }
+}
+
 /// 将 8x8 残差块应用到平面上 (反扫描 + 反量化 + IDCT + 逐像素加法)
 #[allow(dead_code)]
 pub fn apply_8x8_ac_residual(
@@ -710,6 +734,30 @@ pub fn apply_8x8_ac_residual_with_scaling(
             let idx = (y0 + dy) * stride + x0 + dx;
             if idx < plane.len() {
                 let val = plane[idx] as i32 + spatial[dy * 8 + dx];
+                plane[idx] = val.clamp(0, 255) as u8;
+            }
+        }
+    }
+}
+
+/// 将 8x8 残差块以变换旁路方式应用到平面上 (仅反扫描 + 逐像素加法).
+pub fn apply_8x8_bypass_residual(
+    plane: &mut [u8],
+    stride: usize,
+    x0: usize,
+    y0: usize,
+    coeffs_scan: &[i32; 64],
+) {
+    let mut residual = [0i32; 64];
+    for (scan_pos, &raster_idx) in ZIGZAG_8X8.iter().enumerate() {
+        residual[raster_idx] = coeffs_scan[scan_pos];
+    }
+
+    for dy in 0..8 {
+        for dx in 0..8 {
+            let idx = (y0 + dy) * stride + x0 + dx;
+            if idx < plane.len() {
+                let val = plane[idx] as i32 + residual[dy * 8 + dx];
                 plane[idx] = val.clamp(0, 255) as u8;
             }
         }
@@ -768,6 +816,32 @@ mod tests {
             changed(8, 8) > 0,
             "右下 4x4 子块应有变化, 证明非 4x4 独立近似"
         );
+    }
+
+    #[test]
+    fn test_apply_4x4_bypass_residual_uses_scan_to_raster_direct_add() {
+        let mut plane = vec![128u8; 16 * 16];
+        let mut coeffs_scan = [0i32; 16];
+        coeffs_scan[0] = 20;
+        coeffs_scan[1] = -5;
+
+        apply_4x4_bypass_residual(&mut plane, 16, 4, 4, &coeffs_scan);
+
+        assert_eq!(plane[4 * 16 + 4], 148, "扫描位 0 应直接作用于块左上像素");
+        assert_eq!(plane[4 * 16 + 5], 123, "扫描位 1 应按 zig-zag 映射到(0,1)");
+    }
+
+    #[test]
+    fn test_apply_8x8_bypass_residual_uses_scan_to_raster_direct_add() {
+        let mut plane = vec![128u8; 16 * 16];
+        let mut coeffs_scan = [0i32; 64];
+        coeffs_scan[0] = 12;
+        coeffs_scan[2] = -7;
+
+        apply_8x8_bypass_residual(&mut plane, 16, 4, 4, &coeffs_scan);
+
+        assert_eq!(plane[4 * 16 + 4], 140, "扫描位 0 应直接作用于 8x8 左上像素");
+        assert_eq!(plane[5 * 16 + 4], 121, "扫描位 2 应按 zig-zag 映射到(1,0)");
     }
 
     #[test]

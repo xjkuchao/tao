@@ -158,7 +158,7 @@ crates/tao-codec/src/decoders/h264/
 - [x] 4x4 Hadamard(Intra 16x16 DC).
 - [x] 2x2 Hadamard(Chroma DC).
 - [x] 自定义量化矩阵接入(SPS/PPS scaling_list 替代 flat 矩阵) + 单测.
-- [ ] qpprime_y_zero_transform_bypass(QP=0 跳过变换, 低优先级).
+- [x] qpprime_y_zero_transform_bypass(QP=0 跳过变换, 低优先级).
 
 ### P4 帧内预测
 

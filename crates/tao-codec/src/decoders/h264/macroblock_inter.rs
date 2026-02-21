@@ -1946,6 +1946,7 @@ impl H264Decoder {
         qp: i32,
     ) {
         let luma_scaling_4x4 = self.active_luma_scaling_list_4x4(false);
+        let transform_bypass = self.is_transform_bypass_active(qp);
         for sub_y in 0..4 {
             for sub_x in 0..4 {
                 self.set_luma_cbf(mb_x * 4 + sub_x, mb_y * 4 + sub_y, false);
@@ -1985,14 +1986,24 @@ impl H264Decoder {
 
                 let mut coeffs_arr = [0i32; 16];
                 coeffs_arr.copy_from_slice(&raw_coeffs[..16]);
-                residual::dequant_4x4_ac_with_scaling(&mut coeffs_arr, qp, &luma_scaling_4x4);
-                residual::apply_4x4_ac_residual(
-                    &mut self.ref_y,
-                    self.stride_y,
-                    mb_x * 16 + abs_sub_x * 4,
-                    mb_y * 16 + abs_sub_y * 4,
-                    &coeffs_arr,
-                );
+                if transform_bypass {
+                    residual::apply_4x4_bypass_residual(
+                        &mut self.ref_y,
+                        self.stride_y,
+                        mb_x * 16 + abs_sub_x * 4,
+                        mb_y * 16 + abs_sub_y * 4,
+                        &coeffs_arr,
+                    );
+                } else {
+                    residual::dequant_4x4_ac_with_scaling(&mut coeffs_arr, qp, &luma_scaling_4x4);
+                    residual::apply_4x4_ac_residual(
+                        &mut self.ref_y,
+                        self.stride_y,
+                        mb_x * 16 + abs_sub_x * 4,
+                        mb_y * 16 + abs_sub_y * 4,
+                        &coeffs_arr,
+                    );
+                }
             }
             self.set_luma_8x8_cbf(mb_x * 2 + x8x8, mb_y * 2 + y8x8, coded_8x8);
         }

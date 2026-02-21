@@ -65,6 +65,7 @@ fn build_test_sps(sps_id: u32) -> Sps {
         offset_for_non_ref_pic: 0,
         offset_for_top_to_bottom_field: 0,
         offset_for_ref_frame: Vec::new(),
+        qpprime_y_zero_transform_bypass_flag: false,
         scaling_list_4x4: [[16; 16]; 6],
         scaling_list_8x8: vec![[16; 64]; 2],
     }
@@ -935,6 +936,31 @@ fn test_active_chroma_scaling_list_fallback_to_sps_when_pps_absent() {
         dec.active_chroma_scaling_list_4x4(false, true)[0],
         35,
         "Chroma V Inter 4x4 应回退到 SPS 矩阵"
+    );
+}
+
+#[test]
+fn test_transform_bypass_requires_sps_flag_and_qp_zero() {
+    let mut dec = build_test_decoder();
+    let mut sps = build_test_sps(0);
+    sps.qpprime_y_zero_transform_bypass_flag = true;
+    dec.sps = Some(sps);
+
+    assert!(
+        dec.is_transform_bypass_active(0),
+        "SPS 开启且 QP=0 时应启用变换旁路"
+    );
+    assert!(
+        !dec.is_transform_bypass_active(1),
+        "SPS 开启但 QP!=0 时不应启用变换旁路"
+    );
+
+    if let Some(sps_mut) = dec.sps.as_mut() {
+        sps_mut.qpprime_y_zero_transform_bypass_flag = false;
+    }
+    assert!(
+        !dec.is_transform_bypass_active(0),
+        "SPS 关闭时即使 QP=0 也不应启用变换旁路"
     );
 }
 

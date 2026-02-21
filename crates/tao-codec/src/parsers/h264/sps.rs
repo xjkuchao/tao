@@ -75,6 +75,8 @@ pub struct Sps {
     pub offset_for_top_to_bottom_field: i32,
     /// `poc_type==1` 时的 offset_for_ref_frame 列表.
     pub offset_for_ref_frame: Vec<i32>,
+    /// `qpprime_y_zero_transform_bypass_flag`.
+    pub qpprime_y_zero_transform_bypass_flag: bool,
     /// 4x4 量化矩阵列表 (6 组, 已应用默认/回退规则).
     pub scaling_list_4x4: [[u8; 16]; 6],
     /// 8x8 量化矩阵列表 (4:2:0/4:2:2 为 2 组, 4:4:4 为 6 组, 已应用默认/回退规则).
@@ -149,6 +151,7 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
     let mut separate_colour_plane_flag = false;
     let mut bit_depth_luma = 8;
     let mut bit_depth_chroma = 8;
+    let mut qpprime_y_zero_transform_bypass_flag = false;
     let mut scaling_list_4x4 = default_scaling_lists_4x4();
     let mut scaling_list_8x8 = default_scaling_lists_8x8(chroma_format_idc);
 
@@ -179,7 +182,7 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
                 bit_depth_chroma
             )));
         }
-        br.skip_bits(1)?; // qpprime_y_zero_transform_bypass_flag
+        qpprime_y_zero_transform_bypass_flag = br.read_bit()? == 1;
 
         // seq_scaling_matrix_present_flag
         let scaling_present = br.read_bit()?;
@@ -363,6 +366,7 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
         offset_for_non_ref_pic,
         offset_for_top_to_bottom_field,
         offset_for_ref_frame,
+        qpprime_y_zero_transform_bypass_flag,
         scaling_list_4x4,
         scaling_list_8x8,
     })
@@ -747,6 +751,20 @@ mod tests {
         assert_eq!(sps.level_idc, 41);
         assert_eq!(sps.width, 1280);
         assert_eq!(sps.height, 720);
+        assert!(
+            !sps.qpprime_y_zero_transform_bypass_flag,
+            "默认高 profile 测试样例应关闭变换旁路"
+        );
+    }
+
+    #[test]
+    fn test_sps_high_profile_qpprime_transform_bypass_flag() {
+        let rbsp = build_test_high_profile_sps_with_transform_bypass(true);
+        let sps = parse_sps(&rbsp).expect("带 qpprime 旁路标志的 SPS 解析失败");
+        assert!(
+            sps.qpprime_y_zero_transform_bypass_flag,
+            "应正确解析 qpprime_y_zero_transform_bypass_flag=1"
+        );
     }
 
     #[test]
@@ -1154,6 +1172,39 @@ mod tests {
         bits.push(false); // qpprime_y_zero_transform_bypass_flag
         bits.push(false); // seq_scaling_matrix_present_flag
 
+        write_ue(&mut bits, 0); // log2_max_frame_num_minus4
+        write_ue(&mut bits, 0); // pic_order_cnt_type
+        write_ue(&mut bits, 0); // log2_max_pic_order_cnt_lsb_minus4
+        write_ue(&mut bits, 4); // max_num_ref_frames
+        bits.push(false); // gaps_in_frame_num_value_allowed_flag
+        write_ue(&mut bits, 19); // width=320
+        write_ue(&mut bits, 14); // height=240
+        bits.push(true); // frame_mbs_only_flag
+        bits.push(false); // direct_8x8_inference_flag
+        bits.push(false); // frame_cropping_flag
+        bits.push(false); // vui_parameters_present_flag
+
+        bits_to_bytes(&bits)
+    }
+
+    fn build_test_high_profile_sps_with_transform_bypass(enabled: bool) -> Vec<u8> {
+        let mut bits = Vec::new();
+
+        // profile_idc=100(High), constraints=0, level=40
+        for i in (0..8).rev() {
+            bits.push(((100u8 >> i) & 1) != 0);
+        }
+        bits.extend(std::iter::repeat_n(false, 8));
+        for i in (0..8).rev() {
+            bits.push(((40u8 >> i) & 1) != 0);
+        }
+
+        write_ue(&mut bits, 0); // sps_id
+        write_ue(&mut bits, 1); // chroma_format_idc=4:2:0
+        write_ue(&mut bits, 0); // bit_depth_luma_minus8
+        write_ue(&mut bits, 0); // bit_depth_chroma_minus8
+        bits.push(enabled); // qpprime_y_zero_transform_bypass_flag
+        bits.push(false); // seq_scaling_matrix_present_flag
         write_ue(&mut bits, 0); // log2_max_frame_num_minus4
         write_ue(&mut bits, 0); // pic_order_cnt_type
         write_ue(&mut bits, 0); // log2_max_pic_order_cnt_lsb_minus4

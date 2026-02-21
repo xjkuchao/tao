@@ -698,6 +698,15 @@ impl H264Decoder {
         self.active_scaling_list_8x8(list_idx)
     }
 
+    fn is_transform_bypass_active(&self, qp: i32) -> bool {
+        qp == 0
+            && self
+                .sps
+                .as_ref()
+                .map(|sps| sps.qpprime_y_zero_transform_bypass_flag)
+                .unwrap_or(false)
+    }
+
     fn pps_rebuild_action(old: &Pps, new: &Pps) -> ParameterSetRebuildAction {
         let need_full = old.sps_id != new.sps_id
             || old.entropy_coding_mode != new.entropy_coding_mode
