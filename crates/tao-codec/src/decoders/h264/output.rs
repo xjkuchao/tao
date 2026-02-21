@@ -32,6 +32,108 @@ impl H264Decoder {
         }
     }
 
+    fn conceal_macroblock_from_source(
+        &mut self,
+        mb_idx: usize,
+        source: Option<&(Vec<u8>, Vec<u8>, Vec<u8>)>,
+    ) {
+        let mb_x = mb_idx % self.mb_width;
+        let mb_y = mb_idx / self.mb_width;
+        let luma_x = mb_x * 16;
+        let luma_y = mb_y * 16;
+        let width = self.width as usize;
+        let height = self.height as usize;
+        let luma_w = width.saturating_sub(luma_x).min(16);
+        let luma_h = height.saturating_sub(luma_y).min(16);
+        for dy in 0..luma_h {
+            let row = (luma_y + dy) * self.stride_y + luma_x;
+            for dx in 0..luma_w {
+                let idx = row + dx;
+                let value = source
+                    .and_then(|(y, _, _)| y.get(idx).copied())
+                    .unwrap_or(128);
+                self.ref_y[idx] = value;
+            }
+        }
+
+        let chroma_w_total = width / 2;
+        let chroma_h_total = height / 2;
+        let chroma_x = mb_x * 8;
+        let chroma_y = mb_y * 8;
+        let chroma_w = chroma_w_total.saturating_sub(chroma_x).min(8);
+        let chroma_h = chroma_h_total.saturating_sub(chroma_y).min(8);
+        for dy in 0..chroma_h {
+            let row = (chroma_y + dy) * self.stride_c + chroma_x;
+            for dx in 0..chroma_w {
+                let idx = row + dx;
+                let u_value = source
+                    .and_then(|(_, u, _)| u.get(idx).copied())
+                    .unwrap_or(128);
+                let v_value = source
+                    .and_then(|(_, _, v)| v.get(idx).copied())
+                    .unwrap_or(128);
+                self.ref_u[idx] = u_value;
+                self.ref_v[idx] = v_value;
+            }
+        }
+    }
+
+    fn conceal_frame_level_errors(&mut self) {
+        let total_mbs = self.mb_width.saturating_mul(self.mb_height);
+        if total_mbs == 0
+            || self.mb_types.len() < total_mbs
+            || self.mb_slice_first_mb.len() < total_mbs
+        {
+            return;
+        }
+
+        let has_touched_mb = self
+            .mb_slice_first_mb
+            .iter()
+            .take(total_mbs)
+            .any(|&first_mb| first_mb != u32::MAX);
+        let has_error_mb = self
+            .mb_types
+            .iter()
+            .take(total_mbs)
+            .any(|&mb_type| mb_type == 252);
+        if !has_touched_mb && !has_error_mb {
+            return;
+        }
+
+        let source = self
+            .reference_frames
+            .back()
+            .map(|pic| (pic.y.clone(), pic.u.clone(), pic.v.clone()));
+
+        let mut concealed_mbs = 0usize;
+        for mb_idx in 0..total_mbs {
+            let is_missing_mb = has_touched_mb && self.mb_slice_first_mb[mb_idx] == u32::MAX;
+            let is_error_mb = self.mb_types[mb_idx] == 252;
+            if !is_missing_mb && !is_error_mb {
+                continue;
+            }
+            self.conceal_macroblock_from_source(mb_idx, source.as_ref());
+            self.mb_types[mb_idx] = 253;
+            concealed_mbs += 1;
+        }
+
+        if concealed_mbs == 0 {
+            return;
+        }
+        if source.is_some() {
+            warn!(
+                "H264: 帧级错误隐藏生效, concealed_mbs={}, 使用最近参考帧填充",
+                concealed_mbs
+            );
+        } else {
+            warn!(
+                "H264: 帧级错误隐藏生效, concealed_mbs={}, 无参考帧, 使用中性灰填充",
+                concealed_mbs
+            );
+        }
+    }
+
     pub(super) fn max_frame_num_modulo(&self) -> u32 {
         let shift = self
             .sps
@@ -590,6 +692,7 @@ impl H264Decoder {
     pub(super) fn build_output_frame(&mut self, pts: i64, time_base: Rational, is_keyframe: bool) {
         let w = self.width as usize;
         let h = self.height as usize;
+        self.conceal_frame_level_errors();
 
         if self.last_disable_deblocking_filter_idc != 1 {
             let (chroma_qp_index_offset, second_chroma_qp_index_offset) = self
