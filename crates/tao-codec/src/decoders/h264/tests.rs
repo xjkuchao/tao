@@ -1910,6 +1910,78 @@ fn test_decode_cavlc_slice_data_b_non_skip_l1_only_ref_idx() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l0_ref_idx_alignment() {
+    let mut dec = build_test_decoder();
+    let sps_resize = build_sps_nalu(0, 32, 16);
+    dec.handle_sps(&sps_resize);
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_custom_reference(&mut dec, 1, 2, 20, None);
+    push_custom_reference(&mut dec, 2, 8, 100, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+    header.num_ref_idx_l0 = 2;
+    header.num_ref_idx_l1 = 2;
+
+    // mb0: skip_run=0, mb_type=22(B_8x8), sub_mb_type 全为 1(L0_8x8), ref_idx_l0=[0,1,1,0]
+    // mb1: skip_run=0, mb_type=23(intra), 用于验证位流消费对齐。
+    let rbsp = build_rbsp_from_ues(&[0, 22, 1, 1, 1, 1, 0, 1, 1, 0, 0, 23]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    assert_eq!(dec.ref_y[0], 20, "左上 8x8 应使用 L0 ref_idx=0");
+    assert_eq!(dec.ref_y[8], 100, "右上 8x8 应使用 L0 ref_idx=1");
+    assert_eq!(
+        dec.ref_y[8 * dec.stride_y],
+        100,
+        "左下 8x8 应使用 L0 ref_idx=1"
+    );
+    assert_eq!(
+        dec.ref_y[8 * dec.stride_y + 8],
+        20,
+        "右下 8x8 应使用 L0 ref_idx=0"
+    );
+    assert_eq!(dec.mb_types[1], 1, "第二个宏块应解析为帧内宏块");
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l1_ref_idx_alignment() {
+    let mut dec = build_test_decoder();
+    let sps_resize = build_sps_nalu(0, 32, 16);
+    dec.handle_sps(&sps_resize);
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_custom_reference(&mut dec, 1, 2, 20, None);
+    push_custom_reference(&mut dec, 2, 8, 100, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+    header.num_ref_idx_l0 = 2;
+    header.num_ref_idx_l1 = 2;
+
+    // mb0: skip_run=0, mb_type=22(B_8x8), sub_mb_type 全为 2(L1_8x8), ref_idx_l1=[0,1,1,0]
+    // mb1: skip_run=0, mb_type=23(intra), 用于验证位流消费对齐。
+    let rbsp = build_rbsp_from_ues(&[0, 22, 2, 2, 2, 2, 0, 1, 1, 0, 0, 23]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    assert_eq!(dec.ref_y[0], 100, "左上 8x8 应使用 L1 ref_idx=0");
+    assert_eq!(dec.ref_y[8], 20, "右上 8x8 应使用 L1 ref_idx=1");
+    assert_eq!(
+        dec.ref_y[8 * dec.stride_y],
+        20,
+        "左下 8x8 应使用 L1 ref_idx=1"
+    );
+    assert_eq!(
+        dec.ref_y[8 * dec.stride_y + 8],
+        100,
+        "右下 8x8 应使用 L1 ref_idx=0"
+    );
+    assert_eq!(dec.mb_types[1], 1, "第二个宏块应解析为帧内宏块");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_b_skip_run_explicit_weighted() {
     let mut dec = build_test_decoder();
     dec.last_slice_type = 1;

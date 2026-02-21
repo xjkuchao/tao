@@ -917,6 +917,71 @@ impl H264Decoder {
                 if is_inter {
                     self.mb_types[mb_idx] = 254;
                     self.mb_cbp[mb_idx] = 0;
+                    if mb_type == 22 {
+                        let mut sub_mb_types = [0u32; 4];
+                        for slot in &mut sub_mb_types {
+                            *slot = read_ue(&mut br).unwrap_or(0);
+                        }
+                        for (sub_idx, sub_mb_type) in sub_mb_types.iter().copied().enumerate() {
+                            let sub_x = mb_x * 16 + (sub_idx % 2) * 8;
+                            let sub_y = mb_y * 16 + (sub_idx / 2) * 8;
+                            let use_l0 = matches!(sub_mb_type, 1 | 3 | 4 | 5 | 8 | 9 | 10 | 12);
+                            let use_l1 = matches!(sub_mb_type, 2 | 3 | 6 | 7 | 8 | 9 | 11 | 12);
+
+                            let mut l0_motion = None;
+                            let mut l1_motion = None;
+                            if use_l0 {
+                                let mut ref_idx_l0 = 0usize;
+                                if header.num_ref_idx_l0 > 1 {
+                                    ref_idx_l0 = read_ue(&mut br).unwrap_or(0) as usize;
+                                }
+                                l0_motion = Some(BMotion {
+                                    mv_x: 0,
+                                    mv_y: 0,
+                                    ref_idx: ref_idx_l0.min(i8::MAX as usize) as i8,
+                                });
+                            }
+                            if use_l1 {
+                                let mut ref_idx_l1 = 0usize;
+                                if header.num_ref_idx_l1 > 1 {
+                                    ref_idx_l1 = read_ue(&mut br).unwrap_or(0) as usize;
+                                }
+                                l1_motion = Some(BMotion {
+                                    mv_x: 0,
+                                    mv_y: 0,
+                                    ref_idx: ref_idx_l1.min(i8::MAX as usize) as i8,
+                                });
+                            }
+                            if l0_motion.is_none() && l1_motion.is_none() {
+                                l0_motion = Some(BMotion {
+                                    mv_x: 0,
+                                    mv_y: 0,
+                                    ref_idx: 0,
+                                });
+                                l1_motion = Some(BMotion {
+                                    mv_x: 0,
+                                    mv_y: 0,
+                                    ref_idx: 0,
+                                });
+                            }
+                            let _ = self.apply_b_prediction_block(
+                                l0_motion,
+                                l1_motion,
+                                &header.l0_weights,
+                                &header.l1_weights,
+                                header.luma_log2_weight_denom,
+                                header.chroma_log2_weight_denom,
+                                &ref_l0_list,
+                                &ref_l1_list,
+                                sub_x,
+                                sub_y,
+                                8,
+                                8,
+                            );
+                        }
+                        continue;
+                    }
+
                     let mut l0_ref_idx = 0usize;
                     let mut l1_ref_idx = 0usize;
                     if mb_type == 1 && header.num_ref_idx_l0 > 1 {
