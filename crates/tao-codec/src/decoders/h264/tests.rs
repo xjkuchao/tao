@@ -5,8 +5,9 @@ use tao_core::Rational;
 use crate::frame::Frame;
 
 use super::{
-    DecRefPicMarking, H264Decoder, MmcoOp, NalUnit, ParameterSetRebuildAction, PendingFrameMeta,
-    Pps, RefPicListMod, RefPlanes, ReferencePicture, SliceHeader, Sps, sample_h264_luma_qpel,
+    BMotion, DecRefPicMarking, H264Decoder, MmcoOp, NalUnit, ParameterSetRebuildAction,
+    PendingFrameMeta, Pps, PredWeightL0, RefPicListMod, RefPlanes, ReferencePicture, SliceHeader,
+    Sps, sample_h264_luma_qpel,
 };
 
 fn build_test_pps() -> Pps {
@@ -1513,6 +1514,95 @@ fn test_apply_inter_block_l0_selects_ref_by_ref_idx() {
     assert_eq!(dec.ref_y[0], 201, "ref_idx=1 时亮度应来自第二个参考帧");
     assert_eq!(dec.ref_u[0], 202, "ref_idx=1 时 U 应来自第二个参考帧");
     assert_eq!(dec.ref_v[0], 203, "ref_idx=1 时 V 应来自第二个参考帧");
+}
+
+#[test]
+fn test_apply_b_prediction_block_explicit_bi_weighted() {
+    let mut dec = build_test_decoder();
+    let mut pps = build_test_pps();
+    pps.weighted_bipred_idc = 1;
+    dec.pps = Some(pps);
+
+    let ref_l0 = vec![build_constant_ref_planes(&dec, 10, 20, 30)];
+    let ref_l1 = vec![build_constant_ref_planes(&dec, 90, 100, 110)];
+    let l0_weights = vec![PredWeightL0 {
+        luma_weight: 0,
+        luma_offset: 0,
+        chroma_weight: [0, 0],
+        chroma_offset: [0, 0],
+    }];
+    let l1_weights = vec![PredWeightL0 {
+        luma_weight: 4,
+        luma_offset: 0,
+        chroma_weight: [4, 4],
+        chroma_offset: [0, 0],
+    }];
+
+    dec.apply_b_prediction_block(
+        Some(BMotion {
+            mv_x: 0,
+            mv_y: 0,
+            ref_idx: 0,
+        }),
+        Some(BMotion {
+            mv_x: 0,
+            mv_y: 0,
+            ref_idx: 0,
+        }),
+        &l0_weights,
+        &l1_weights,
+        2,
+        2,
+        &ref_l0,
+        &ref_l1,
+        0,
+        0,
+        4,
+        4,
+    );
+
+    assert_eq!(dec.ref_y[0], 45, "显式双向加权后亮度应按 list1 权重输出");
+    assert_eq!(dec.ref_u[0], 50, "显式双向加权后 U 应按 list1 权重输出");
+    assert_eq!(dec.ref_v[0], 55, "显式双向加权后 V 应按 list1 权重输出");
+}
+
+#[test]
+fn test_apply_b_prediction_block_explicit_single_l1_weight() {
+    let mut dec = build_test_decoder();
+    let mut pps = build_test_pps();
+    pps.weighted_bipred_idc = 1;
+    dec.pps = Some(pps);
+
+    let ref_l1 = vec![build_constant_ref_planes(&dec, 80, 60, 40)];
+    let l1_weights = vec![PredWeightL0 {
+        luma_weight: 1,
+        luma_offset: 10,
+        chroma_weight: [1, 1],
+        chroma_offset: [2, -2],
+    }];
+
+    dec.apply_b_prediction_block(
+        None,
+        Some(BMotion {
+            mv_x: 0,
+            mv_y: 0,
+            ref_idx: 0,
+        }),
+        &[],
+        &l1_weights,
+        1,
+        1,
+        &[],
+        &ref_l1,
+        0,
+        0,
+        4,
+        4,
+    );
+
+    assert_eq!(dec.ref_y[0], 50, "显式 L1 加权后亮度应应用权重和偏移");
+    assert_eq!(dec.ref_u[0], 32, "显式 L1 加权后 U 应应用权重和偏移");
+    assert_eq!(dec.ref_v[0], 18, "显式 L1 加权后 V 应应用权重和偏移");
 }
 
 #[test]

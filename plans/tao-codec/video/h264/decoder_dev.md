@@ -124,6 +124,7 @@
 - [ ] 宏块分区与运动向量解析。
     - [x] P-slice 互预测路径按 `ref_idx_l0` 选择参考列表项, 不再固定使用 `L0 rank0`。
     - [x] 补齐 `ref_idx_l0` 参考选择单元测试(`test_apply_inter_block_l0_selects_ref_by_ref_idx`)。
+    - [x] B-slice 显式加权预测(`weighted_bipred_idc=1`)接入 list0/list1 权重路径, 并补双向/单向 L1 单测。
 - [ ] 整数/半像素/四分之一像素插值。
     - [x] 亮度路径接入 H264 6-tap + qpel 16 位置组合采样(`sample_h264_luma_qpel`), 并替换 P/B 帧间重建、双向预测与加权预测中的亮度采样入口。
     - [x] 补齐亮度 qpel 单元测试(整像素透传/半像素 6-tap/1/4 与 3/4 像素平均)。

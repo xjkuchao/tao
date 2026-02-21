@@ -30,6 +30,12 @@ pub(super) fn p_l0_weight(weights: &[PredWeightL0], ref_idx: u32) -> Option<&Pre
         .and_then(|idx| weights.get(idx))
 }
 
+pub(super) fn p_l1_weight(weights: &[PredWeightL0], ref_idx: u32) -> Option<&PredWeightL0> {
+    usize::try_from(ref_idx)
+        .ok()
+        .and_then(|idx| weights.get(idx))
+}
+
 pub(super) fn select_ref_planes(ref_list: &[RefPlanes], ref_idx: i8) -> &RefPlanes {
     let Some(first) = ref_list.first() else {
         return &EMPTY_REF_PLANES;

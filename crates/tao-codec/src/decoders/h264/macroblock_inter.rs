@@ -840,6 +840,182 @@ impl H264Decoder {
         }
     }
 
+    fn weighted_bi_sample(
+        p0: i32,
+        p1: i32,
+        w0: i32,
+        w1: i32,
+        o0: i32,
+        o1: i32,
+        log2_denom: u8,
+    ) -> u8 {
+        let shift = i32::from(log2_denom).saturating_add(1);
+        let round = 1i32 << i32::from(log2_denom);
+        let offset = (o0 + o1 + 1) >> 1;
+        let weighted = (w0 * p0 + w1 * p1 + round) >> shift;
+        (weighted + offset).clamp(0, 255) as u8
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn apply_bi_explicit_weighted_block(
+        &mut self,
+        src_l0_y: &[u8],
+        src_l0_u: &[u8],
+        src_l0_v: &[u8],
+        src_l1_y: &[u8],
+        src_l1_u: &[u8],
+        src_l1_v: &[u8],
+        dst_x: usize,
+        dst_y: usize,
+        w: usize,
+        h: usize,
+        mv0_x_qpel: i32,
+        mv0_y_qpel: i32,
+        mv1_x_qpel: i32,
+        mv1_y_qpel: i32,
+        luma_w0: i32,
+        luma_o0: i32,
+        luma_w1: i32,
+        luma_o1: i32,
+        chroma_w0: [i32; 2],
+        chroma_o0: [i32; 2],
+        chroma_w1: [i32; 2],
+        chroma_o1: [i32; 2],
+        luma_log2_weight_denom: u8,
+        chroma_log2_weight_denom: u8,
+    ) {
+        let l0_src_x = dst_x as i32 + floor_div(mv0_x_qpel, 4);
+        let l0_src_y = dst_y as i32 + floor_div(mv0_y_qpel, 4);
+        let l0_fx = mod_floor(mv0_x_qpel, 4) as u8;
+        let l0_fy = mod_floor(mv0_y_qpel, 4) as u8;
+        let l1_src_x = dst_x as i32 + floor_div(mv1_x_qpel, 4);
+        let l1_src_y = dst_y as i32 + floor_div(mv1_y_qpel, 4);
+        let l1_fx = mod_floor(mv1_x_qpel, 4) as u8;
+        let l1_fy = mod_floor(mv1_y_qpel, 4) as u8;
+
+        for y in 0..h {
+            for x in 0..w {
+                let px0 = sample_h264_luma_qpel(
+                    src_l0_y,
+                    self.stride_y,
+                    self.stride_y,
+                    self.mb_height * 16,
+                    l0_src_x + x as i32,
+                    l0_src_y + y as i32,
+                    l0_fx,
+                    l0_fy,
+                ) as i32;
+                let px1 = sample_h264_luma_qpel(
+                    src_l1_y,
+                    self.stride_y,
+                    self.stride_y,
+                    self.mb_height * 16,
+                    l1_src_x + x as i32,
+                    l1_src_y + y as i32,
+                    l1_fx,
+                    l1_fy,
+                ) as i32;
+                let dst_idx = (dst_y + y) * self.stride_y + (dst_x + x);
+                if dst_idx < self.ref_y.len() {
+                    self.ref_y[dst_idx] = Self::weighted_bi_sample(
+                        px0,
+                        px1,
+                        luma_w0,
+                        luma_w1,
+                        luma_o0,
+                        luma_o1,
+                        luma_log2_weight_denom,
+                    );
+                }
+            }
+        }
+
+        let cw = w.div_ceil(2);
+        let ch = h.div_ceil(2);
+        let c_dst_x = dst_x / 2;
+        let c_dst_y = dst_y / 2;
+        let l0_c_src_x = c_dst_x as i32 + floor_div(mv0_x_qpel, 8);
+        let l0_c_src_y = c_dst_y as i32 + floor_div(mv0_y_qpel, 8);
+        let l1_c_src_x = c_dst_x as i32 + floor_div(mv1_x_qpel, 8);
+        let l1_c_src_y = c_dst_y as i32 + floor_div(mv1_y_qpel, 8);
+        let l0_c_fx = mod_floor(mv0_x_qpel, 8) as u8;
+        let l0_c_fy = mod_floor(mv0_y_qpel, 8) as u8;
+        let l1_c_fx = mod_floor(mv1_x_qpel, 8) as u8;
+        let l1_c_fy = mod_floor(mv1_y_qpel, 8) as u8;
+
+        for y in 0..ch {
+            for x in 0..cw {
+                let u0 = sample_bilinear_clamped(
+                    src_l0_u,
+                    self.stride_c,
+                    self.stride_c,
+                    self.mb_height * 8,
+                    l0_c_src_x + x as i32,
+                    l0_c_src_y + y as i32,
+                    l0_c_fx,
+                    l0_c_fy,
+                    8,
+                ) as i32;
+                let u1 = sample_bilinear_clamped(
+                    src_l1_u,
+                    self.stride_c,
+                    self.stride_c,
+                    self.mb_height * 8,
+                    l1_c_src_x + x as i32,
+                    l1_c_src_y + y as i32,
+                    l1_c_fx,
+                    l1_c_fy,
+                    8,
+                ) as i32;
+                let v0 = sample_bilinear_clamped(
+                    src_l0_v,
+                    self.stride_c,
+                    self.stride_c,
+                    self.mb_height * 8,
+                    l0_c_src_x + x as i32,
+                    l0_c_src_y + y as i32,
+                    l0_c_fx,
+                    l0_c_fy,
+                    8,
+                ) as i32;
+                let v1 = sample_bilinear_clamped(
+                    src_l1_v,
+                    self.stride_c,
+                    self.stride_c,
+                    self.mb_height * 8,
+                    l1_c_src_x + x as i32,
+                    l1_c_src_y + y as i32,
+                    l1_c_fx,
+                    l1_c_fy,
+                    8,
+                ) as i32;
+                let dst_idx = (c_dst_y + y) * self.stride_c + (c_dst_x + x);
+                if dst_idx < self.ref_u.len() {
+                    self.ref_u[dst_idx] = Self::weighted_bi_sample(
+                        u0,
+                        u1,
+                        chroma_w0[0],
+                        chroma_w1[0],
+                        chroma_o0[0],
+                        chroma_o1[0],
+                        chroma_log2_weight_denom,
+                    );
+                }
+                if dst_idx < self.ref_v.len() {
+                    self.ref_v[dst_idx] = Self::weighted_bi_sample(
+                        v0,
+                        v1,
+                        chroma_w0[1],
+                        chroma_w1[1],
+                        chroma_o0[1],
+                        chroma_o1[1],
+                        chroma_log2_weight_denom,
+                    );
+                }
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_p_inter_mb(
         &mut self,
@@ -1099,10 +1275,10 @@ impl H264Decoder {
         slice_qp: i32,
         num_ref_idx_l0: u32,
         num_ref_idx_l1: u32,
-        _l0_weights: &[PredWeightL0],
-        _l1_weights: &[PredWeightL0],
-        _luma_log2_weight_denom: u8,
-        _chroma_log2_weight_denom: u8,
+        l0_weights: &[PredWeightL0],
+        l1_weights: &[PredWeightL0],
+        luma_log2_weight_denom: u8,
+        chroma_log2_weight_denom: u8,
         ref_l0_list: &[RefPlanes],
         ref_l1_list: &[RefPlanes],
     ) {
@@ -1128,36 +1304,31 @@ impl H264Decoder {
                 self.reset_chroma_cbf_mb(mb_x, mb_y);
                 self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
                 let (pred_x, pred_y) = self.predict_mv_l0_16x16(mb_x, mb_y);
-                let ref_l0 = select_ref_planes(ref_l0_list, 0);
-                self.apply_inter_block(
-                    ref_l0.y.as_slice(),
-                    ref_l0.u.as_slice(),
-                    ref_l0.v.as_slice(),
+                let (mv_x, mv_y, ref_idx) = self.apply_b_prediction_block(
+                    Some(BMotion {
+                        mv_x: pred_x,
+                        mv_y: pred_y,
+                        ref_idx: 0,
+                    }),
+                    Some(BMotion {
+                        mv_x: pred_x,
+                        mv_y: pred_y,
+                        ref_idx: 0,
+                    }),
+                    l0_weights,
+                    l1_weights,
+                    luma_log2_weight_denom,
+                    chroma_log2_weight_denom,
+                    ref_l0_list,
+                    ref_l1_list,
                     mb_x * 16,
                     mb_y * 16,
                     16,
                     16,
-                    pred_x,
-                    pred_y,
-                    None,
-                    0,
-                    0,
                 );
-                let ref_l1 = select_ref_planes(ref_l1_list, 0);
-                self.blend_inter_block(
-                    ref_l1.y.as_slice(),
-                    ref_l1.u.as_slice(),
-                    ref_l1.v.as_slice(),
-                    mb_x * 16,
-                    mb_y * 16,
-                    16,
-                    16,
-                    pred_x,
-                    pred_y,
-                );
-                self.mv_l0_x[mb_idx] = pred_x as i16;
-                self.mv_l0_y[mb_idx] = pred_y as i16;
-                self.ref_idx_l0[mb_idx] = 0;
+                self.mv_l0_x[mb_idx] = mv_x.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                self.mv_l0_y[mb_idx] = mv_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                self.ref_idx_l0[mb_idx] = ref_idx;
             } else {
                 match self.decode_b_mb_type(cabac, ctxs, mb_x, mb_y) {
                     BMbType::Intra => {
@@ -1198,6 +1369,10 @@ impl H264Decoder {
                             &mut cur_qp,
                             num_ref_idx_l0,
                             num_ref_idx_l1,
+                            l0_weights,
+                            l1_weights,
+                            luma_log2_weight_denom,
+                            chroma_log2_weight_denom,
                             ref_l0_list,
                             ref_l1_list,
                         );
@@ -1212,6 +1387,10 @@ impl H264Decoder {
                             &mut cur_qp,
                             num_ref_idx_l0,
                             num_ref_idx_l1,
+                            l0_weights,
+                            l1_weights,
+                            luma_log2_weight_denom,
+                            chroma_log2_weight_denom,
                             ref_l0_list,
                             ref_l1_list,
                         );
@@ -1253,6 +1432,10 @@ impl H264Decoder {
         &mut self,
         motion_l0: Option<BMotion>,
         motion_l1: Option<BMotion>,
+        l0_weights: &[PredWeightL0],
+        l1_weights: &[PredWeightL0],
+        luma_log2_weight_denom: u8,
+        chroma_log2_weight_denom: u8,
         ref_l0_list: &[RefPlanes],
         ref_l1_list: &[RefPlanes],
         dst_x: usize,
@@ -1289,6 +1472,49 @@ impl H264Decoder {
                         w0,
                         w1,
                     );
+                } else if weighted_bipred_idc == 1 {
+                    let default_luma_weight = 1 << luma_log2_weight_denom;
+                    let default_chroma_weight = 1 << chroma_log2_weight_denom;
+                    let weight_l0 = p_l0_weight(l0_weights, m0.ref_idx.max(0) as u32).copied();
+                    let weight_l1 = p_l1_weight(l1_weights, m1.ref_idx.max(0) as u32).copied();
+                    let l0 = weight_l0.unwrap_or(PredWeightL0 {
+                        luma_weight: default_luma_weight,
+                        luma_offset: 0,
+                        chroma_weight: [default_chroma_weight; 2],
+                        chroma_offset: [0, 0],
+                    });
+                    let l1 = weight_l1.unwrap_or(PredWeightL0 {
+                        luma_weight: default_luma_weight,
+                        luma_offset: 0,
+                        chroma_weight: [default_chroma_weight; 2],
+                        chroma_offset: [0, 0],
+                    });
+                    self.apply_bi_explicit_weighted_block(
+                        ref_l0.y.as_slice(),
+                        ref_l0.u.as_slice(),
+                        ref_l0.v.as_slice(),
+                        ref_l1.y.as_slice(),
+                        ref_l1.u.as_slice(),
+                        ref_l1.v.as_slice(),
+                        dst_x,
+                        dst_y,
+                        w,
+                        h,
+                        m0.mv_x,
+                        m0.mv_y,
+                        m1.mv_x,
+                        m1.mv_y,
+                        l0.luma_weight,
+                        l0.luma_offset,
+                        l1.luma_weight,
+                        l1.luma_offset,
+                        l0.chroma_weight,
+                        l0.chroma_offset,
+                        l1.chroma_weight,
+                        l1.chroma_offset,
+                        luma_log2_weight_denom,
+                        chroma_log2_weight_denom,
+                    );
                 } else {
                     self.apply_inter_block(
                         ref_l0.y.as_slice(),
@@ -1320,6 +1546,16 @@ impl H264Decoder {
             }
             (Some(m0), None) => {
                 let ref_l0 = select_ref_planes(ref_l0_list, m0.ref_idx);
+                let weighted_bipred_idc = self
+                    .pps
+                    .as_ref()
+                    .map(|p| p.weighted_bipred_idc)
+                    .unwrap_or(0);
+                let pred_weight = if weighted_bipred_idc == 1 {
+                    p_l0_weight(l0_weights, m0.ref_idx.max(0) as u32)
+                } else {
+                    None
+                };
                 self.apply_inter_block(
                     ref_l0.y.as_slice(),
                     ref_l0.u.as_slice(),
@@ -1330,14 +1566,24 @@ impl H264Decoder {
                     h,
                     m0.mv_x,
                     m0.mv_y,
-                    None,
-                    0,
-                    0,
+                    pred_weight,
+                    luma_log2_weight_denom,
+                    chroma_log2_weight_denom,
                 );
                 (m0.mv_x, m0.mv_y, m0.ref_idx)
             }
             (None, Some(m1)) => {
                 let ref_l1 = select_ref_planes(ref_l1_list, m1.ref_idx);
+                let weighted_bipred_idc = self
+                    .pps
+                    .as_ref()
+                    .map(|p| p.weighted_bipred_idc)
+                    .unwrap_or(0);
+                let pred_weight = if weighted_bipred_idc == 1 {
+                    p_l1_weight(l1_weights, m1.ref_idx.max(0) as u32)
+                } else {
+                    None
+                };
                 self.apply_inter_block(
                     ref_l1.y.as_slice(),
                     ref_l1.u.as_slice(),
@@ -1348,9 +1594,9 @@ impl H264Decoder {
                     h,
                     m1.mv_x,
                     m1.mv_y,
-                    None,
-                    0,
-                    0,
+                    pred_weight,
+                    luma_log2_weight_denom,
+                    chroma_log2_weight_denom,
                 );
                 (m1.mv_x, m1.mv_y, m1.ref_idx)
             }
@@ -1369,6 +1615,10 @@ impl H264Decoder {
         cur_qp: &mut i32,
         num_ref_idx_l0: u32,
         num_ref_idx_l1: u32,
+        l0_weights: &[PredWeightL0],
+        l1_weights: &[PredWeightL0],
+        luma_log2_weight_denom: u8,
+        chroma_log2_weight_denom: u8,
         ref_l0_list: &[RefPlanes],
         ref_l1_list: &[RefPlanes],
     ) {
@@ -1397,6 +1647,10 @@ impl H264Decoder {
                         mv_y: pred_mv_y,
                         ref_idx: 0,
                     }),
+                    l0_weights,
+                    l1_weights,
+                    luma_log2_weight_denom,
+                    chroma_log2_weight_denom,
                     ref_l0_list,
                     ref_l1_list,
                     mb_x * 16,
@@ -1437,6 +1691,10 @@ impl H264Decoder {
                         let (mv_x, mv_y, ref_idx) = self.apply_b_prediction_block(
                             motion_l0,
                             motion_l1,
+                            l0_weights,
+                            l1_weights,
+                            luma_log2_weight_denom,
+                            chroma_log2_weight_denom,
                             ref_l0_list,
                             ref_l1_list,
                             mb_x * 16 + sx + part_off_x,
@@ -1473,6 +1731,10 @@ impl H264Decoder {
                         let (mv_x, mv_y, ref_idx) = self.apply_b_prediction_block(
                             motion_l0,
                             motion_l1,
+                            l0_weights,
+                            l1_weights,
+                            luma_log2_weight_denom,
+                            chroma_log2_weight_denom,
                             ref_l0_list,
                             ref_l1_list,
                             mb_x * 16 + part_off_x,
