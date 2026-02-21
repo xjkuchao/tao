@@ -2544,6 +2544,100 @@ fn test_apply_b_prediction_block_default_bi_weighted_rounding() {
 }
 
 #[test]
+fn test_apply_b_prediction_block_default_bi_weighted_rounding_fractional_mv() {
+    let mut dec = build_test_decoder();
+    let mut pps = build_test_pps();
+    pps.weighted_bipred_idc = 0;
+    dec.pps = Some(pps);
+
+    let ref_l0 = vec![build_constant_ref_planes(&dec, 40, 50, 60)];
+    let mut ref_l1_plane = build_constant_ref_planes(&dec, 0, 0, 0);
+    for row in 0..dec.height as usize {
+        for col in 0..dec.width as usize {
+            ref_l1_plane.y[row * dec.stride_y + col] = ((row * 7 + col * 3) % 200 + 20) as u8;
+        }
+    }
+    for row in 0..(dec.height as usize / 2) {
+        for col in 0..(dec.width as usize / 2) {
+            let idx = row * dec.stride_c + col;
+            ref_l1_plane.u[idx] = ((idx * 5) % 200 + 10) as u8;
+            ref_l1_plane.v[idx] = ((idx * 7) % 200 + 30) as u8;
+        }
+    }
+    let ref_l1 = vec![ref_l1_plane.clone()];
+
+    dec.apply_b_prediction_block(
+        Some(BMotion {
+            mv_x: 0,
+            mv_y: 0,
+            ref_idx: 0,
+        }),
+        Some(BMotion {
+            mv_x: 1,
+            mv_y: 3,
+            ref_idx: 0,
+        }),
+        &[],
+        &[],
+        0,
+        0,
+        &ref_l0,
+        &ref_l1,
+        0,
+        0,
+        4,
+        4,
+    );
+
+    let l1_y = sample_h264_luma_qpel(
+        ref_l1[0].y.as_slice(),
+        dec.stride_y,
+        dec.stride_y,
+        dec.mb_height * 16,
+        0,
+        0,
+        1,
+        3,
+    );
+    let l1_u = sample_h264_chroma_qpel(
+        ref_l1[0].u.as_slice(),
+        dec.stride_c,
+        dec.stride_c,
+        dec.mb_height * 8,
+        0,
+        0,
+        1,
+        3,
+    );
+    let l1_v = sample_h264_chroma_qpel(
+        ref_l1[0].v.as_slice(),
+        dec.stride_c,
+        dec.stride_c,
+        dec.mb_height * 8,
+        0,
+        0,
+        1,
+        3,
+    );
+    let round_avg = |a: u8, b: u8| -> u8 { ((u16::from(a) + u16::from(b) + 1) >> 1) as u8 };
+    assert_eq!(
+        dec.ref_y[0],
+        round_avg(40, l1_y),
+        "默认双向融合亮度应按 qpel 插值结果执行 (L0+L1+1)>>1 舍入"
+    );
+    assert_eq!(
+        dec.ref_u[0],
+        round_avg(50, l1_u),
+        "默认双向融合 U 应按 qpel 插值结果执行 (L0+L1+1)>>1 舍入"
+    );
+    assert_eq!(
+        dec.ref_v[0],
+        round_avg(60, l1_v),
+        "默认双向融合 V 应按 qpel 插值结果执行 (L0+L1+1)>>1 舍入"
+    );
+}
+
+#[test]
 fn test_implicit_bi_weights_from_poc_distance() {
     let mut dec = build_test_decoder();
     dec.last_poc = 6;

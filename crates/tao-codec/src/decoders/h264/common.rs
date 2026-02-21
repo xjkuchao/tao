@@ -55,6 +55,10 @@ pub(super) fn apply_weighted_sample(sample: u8, weight: i32, offset: i32, log2_d
     (shifted + offset).clamp(0, 255) as u8
 }
 
+pub(super) fn h264_round_avg_u8(a: u8, b: u8) -> u8 {
+    ((u16::from(a) + u16::from(b) + 1) >> 1) as u8
+}
+
 pub(super) fn sample_clamped(
     src: &[u8],
     stride: usize,
@@ -378,7 +382,7 @@ pub(super) fn blend_luma_block_with_h264_qpel(
                     frac_x,
                     frac_y,
                 );
-                dst[dst_idx] = ((u16::from(dst[dst_idx]) + u16::from(sample) + 1) >> 1) as u8;
+                dst[dst_idx] = h264_round_avg_u8(dst[dst_idx], sample);
             }
         }
     }
@@ -536,8 +540,7 @@ pub(super) fn blend_block_with_qpel_bilinear(
                         frac_base,
                     )
                 };
-                let blended = ((u16::from(dst[dst_idx]) + u16::from(sample) + 1) >> 1) as u8;
-                dst[dst_idx] = blended;
+                dst[dst_idx] = h264_round_avg_u8(dst[dst_idx], sample);
             }
         }
     }
