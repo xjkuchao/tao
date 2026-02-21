@@ -43,6 +43,8 @@ pub struct Sps {
     pub height: u32,
     /// 是否为帧编码 (非场编码)
     pub frame_mbs_only: bool,
+    /// `direct_8x8_inference_flag`.
+    pub direct_8x8_inference_flag: bool,
     /// 是否存在 VUI 参数
     pub vui_present: bool,
     /// 帧率 (如果 VUI 中有 timing_info)
@@ -271,7 +273,7 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
     }
 
     // direct_8x8_inference_flag
-    br.skip_bits(1)?;
+    let direct_8x8_inference_flag = br.read_bit()? == 1;
 
     // Cropping
     let mut crop_left = 0u32;
@@ -354,6 +356,7 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
         width,
         height,
         frame_mbs_only,
+        direct_8x8_inference_flag,
         vui_present,
         fps,
         max_num_reorder_frames,
@@ -815,6 +818,10 @@ mod tests {
         assert_eq!(sps.width, 1920);
         assert_eq!(sps.height, 1080);
         assert_eq!(sps.chroma_format_idc, 1); // 默认 4:2:0
+        assert!(
+            !sps.direct_8x8_inference_flag,
+            "测试样例中 direct_8x8_inference_flag 应为 0"
+        );
     }
 
     #[test]
@@ -826,6 +833,10 @@ mod tests {
         assert_eq!(sps.level_idc, 41);
         assert_eq!(sps.width, 1280);
         assert_eq!(sps.height, 720);
+        assert!(
+            !sps.direct_8x8_inference_flag,
+            "测试样例中 direct_8x8_inference_flag 应为 0"
+        );
         assert!(
             !sps.qpprime_y_zero_transform_bypass_flag,
             "默认高 profile 测试样例应关闭变换旁路"

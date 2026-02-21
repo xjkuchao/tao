@@ -70,6 +70,7 @@ crates/tao-codec/src/decoders/h264/
 - [ ] SPS/PPS 完整解析.
     - [x] PPS 解析迁移 + 合法性校验 + 单测.
     - [x] SPS 基础/深度校验 + 单测.
+    - [x] SPS `direct_8x8_inference_flag` 解析接入 + 单测.
     - [x] SPS 能力门禁(4:2:0 + 8-bit + frame_mbs_only).
     - [x] `handle_sps` 缓存前能力校验 + 单测.
     - [x] avcC 全链路校验(版本/保留位/截断/NAL类型) + 单测.

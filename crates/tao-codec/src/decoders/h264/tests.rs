@@ -49,6 +49,7 @@ fn build_test_sps(sps_id: u32) -> Sps {
         width: 16,
         height: 16,
         frame_mbs_only: true,
+        direct_8x8_inference_flag: true,
         vui_present: false,
         fps: None,
         max_num_reorder_frames: None,
@@ -2010,6 +2011,19 @@ fn test_handle_sps_same_id_size_change_resets_reference_state() {
     assert_eq!(
         dec.decode_order_counter, 0,
         "尺寸变化应重置 decode_order_counter"
+    );
+}
+
+#[test]
+fn test_handle_sps_stores_direct_8x8_inference_flag() {
+    let mut dec = build_test_decoder();
+    let sps = build_sps_nalu(0, 16, 16);
+    dec.handle_sps(&sps);
+
+    let cached = dec.sps.as_ref().expect("handle_sps 后应缓存当前 SPS");
+    assert!(
+        !cached.direct_8x8_inference_flag,
+        "应从 SPS RBSP 正确解析并缓存 direct_8x8_inference_flag"
     );
 }
 
