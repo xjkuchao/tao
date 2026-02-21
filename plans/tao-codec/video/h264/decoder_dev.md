@@ -116,6 +116,7 @@
     - [x] 接入最小 CAVLC slice 数据路径: `mb_skip_run/mb_type` 基础语法消费 + I 宏块基础帧内预测 + P/B 宏块参考复制。
     - [x] 补齐 CAVLC 最小路径单元测试(I-slice 最小路径, P-slice skip_run 参考复制)。
     - [x] CAVLC B-slice 最小路径接入 list0/list1 预测融合(含显式加权), 并补 skip_run 单元测试。
+    - [x] CAVLC B-slice 非 skip `mb_type=1/2` 接入 `L0-only/L1-only` 方向选择, 并补单元测试。
     - [x] CAVLC P-slice 非 skip `I` 宏块(`mb_type>=5`)接入帧内预测路径, 并补单元测试。
     - [x] CAVLC P-slice 非 skip `P_L0_16x16` 接入 `ref_idx_l0` 语法消费与参考帧选择, 并补单元测试。
 - [ ] 残差逆变换/反量化覆盖 4x4/8x8 关键路径。

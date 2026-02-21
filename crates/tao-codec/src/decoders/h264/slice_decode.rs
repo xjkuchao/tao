@@ -917,17 +917,24 @@ impl H264Decoder {
                 if is_inter {
                     self.mb_types[mb_idx] = 254;
                     self.mb_cbp[mb_idx] = 0;
+                    let mut l0_motion = Some(BMotion {
+                        mv_x: 0,
+                        mv_y: 0,
+                        ref_idx: 0,
+                    });
+                    let mut l1_motion = Some(BMotion {
+                        mv_x: 0,
+                        mv_y: 0,
+                        ref_idx: 0,
+                    });
+                    if mb_type == 1 {
+                        l1_motion = None;
+                    } else if mb_type == 2 {
+                        l0_motion = None;
+                    }
                     let _ = self.apply_b_prediction_block(
-                        Some(BMotion {
-                            mv_x: 0,
-                            mv_y: 0,
-                            ref_idx: 0,
-                        }),
-                        Some(BMotion {
-                            mv_x: 0,
-                            mv_y: 0,
-                            ref_idx: 0,
-                        }),
+                        l0_motion,
+                        l1_motion,
                         &header.l0_weights,
                         &header.l1_weights,
                         header.luma_log2_weight_denom,
