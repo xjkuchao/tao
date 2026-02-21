@@ -6,6 +6,8 @@
 //! - 亮度 4x4 内部边界按 `cbf/ref_idx/mv` 估算强弱(`bs=2/1/0`).
 //! - 弱滤波使用 `tc0` 约束, 强滤波使用更强的 `p0/q0` 更新.
 
+use super::common::chroma_qp_from_luma_with_offset;
+
 /// 去块滤波输入参数.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct DeblockSliceParams<'a> {
@@ -15,6 +17,8 @@ pub(super) struct DeblockSliceParams<'a> {
     pub(super) height: usize,
     pub(super) slice_qp: i32,
     pub(super) disable_deblocking_filter_idc: u32,
+    pub(super) chroma_qp_index_offset: i32,
+    pub(super) second_chroma_qp_index_offset: i32,
     pub(super) alpha_offset_div2: i32,
     pub(super) beta_offset_div2: i32,
     pub(super) mb_width: usize,
@@ -45,6 +49,8 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
         height,
         slice_qp,
         disable_deblocking_filter_idc,
+        chroma_qp_index_offset,
+        second_chroma_qp_index_offset,
         alpha_offset_div2,
         beta_offset_div2,
         mb_width,
@@ -63,12 +69,18 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
     if width == 0 || height == 0 {
         return;
     }
-    let alpha_idx = alpha_index(slice_qp, alpha_offset_div2);
-    let alpha = alpha_threshold(slice_qp, alpha_offset_div2);
-    let beta = beta_threshold(slice_qp, beta_offset_div2);
-    if alpha == 0 || beta == 0 {
-        return;
-    }
+    let luma_alpha_idx = alpha_index(slice_qp, alpha_offset_div2);
+    let luma_alpha = alpha_threshold(slice_qp, alpha_offset_div2);
+    let luma_beta = beta_threshold(slice_qp, beta_offset_div2);
+
+    let chroma_qp_u = chroma_qp_from_luma_with_offset(slice_qp, chroma_qp_index_offset);
+    let chroma_qp_v = chroma_qp_from_luma_with_offset(slice_qp, second_chroma_qp_index_offset);
+    let chroma_alpha_idx_u = alpha_index(chroma_qp_u, alpha_offset_div2);
+    let chroma_alpha_u = alpha_threshold(chroma_qp_u, alpha_offset_div2);
+    let chroma_beta_u = beta_threshold(chroma_qp_u, beta_offset_div2);
+    let chroma_alpha_idx_v = alpha_index(chroma_qp_v, alpha_offset_div2);
+    let chroma_alpha_v = alpha_threshold(chroma_qp_v, alpha_offset_div2);
+    let chroma_beta_v = beta_threshold(chroma_qp_v, beta_offset_div2);
 
     let mb_ctx = mb_types.and_then(|types| {
         mb_cbp.and_then(|cbp| {
@@ -104,9 +116,9 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
         height,
         4,
         16,
-        alpha_idx,
-        alpha,
-        beta,
+        luma_alpha_idx,
+        luma_alpha,
+        luma_beta,
         mb_ctx.as_ref(),
     );
     apply_adaptive_deblock_plane(
@@ -116,9 +128,9 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
         height / 2,
         2,
         8,
-        alpha_idx,
-        alpha,
-        beta,
+        chroma_alpha_idx_u,
+        chroma_alpha_u,
+        chroma_beta_u,
         mb_ctx.as_ref(),
     );
     apply_adaptive_deblock_plane(
@@ -128,9 +140,9 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
         height / 2,
         2,
         8,
-        alpha_idx,
-        alpha,
-        beta,
+        chroma_alpha_idx_v,
+        chroma_alpha_v,
+        chroma_beta_v,
         mb_ctx.as_ref(),
     );
 }
@@ -816,6 +828,8 @@ mod tests {
                 height,
                 slice_qp: 20,
                 disable_deblocking_filter_idc: 0,
+                chroma_qp_index_offset: 0,
+                second_chroma_qp_index_offset: 0,
                 alpha_offset_div2: 0,
                 beta_offset_div2: 0,
                 mb_width: 0,
@@ -847,6 +861,8 @@ mod tests {
                 height,
                 slice_qp: 20,
                 disable_deblocking_filter_idc: 0,
+                chroma_qp_index_offset: 0,
+                second_chroma_qp_index_offset: 0,
                 alpha_offset_div2: 3,
                 beta_offset_div2: 0,
                 mb_width: 0,
@@ -918,6 +934,8 @@ mod tests {
                 height,
                 slice_qp: 26,
                 disable_deblocking_filter_idc: 0,
+                chroma_qp_index_offset: 0,
+                second_chroma_qp_index_offset: 0,
                 alpha_offset_div2: 0,
                 beta_offset_div2: 0,
                 mb_width: 0,
@@ -938,6 +956,70 @@ mod tests {
         assert_ne!(y[8], 48, "亮度平面应发生平滑");
         assert_ne!(u[4], 72, "U 平面应发生平滑");
         assert_ne!(v[4], 104, "V 平面应发生平滑");
+    }
+
+    #[test]
+    fn test_apply_deblock_uses_chroma_qp_mapping_offsets() {
+        let width = 16usize;
+        let height = 16usize;
+        let stride_y = width;
+        let stride_c = width / 2;
+        let mut y = vec![32u8; stride_y * height];
+        let mut u = vec![60u8; stride_c * (height / 2)];
+        let mut v = vec![80u8; stride_c * (height / 2)];
+
+        for row in 0..height {
+            let base = row * stride_y;
+            y[base + 6] = 40;
+            y[base + 7] = 40;
+            y[base + 8] = 42;
+            y[base + 9] = 42;
+        }
+        for row in 0..(height / 2) {
+            let base = row * stride_c;
+            u[base + 2] = 60;
+            u[base + 3] = 60;
+            u[base + 4] = 62;
+            u[base + 5] = 62;
+            v[base + 2] = 80;
+            v[base + 3] = 80;
+            v[base + 4] = 82;
+            v[base + 5] = 82;
+        }
+
+        apply_deblock_yuv420_with_slice_params(
+            &mut y,
+            &mut u,
+            &mut v,
+            DeblockSliceParams {
+                stride_y,
+                stride_c,
+                width,
+                height,
+                slice_qp: 4,
+                disable_deblocking_filter_idc: 0,
+                chroma_qp_index_offset: 12,
+                second_chroma_qp_index_offset: 12,
+                alpha_offset_div2: 0,
+                beta_offset_div2: 0,
+                mb_width: 0,
+                mb_height: 0,
+                mb_types: None,
+                mb_cbp: None,
+                mb_slice_first_mb: None,
+                mv_l0_x: None,
+                mv_l0_y: None,
+                ref_idx_l0: None,
+                cbf_luma: None,
+                mv_l0_x_4x4: None,
+                mv_l0_y_4x4: None,
+                ref_idx_l0_4x4: None,
+            },
+        );
+
+        assert_eq!(y[8], 42, "低 luma QP 时亮度阈值为 0, 不应触发去块");
+        assert_ne!(u[4], 62, "色度 U 应使用 chroma_qp 映射后阈值触发去块");
+        assert_ne!(v[4], 82, "色度 V 应使用 chroma_qp 映射后阈值触发去块");
     }
 
     #[test]

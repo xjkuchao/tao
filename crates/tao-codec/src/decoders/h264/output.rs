@@ -592,6 +592,11 @@ impl H264Decoder {
         let h = self.height as usize;
 
         if self.last_disable_deblocking_filter_idc != 1 {
+            let (chroma_qp_index_offset, second_chroma_qp_index_offset) = self
+                .pps
+                .as_ref()
+                .map(|p| (p.chroma_qp_index_offset, p.second_chroma_qp_index_offset))
+                .unwrap_or((0, 0));
             deblock::apply_deblock_yuv420_with_slice_params(
                 &mut self.ref_y,
                 &mut self.ref_u,
@@ -603,6 +608,8 @@ impl H264Decoder {
                     height: h,
                     slice_qp: self.last_slice_qp,
                     disable_deblocking_filter_idc: self.last_disable_deblocking_filter_idc,
+                    chroma_qp_index_offset,
+                    second_chroma_qp_index_offset,
                     alpha_offset_div2: self.last_slice_alpha_c0_offset_div2,
                     beta_offset_div2: self.last_slice_beta_offset_div2,
                     mb_width: self.mb_width,
