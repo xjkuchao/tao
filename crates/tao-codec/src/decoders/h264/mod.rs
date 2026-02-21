@@ -16,6 +16,7 @@ mod macroblock_state;
 mod output;
 mod parameter_sets;
 mod residual;
+mod sei;
 mod slice_decode;
 mod syntax;
 #[cfg(test)]
@@ -301,6 +302,8 @@ pub struct H264Decoder {
     missing_reference_fallbacks: u64,
     /// 坏 NAL 丢弃次数(用于容错统计与单测验证).
     malformed_nal_drops: u64,
+    /// 最近一次成功解析的 SEI payload 列表.
+    last_sei_payloads: Vec<sei::SeiPayload>,
     output_queue: VecDeque<Frame>,
     reorder_buffer: Vec<ReorderFrameEntry>,
     reorder_depth_override: Option<usize>,
@@ -366,6 +369,7 @@ impl H264Decoder {
             max_reference_frames: 1,
             missing_reference_fallbacks: 0,
             malformed_nal_drops: 0,
+            last_sei_payloads: Vec::new(),
             output_queue: VecDeque::new(),
             reorder_buffer: Vec::new(),
             reorder_depth_override: None,
@@ -449,6 +453,28 @@ impl H264Decoder {
             self.pps_map.insert(pps_id, pps);
             if self.active_pps_id.map(|id| id == pps_id).unwrap_or(true) {
                 let _ = self.activate_parameter_sets(pps_id);
+            }
+        }
+    }
+
+    /// 处理 SEI NAL 单元
+    fn handle_sei(&mut self, nalu: &NalUnit) {
+        let rbsp = nalu.rbsp();
+        match sei::parse_sei_rbsp(&rbsp) {
+            Ok(payloads) => {
+                for payload in &payloads {
+                    if matches!(&payload.message, sei::SeiMessage::Unknown { .. }) {
+                        debug!(
+                            "H264: 跳过未识别 SEI, payload_type={}, payload_size={}",
+                            payload.payload_type, payload.payload_size
+                        );
+                    }
+                }
+                self.last_sei_payloads = payloads;
+            }
+            Err(err) => {
+                warn!("H264: SEI 解析失败, err={}", err);
+                self.last_sei_payloads.clear();
             }
         }
     }
@@ -671,6 +697,7 @@ impl Decoder for H264Decoder {
         self.prev_frame_num_offset_type2 = 0;
         self.last_dec_ref_pic_marking = DecRefPicMarking::default();
         self.malformed_nal_drops = 0;
+        self.last_sei_payloads.clear();
         self.reorder_depth_override = std::env::var("TAO_H264_REORDER_DEPTH")
             .ok()
             .and_then(|v| v.parse::<usize>().ok());
@@ -745,6 +772,7 @@ impl Decoder for H264Decoder {
             match nalu.nal_type {
                 NalUnitType::Sps => self.handle_sps(nalu),
                 NalUnitType::Pps => self.handle_pps(nalu),
+                NalUnitType::Sei => self.handle_sei(nalu),
                 NalUnitType::SliceIdr | NalUnitType::Slice => {
                     let is_idr = nalu.nal_type == NalUnitType::SliceIdr;
                     let first_mb = self.parse_slice_first_mb(nalu);
@@ -810,6 +838,7 @@ impl Decoder for H264Decoder {
         self.prev_frame_num_offset_type1 = 0;
         self.prev_frame_num_offset_type2 = 0;
         self.last_dec_ref_pic_marking = DecRefPicMarking::default();
+        self.last_sei_payloads.clear();
         self.reset_reference_planes();
         self.mb_types.fill(0);
         self.mb_cbp.fill(0);

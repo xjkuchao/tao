@@ -34,7 +34,7 @@ crates/tao-codec/src/decoders/h264/
 ├── output.rs            # DPB/POC/参考帧/输出重排
 ├── parameter_sets.rs    # SPS/PPS 解析
 ├── residual.rs          # 残差解码/反量化/IDCT
-├── sei.rs               # SEI 消息解析(待新建)
+├── sei.rs               # SEI 消息解析
 ├── slice_decode.rs      # Slice 级解码
 ├── syntax.rs            # CABAC 语法元素工具
 └── tests.rs             # 单元测试
@@ -79,11 +79,11 @@ crates/tao-codec/src/decoders/h264/
     - [x] PPS 变更分级策略(None/RuntimeOnly/Full) + 单测.
     - [x] 参数集一致性保护 + 切换集成测试.
     - [x] SPS 尺寸变更集成测试.
-- [ ] SEI 消息基础解析.
-    - [ ] 新建 `sei.rs`, 分帧与类型分发.
-    - [ ] `recovery_point` / `pic_timing` / `buffering_period` / `user_data_unregistered` 解析.
-    - [ ] 未识别 SEI 安全跳过 + `debug!` 日志.
-    - [ ] SEI 单测(各类型成功/截断失败).
+- [x] SEI 消息基础解析.
+    - [x] 新建 `sei.rs`, 分帧与类型分发.
+    - [x] `recovery_point` / `pic_timing` / `buffering_period` / `user_data_unregistered` 解析.
+    - [x] 未识别 SEI 安全跳过 + `debug!` 日志.
+    - [x] SEI 单测(各类型成功/截断失败).
 - 验收: 样本稳定进入 slice 解码, 参数切换无崩溃.
 
 ### P3 Slice 语法与熵解码
