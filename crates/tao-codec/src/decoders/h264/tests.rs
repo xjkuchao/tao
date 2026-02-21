@@ -2361,6 +2361,44 @@ fn test_apply_b_prediction_block_explicit_bi_weighted() {
 }
 
 #[test]
+fn test_apply_b_prediction_block_default_bi_weighted_rounding() {
+    let mut dec = build_test_decoder();
+    let mut pps = build_test_pps();
+    pps.weighted_bipred_idc = 0;
+    dec.pps = Some(pps);
+
+    let ref_l0 = vec![build_constant_ref_planes(&dec, 10, 20, 30)];
+    let ref_l1 = vec![build_constant_ref_planes(&dec, 91, 101, 111)];
+
+    dec.apply_b_prediction_block(
+        Some(BMotion {
+            mv_x: 0,
+            mv_y: 0,
+            ref_idx: 0,
+        }),
+        Some(BMotion {
+            mv_x: 0,
+            mv_y: 0,
+            ref_idx: 0,
+        }),
+        &[],
+        &[],
+        0,
+        0,
+        &ref_l0,
+        &ref_l1,
+        0,
+        0,
+        4,
+        4,
+    );
+
+    assert_eq!(dec.ref_y[0], 51, "默认双向加权亮度应为 (L0+L1+1)>>1");
+    assert_eq!(dec.ref_u[0], 61, "默认双向加权 U 应为 (L0+L1+1)>>1");
+    assert_eq!(dec.ref_v[0], 71, "默认双向加权 V 应为 (L0+L1+1)>>1");
+}
+
+#[test]
 fn test_apply_b_prediction_block_explicit_single_l1_weight() {
     let mut dec = build_test_decoder();
     let mut pps = build_test_pps();
