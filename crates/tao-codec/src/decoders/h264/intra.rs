@@ -362,38 +362,33 @@ pub fn predict_4x4_dc(plane: &mut [u8], stride: usize, x0: usize, y0: usize) {
 
 /// 模式 3: 对角线向下左 (Diagonal Down-Left)
 fn predict_4x4_diagonal_down_left(plane: &mut [u8], stride: usize, x0: usize, y0: usize) {
-    let mut ref_vals = [128u8; 8];
-
-    if y0 > 0 {
-        for (i, ref_val) in ref_vals.iter_mut().enumerate().take(4) {
-            let idx = (y0 - 1) * stride + x0 + i;
-            if idx < plane.len() {
-                *ref_val = plane[idx];
-            }
-        }
-        if x0 + 4 < stride && (y0 - 1) * stride + x0 + 4 < plane.len() {
-            ref_vals[4] = plane[(y0 - 1) * stride + x0 + 4];
-        }
+    if y0 == 0 {
+        fill_block(plane, stride, x0, y0, 4, 4, 128);
+        return;
     }
-    if x0 > 0 {
-        for i in 0..4 {
-            let idx = (y0 + i) * stride + x0 - 1;
-            if idx < plane.len() {
-                ref_vals[i + 1] = plane[idx];
-            }
+
+    // 该模式仅使用上方与右上参考样本.
+    let mut top = [128u8; 8];
+    let mut last = 128u8;
+    for (i, item) in top.iter_mut().enumerate() {
+        let col = x0 + i;
+        let idx = (y0 - 1) * stride + col;
+        if col < stride && idx < plane.len() {
+            last = plane[idx];
+            *item = last;
+        } else {
+            // 越界时沿用最后一个可用样本.
+            *item = last;
         }
     }
 
     for dy in 0..4 {
         for dx in 0..4 {
-            let val = if dy + dx + 1 < 8 {
-                let a = ref_vals[dy + dx];
-                let b = ref_vals[dy + dx + 1];
-                let c = ref_vals.get(dy + dx + 2).copied().unwrap_or(128);
-                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
-            } else {
-                ref_vals[7]
-            };
+            let base = dx + dy;
+            let s0 = top[base.min(7)] as u32;
+            let s1 = top[(base + 1).min(7)] as u32;
+            let s2 = top[(base + 2).min(7)] as u32;
+            let val = ((s0 + 2 * s1 + s2 + 2) / 4) as u8;
             let idx = (y0 + dy) * stride + x0 + dx;
             if idx < plane.len() {
                 plane[idx] = val;
@@ -728,5 +723,61 @@ pub fn fill_block(
         if end <= plane.len() {
             plane[start..end].fill(val);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::predict_4x4;
+
+    fn read_block_4x4(plane: &[u8], stride: usize, x0: usize, y0: usize) -> [[u8; 4]; 4] {
+        let mut block = [[0u8; 4]; 4];
+        for dy in 0..4 {
+            for dx in 0..4 {
+                block[dy][dx] = plane[(y0 + dy) * stride + x0 + dx];
+            }
+        }
+        block
+    }
+
+    #[test]
+    fn test_intra4x4_mode3_diagonal_down_left_uses_top_and_top_right() {
+        let stride = 16;
+        let x0 = 4;
+        let y0 = 4;
+        let mut plane = vec![0u8; stride * stride];
+
+        let top_ref = [10u8, 20, 30, 40, 50, 60, 70, 80];
+        for (i, val) in top_ref.iter().enumerate() {
+            plane[(y0 - 1) * stride + x0 + i] = *val;
+        }
+        for row in 0..4 {
+            plane[(y0 + row) * stride + x0 - 1] = 200 + row as u8;
+        }
+
+        predict_4x4(&mut plane, stride, x0, y0, 3);
+        let got = read_block_4x4(&plane, stride, x0, y0);
+        let expect = [
+            [20, 30, 40, 50],
+            [30, 40, 50, 60],
+            [40, 50, 60, 70],
+            [50, 60, 70, 78],
+        ];
+
+        assert_eq!(got, expect, "模式3应仅按上方与右上样本进行对角线向下左预测");
+    }
+
+    #[test]
+    fn test_intra4x4_mode3_without_top_falls_back_to_128() {
+        let stride = 16;
+        let x0 = 4;
+        let y0 = 0;
+        let mut plane = vec![7u8; stride * stride];
+
+        predict_4x4(&mut plane, stride, x0, y0, 3);
+        let got = read_block_4x4(&plane, stride, x0, y0);
+        let expect = [[128u8; 4]; 4];
+
+        assert_eq!(got, expect, "无上方参考时模式3应回退为128填充");
     }
 }
