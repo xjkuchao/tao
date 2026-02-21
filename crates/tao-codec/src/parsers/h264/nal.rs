@@ -305,6 +305,18 @@ pub fn parse_avcc_config(data: &[u8]) -> TaoResult<AvccConfig> {
     let _profile = data[1];
     let _compat = data[2];
     let _level = data[3];
+    if (data[4] & 0xFC) != 0xFC {
+        return Err(tao_core::TaoError::InvalidData(format!(
+            "H.264: avcC lengthSizeMinusOne 保留位非法, value=0x{:02X}",
+            data[4]
+        )));
+    }
+    if (data[5] & 0xE0) != 0xE0 {
+        return Err(tao_core::TaoError::InvalidData(format!(
+            "H.264: avcC numOfSPS 保留位非法, value=0x{:02X}",
+            data[5]
+        )));
+    }
     let length_size = ((data[4] & 0x03) + 1) as usize;
 
     let num_sps = (data[5] & 0x1F) as usize;
@@ -880,6 +892,30 @@ mod tests {
         assert!(
             msg.contains("configurationVersion"),
             "错误信息应包含 configurationVersion, actual={}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_parse_avcc_config_reject_invalid_length_size_reserved_bits() {
+        let data = [0x01, 0x64, 0x00, 0x1E, 0x00, 0xE0, 0x00];
+        let err = parse_avcc_config(&data).expect_err("lengthSizeMinusOne 保留位错误应失败");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("lengthSizeMinusOne"),
+            "错误信息应包含 lengthSizeMinusOne, actual={}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_parse_avcc_config_reject_invalid_num_sps_reserved_bits() {
+        let data = [0x01, 0x64, 0x00, 0x1E, 0xFF, 0x00, 0x00];
+        let err = parse_avcc_config(&data).expect_err("numOfSPS 保留位错误应失败");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("numOfSPS"),
+            "错误信息应包含 numOfSPS, actual={}",
             msg
         );
     }
