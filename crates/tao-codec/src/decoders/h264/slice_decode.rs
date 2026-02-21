@@ -600,6 +600,7 @@ impl H264Decoder {
         }
 
         const MAX_MMCO_OPS: usize = 64;
+        let max_long_term_frame_idx = self.max_reference_frames.saturating_sub(1) as u32;
         loop {
             let op = read_ue(br)?;
             match op {
@@ -635,6 +636,12 @@ impl H264Decoder {
                     }
                     let difference = read_ue(br)?;
                     let long_term_frame_idx = read_ue(br)?;
+                    if long_term_frame_idx > max_long_term_frame_idx {
+                        return Err(TaoError::InvalidData(format!(
+                            "H264: MMCO3 long_term_frame_idx 超范围, value={}, max={}",
+                            long_term_frame_idx, max_long_term_frame_idx
+                        )));
+                    }
                     marking.ops.push(MmcoOp::ConvertShortToLong {
                         difference_of_pic_nums_minus1: difference,
                         long_term_frame_idx,
@@ -648,6 +655,12 @@ impl H264Decoder {
                         )));
                     }
                     let max_long_term_frame_idx_plus1 = read_ue(br)?;
+                    if max_long_term_frame_idx_plus1 > self.max_reference_frames as u32 {
+                        return Err(TaoError::InvalidData(format!(
+                            "H264: MMCO4 max_long_term_frame_idx_plus1 超范围, value={}, max={}",
+                            max_long_term_frame_idx_plus1, self.max_reference_frames
+                        )));
+                    }
                     marking.ops.push(MmcoOp::TrimLong {
                         max_long_term_frame_idx_plus1,
                     });
@@ -669,6 +682,12 @@ impl H264Decoder {
                         )));
                     }
                     let long_term_frame_idx = read_ue(br)?;
+                    if long_term_frame_idx > max_long_term_frame_idx {
+                        return Err(TaoError::InvalidData(format!(
+                            "H264: MMCO6 long_term_frame_idx 超范围, value={}, max={}",
+                            long_term_frame_idx, max_long_term_frame_idx
+                        )));
+                    }
                     marking.ops.push(MmcoOp::MarkCurrentLong {
                         long_term_frame_idx,
                     });

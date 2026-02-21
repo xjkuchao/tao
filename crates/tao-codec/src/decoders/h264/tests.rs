@@ -911,6 +911,66 @@ fn test_parse_dec_ref_pic_marking_reject_too_many_mmco_ops() {
 }
 
 #[test]
+fn test_parse_dec_ref_pic_marking_reject_mmco4_max_long_term_idx_out_of_range() {
+    let dec = build_test_decoder();
+    let nalu = NalUnit::parse(&[0x61]).expect("测试构造非 IDR slice NAL 失败");
+
+    let mut bits = Vec::new();
+    bits.push(true); // adaptive_ref_pic_marking_mode_flag
+    write_ue(&mut bits, 4); // MMCO4
+    write_ue(&mut bits, 5); // max_long_term_frame_idx_plus1, 超过 max_reference_frames=4
+    write_ue(&mut bits, 0); // 结束符
+    let rbsp = bits_to_bytes(&bits);
+    let mut br = BitReader::new(&rbsp);
+
+    let err = match dec.parse_dec_ref_pic_marking(&mut br, &nalu) {
+        Ok(_) => panic!("MMCO4 超范围应失败"),
+        Err(err) => err,
+    };
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("MMCO4"),
+        "错误信息应包含 MMCO4, actual={}",
+        msg
+    );
+    assert!(
+        msg.contains("超范围"),
+        "错误信息应提示超范围, actual={}",
+        msg
+    );
+}
+
+#[test]
+fn test_parse_dec_ref_pic_marking_reject_mmco6_long_term_idx_out_of_range() {
+    let dec = build_test_decoder();
+    let nalu = NalUnit::parse(&[0x61]).expect("测试构造非 IDR slice NAL 失败");
+
+    let mut bits = Vec::new();
+    bits.push(true); // adaptive_ref_pic_marking_mode_flag
+    write_ue(&mut bits, 6); // MMCO6
+    write_ue(&mut bits, 4); // long_term_frame_idx, 超过 max=3
+    write_ue(&mut bits, 0); // 结束符
+    let rbsp = bits_to_bytes(&bits);
+    let mut br = BitReader::new(&rbsp);
+
+    let err = match dec.parse_dec_ref_pic_marking(&mut br, &nalu) {
+        Ok(_) => panic!("MMCO6 超范围应失败"),
+        Err(err) => err,
+    };
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("MMCO6"),
+        "错误信息应包含 MMCO6, actual={}",
+        msg
+    );
+    assert!(
+        msg.contains("超范围"),
+        "错误信息应提示超范围, actual={}",
+        msg
+    );
+}
+
+#[test]
 fn test_parse_slice_header_reject_slice_qp_out_of_range() {
     let mut dec = build_test_decoder();
     let sps0 = build_test_sps(0);
