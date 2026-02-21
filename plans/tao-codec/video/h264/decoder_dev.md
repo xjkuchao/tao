@@ -95,7 +95,7 @@ crates/tao-codec/src/decoders/h264/
 - [x] ref_pic_list_modification 解析(list0/list1) + 边界校验 + 单测.
 - [x] pred_weight_table 解析(含 B-slice list1) + 单测.
 - [x] direct_spatial_mv_pred_flag + redundant_pic_cnt 解析 + 单测.
-- [ ] `redundant_pic_cnt > 0` 时跳过冗余 slice + 单测.
+- [x] `redundant_pic_cnt > 0` 时跳过冗余 slice + 单测.
 
 #### P3.2 CABAC 完整路径
 

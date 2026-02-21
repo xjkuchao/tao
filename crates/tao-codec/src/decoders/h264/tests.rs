@@ -2526,6 +2526,67 @@ fn test_decode_slice_bad_header_records_malformed_nal_drop() {
 }
 
 #[test]
+fn test_decode_slice_skip_when_redundant_pic_cnt_positive() {
+    let mut dec = build_test_decoder();
+    install_basic_parameter_sets(&mut dec, 1);
+    dec.last_frame_num = 7;
+    dec.last_slice_type = 2;
+    dec.ref_y.fill(9);
+
+    if let Some(pps) = dec.pps.as_mut() {
+        pps.redundant_pic_cnt_present = true;
+    }
+    if let Some(pps) = dec.pps_map.get_mut(&0) {
+        pps.redundant_pic_cnt_present = true;
+    }
+
+    let rbsp = build_p_slice_header_rbsp_with_redundant_pic_cnt(0, 1, 2, 2);
+    let mut nalu_data = vec![0x01];
+    nalu_data.extend_from_slice(&rbsp);
+    let nalu = NalUnit::parse(&nalu_data).expect("测试构造 slice NAL 失败");
+    let before_drop = dec.malformed_nal_drops;
+
+    dec.decode_slice(&nalu);
+
+    assert_eq!(
+        dec.malformed_nal_drops, before_drop,
+        "冗余 slice 跳过不应记录坏 NAL 丢弃计数"
+    );
+    assert_eq!(dec.last_frame_num, 7, "冗余 slice 跳过不应推进帧号状态");
+    assert_eq!(
+        dec.last_slice_type, 2,
+        "冗余 slice 跳过不应覆盖上一帧 slice 类型"
+    );
+    assert_eq!(dec.ref_y[0], 9, "冗余 slice 跳过不应改写像素缓冲");
+}
+
+#[test]
+fn test_decode_slice_not_skip_when_redundant_pic_cnt_zero() {
+    let mut dec = build_test_decoder();
+    install_basic_parameter_sets(&mut dec, 1);
+    dec.last_frame_num = 7;
+
+    if let Some(pps) = dec.pps.as_mut() {
+        pps.redundant_pic_cnt_present = true;
+    }
+    if let Some(pps) = dec.pps_map.get_mut(&0) {
+        pps.redundant_pic_cnt_present = true;
+    }
+
+    let rbsp = build_p_slice_header_rbsp_with_redundant_pic_cnt(0, 1, 2, 0);
+    let mut nalu_data = vec![0x01];
+    nalu_data.extend_from_slice(&rbsp);
+    let nalu = NalUnit::parse(&nalu_data).expect("测试构造 slice NAL 失败");
+
+    dec.decode_slice(&nalu);
+
+    assert_eq!(
+        dec.last_frame_num, 1,
+        "redundant_pic_cnt=0 时应按正常 slice 路径推进帧号状态"
+    );
+}
+
+#[test]
 fn test_send_packet_without_valid_nal_records_malformed_nal_drop() {
     let mut dec = build_test_decoder();
     let before = dec.malformed_nal_drops;

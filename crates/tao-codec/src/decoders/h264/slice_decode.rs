@@ -11,6 +11,16 @@ impl H264Decoder {
 
         match self.parse_slice_header(&rbsp, nalu) {
             Ok(header) => {
+                if header.redundant_pic_cnt > 0 {
+                    log::debug!(
+                        "H264: 跳过冗余 slice, redundant_pic_cnt={}, frame_num={}, pps_id={}",
+                        header.redundant_pic_cnt,
+                        header.frame_num,
+                        header.pps_id
+                    );
+                    return;
+                }
+
                 let prev_frame_num = self.last_frame_num;
                 self.last_slice_type = header.slice_type;
                 self.last_nal_ref_idc = header.nal_ref_idc;
@@ -21,12 +31,6 @@ impl H264Decoder {
                 self.last_poc = self.compute_slice_poc(&header, prev_frame_num);
                 self.last_frame_num = header.frame_num;
                 self.last_dec_ref_pic_marking = header.dec_ref_pic_marking.clone();
-                if header.redundant_pic_cnt > 0 {
-                    log::debug!(
-                        "H264: 检测到冗余图像计数, redundant_pic_cnt={}",
-                        header.redundant_pic_cnt
-                    );
-                }
                 self.decode_slice_data(&rbsp, &header);
             }
             Err(err) => {
