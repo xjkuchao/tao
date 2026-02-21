@@ -623,43 +623,46 @@ fn predict_4x4_vertical_left(plane: &mut [u8], stride: usize, x0: usize, y0: usi
 
 /// 模式 8: 水平-上 (Horizontal-Up)
 fn predict_4x4_horizontal_up(plane: &mut [u8], stride: usize, x0: usize, y0: usize) {
-    let mut ref_vals = [128u8; 8];
+    if x0 == 0 {
+        fill_block(plane, stride, x0, y0, 4, 4, 128);
+        return;
+    }
 
-    if x0 > 0 {
-        for (i, item) in ref_vals.iter_mut().enumerate().take(4) {
-            let idx = (y0 + i) * stride + x0 - 1;
-            if idx < plane.len() {
-                *item = plane[idx];
-            }
-        }
-        if y0 + 4 < plane.len() / stride {
-            let idx = (y0 + 4) * stride + x0 - 1;
-            if idx < plane.len() {
-                ref_vals[4] = plane[idx];
-            }
+    let mut left = [128u8; 5];
+    let mut last = 128u8;
+    for (i, item) in left.iter_mut().enumerate().take(4) {
+        let idx = (y0 + i) * stride + x0 - 1;
+        if idx < plane.len() {
+            last = plane[idx];
+            *item = last;
+        } else {
+            *item = last;
         }
     }
+    let ext_idx = (y0 + 4) * stride + x0 - 1;
+    left[4] = if ext_idx < plane.len() {
+        plane[ext_idx]
+    } else {
+        left[3]
+    };
+
+    let avg2 = |a: u8, b: u8| -> u8 { (a as u32 + b as u32).div_ceil(2) as u8 };
+    let avg3 = |a: u8, b: u8, c: u8| -> u8 { ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8 };
 
     for dy in 0..4 {
         for dx in 0..4 {
-            let val = if dx < dy {
-                if dx + 1 == dy {
-                    let a = ref_vals[dy];
-                    let b = ref_vals[dy + 1];
-                    (a as u32 + b as u32).div_ceil(2) as u8
-                } else {
-                    ref_vals[dy + 1]
+            let z = dx + 2 * dy;
+            let val = match z {
+                0 | 2 | 4 | 6 => {
+                    let i = z / 2;
+                    avg2(left[i], left[i + 1])
                 }
-            } else if dx == dy {
-                let a = ref_vals[dy];
-                let b = ref_vals[dy + 1];
-                let c = ref_vals.get(dy + 2).copied().unwrap_or(128);
-                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
-            } else {
-                let a = ref_vals[dx - dy];
-                let b = ref_vals[dx - dy + 1];
-                let c = ref_vals.get(dx - dy + 2).copied().unwrap_or(128);
-                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
+                1 | 3 | 5 => {
+                    let i = (z - 1) / 2;
+                    avg3(left[i], left[i + 1], left[i + 2])
+                }
+                7 => ((left[3] as u32 + 3 * left[4] as u32 + 2) >> 2) as u8,
+                _ => left[4],
             };
             let idx = (y0 + dy) * stride + x0 + dx;
             if idx < plane.len() {
@@ -922,5 +925,47 @@ mod tests {
         let expect = [[128u8; 4]; 4];
 
         assert_eq!(got, expect, "模式7在缺少上方参考时应回退为128填充");
+    }
+
+    #[test]
+    fn test_intra4x4_mode8_horizontal_up_matches_spec_mapping() {
+        let stride = 16;
+        let x0 = 4;
+        let y0 = 4;
+        let mut plane = vec![0u8; stride * stride];
+
+        plane[y0 * stride + x0 - 1] = 20;
+        plane[(y0 + 1) * stride + x0 - 1] = 30;
+        plane[(y0 + 2) * stride + x0 - 1] = 40;
+        plane[(y0 + 3) * stride + x0 - 1] = 50;
+        plane[(y0 + 4) * stride + x0 - 1] = 60;
+        for i in 0..8 {
+            plane[(y0 - 1) * stride + x0 + i] = 200 + i as u8;
+        }
+
+        predict_4x4(&mut plane, stride, x0, y0, 8);
+        let got = read_block_4x4(&plane, stride, x0, y0);
+        let expect = [
+            [25, 30, 35, 40],
+            [35, 40, 45, 50],
+            [45, 50, 55, 58],
+            [55, 58, 60, 60],
+        ];
+
+        assert_eq!(got, expect, "模式8应按规范使用左样本进行水平-上预测");
+    }
+
+    #[test]
+    fn test_intra4x4_mode8_without_left_falls_back_to_128() {
+        let stride = 16;
+        let x0 = 0;
+        let y0 = 4;
+        let mut plane = vec![17u8; stride * stride];
+
+        predict_4x4(&mut plane, stride, x0, y0, 8);
+        let got = read_block_4x4(&plane, stride, x0, y0);
+        let expect = [[128u8; 4]; 4];
+
+        assert_eq!(got, expect, "模式8在缺少左参考时应回退为128填充");
     }
 }
