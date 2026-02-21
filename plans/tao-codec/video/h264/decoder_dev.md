@@ -109,6 +109,7 @@
     - [x] 补齐 `poc_type1` 的 `delta_pic_order_cnt[0/1]` 解析和 `disable_deblocking_filter_idc` 状态透传。
     - [x] 接入 `ref_pic_list_modification` 解析(`list0/list1`)并将重排结果接入 CABAC/CAVLC 帧间参考列表构建。
     - [x] 补齐参考列表重排单测(短期重排/长期重排)。
+    - [x] 补齐 `pred_weight_table` 合法性校验(`luma/chroma_log2_weight_denom <= 7`, `luma/chroma weight/offset` 范围)并新增权重表解析单测。
 - [ ] CABAC 完整路径可用。
 - [ ] CAVLC 完整路径可用。
     - [x] 接入最小 CAVLC slice 数据路径: `mb_skip_run/mb_type` 基础语法消费 + I 宏块基础帧内预测 + P/B 宏块参考复制。

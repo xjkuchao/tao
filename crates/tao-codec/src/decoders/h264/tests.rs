@@ -385,6 +385,62 @@ fn build_p_slice_header_rbsp_with_deblock_offsets(spec: PSliceHeaderRbspSpec) ->
     bits_to_bytes(&bits)
 }
 
+struct PWeightTableRbspSpec {
+    pps_id: u32,
+    frame_num: u32,
+    poc_lsb: u32,
+    cabac_init_idc: u32,
+    qp_delta: i32,
+    disable_deblocking_filter_idc: u32,
+    luma_log2_weight_denom: u32,
+    chroma_log2_weight_denom: u32,
+    luma_weight: Option<(i32, i32)>,
+    chroma_weight: Option<([i32; 2], [i32; 2])>,
+}
+
+fn build_p_slice_header_rbsp_with_weight_table(spec: PWeightTableRbspSpec) -> Vec<u8> {
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 0); // first_mb_in_slice
+    write_ue(&mut bits, 0); // slice_type=P
+    write_ue(&mut bits, spec.pps_id);
+    push_bits_fixed(&mut bits, spec.frame_num, 4);
+    push_bits_fixed(&mut bits, spec.poc_lsb, 4);
+    bits.push(false); // num_ref_idx_active_override_flag
+    bits.push(false); // ref_pic_list_modification_flag_l0
+
+    write_ue(&mut bits, spec.luma_log2_weight_denom);
+    write_ue(&mut bits, spec.chroma_log2_weight_denom);
+    if let Some((weight, offset)) = spec.luma_weight {
+        bits.push(true);
+        write_se(&mut bits, weight);
+        write_se(&mut bits, offset);
+    } else {
+        bits.push(false);
+    }
+    if let Some((weights, offsets)) = spec.chroma_weight {
+        bits.push(true);
+        for c in 0..2 {
+            write_se(&mut bits, weights[c]);
+            write_se(&mut bits, offsets[c]);
+        }
+    } else {
+        bits.push(false);
+    }
+
+    write_ue(&mut bits, spec.cabac_init_idc);
+    write_se(&mut bits, spec.qp_delta);
+    write_ue(&mut bits, spec.disable_deblocking_filter_idc);
+    if spec.disable_deblocking_filter_idc != 1 {
+        write_se(&mut bits, 0);
+        write_se(&mut bits, 0);
+    }
+    bits.push(true); // rbsp_trailing_bits stop bit
+    while bits.len() % 8 != 0 {
+        bits.push(false);
+    }
+    bits_to_bytes(&bits)
+}
+
 fn build_p_slice_header_rbsp_with_l0_reorder(
     pps_id: u32,
     frame_num: u32,
@@ -855,6 +911,132 @@ fn test_parse_slice_header_store_deblocking_offsets() {
     assert_eq!(
         header.slice_beta_offset_div2, -1,
         "slice header 应保存 beta offset"
+    );
+}
+
+#[test]
+fn test_parse_slice_header_reject_luma_weight_denom_out_of_range() {
+    let mut dec = build_test_decoder();
+    let sps0 = build_test_sps(0);
+    dec.sps_map.insert(0, sps0);
+
+    let mut pps0 = build_test_pps();
+    pps0.weighted_pred = true;
+    dec.pps_map.insert(0, pps0);
+
+    let rbsp = build_p_slice_header_rbsp_with_weight_table(PWeightTableRbspSpec {
+        pps_id: 0,
+        frame_num: 0,
+        poc_lsb: 0,
+        cabac_init_idc: 0,
+        qp_delta: 0,
+        disable_deblocking_filter_idc: 1,
+        luma_log2_weight_denom: 8,
+        chroma_log2_weight_denom: 0,
+        luma_weight: None,
+        chroma_weight: None,
+    });
+    let nalu = NalUnit::parse(&[0x01]).expect("测试构造 slice NAL 失败");
+    let err = match dec.parse_slice_header(&rbsp, &nalu) {
+        Ok(_) => panic!("luma_log2_weight_denom 超范围应失败"),
+        Err(err) => err,
+    };
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("luma_log2_weight_denom"),
+        "错误信息应包含 luma_log2_weight_denom, actual={}",
+        msg
+    );
+}
+
+#[test]
+fn test_parse_slice_header_reject_chroma_weight_denom_out_of_range() {
+    let mut dec = build_test_decoder();
+    let sps0 = build_test_sps(0);
+    dec.sps_map.insert(0, sps0);
+
+    let mut pps0 = build_test_pps();
+    pps0.weighted_pred = true;
+    dec.pps_map.insert(0, pps0);
+
+    let rbsp = build_p_slice_header_rbsp_with_weight_table(PWeightTableRbspSpec {
+        pps_id: 0,
+        frame_num: 0,
+        poc_lsb: 0,
+        cabac_init_idc: 0,
+        qp_delta: 0,
+        disable_deblocking_filter_idc: 1,
+        luma_log2_weight_denom: 0,
+        chroma_log2_weight_denom: 8,
+        luma_weight: None,
+        chroma_weight: None,
+    });
+    let nalu = NalUnit::parse(&[0x01]).expect("测试构造 slice NAL 失败");
+    let err = match dec.parse_slice_header(&rbsp, &nalu) {
+        Ok(_) => panic!("chroma_log2_weight_denom 超范围应失败"),
+        Err(err) => err,
+    };
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("chroma_log2_weight_denom"),
+        "错误信息应包含 chroma_log2_weight_denom, actual={}",
+        msg
+    );
+}
+
+#[test]
+fn test_parse_slice_header_store_l0_pred_weights() {
+    let mut dec = build_test_decoder();
+    let sps0 = build_test_sps(0);
+    dec.sps_map.insert(0, sps0);
+
+    let mut pps0 = build_test_pps();
+    pps0.weighted_pred = true;
+    dec.pps_map.insert(0, pps0);
+
+    let rbsp = build_p_slice_header_rbsp_with_weight_table(PWeightTableRbspSpec {
+        pps_id: 0,
+        frame_num: 1,
+        poc_lsb: 1,
+        cabac_init_idc: 0,
+        qp_delta: 0,
+        disable_deblocking_filter_idc: 1,
+        luma_log2_weight_denom: 1,
+        chroma_log2_weight_denom: 2,
+        luma_weight: Some((3, -2)),
+        chroma_weight: Some(([2, -3], [4, -5])),
+    });
+    let nalu = NalUnit::parse(&[0x01]).expect("测试构造 slice NAL 失败");
+    let header = dec
+        .parse_slice_header(&rbsp, &nalu)
+        .expect("带权重表的 slice header 应可解析");
+
+    assert_eq!(
+        header.luma_log2_weight_denom, 1,
+        "应保存 luma_log2_weight_denom"
+    );
+    assert_eq!(
+        header.chroma_log2_weight_denom, 2,
+        "应保存 chroma_log2_weight_denom"
+    );
+    assert_eq!(header.l0_weights.len(), 1, "应解析出 1 个 l0 权重项");
+    assert_eq!(
+        header.l0_weights[0].luma_weight, 3,
+        "l0 luma_weight 解析错误"
+    );
+    assert_eq!(
+        header.l0_weights[0].luma_offset, -2,
+        "l0 luma_offset 解析错误"
+    );
+    assert_eq!(
+        header.l0_weights[0].chroma_weight,
+        [2, -3],
+        "l0 chroma_weight 解析错误"
+    );
+    assert_eq!(
+        header.l0_weights[0].chroma_offset,
+        [4, -5],
+        "l0 chroma_offset 解析错误"
     );
 }
 
