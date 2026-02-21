@@ -201,6 +201,7 @@ crates/tao-codec/src/decoders/h264/
 - [ ] 新建 `mv_pred.rs`.
 - [ ] 中值预测(A/B/C, D 替补), 对齐 FFmpeg `pred_motion()`.
 - [ ] 16x8/8x16 特殊 MVP(规范 8.4.1.3 directional).
+    - [x] P_L0_L0_16x8/8x16 在同 `ref_idx` 时第二分区复用第一分区预测 MV(CABAC/CAVLC).
 - [ ] P_Skip MV 推导(邻居中值, 非简单复制).
 - [ ] mvd + mvp 合成完整 MV(逐分区/子分区).
 - [ ] MV 预测单测(16x16/16x8/8x16/8x8/P_Skip).

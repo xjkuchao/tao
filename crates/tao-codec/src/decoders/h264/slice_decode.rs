@@ -1629,10 +1629,20 @@ impl H264Decoder {
                             ref_idx_top = read_ue(&mut br).unwrap_or(0);
                             ref_idx_bottom = read_ue(&mut br).unwrap_or(0);
                         }
-                        let mv_top_x = read_se(&mut br).unwrap_or(0);
-                        let mv_top_y = read_se(&mut br).unwrap_or(0);
-                        let mv_bottom_x = read_se(&mut br).unwrap_or(0);
-                        let mv_bottom_y = read_se(&mut br).unwrap_or(0);
+                        let (pred_mv_x, pred_mv_y) = self.predict_mv_l0_16x16(mb_x, mb_y);
+                        let mvd_top_x = read_se(&mut br).unwrap_or(0);
+                        let mvd_top_y = read_se(&mut br).unwrap_or(0);
+                        let mv_top_x = pred_mv_x + mvd_top_x;
+                        let mv_top_y = pred_mv_y + mvd_top_y;
+                        let (pred_bottom_x, pred_bottom_y) = if ref_idx_bottom == ref_idx_top {
+                            (mv_top_x, mv_top_y)
+                        } else {
+                            self.predict_mv_l0_16x16(mb_x, mb_y)
+                        };
+                        let mvd_bottom_x = read_se(&mut br).unwrap_or(0);
+                        let mvd_bottom_y = read_se(&mut br).unwrap_or(0);
+                        let mv_bottom_x = pred_bottom_x + mvd_bottom_x;
+                        let mv_bottom_y = pred_bottom_y + mvd_bottom_y;
                         self.apply_inter_block_l0(
                             &ref_l0_list,
                             ref_idx_top,
@@ -1670,10 +1680,20 @@ impl H264Decoder {
                             ref_idx_left = read_ue(&mut br).unwrap_or(0);
                             ref_idx_right = read_ue(&mut br).unwrap_or(0);
                         }
-                        let mv_left_x = read_se(&mut br).unwrap_or(0);
-                        let mv_left_y = read_se(&mut br).unwrap_or(0);
-                        let mv_right_x = read_se(&mut br).unwrap_or(0);
-                        let mv_right_y = read_se(&mut br).unwrap_or(0);
+                        let (pred_mv_x, pred_mv_y) = self.predict_mv_l0_16x16(mb_x, mb_y);
+                        let mvd_left_x = read_se(&mut br).unwrap_or(0);
+                        let mvd_left_y = read_se(&mut br).unwrap_or(0);
+                        let mv_left_x = pred_mv_x + mvd_left_x;
+                        let mv_left_y = pred_mv_y + mvd_left_y;
+                        let (pred_right_x, pred_right_y) = if ref_idx_right == ref_idx_left {
+                            (mv_left_x, mv_left_y)
+                        } else {
+                            self.predict_mv_l0_16x16(mb_x, mb_y)
+                        };
+                        let mvd_right_x = read_se(&mut br).unwrap_or(0);
+                        let mvd_right_y = read_se(&mut br).unwrap_or(0);
+                        let mv_right_x = pred_right_x + mvd_right_x;
+                        let mv_right_y = pred_right_y + mvd_right_y;
                         self.apply_inter_block_l0(
                             &ref_l0_list,
                             ref_idx_left,

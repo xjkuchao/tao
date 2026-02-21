@@ -3862,6 +3862,54 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_8x16_partition_ref_idx() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_p_non_skip_inter_16x8_directional_mvp_uses_top_partition_mv() {
+    use ExpGolombValue::{Se, Ue};
+
+    let mut dec = build_test_decoder();
+    dec.reference_frames.clear();
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.data_bit_offset = 0;
+
+    // mb_skip_run=0, mb_type=1(P_L0_L0_16x8)
+    // top: mvd=(4,0) => mv=+1 像素
+    // bottom: mvd=(0,0) 且同 ref_idx, 应复用 top 分区预测 mv.
+    let rbsp = build_rbsp_from_exp_golomb(&[Ue(0), Ue(1), Se(4), Se(0), Se(0), Se(0)]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    assert_eq!(dec.ref_y[0], 1, "16x8 顶部分区应按 +1 像素位移采样");
+    assert_eq!(
+        dec.ref_y[8 * dec.stride_y],
+        1,
+        "16x8 底部分区应复用顶部分区预测 MV"
+    );
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_p_non_skip_inter_8x16_directional_mvp_uses_left_partition_mv() {
+    use ExpGolombValue::{Se, Ue};
+
+    let mut dec = build_test_decoder();
+    dec.reference_frames.clear();
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.data_bit_offset = 0;
+
+    // mb_skip_run=0, mb_type=2(P_L0_L0_8x16)
+    // left: mvd=(4,0) => mv=+1 像素
+    // right: mvd=(0,0) 且同 ref_idx, 应复用 left 分区预测 mv.
+    let rbsp = build_rbsp_from_exp_golomb(&[Ue(0), Ue(2), Se(4), Se(0), Se(0), Se(0)]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    assert_eq!(dec.ref_y[0], 1, "8x16 左分区应按 +1 像素位移采样");
+    assert_eq!(dec.ref_y[8], 9, "8x16 右分区应复用左分区预测 MV");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_ref_idx_and_alignment() {
     use ExpGolombValue::{Se, Ue};
 
