@@ -1753,6 +1753,70 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_8x16_partition_ref_idx() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_ref_idx_and_alignment() {
+    let mut dec = build_test_decoder();
+    let sps_resize = build_sps_nalu(0, 32, 16);
+    dec.handle_sps(&sps_resize);
+    push_custom_reference(&mut dec, 3, 3, 20, None);
+    push_custom_reference(&mut dec, 2, 2, 90, None);
+
+    let mut header = build_test_slice_header(4, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.data_bit_offset = 0;
+    header.num_ref_idx_l0 = 2;
+
+    // mb0: skip_run=0, mb_type=3(P_8x8), 四个 sub_mb_type=0, ref_idx=[0,1,1,0]
+    // mb1: skip_run=0, mb_type=5(I 宏块), 用于验证前一宏块语法消费对齐正确。
+    let rbsp = build_rbsp_from_ues(&[0, 3, 0, 0, 0, 0, 0, 1, 1, 0, 0, 5]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    assert_eq!(dec.mb_types[0], 203, "P_8x8 宏块应标记为互预测类型");
+    assert_eq!(dec.ref_y[0], 20, "左上 8x8 应使用 ref_idx=0");
+    assert_eq!(dec.ref_y[8], 90, "右上 8x8 应使用 ref_idx=1");
+    assert_eq!(dec.ref_y[8 * dec.stride_y], 90, "左下 8x8 应使用 ref_idx=1");
+    assert_eq!(
+        dec.ref_y[8 * dec.stride_y + 8],
+        20,
+        "右下 8x8 应使用 ref_idx=0"
+    );
+    assert_eq!(dec.mb_types[1], 1, "第二个宏块应成功解析为 I 宏块");
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8ref0_no_ref_idx_parse() {
+    let mut dec = build_test_decoder();
+    let sps_resize = build_sps_nalu(0, 32, 16);
+    dec.handle_sps(&sps_resize);
+    push_custom_reference(&mut dec, 3, 3, 20, None);
+    push_custom_reference(&mut dec, 2, 2, 90, None);
+
+    let mut header = build_test_slice_header(4, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.data_bit_offset = 0;
+    header.num_ref_idx_l0 = 2;
+
+    // mb0: skip_run=0, mb_type=4(P_8x8ref0), 四个 sub_mb_type=0, 不应读取 ref_idx
+    // mb1: skip_run=0, mb_type=5(I 宏块), 用于验证语法对齐。
+    let rbsp = build_rbsp_from_ues(&[0, 4, 0, 0, 0, 0, 0, 5]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    assert_eq!(dec.mb_types[0], 203, "P_8x8ref0 宏块应标记为互预测类型");
+    assert_eq!(dec.ref_y[0], 20, "P_8x8ref0 应固定使用 list0 的首参考帧");
+    assert_eq!(dec.ref_y[8], 20, "P_8x8ref0 应固定使用 list0 的首参考帧");
+    assert_eq!(
+        dec.ref_y[8 * dec.stride_y],
+        20,
+        "P_8x8ref0 应固定使用 list0 的首参考帧"
+    );
+    assert_eq!(
+        dec.ref_y[8 * dec.stride_y + 8],
+        20,
+        "P_8x8ref0 应固定使用 list0 的首参考帧"
+    );
+    assert_eq!(dec.mb_types[1], 1, "第二个宏块应成功解析为 I 宏块");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_b_skip_run_blend_l0_l1() {
     let mut dec = build_test_decoder();
     dec.last_slice_type = 1;

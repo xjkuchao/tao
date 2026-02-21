@@ -1105,6 +1105,167 @@ impl H264Decoder {
                             header.chroma_log2_weight_denom,
                         );
                     }
+                    3 | 4 => {
+                        let mut sub_mb_types = [0u32; 4];
+                        for slot in &mut sub_mb_types {
+                            *slot = read_ue(&mut br).unwrap_or(0);
+                        }
+
+                        let mut sub_ref_idx = [0u32; 4];
+                        if mb_type == 3 && header.num_ref_idx_l0 > 1 {
+                            for slot in &mut sub_ref_idx {
+                                *slot = read_ue(&mut br).unwrap_or(0);
+                            }
+                        }
+
+                        for sub_idx in 0..4usize {
+                            let sub_x = base_x + (sub_idx % 2) * 8;
+                            let sub_y = base_y + (sub_idx / 2) * 8;
+                            let ref_idx = sub_ref_idx[sub_idx];
+                            match sub_mb_types[sub_idx] {
+                                0 => {
+                                    self.apply_inter_block_l0(
+                                        &ref_l0_list,
+                                        ref_idx,
+                                        sub_x,
+                                        sub_y,
+                                        8,
+                                        8,
+                                        0,
+                                        0,
+                                        &header.l0_weights,
+                                        header.luma_log2_weight_denom,
+                                        header.chroma_log2_weight_denom,
+                                    );
+                                }
+                                1 => {
+                                    self.apply_inter_block_l0(
+                                        &ref_l0_list,
+                                        ref_idx,
+                                        sub_x,
+                                        sub_y,
+                                        8,
+                                        4,
+                                        0,
+                                        0,
+                                        &header.l0_weights,
+                                        header.luma_log2_weight_denom,
+                                        header.chroma_log2_weight_denom,
+                                    );
+                                    self.apply_inter_block_l0(
+                                        &ref_l0_list,
+                                        ref_idx,
+                                        sub_x,
+                                        sub_y + 4,
+                                        8,
+                                        4,
+                                        0,
+                                        0,
+                                        &header.l0_weights,
+                                        header.luma_log2_weight_denom,
+                                        header.chroma_log2_weight_denom,
+                                    );
+                                }
+                                2 => {
+                                    self.apply_inter_block_l0(
+                                        &ref_l0_list,
+                                        ref_idx,
+                                        sub_x,
+                                        sub_y,
+                                        4,
+                                        8,
+                                        0,
+                                        0,
+                                        &header.l0_weights,
+                                        header.luma_log2_weight_denom,
+                                        header.chroma_log2_weight_denom,
+                                    );
+                                    self.apply_inter_block_l0(
+                                        &ref_l0_list,
+                                        ref_idx,
+                                        sub_x + 4,
+                                        sub_y,
+                                        4,
+                                        8,
+                                        0,
+                                        0,
+                                        &header.l0_weights,
+                                        header.luma_log2_weight_denom,
+                                        header.chroma_log2_weight_denom,
+                                    );
+                                }
+                                3 => {
+                                    self.apply_inter_block_l0(
+                                        &ref_l0_list,
+                                        ref_idx,
+                                        sub_x,
+                                        sub_y,
+                                        4,
+                                        4,
+                                        0,
+                                        0,
+                                        &header.l0_weights,
+                                        header.luma_log2_weight_denom,
+                                        header.chroma_log2_weight_denom,
+                                    );
+                                    self.apply_inter_block_l0(
+                                        &ref_l0_list,
+                                        ref_idx,
+                                        sub_x + 4,
+                                        sub_y,
+                                        4,
+                                        4,
+                                        0,
+                                        0,
+                                        &header.l0_weights,
+                                        header.luma_log2_weight_denom,
+                                        header.chroma_log2_weight_denom,
+                                    );
+                                    self.apply_inter_block_l0(
+                                        &ref_l0_list,
+                                        ref_idx,
+                                        sub_x,
+                                        sub_y + 4,
+                                        4,
+                                        4,
+                                        0,
+                                        0,
+                                        &header.l0_weights,
+                                        header.luma_log2_weight_denom,
+                                        header.chroma_log2_weight_denom,
+                                    );
+                                    self.apply_inter_block_l0(
+                                        &ref_l0_list,
+                                        ref_idx,
+                                        sub_x + 4,
+                                        sub_y + 4,
+                                        4,
+                                        4,
+                                        0,
+                                        0,
+                                        &header.l0_weights,
+                                        header.luma_log2_weight_denom,
+                                        header.chroma_log2_weight_denom,
+                                    );
+                                }
+                                _ => {
+                                    self.apply_inter_block_l0(
+                                        &ref_l0_list,
+                                        ref_idx,
+                                        sub_x,
+                                        sub_y,
+                                        8,
+                                        8,
+                                        0,
+                                        0,
+                                        &header.l0_weights,
+                                        header.luma_log2_weight_denom,
+                                        header.chroma_log2_weight_denom,
+                                    );
+                                }
+                            }
+                        }
+                    }
                     _ => {
                         self.copy_macroblock_from_planes(mb_x, mb_y, &ref_l0);
                     }
