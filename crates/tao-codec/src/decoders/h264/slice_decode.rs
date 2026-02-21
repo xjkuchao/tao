@@ -394,23 +394,50 @@ impl H264Decoder {
         br: &mut BitReader,
     ) -> TaoResult<Vec<RefPicListMod>> {
         let mut mods = Vec::new();
+        let max_abs_diff_pic_num_minus1 = self
+            .sps
+            .as_ref()
+            .and_then(|sps| {
+                1u32.checked_shl(sps.log2_max_frame_num)
+                    .map(|max_pic_num| max_pic_num.saturating_sub(1))
+            })
+            .unwrap_or(u32::MAX);
+        let max_long_term_pic_num = self.max_reference_frames.saturating_sub(1) as u32;
         loop {
             let op = read_ue(br)?;
             match op {
                 0 => {
                     let abs_diff_pic_num_minus1 = read_ue(br)?;
+                    if abs_diff_pic_num_minus1 > max_abs_diff_pic_num_minus1 {
+                        return Err(TaoError::InvalidData(format!(
+                            "H264: ref_pic_list_modification abs_diff_pic_num_minus1 超范围, value={}, max={}",
+                            abs_diff_pic_num_minus1, max_abs_diff_pic_num_minus1
+                        )));
+                    }
                     mods.push(RefPicListMod::ShortTermSub {
                         abs_diff_pic_num_minus1,
                     });
                 }
                 1 => {
                     let abs_diff_pic_num_minus1 = read_ue(br)?;
+                    if abs_diff_pic_num_minus1 > max_abs_diff_pic_num_minus1 {
+                        return Err(TaoError::InvalidData(format!(
+                            "H264: ref_pic_list_modification abs_diff_pic_num_minus1 超范围, value={}, max={}",
+                            abs_diff_pic_num_minus1, max_abs_diff_pic_num_minus1
+                        )));
+                    }
                     mods.push(RefPicListMod::ShortTermAdd {
                         abs_diff_pic_num_minus1,
                     });
                 }
                 2 => {
                     let long_term_pic_num = read_ue(br)?;
+                    if long_term_pic_num > max_long_term_pic_num {
+                        return Err(TaoError::InvalidData(format!(
+                            "H264: ref_pic_list_modification long_term_pic_num 超范围, value={}, max={}",
+                            long_term_pic_num, max_long_term_pic_num
+                        )));
+                    }
                     mods.push(RefPicListMod::LongTerm { long_term_pic_num });
                 }
                 3 => break,

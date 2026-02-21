@@ -1499,6 +1499,63 @@ fn test_parse_slice_header_ref_pic_list_mod_l0_short_term_sub() {
 }
 
 #[test]
+fn test_parse_single_ref_pic_list_mod_reject_abs_diff_out_of_range() {
+    let mut dec = build_test_decoder();
+    dec.sps = Some(build_test_sps(0)); // log2_max_frame_num=4 => max abs_diff=15
+
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 0); // short-term subtraction
+    write_ue(&mut bits, 16); // abs_diff_pic_num_minus1, 超过 max=15
+    write_ue(&mut bits, 3); // 结束符
+    let rbsp = bits_to_bytes(&bits);
+    let mut br = BitReader::new(&rbsp);
+
+    let err = match dec.parse_single_ref_pic_list_mod(&mut br) {
+        Ok(_) => panic!("abs_diff_pic_num_minus1 超范围应失败"),
+        Err(err) => err,
+    };
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("abs_diff_pic_num_minus1"),
+        "错误信息应包含 abs_diff_pic_num_minus1, actual={}",
+        msg
+    );
+    assert!(
+        msg.contains("超范围"),
+        "错误信息应提示超范围, actual={}",
+        msg
+    );
+}
+
+#[test]
+fn test_parse_single_ref_pic_list_mod_reject_long_term_pic_num_out_of_range() {
+    let dec = build_test_decoder();
+
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 2); // long-term
+    write_ue(&mut bits, 4); // long_term_pic_num, 超过 max=3
+    write_ue(&mut bits, 3); // 结束符
+    let rbsp = bits_to_bytes(&bits);
+    let mut br = BitReader::new(&rbsp);
+
+    let err = match dec.parse_single_ref_pic_list_mod(&mut br) {
+        Ok(_) => panic!("long_term_pic_num 超范围应失败"),
+        Err(err) => err,
+    };
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("long_term_pic_num"),
+        "错误信息应包含 long_term_pic_num, actual={}",
+        msg
+    );
+    assert!(
+        msg.contains("超范围"),
+        "错误信息应提示超范围, actual={}",
+        msg
+    );
+}
+
+#[test]
 fn test_handle_sps_same_id_size_change_resets_reference_state() {
     let mut dec = build_test_decoder();
     let sps0 = build_test_sps(0);

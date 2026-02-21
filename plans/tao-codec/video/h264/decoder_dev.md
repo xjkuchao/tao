@@ -109,6 +109,7 @@
     - [x] 补齐 `poc_type1` 的 `delta_pic_order_cnt[0/1]` 解析和 `disable_deblocking_filter_idc` 状态透传。
     - [x] 接入 `ref_pic_list_modification` 解析(`list0/list1`)并将重排结果接入 CABAC/CAVLC 帧间参考列表构建。
     - [x] 补齐参考列表重排单测(短期重排/长期重排)。
+    - [x] 补齐 `ref_pic_list_modification` 语法边界校验(`abs_diff_pic_num_minus1`/`long_term_pic_num`)并新增超范围失败单测。
     - [x] 补齐 `pred_weight_table` 合法性校验(`luma/chroma_log2_weight_denom <= 7`, `luma/chroma weight/offset` 范围)并新增权重表解析单测。
     - [x] B-slice `pred_weight_table` 补齐 `list1` 权重解析与存储(`l1_weights`), 并新增对应单测。
 - [ ] CABAC 完整路径可用。
