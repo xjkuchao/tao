@@ -966,43 +966,6 @@ impl H264Decoder {
         }
     }
 
-    pub(super) fn copy_macroblock_from_planes(
-        &mut self,
-        mb_x: usize,
-        mb_y: usize,
-        ref_src: &RefPlanes,
-    ) {
-        let y_base_x = mb_x * 16;
-        let y_base_y = mb_y * 16;
-        for y in 0..16usize {
-            let dst_y = y_base_y + y;
-            for x in 0..16usize {
-                let dst_x = y_base_x + x;
-                let dst_idx = dst_y * self.stride_y + dst_x;
-                if dst_idx >= self.ref_y.len() {
-                    continue;
-                }
-                let src_idx = dst_y * self.stride_y + dst_x;
-                self.ref_y[dst_idx] = *ref_src.y.get(src_idx).unwrap_or(&128);
-            }
-        }
-
-        let c_base_x = mb_x * 8;
-        let c_base_y = mb_y * 8;
-        for y in 0..8usize {
-            let dst_y = c_base_y + y;
-            for x in 0..8usize {
-                let dst_x = c_base_x + x;
-                let dst_idx = dst_y * self.stride_c + dst_x;
-                if dst_idx >= self.ref_u.len() || dst_idx >= self.ref_v.len() {
-                    continue;
-                }
-                self.ref_u[dst_idx] = *ref_src.u.get(dst_idx).unwrap_or(&128);
-                self.ref_v[dst_idx] = *ref_src.v.get(dst_idx).unwrap_or(&128);
-            }
-        }
-    }
-
     /// CAVLC 最小路径: 消费 `mb_skip_run/mb_type`, 并执行基础重建.
     pub(super) fn decode_cavlc_slice_data(&mut self, rbsp: &[u8], header: &SliceHeader) {
         let total_mbs = self.mb_width * self.mb_height;
@@ -1081,10 +1044,6 @@ impl H264Decoder {
         } else {
             Vec::new()
         };
-        let ref_l0 = ref_l0_list
-            .first()
-            .cloned()
-            .unwrap_or_else(|| self.zero_reference_planes());
         let mut skip_run_left = 0u32;
         for mb_idx in first..total_mbs {
             if skip_run_left == 0 {
@@ -1130,7 +1089,14 @@ impl H264Decoder {
                         16,
                     );
                 } else {
-                    self.copy_macroblock_from_planes(mb_x, mb_y, &ref_l0);
+                    self.decode_p_skip_mb(
+                        mb_x,
+                        mb_y,
+                        &ref_l0_list,
+                        &header.l0_weights,
+                        header.luma_log2_weight_denom,
+                        header.chroma_log2_weight_denom,
+                    );
                 }
                 skip_run_left -= 1;
                 continue;
@@ -1628,6 +1594,9 @@ impl H264Decoder {
                 self.mb_types[mb_idx] = 200u8.saturating_add((mb_type as u8).min(3));
                 let base_x = mb_x * 16;
                 let base_y = mb_y * 16;
+                let mut final_mv_x = 0i32;
+                let mut final_mv_y = 0i32;
+                let mut final_ref_idx = 0u32;
                 match mb_type {
                     0 => {
                         let mut ref_idx_l0 = 0u32;
@@ -1649,6 +1618,9 @@ impl H264Decoder {
                             header.luma_log2_weight_denom,
                             header.chroma_log2_weight_denom,
                         );
+                        final_mv_x = mv_x;
+                        final_mv_y = mv_y;
+                        final_ref_idx = ref_idx_l0;
                     }
                     1 => {
                         let mut ref_idx_top = 0u32;
@@ -1687,6 +1659,9 @@ impl H264Decoder {
                             header.luma_log2_weight_denom,
                             header.chroma_log2_weight_denom,
                         );
+                        final_mv_x = mv_bottom_x;
+                        final_mv_y = mv_bottom_y;
+                        final_ref_idx = ref_idx_bottom;
                     }
                     2 => {
                         let mut ref_idx_left = 0u32;
@@ -1725,6 +1700,9 @@ impl H264Decoder {
                             header.luma_log2_weight_denom,
                             header.chroma_log2_weight_denom,
                         );
+                        final_mv_x = mv_right_x;
+                        final_mv_y = mv_right_y;
+                        final_ref_idx = ref_idx_right;
                     }
                     3 | 4 => {
                         let mut sub_mb_types = [0u32; 4];
@@ -1772,6 +1750,9 @@ impl H264Decoder {
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
                                     );
+                                    final_mv_x = sub_mv_x[sub_idx][0];
+                                    final_mv_y = sub_mv_y[sub_idx][0];
+                                    final_ref_idx = ref_idx;
                                 }
                                 1 => {
                                     self.apply_inter_block_l0(
@@ -1800,6 +1781,9 @@ impl H264Decoder {
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
                                     );
+                                    final_mv_x = sub_mv_x[sub_idx][1];
+                                    final_mv_y = sub_mv_y[sub_idx][1];
+                                    final_ref_idx = ref_idx;
                                 }
                                 2 => {
                                     self.apply_inter_block_l0(
@@ -1828,6 +1812,9 @@ impl H264Decoder {
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
                                     );
+                                    final_mv_x = sub_mv_x[sub_idx][1];
+                                    final_mv_y = sub_mv_y[sub_idx][1];
+                                    final_ref_idx = ref_idx;
                                 }
                                 3 => {
                                     self.apply_inter_block_l0(
@@ -1882,6 +1869,9 @@ impl H264Decoder {
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
                                     );
+                                    final_mv_x = sub_mv_x[sub_idx][3];
+                                    final_mv_y = sub_mv_y[sub_idx][3];
+                                    final_ref_idx = ref_idx;
                                 }
                                 _ => {
                                     self.apply_inter_block_l0(
@@ -1897,14 +1887,32 @@ impl H264Decoder {
                                         header.luma_log2_weight_denom,
                                         header.chroma_log2_weight_denom,
                                     );
+                                    final_mv_x = sub_mv_x[sub_idx][0];
+                                    final_mv_y = sub_mv_y[sub_idx][0];
+                                    final_ref_idx = ref_idx;
                                 }
                             }
                         }
                     }
                     _ => {
-                        self.copy_macroblock_from_planes(mb_x, mb_y, &ref_l0);
+                        self.apply_inter_block_l0(
+                            &ref_l0_list,
+                            0,
+                            base_x,
+                            base_y,
+                            16,
+                            16,
+                            0,
+                            0,
+                            &header.l0_weights,
+                            header.luma_log2_weight_denom,
+                            header.chroma_log2_weight_denom,
+                        );
                     }
                 }
+                self.mv_l0_x[mb_idx] = final_mv_x.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                self.mv_l0_y[mb_idx] = final_mv_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                self.ref_idx_l0[mb_idx] = final_ref_idx.min(i8::MAX as u32) as i8;
             }
         }
     }

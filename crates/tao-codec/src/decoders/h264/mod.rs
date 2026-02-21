@@ -1,7 +1,7 @@
 //! H.264/AVC 视频解码器.
 //!
 //! 实现 CABAC 熵解码, I_16x16/I_4x4 帧内预测和残差解码.
-//! P/B 帧使用 P_Skip (复制参考帧).
+//! P/B 帧支持帧间预测、P_Skip/B_Skip 与基础运动补偿.
 
 mod cabac;
 mod cabac_init_ext;

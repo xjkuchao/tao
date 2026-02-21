@@ -28,6 +28,43 @@ impl H264Decoder {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(super) fn decode_p_skip_mb(
+        &mut self,
+        mb_x: usize,
+        mb_y: usize,
+        ref_l0_list: &[RefPlanes],
+        l0_weights: &[PredWeightL0],
+        luma_log2_weight_denom: u8,
+        chroma_log2_weight_denom: u8,
+    ) {
+        let mb_idx = mb_y * self.mb_width + mb_x;
+        self.mb_types[mb_idx] = 255;
+        self.set_mb_cbp(mb_x, mb_y, 0);
+        self.set_transform_8x8_flag(mb_x, mb_y, false);
+        self.set_chroma_pred_mode(mb_x, mb_y, 0);
+        self.set_luma_dc_cbf(mb_x, mb_y, false);
+        self.reset_chroma_cbf_mb(mb_x, mb_y);
+        self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
+        let (pred_x, pred_y) = self.predict_mv_l0_16x16(mb_x, mb_y);
+        self.apply_inter_block_l0(
+            ref_l0_list,
+            0,
+            mb_x * 16,
+            mb_y * 16,
+            16,
+            16,
+            pred_x,
+            pred_y,
+            l0_weights,
+            luma_log2_weight_denom,
+            chroma_log2_weight_denom,
+        );
+        self.mv_l0_x[mb_idx] = pred_x.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        self.mv_l0_y[mb_idx] = pred_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        self.ref_idx_l0[mb_idx] = 0;
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_p_slice_mbs(
         &mut self,
         cabac: &mut CabacDecoder,
@@ -52,30 +89,14 @@ impl H264Decoder {
             let skip = self.decode_p_mb_skip_flag(cabac, ctxs, mb_x, mb_y);
 
             if skip {
-                self.mb_types[mb_idx] = 255;
-                self.set_mb_cbp(mb_x, mb_y, 0);
-                self.set_transform_8x8_flag(mb_x, mb_y, false);
-                self.set_chroma_pred_mode(mb_x, mb_y, 0);
-                self.set_luma_dc_cbf(mb_x, mb_y, false);
-                self.reset_chroma_cbf_mb(mb_x, mb_y);
-                self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
-                let (pred_x, pred_y) = self.predict_mv_l0_16x16(mb_x, mb_y);
-                self.apply_inter_block_l0(
+                self.decode_p_skip_mb(
+                    mb_x,
+                    mb_y,
                     ref_l0_list,
-                    0,
-                    mb_x * 16,
-                    mb_y * 16,
-                    16,
-                    16,
-                    pred_x,
-                    pred_y,
                     l0_weights,
                     luma_log2_weight_denom,
                     chroma_log2_weight_denom,
                 );
-                self.mv_l0_x[mb_idx] = pred_x as i16;
-                self.mv_l0_y[mb_idx] = pred_y as i16;
-                self.ref_idx_l0[mb_idx] = 0;
             } else if let Some(p_mb_type) = self.decode_p_mb_type(cabac, ctxs, mb_x, mb_y) {
                 self.decode_p_inter_mb(
                     cabac,

@@ -3319,7 +3319,7 @@ fn test_drain_reorder_buffer_outputs_frames_by_poc_ascending() {
 }
 
 #[test]
-fn test_decode_cavlc_slice_data_p_skip_run_copy_reference() {
+fn test_decode_cavlc_slice_data_p_skip_run_reconstructs_from_l0_prediction() {
     let mut dec = build_test_decoder();
     push_custom_reference(&mut dec, 3, 3, 77, None);
 
@@ -3331,8 +3331,41 @@ fn test_decode_cavlc_slice_data_p_skip_run_copy_reference() {
     // ue(1)=010 + rbsp_trailing_bits=1 => 0101_0000
     let rbsp = [0x50u8];
     dec.decode_cavlc_slice_data(&rbsp, &header);
-    assert_eq!(dec.ref_y[0], 77, "P-slice skip 宏块应复制参考帧像素");
+    assert_eq!(dec.ref_y[0], 77, "P-slice skip 宏块应按 L0 预测重建");
     assert_eq!(dec.mb_types[0], 255, "P-slice skip 宏块应标记为 skip");
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_p_skip_run_uses_predicted_mv_from_left_neighbor() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 16;
+    dec.init_buffers();
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    // 仅解码第 2 个宏块, 并预置左邻宏块运动向量为 +1 像素(qpel=4),
+    // 使 P_Skip 的 MVP 可以观测到非零位移.
+    dec.mv_l0_x[0] = 4;
+    dec.mv_l0_y[0] = 0;
+    dec.ref_idx_l0[0] = 0;
+    dec.mb_types[0] = 200;
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.first_mb = 1;
+    header.data_bit_offset = 0;
+
+    let rbsp = build_rbsp_from_ues(&[1]); // mb_skip_run=1
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    let mb1_y0_idx = 16usize;
+    assert_eq!(
+        dec.ref_y[mb1_y0_idx], 17,
+        "P_Skip 应使用左邻 MVP=+1 像素, 而非直接复制同坐标参考像素"
+    );
+    assert_eq!(dec.mv_l0_x[1], 4, "P_Skip 应写入预测后的宏块 MV(x)");
+    assert_eq!(dec.mv_l0_y[1], 0, "P_Skip 应写入预测后的宏块 MV(y)");
+    assert_eq!(dec.ref_idx_l0[1], 0, "P_Skip 应固定使用 L0 的 ref_idx=0");
 }
 
 #[test]
