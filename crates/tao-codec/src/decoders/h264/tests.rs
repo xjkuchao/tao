@@ -1670,6 +1670,60 @@ fn test_decode_cavlc_slice_data_p_skip_run_copy_reference() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_b_skip_run_blend_l0_l1() {
+    let mut dec = build_test_decoder();
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_custom_reference(&mut dec, 1, 2, 20, None);
+    push_custom_reference(&mut dec, 2, 8, 100, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+
+    // mb_skip_run = 1, 覆盖单宏块帧
+    let rbsp = build_rbsp_from_ues(&[1]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+    assert_eq!(dec.ref_y[0], 60, "B-slice skip 应融合 L0/L1 预测");
+    assert_eq!(dec.mb_types[0], 254, "B-slice skip 宏块应标记为 B skip");
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_b_skip_run_explicit_weighted() {
+    let mut dec = build_test_decoder();
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_custom_reference(&mut dec, 1, 2, 20, None);
+    push_custom_reference(&mut dec, 2, 8, 100, None);
+
+    let mut pps = build_test_pps();
+    pps.weighted_bipred_idc = 1;
+    dec.pps = Some(pps);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+    header.luma_log2_weight_denom = 2;
+    header.chroma_log2_weight_denom = 0;
+    header.l0_weights = vec![PredWeightL0 {
+        luma_weight: 0,
+        luma_offset: 0,
+        chroma_weight: [1, 1],
+        chroma_offset: [0, 0],
+    }];
+    header.l1_weights = vec![PredWeightL0 {
+        luma_weight: 4,
+        luma_offset: 0,
+        chroma_weight: [1, 1],
+        chroma_offset: [0, 0],
+    }];
+
+    let rbsp = build_rbsp_from_ues(&[1]); // mb_skip_run=1
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+    assert_eq!(dec.ref_y[0], 50, "显式加权 B-slice skip 应应用权重");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_i_minimal_intra_predict() {
     let mut dec = build_test_decoder();
     dec.ref_y.fill(0);

@@ -817,6 +817,7 @@ impl H264Decoder {
         }
 
         let is_i = header.slice_type == 2 || header.slice_type == 4;
+        let is_b = header.slice_type == 1;
         if is_i {
             for mb_idx in first..total_mbs {
                 let _mb_type = read_ue(&mut br).unwrap_or(0);
@@ -853,14 +854,23 @@ impl H264Decoder {
             return;
         }
 
-        let ref_l0 = self
-            .build_reference_list_l0_with_mod(
-                header.num_ref_idx_l0,
-                &header.ref_pic_list_mod_l0,
+        let ref_l0_list = self.build_reference_list_l0_with_mod(
+            header.num_ref_idx_l0,
+            &header.ref_pic_list_mod_l0,
+            header.frame_num,
+        );
+        let ref_l1_list = if is_b {
+            self.build_reference_list_l1_with_mod(
+                header.num_ref_idx_l1,
+                &header.ref_pic_list_mod_l1,
                 header.frame_num,
             )
-            .into_iter()
-            .next()
+        } else {
+            Vec::new()
+        };
+        let ref_l0 = ref_l0_list
+            .first()
+            .cloned()
             .unwrap_or_else(|| self.zero_reference_planes());
         let mut skip_run_left = 0u32;
         for mb_idx in first..total_mbs {
@@ -870,13 +880,96 @@ impl H264Decoder {
             let mb_x = mb_idx % self.mb_width;
             let mb_y = mb_idx / self.mb_width;
             if skip_run_left > 0 {
-                self.mb_types[mb_idx] = 255;
+                self.mb_types[mb_idx] = if is_b { 254 } else { 255 };
                 self.mb_cbp[mb_idx] = 0;
-                self.copy_macroblock_from_planes(mb_x, mb_y, &ref_l0);
+                if is_b {
+                    let _ = self.apply_b_prediction_block(
+                        Some(BMotion {
+                            mv_x: 0,
+                            mv_y: 0,
+                            ref_idx: 0,
+                        }),
+                        Some(BMotion {
+                            mv_x: 0,
+                            mv_y: 0,
+                            ref_idx: 0,
+                        }),
+                        &header.l0_weights,
+                        &header.l1_weights,
+                        header.luma_log2_weight_denom,
+                        header.chroma_log2_weight_denom,
+                        &ref_l0_list,
+                        &ref_l1_list,
+                        mb_x * 16,
+                        mb_y * 16,
+                        16,
+                        16,
+                    );
+                } else {
+                    self.copy_macroblock_from_planes(mb_x, mb_y, &ref_l0);
+                }
                 skip_run_left -= 1;
                 continue;
             }
-            let _mb_type = read_ue(&mut br).unwrap_or(0);
+            let mb_type = read_ue(&mut br).unwrap_or(0);
+            if is_b {
+                let is_inter = mb_type <= 22;
+                if is_inter {
+                    self.mb_types[mb_idx] = 254;
+                    self.mb_cbp[mb_idx] = 0;
+                    let _ = self.apply_b_prediction_block(
+                        Some(BMotion {
+                            mv_x: 0,
+                            mv_y: 0,
+                            ref_idx: 0,
+                        }),
+                        Some(BMotion {
+                            mv_x: 0,
+                            mv_y: 0,
+                            ref_idx: 0,
+                        }),
+                        &header.l0_weights,
+                        &header.l1_weights,
+                        header.luma_log2_weight_denom,
+                        header.chroma_log2_weight_denom,
+                        &ref_l0_list,
+                        &ref_l1_list,
+                        mb_x * 16,
+                        mb_y * 16,
+                        16,
+                        16,
+                    );
+                } else {
+                    self.mb_types[mb_idx] = 1;
+                    self.mb_cbp[mb_idx] = 0;
+                    intra::predict_16x16(
+                        &mut self.ref_y,
+                        self.stride_y,
+                        mb_x * 16,
+                        mb_y * 16,
+                        2,
+                        mb_x > 0,
+                        mb_y > 0,
+                    );
+                    intra::predict_chroma_dc(
+                        &mut self.ref_u,
+                        self.stride_c,
+                        mb_x * 8,
+                        mb_y * 8,
+                        mb_x > 0,
+                        mb_y > 0,
+                    );
+                    intra::predict_chroma_dc(
+                        &mut self.ref_v,
+                        self.stride_c,
+                        mb_x * 8,
+                        mb_y * 8,
+                        mb_x > 0,
+                        mb_y > 0,
+                    );
+                }
+                continue;
+            }
             self.mb_types[mb_idx] = 255;
             self.mb_cbp[mb_idx] = 0;
             self.copy_macroblock_from_planes(mb_x, mb_y, &ref_l0);
