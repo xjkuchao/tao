@@ -27,6 +27,36 @@ impl H264Decoder {
         (motion_l0, motion_l1)
     }
 
+    /// 推导 P_Skip 的 L0 运动向量.
+    ///
+    /// 规则:
+    /// - 当左/上邻居都存在且二者均为 `ref_idx=0 且 mv=(0,0)` 时, 返回零向量.
+    /// - 其它情况退化为 `ref_idx=0` 的 16x16 MVP.
+    pub(super) fn predict_p_skip_mv(&self, mb_x: usize, mb_y: usize) -> (i32, i32) {
+        let left = if mb_x > 0 {
+            self.mb_index(mb_x - 1, mb_y)
+        } else {
+            None
+        };
+        let top = if mb_y > 0 {
+            self.mb_index(mb_x, mb_y - 1)
+        } else {
+            None
+        };
+        if let (Some(left_idx), Some(top_idx)) = (left, top) {
+            let left_zero = self.ref_idx_l0.get(left_idx).copied().unwrap_or(-1) == 0
+                && self.mv_l0_x.get(left_idx).copied().unwrap_or(0) == 0
+                && self.mv_l0_y.get(left_idx).copied().unwrap_or(0) == 0;
+            let top_zero = self.ref_idx_l0.get(top_idx).copied().unwrap_or(-1) == 0
+                && self.mv_l0_x.get(top_idx).copied().unwrap_or(0) == 0
+                && self.mv_l0_y.get(top_idx).copied().unwrap_or(0) == 0;
+            if left_zero && top_zero {
+                return (0, 0);
+            }
+        }
+        self.predict_mv_l0_partition(mb_x, mb_y, 0, 0, 4, 0)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_p_skip_mb(
         &mut self,
@@ -45,7 +75,7 @@ impl H264Decoder {
         self.set_luma_dc_cbf(mb_x, mb_y, false);
         self.reset_chroma_cbf_mb(mb_x, mb_y);
         self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
-        let (pred_x, pred_y) = self.predict_mv_l0_16x16(mb_x, mb_y);
+        let (pred_x, pred_y) = self.predict_p_skip_mv(mb_x, mb_y);
         self.apply_inter_block_l0(
             ref_l0_list,
             0,

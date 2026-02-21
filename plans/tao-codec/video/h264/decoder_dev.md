@@ -204,6 +204,7 @@ crates/tao-codec/src/decoders/h264/
 - [ ] 16x8/8x16 特殊 MVP(规范 8.4.1.3 directional).
     - [x] P_L0_L0_16x8/8x16 在同 `ref_idx` 时第二分区复用第一分区预测 MV(CABAC/CAVLC).
 - [ ] P_Skip MV 推导(邻居中值, 非简单复制).
+    - [x] 左/上邻居均为 `ref_idx=0 && mv=(0,0)` 时输出零 MV, 其它场景退化到 16x16 MVP.
 - [ ] mvd + mvp 合成完整 MV(逐分区/子分区).
     - [x] CAVLC `P_8x8` 子分区(8x8/8x4/4x8/4x4)完成 mvp+mvd 合成并接入单测.
 - [ ] MV 预测单测(16x16/16x8/8x16/8x8/P_Skip).

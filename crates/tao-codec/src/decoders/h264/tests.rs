@@ -3930,6 +3930,56 @@ fn test_predict_mv_l0_partition_prefers_single_ref_match_and_fallback_to_d() {
 }
 
 #[test]
+fn test_predict_p_skip_mv_returns_zero_when_left_top_mb_motion_are_zero() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+
+    // 目标宏块(1,1)的左/上邻居 mb 级运动信息都为零且 ref_idx=0.
+    let left_mb = dec.mb_index(0, 1).expect("左邻索引应存在");
+    let top_mb = dec.mb_index(1, 0).expect("上邻索引应存在");
+    dec.mv_l0_x[left_mb] = 0;
+    dec.mv_l0_y[left_mb] = 0;
+    dec.ref_idx_l0[left_mb] = 0;
+    dec.mv_l0_x[top_mb] = 0;
+    dec.mv_l0_y[top_mb] = 0;
+    dec.ref_idx_l0[top_mb] = 0;
+
+    // 即便 4x4 状态存在非零候选, P_Skip 也应优先走零向量分支.
+    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 8, 0, 0);
+    dec.set_l0_motion_block_4x4(16, 0, 16, 16, 12, 0, 0);
+
+    let mv = dec.predict_p_skip_mv(1, 1);
+    assert_eq!(mv, (0, 0), "左/上邻居均为零向量时 P_Skip 应输出零 MV");
+}
+
+#[test]
+fn test_predict_p_skip_mv_uses_partition_predict_when_neighbors_not_both_zero() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+
+    // 构造目标宏块(1,1)的 A/B/C 候选: A=8, B=8, D=0 => 中值应为 8.
+    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 8, 0, 0);
+    dec.set_l0_motion_block_4x4(16, 0, 16, 16, 8, 0, 0);
+    dec.set_l0_motion_block_4x4(0, 0, 16, 16, 0, 0, 0);
+
+    let left_mb = dec.mb_index(0, 1).expect("左邻索引应存在");
+    let top_mb = dec.mb_index(1, 0).expect("上邻索引应存在");
+    dec.mv_l0_x[left_mb] = 8;
+    dec.mv_l0_y[left_mb] = 0;
+    dec.ref_idx_l0[left_mb] = 0;
+    dec.mv_l0_x[top_mb] = 8;
+    dec.mv_l0_y[top_mb] = 0;
+    dec.ref_idx_l0[top_mb] = 0;
+
+    let mv = dec.predict_p_skip_mv(1, 1);
+    assert_eq!(mv, (8, 0), "非零邻居场景应退化到分区中值预测");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_p_non_skip_inter_16x16_prefers_single_ref_match_mvp() {
     use ExpGolombValue::{Se, Ue};
 
