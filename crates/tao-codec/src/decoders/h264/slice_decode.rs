@@ -369,7 +369,9 @@ impl H264Decoder {
                 if header.nal_ref_idc == 0 {
                     poc -= 1;
                 }
-                self.prev_frame_num_offset_type2 = frame_num_offset;
+                if header.nal_ref_idc != 0 {
+                    self.prev_frame_num_offset_type2 = frame_num_offset;
+                }
                 poc
             }
             _ => header.frame_num as i32,

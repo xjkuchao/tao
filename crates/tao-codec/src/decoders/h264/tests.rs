@@ -3651,6 +3651,28 @@ fn test_compute_slice_poc_type2_idr_resets_offset() {
 }
 
 #[test]
+fn test_compute_slice_poc_type2_non_ref_wrap_does_not_update_prev_offset() {
+    let mut dec = build_test_decoder();
+    let sps = build_test_sps_with_poc_type(0, 2);
+    dec.sps_map.insert(0, sps.clone());
+    dec.sps = Some(sps);
+    dec.active_sps_id = Some(0);
+    dec.prev_frame_num_offset_type2 = 16;
+
+    let non_ref_wrap = build_test_slice_header(0, 0, false, None);
+    let poc_non_ref = dec.compute_slice_poc(&non_ref_wrap, 15);
+    assert_eq!(poc_non_ref, 63, "非参考帧 wrap 的 POC 计算错误");
+    assert_eq!(
+        dec.prev_frame_num_offset_type2, 16,
+        "非参考帧不应更新 prev_frame_num_offset_type2"
+    );
+
+    let ref_after_non_ref = build_test_slice_header(1, 1, false, None);
+    let poc_ref = dec.compute_slice_poc(&ref_after_non_ref, 0);
+    assert_eq!(poc_ref, 34, "后续参考帧应基于上一个参考帧偏移继续计算");
+}
+
+#[test]
 fn test_compute_slice_poc_type1_basic_and_non_ref() {
     let mut dec = build_test_decoder();
     let mut sps = build_test_sps_with_poc_type(0, 1);
