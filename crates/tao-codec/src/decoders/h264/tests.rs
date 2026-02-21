@@ -180,6 +180,7 @@ fn build_test_decoder() -> H264Decoder {
         missing_reference_fallbacks: 0,
         malformed_nal_drops: 0,
         last_sei_payloads: Vec::new(),
+        pending_recovery_point_frame_cnt: None,
         output_queue: VecDeque::new(),
         reorder_buffer: Vec::new(),
         reorder_depth_override: None,
@@ -4999,4 +5000,84 @@ fn test_send_packet_sei_updates_last_payloads() {
         }
         _ => panic!("第二条 SEI 应为 recovery_point"),
     }
+}
+
+#[test]
+fn test_consume_recovery_point_for_new_picture_countdown_and_mark_keyframe() {
+    let mut dec = build_test_decoder();
+    dec.pending_recovery_point_frame_cnt = Some(2);
+
+    assert!(
+        !dec.consume_recovery_point_for_new_picture(false),
+        "倒计时未归零时不应标记随机访问点"
+    );
+    assert_eq!(
+        dec.pending_recovery_point_frame_cnt,
+        Some(1),
+        "消费一次后计数应减 1"
+    );
+
+    assert!(
+        !dec.consume_recovery_point_for_new_picture(false),
+        "倒计时=1 的图像仍不应标记随机访问点"
+    );
+    assert_eq!(
+        dec.pending_recovery_point_frame_cnt,
+        Some(0),
+        "倒计时应继续下降到 0"
+    );
+
+    assert!(
+        dec.consume_recovery_point_for_new_picture(false),
+        "倒计时归零后的下一非 IDR 图像应标记随机访问点"
+    );
+    assert_eq!(
+        dec.pending_recovery_point_frame_cnt, None,
+        "随机访问点命中后应清除 recovery_point 状态"
+    );
+
+    dec.pending_recovery_point_frame_cnt = Some(3);
+    assert!(
+        !dec.consume_recovery_point_for_new_picture(true),
+        "IDR 图像不应走 recovery_point 随机访问点标记"
+    );
+    assert_eq!(
+        dec.pending_recovery_point_frame_cnt, None,
+        "遇到 IDR 图像后应清空 recovery_point 状态"
+    );
+}
+
+#[test]
+fn test_send_packet_marks_non_idr_pending_frame_keyframe_from_recovery_point() {
+    let mut dec = build_test_decoder();
+    install_basic_parameter_sets(&mut dec, 0);
+
+    let mut sei_nalu = vec![0x06];
+    sei_nalu.extend_from_slice(&build_sei_rbsp(&[(
+        6,
+        build_recovery_point_payload(0, true, false, 0),
+    )]));
+
+    let mut slice_nalu = vec![0x41]; // non-IDR slice
+    slice_nalu.extend_from_slice(&build_p_slice_header_rbsp(0, 0, 0, 0, 0, 1));
+
+    let mut avcc = Vec::new();
+    for nalu in [&sei_nalu, &slice_nalu] {
+        avcc.extend_from_slice(&(nalu.len() as u32).to_be_bytes());
+        avcc.extend_from_slice(nalu);
+    }
+    let packet = Packet::from_data(avcc);
+
+    dec.send_packet(&packet)
+        .expect("recovery_point + non-IDR 包应可正常处理");
+
+    assert_eq!(
+        dec.pending_frame.as_ref().map(|meta| meta.is_keyframe),
+        Some(true),
+        "recovery_frame_cnt=0 时首个非 IDR 图像应标记为随机访问点"
+    );
+    assert_eq!(
+        dec.pending_recovery_point_frame_cnt, None,
+        "随机访问点命中后应消费并清空 recovery_point 状态"
+    );
 }

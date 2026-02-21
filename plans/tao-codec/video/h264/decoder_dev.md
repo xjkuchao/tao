@@ -275,7 +275,7 @@ crates/tao-codec/src/decoders/h264/
 - [x] MMCO 上限/参数范围 + 缺参考帧回退 + 坏 NAL 拒绝 + slice 边界/first_mb 容错.
 - [x] 宏块解码异常恢复(标记错误 + 跳过后续宏块) + 单测.
 - [x] 帧级错误隐藏(参考帧像素填充缺失区域) + 单测.
-- [ ] recovery_point SEI 处理(非 IDR 随机访问点标记).
+- [x] recovery_point SEI 处理(非 IDR 随机访问点标记).
 
 #### P6.5 多 Slice 拼装
 

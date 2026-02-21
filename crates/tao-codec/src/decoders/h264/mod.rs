@@ -328,6 +328,8 @@ pub struct H264Decoder {
     malformed_nal_drops: u64,
     /// 最近一次成功解析的 SEI payload 列表.
     last_sei_payloads: Vec<sei::SeiPayload>,
+    /// recovery_point 等待计数(到 0 时将下一非 IDR 图像标记为随机访问点).
+    pending_recovery_point_frame_cnt: Option<u32>,
     output_queue: VecDeque<Frame>,
     reorder_buffer: Vec<ReorderFrameEntry>,
     reorder_depth_override: Option<usize>,
@@ -404,6 +406,7 @@ impl H264Decoder {
             missing_reference_fallbacks: 0,
             malformed_nal_drops: 0,
             last_sei_payloads: Vec::new(),
+            pending_recovery_point_frame_cnt: None,
             output_queue: VecDeque::new(),
             reorder_buffer: Vec::new(),
             reorder_depth_override: None,
@@ -514,6 +517,19 @@ impl H264Decoder {
                         );
                     }
                 }
+                if let Some(recovery_frame_cnt) = payloads.iter().rev().find_map(|payload| {
+                    if let sei::SeiMessage::RecoveryPoint(recovery) = &payload.message {
+                        Some(recovery.recovery_frame_cnt)
+                    } else {
+                        None
+                    }
+                }) {
+                    self.pending_recovery_point_frame_cnt = Some(recovery_frame_cnt);
+                    debug!(
+                        "H264: 收到 recovery_point, recovery_frame_cnt={}",
+                        recovery_frame_cnt
+                    );
+                }
                 self.last_sei_payloads = payloads;
             }
             Err(err) => {
@@ -521,6 +537,22 @@ impl H264Decoder {
                 self.last_sei_payloads.clear();
             }
         }
+    }
+
+    fn consume_recovery_point_for_new_picture(&mut self, is_idr: bool) -> bool {
+        if is_idr {
+            self.pending_recovery_point_frame_cnt = None;
+            return false;
+        }
+        let Some(frame_cnt) = self.pending_recovery_point_frame_cnt else {
+            return false;
+        };
+        if frame_cnt == 0 {
+            self.pending_recovery_point_frame_cnt = None;
+            return true;
+        }
+        self.pending_recovery_point_frame_cnt = Some(frame_cnt - 1);
+        false
     }
 
     /// 重置参考帧缓冲为中性值
@@ -891,6 +923,7 @@ impl Decoder for H264Decoder {
         self.last_dec_ref_pic_marking = DecRefPicMarking::default();
         self.malformed_nal_drops = 0;
         self.last_sei_payloads.clear();
+        self.pending_recovery_point_frame_cnt = None;
         self.reorder_depth_override = std::env::var("TAO_H264_REORDER_DEPTH")
             .ok()
             .and_then(|v| v.parse::<usize>().ok());
@@ -987,13 +1020,16 @@ impl Decoder for H264Decoder {
                     }
                     self.decode_slice(nalu);
                     if self.pending_frame.is_none() {
+                        let mark_recovery_keyframe =
+                            self.consume_recovery_point_for_new_picture(is_idr);
                         self.pending_frame = Some(PendingFrameMeta {
                             pts: packet.pts,
                             time_base: packet.time_base,
-                            is_keyframe: is_idr,
+                            is_keyframe: is_idr || mark_recovery_keyframe,
                         });
                     } else if is_idr && let Some(meta) = self.pending_frame.as_mut() {
                         meta.is_keyframe = true;
+                        self.pending_recovery_point_frame_cnt = None;
                     }
                 }
                 _ => {}
@@ -1032,6 +1068,7 @@ impl Decoder for H264Decoder {
         self.prev_frame_num_offset_type2 = 0;
         self.last_dec_ref_pic_marking = DecRefPicMarking::default();
         self.last_sei_payloads.clear();
+        self.pending_recovery_point_frame_cnt = None;
         self.reset_reference_planes();
         self.mb_types.fill(0);
         self.mb_cbp.fill(0);
