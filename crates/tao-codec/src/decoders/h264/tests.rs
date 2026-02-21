@@ -302,6 +302,23 @@ fn build_rbsp_from_ues(values: &[u32]) -> Vec<u8> {
     bits_to_bytes(&bits)
 }
 
+#[derive(Clone, Copy)]
+enum ExpGolombValue {
+    Ue(u32),
+    Se(i32),
+}
+
+fn build_rbsp_from_exp_golomb(values: &[ExpGolombValue]) -> Vec<u8> {
+    let mut bits = Vec::new();
+    for value in values {
+        match value {
+            ExpGolombValue::Ue(v) => write_ue(&mut bits, *v),
+            ExpGolombValue::Se(v) => write_se(&mut bits, *v),
+        }
+    }
+    bits_to_bytes(&bits)
+}
+
 fn build_sps_nalu(sps_id: u32, width: u32, height: u32) -> NalUnit {
     let mut bits = Vec::new();
     push_bits_u8(&mut bits, 66); // profile_idc: Baseline
@@ -1911,6 +1928,8 @@ fn test_decode_cavlc_slice_data_b_non_skip_l1_only_ref_idx() {
 
 #[test]
 fn test_decode_cavlc_slice_data_b_non_skip_bi_16x16_ref_idx() {
+    use ExpGolombValue::{Se, Ue};
+
     let mut dec = build_test_decoder();
     dec.last_slice_type = 1;
     dec.last_poc = 5;
@@ -1923,14 +1942,17 @@ fn test_decode_cavlc_slice_data_b_non_skip_bi_16x16_ref_idx() {
     header.num_ref_idx_l0 = 2;
     header.num_ref_idx_l1 = 2;
 
-    // mb_skip_run=0, mb_type=3(B_Bi_16x16), ref_idx_l0=1, ref_idx_l1=1
-    let rbsp = build_rbsp_from_ues(&[0, 3, 1, 1]);
+    // mb_skip_run=0, mb_type=3(B_Bi_16x16), ref_idx_l0=1, ref_idx_l1=1, mvd_l0/mvd_l1 均为 0
+    let rbsp =
+        build_rbsp_from_exp_golomb(&[Ue(0), Ue(3), Ue(1), Ue(1), Se(0), Se(0), Se(0), Se(0)]);
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(dec.ref_y[0], 99, "B_Bi_16x16 应按 ref_idx_l0/l1 选择参考帧");
 }
 
 #[test]
 fn test_decode_cavlc_slice_data_b_non_skip_bi_16x16_ref_idx_alignment() {
+    use ExpGolombValue::{Se, Ue};
+
     let mut dec = build_test_decoder();
     let sps_resize = build_sps_nalu(0, 32, 16);
     dec.handle_sps(&sps_resize);
@@ -1945,16 +1967,67 @@ fn test_decode_cavlc_slice_data_b_non_skip_bi_16x16_ref_idx_alignment() {
     header.num_ref_idx_l0 = 2;
     header.num_ref_idx_l1 = 2;
 
-    // mb0: skip_run=0, mb_type=3(B_Bi_16x16), ref_idx_l0=1, ref_idx_l1=1
+    // mb0: skip_run=0, mb_type=3(B_Bi_16x16), ref_idx_l0=1, ref_idx_l1=1, mvd_l0/mvd_l1 均为 0
     // mb1: skip_run=0, mb_type=23(intra), 用于验证语法消费对齐。
-    let rbsp = build_rbsp_from_ues(&[0, 3, 1, 1, 0, 23]);
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0),
+        Ue(3),
+        Ue(1),
+        Ue(1),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Ue(0),
+        Ue(23),
+    ]);
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(dec.ref_y[0], 99, "首个 B_Bi_16x16 应按 ref_idx 选择参考");
     assert_eq!(dec.mb_types[1], 1, "第二个宏块应解析为帧内宏块");
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_b_non_skip_bi_16x16_mvd_alignment() {
+    use ExpGolombValue::{Se, Ue};
+
+    let mut dec = build_test_decoder();
+    let sps_resize = build_sps_nalu(0, 32, 16);
+    dec.handle_sps(&sps_resize);
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_custom_reference(&mut dec, 1, 2, 20, None);
+    push_custom_reference(&mut dec, 2, 1, 99, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+    header.num_ref_idx_l0 = 2;
+    header.num_ref_idx_l1 = 2;
+
+    // mb0: skip_run=0, mb_type=3(B_Bi_16x16), ref_idx_l0=1, ref_idx_l1=1, mvd_l0=(2,-1), mvd_l1=(-2,1)
+    // mb1: skip_run=0, mb_type=23(intra), 用于验证 mvd 语法消费对齐。
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0),
+        Ue(3),
+        Ue(1),
+        Ue(1),
+        Se(2),
+        Se(-1),
+        Se(-2),
+        Se(1),
+        Ue(0),
+        Ue(23),
+    ]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    assert_eq!(dec.ref_y[0], 99, "B_Bi_16x16 应按 ref_idx 选择参考帧");
+    assert_eq!(dec.mb_types[1], 1, "第二个宏块应解析为帧内宏块");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_b_non_skip_b_l0_l1_16x8_ref_idx_alignment() {
+    use ExpGolombValue::{Se, Ue};
+
     let mut dec = build_test_decoder();
     let sps_resize = build_sps_nalu(0, 32, 16);
     dec.handle_sps(&sps_resize);
@@ -1969,28 +2042,84 @@ fn test_decode_cavlc_slice_data_b_non_skip_b_l0_l1_16x8_ref_idx_alignment() {
     header.num_ref_idx_l0 = 2;
     header.num_ref_idx_l1 = 2;
 
-    // mb0: skip_run=0, mb_type=8(B_L0_L1_16x8), top(ref_idx_l0=1), bottom(ref_idx_l1=1)
+    // mb0: skip_run=0, mb_type=8(B_L0_L1_16x8), top(ref_idx_l0=0,mvd=0), bottom(ref_idx_l1=0,mvd=0)
     // mb1: skip_run=0, mb_type=23(intra), 用于验证语法消费对齐。
-    let rbsp = build_rbsp_from_ues(&[0, 8, 1, 1, 0, 23]);
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0),
+        Ue(8),
+        Ue(0),
+        Ue(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Ue(0),
+        Ue(23),
+    ]);
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
-    assert_eq!(dec.ref_y[0], 100, "上半分区应使用 L0 ref_idx=1");
-    assert_eq!(dec.ref_y[15], 100, "上半分区右侧应使用 L0 ref_idx=1");
+    assert_eq!(dec.ref_y[0], 20, "上半分区应使用 L0 ref_idx=0");
+    assert_eq!(dec.ref_y[15], 20, "上半分区右侧应使用 L0 ref_idx=0");
     assert_eq!(
         dec.ref_y[8 * dec.stride_y],
-        20,
-        "下半分区应使用 L1 ref_idx=1"
+        100,
+        "下半分区应使用 L1 ref_idx=0"
     );
     assert_eq!(
         dec.ref_y[8 * dec.stride_y + 15],
-        20,
-        "下半分区右侧应使用 L1 ref_idx=1"
+        100,
+        "下半分区右侧应使用 L1 ref_idx=0"
+    );
+    assert_eq!(dec.mb_types[1], 1, "第二个宏块应解析为帧内宏块");
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_b_non_skip_b_l0_l1_16x8_mvd_alignment() {
+    use ExpGolombValue::{Se, Ue};
+
+    let mut dec = build_test_decoder();
+    let sps_resize = build_sps_nalu(0, 32, 16);
+    dec.handle_sps(&sps_resize);
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_custom_reference(&mut dec, 1, 2, 20, None);
+    push_custom_reference(&mut dec, 2, 8, 100, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+    header.num_ref_idx_l0 = 2;
+    header.num_ref_idx_l1 = 2;
+
+    // mb0: skip_run=0, mb_type=8(B_L0_L1_16x8), top(ref_idx_l0=0,mvd=(1,0)), bottom(ref_idx_l1=0,mvd=(-1,0))
+    // mb1: skip_run=0, mb_type=23(intra), 用于验证 mvd 语法消费对齐。
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0),
+        Ue(8),
+        Ue(0),
+        Ue(0),
+        Se(1),
+        Se(0),
+        Se(-1),
+        Se(0),
+        Ue(0),
+        Ue(23),
+    ]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    assert_eq!(dec.ref_y[0], 20, "上半分区应使用 L0 ref_idx=0");
+    assert_eq!(
+        dec.ref_y[8 * dec.stride_y],
+        100,
+        "下半分区应使用 L1 ref_idx=0"
     );
     assert_eq!(dec.mb_types[1], 1, "第二个宏块应解析为帧内宏块");
 }
 
 #[test]
 fn test_decode_cavlc_slice_data_b_non_skip_b_l0_l1_8x16_ref_idx_alignment() {
+    use ExpGolombValue::{Se, Ue};
+
     let mut dec = build_test_decoder();
     let sps_resize = build_sps_nalu(0, 32, 16);
     dec.handle_sps(&sps_resize);
@@ -2005,22 +2134,33 @@ fn test_decode_cavlc_slice_data_b_non_skip_b_l0_l1_8x16_ref_idx_alignment() {
     header.num_ref_idx_l0 = 2;
     header.num_ref_idx_l1 = 2;
 
-    // mb0: skip_run=0, mb_type=9(B_L0_L1_8x16), left(ref_idx_l0=1), right(ref_idx_l1=1)
+    // mb0: skip_run=0, mb_type=9(B_L0_L1_8x16), left(ref_idx_l0=0,mvd=0), right(ref_idx_l1=0,mvd=0)
     // mb1: skip_run=0, mb_type=23(intra), 用于验证语法消费对齐。
-    let rbsp = build_rbsp_from_ues(&[0, 9, 1, 1, 0, 23]);
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0),
+        Ue(9),
+        Ue(0),
+        Ue(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Ue(0),
+        Ue(23),
+    ]);
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
-    assert_eq!(dec.ref_y[0], 100, "左半分区应使用 L0 ref_idx=1");
+    assert_eq!(dec.ref_y[0], 20, "左半分区应使用 L0 ref_idx=0");
     assert_eq!(
         dec.ref_y[8 * dec.stride_y],
-        100,
-        "左半分区下方应使用 L0 ref_idx=1"
+        20,
+        "左半分区下方应使用 L0 ref_idx=0"
     );
-    assert_eq!(dec.ref_y[8], 20, "右半分区应使用 L1 ref_idx=1");
+    assert_eq!(dec.ref_y[8], 100, "右半分区应使用 L1 ref_idx=0");
     assert_eq!(
         dec.ref_y[8 * dec.stride_y + 8],
-        20,
-        "右半分区下方应使用 L1 ref_idx=1"
+        100,
+        "右半分区下方应使用 L1 ref_idx=0"
     );
     assert_eq!(dec.mb_types[1], 1, "第二个宏块应解析为帧内宏块");
 }

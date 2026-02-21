@@ -1128,14 +1128,21 @@ impl H264Decoder {
                                 let use_l0 = pred_mode == MODE_L0 || pred_mode == MODE_BI;
                                 let use_l1 = pred_mode == MODE_L1 || pred_mode == MODE_BI;
 
+                                let mut ref_idx_l0 = 0usize;
+                                if use_l0 && header.num_ref_idx_l0 > 1 {
+                                    ref_idx_l0 = read_ue(&mut br).unwrap_or(0) as usize;
+                                }
+                                let mut ref_idx_l1 = 0usize;
+                                if use_l1 && header.num_ref_idx_l1 > 1 {
+                                    ref_idx_l1 = read_ue(&mut br).unwrap_or(0) as usize;
+                                }
+
                                 let l0_motion = if use_l0 {
-                                    let mut ref_idx_l0 = 0usize;
-                                    if header.num_ref_idx_l0 > 1 {
-                                        ref_idx_l0 = read_ue(&mut br).unwrap_or(0) as usize;
-                                    }
+                                    let mv_x = read_se(&mut br).unwrap_or(0);
+                                    let mv_y = read_se(&mut br).unwrap_or(0);
                                     Some(BMotion {
-                                        mv_x: 0,
-                                        mv_y: 0,
+                                        mv_x,
+                                        mv_y,
                                         ref_idx: ref_idx_l0.min(i8::MAX as usize) as i8,
                                     })
                                 } else {
@@ -1143,13 +1150,11 @@ impl H264Decoder {
                                 };
 
                                 let l1_motion = if use_l1 {
-                                    let mut ref_idx_l1 = 0usize;
-                                    if header.num_ref_idx_l1 > 1 {
-                                        ref_idx_l1 = read_ue(&mut br).unwrap_or(0) as usize;
-                                    }
+                                    let mv_x = read_se(&mut br).unwrap_or(0);
+                                    let mv_y = read_se(&mut br).unwrap_or(0);
                                     Some(BMotion {
-                                        mv_x: 0,
-                                        mv_y: 0,
+                                        mv_x,
+                                        mv_y,
                                         ref_idx: ref_idx_l1.min(i8::MAX as usize) as i8,
                                     })
                                 } else {
@@ -1222,28 +1227,49 @@ impl H264Decoder {
                         continue;
                     }
 
-                    let mut l0_ref_idx = 0usize;
-                    let mut l1_ref_idx = 0usize;
-                    if (mb_type == 1 || mb_type == 3) && header.num_ref_idx_l0 > 1 {
-                        l0_ref_idx = read_ue(&mut br).unwrap_or(0) as usize;
-                    }
-                    if (mb_type == 2 || mb_type == 3) && header.num_ref_idx_l1 > 1 {
-                        l1_ref_idx = read_ue(&mut br).unwrap_or(0) as usize;
-                    }
-                    let mut l0_motion = Some(BMotion {
-                        mv_x: 0,
-                        mv_y: 0,
-                        ref_idx: l0_ref_idx.min(i8::MAX as usize) as i8,
-                    });
-                    let mut l1_motion = Some(BMotion {
-                        mv_x: 0,
-                        mv_y: 0,
-                        ref_idx: l1_ref_idx.min(i8::MAX as usize) as i8,
-                    });
-                    if mb_type == 1 {
-                        l1_motion = None;
-                    } else if mb_type == 2 {
-                        l0_motion = None;
+                    let mut l0_motion = None;
+                    let mut l1_motion = None;
+                    if mb_type == 0 {
+                        l0_motion = Some(BMotion {
+                            mv_x: 0,
+                            mv_y: 0,
+                            ref_idx: 0,
+                        });
+                        l1_motion = Some(BMotion {
+                            mv_x: 0,
+                            mv_y: 0,
+                            ref_idx: 0,
+                        });
+                    } else {
+                        let use_l0 = mb_type == 1 || mb_type == 3;
+                        let use_l1 = mb_type == 2 || mb_type == 3;
+                        let mut l0_ref_idx = 0usize;
+                        let mut l1_ref_idx = 0usize;
+                        if use_l0 && header.num_ref_idx_l0 > 1 {
+                            l0_ref_idx = read_ue(&mut br).unwrap_or(0) as usize;
+                        }
+                        if use_l1 && header.num_ref_idx_l1 > 1 {
+                            l1_ref_idx = read_ue(&mut br).unwrap_or(0) as usize;
+                        }
+
+                        if mb_type == 1 || mb_type == 3 {
+                            let mv_x = read_se(&mut br).unwrap_or(0);
+                            let mv_y = read_se(&mut br).unwrap_or(0);
+                            l0_motion = Some(BMotion {
+                                mv_x,
+                                mv_y,
+                                ref_idx: l0_ref_idx.min(i8::MAX as usize) as i8,
+                            });
+                        }
+                        if mb_type == 2 || mb_type == 3 {
+                            let mv_x = read_se(&mut br).unwrap_or(0);
+                            let mv_y = read_se(&mut br).unwrap_or(0);
+                            l1_motion = Some(BMotion {
+                                mv_x,
+                                mv_y,
+                                ref_idx: l1_ref_idx.min(i8::MAX as usize) as i8,
+                            });
+                        }
                     }
                     let _ = self.apply_b_prediction_block(
                         l0_motion,
