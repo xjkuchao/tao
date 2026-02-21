@@ -280,7 +280,7 @@ crates/tao-codec/src/decoders/h264/
 #### P6.5 多 Slice 拼装
 
 - [x] first_mb==0 新帧边界 + pending frame 拼帧.
-- [ ] 同帧多 slice 按 first_mb 偏移拼合 + 单测.
+- [x] 同帧多 slice 按 first_mb 偏移拼合 + 单测.
 
 #### P6.6 功能验收门
 

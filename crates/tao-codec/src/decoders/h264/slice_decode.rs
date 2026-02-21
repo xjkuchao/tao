@@ -1104,10 +1104,16 @@ impl H264Decoder {
             .unwrap_or_else(|| self.zero_reference_planes());
         let mut skip_run_left = 0u32;
         for mb_idx in first..total_mbs {
-            self.mark_mb_slice_first_mb(mb_idx, header.first_mb);
             if skip_run_left == 0 {
-                skip_run_left = read_ue(&mut br).unwrap_or(0);
+                if !has_more_rbsp_data(&mut br) {
+                    break;
+                }
+                let Ok(skip_run) = read_ue(&mut br) else {
+                    break;
+                };
+                skip_run_left = skip_run;
             }
+            self.mark_mb_slice_first_mb(mb_idx, header.first_mb);
             let mb_x = mb_idx % self.mb_width;
             let mb_y = mb_idx / self.mb_width;
             if skip_run_left > 0 {
@@ -1136,7 +1142,12 @@ impl H264Decoder {
                 skip_run_left -= 1;
                 continue;
             }
-            let mb_type = read_ue(&mut br).unwrap_or(0);
+            if !has_more_rbsp_data(&mut br) {
+                break;
+            }
+            let Ok(mb_type) = read_ue(&mut br) else {
+                break;
+            };
             if is_b {
                 let is_inter = mb_type <= 22;
                 if is_inter {
@@ -1899,4 +1910,20 @@ impl H264Decoder {
             }
         }
     }
+}
+
+/// 判断 RBSP 是否仍有有效语法数据 (排除 rbsp_trailing_bits).
+fn has_more_rbsp_data(br: &mut BitReader) -> bool {
+    let bits_left = br.bits_left();
+    if bits_left == 0 {
+        return false;
+    }
+    if bits_left > 8 {
+        return true;
+    }
+    let Ok(rest) = br.peek_bits(bits_left as u32) else {
+        return false;
+    };
+    let trailing = 1u32 << (bits_left - 1);
+    rest != trailing
 }
