@@ -28,7 +28,9 @@ impl H264Decoder {
                 self.last_disable_deblocking_filter_idc = header.disable_deblocking_filter_idc;
                 self.last_slice_alpha_c0_offset_div2 = header.slice_alpha_c0_offset_div2;
                 self.last_slice_beta_offset_div2 = header.slice_beta_offset_div2;
-                self.last_poc = self.compute_slice_poc(&header, prev_frame_num);
+                let prev_frame_num_for_poc =
+                    self.fill_frame_num_gaps_if_needed(&header, prev_frame_num);
+                self.last_poc = self.compute_slice_poc(&header, prev_frame_num_for_poc);
                 self.last_frame_num = header.frame_num;
                 self.last_dec_ref_pic_marking = header.dec_ref_pic_marking.clone();
                 self.decode_slice_data(&rbsp, &header);
@@ -36,6 +38,65 @@ impl H264Decoder {
             Err(err) => {
                 self.record_malformed_nal_drop("slice_header_parse", &err);
             }
+        }
+    }
+
+    fn slice_sps_by_header(&self, header: &SliceHeader) -> Option<&Sps> {
+        let pps = self.pps_map.get(&header.pps_id).or({
+            if self.pps_map.is_empty() {
+                self.pps.as_ref()
+            } else {
+                None
+            }
+        })?;
+        self.sps_map.get(&pps.sps_id).or({
+            if self.sps_map.is_empty() {
+                self.sps.as_ref()
+            } else {
+                None
+            }
+        })
+    }
+
+    pub(super) fn fill_frame_num_gaps_if_needed(
+        &mut self,
+        header: &SliceHeader,
+        prev_frame_num: u32,
+    ) -> u32 {
+        let gaps_allowed = self
+            .slice_sps_by_header(header)
+            .map(|sps| sps.gaps_in_frame_num_value_allowed_flag)
+            .unwrap_or(false);
+        if header.is_idr || !gaps_allowed {
+            return prev_frame_num;
+        }
+
+        let max_frame_num = self.max_frame_num_modulo();
+        if max_frame_num == 0 {
+            return prev_frame_num;
+        }
+        let mut next_frame_num = (prev_frame_num + 1) % max_frame_num;
+        if next_frame_num == header.frame_num {
+            return prev_frame_num;
+        }
+
+        let mut inserted = 0usize;
+        while next_frame_num != header.frame_num {
+            let non_existing_poc = self.last_poc + ((inserted as i32) + 1) * 2;
+            self.push_non_existing_short_term_reference(next_frame_num, non_existing_poc);
+            inserted += 1;
+            if inserted > max_frame_num as usize {
+                break;
+            }
+            next_frame_num = (next_frame_num + 1) % max_frame_num;
+        }
+        if inserted == 0 {
+            return prev_frame_num;
+        }
+        if header.frame_num == 0 {
+            max_frame_num - 1
+        } else {
+            header.frame_num - 1
         }
     }
 

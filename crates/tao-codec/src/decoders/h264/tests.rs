@@ -42,6 +42,7 @@ fn build_test_sps(sps_id: u32) -> Sps {
         bit_depth_luma: 8,
         bit_depth_chroma: 8,
         max_num_ref_frames: 4,
+        gaps_in_frame_num_value_allowed_flag: false,
         width: 16,
         height: 16,
         frame_mbs_only: true,
@@ -2279,6 +2280,73 @@ fn test_store_reference_with_marking_sliding_window_wrap_around() {
     assert!(
         dec.reference_frames.iter().any(|pic| pic.frame_num == 1),
         "回绕场景应保留当前短期参考帧"
+    );
+}
+
+#[test]
+fn test_fill_frame_num_gaps_if_needed_inserts_non_existing_references() {
+    let mut dec = build_test_decoder();
+    install_basic_parameter_sets(&mut dec, 1);
+    dec.max_reference_frames = 4;
+    dec.last_frame_num = 1;
+    dec.last_poc = 20;
+    push_dummy_reference(&mut dec, 1);
+
+    let mut sps = build_test_sps(0);
+    sps.gaps_in_frame_num_value_allowed_flag = true;
+    dec.sps = Some(sps.clone());
+    dec.sps_map.insert(0, sps);
+
+    let header = build_test_slice_header(4, 1, false, None);
+    let prev_for_poc = dec.fill_frame_num_gaps_if_needed(&header, 1);
+
+    assert_eq!(
+        prev_for_poc, 3,
+        "填补间隙后 prev_frame_num 应推进到 current-1"
+    );
+    assert!(
+        dec.reference_frames.iter().any(|pic| pic.frame_num == 2),
+        "应插入 frame_num=2 的不存在参考帧"
+    );
+    assert!(
+        dec.reference_frames.iter().any(|pic| pic.frame_num == 3),
+        "应插入 frame_num=3 的不存在参考帧"
+    );
+    let inserted = dec
+        .reference_frames
+        .iter()
+        .find(|pic| pic.frame_num == 2)
+        .expect("应能找到插入的 frame_num=2 参考帧");
+    assert_eq!(
+        inserted.y[0], 128,
+        "不存在参考帧应使用中性像素填充以避免预测路径异常"
+    );
+    assert_eq!(
+        inserted.long_term_frame_idx, None,
+        "不存在参考帧应按短期参考帧管理"
+    );
+}
+
+#[test]
+fn test_fill_frame_num_gaps_if_needed_skips_when_flag_disabled() {
+    let mut dec = build_test_decoder();
+    install_basic_parameter_sets(&mut dec, 1);
+    dec.max_reference_frames = 4;
+    dec.last_frame_num = 1;
+    dec.last_poc = 20;
+    push_dummy_reference(&mut dec, 1);
+
+    let header = build_test_slice_header(4, 1, false, None);
+    let prev_for_poc = dec.fill_frame_num_gaps_if_needed(&header, 1);
+
+    assert_eq!(
+        prev_for_poc, 1,
+        "未开启 gaps_in_frame_num_value_allowed_flag 时不应修改 prev_frame_num"
+    );
+    assert_eq!(
+        dec.reference_frames.len(),
+        1,
+        "未开启 gaps 标志时不应插入不存在参考帧"
     );
 }
 

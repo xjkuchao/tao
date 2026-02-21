@@ -35,6 +35,8 @@ pub struct Sps {
     pub bit_depth_chroma: u32,
     /// 最大参考帧数
     pub max_num_ref_frames: u32,
+    /// gaps_in_frame_num_value_allowed_flag.
+    pub gaps_in_frame_num_value_allowed_flag: bool,
     /// 图像宽度 (像素, 已应用 cropping)
     pub width: u32,
     /// 图像高度 (像素, 已应用 cropping)
@@ -220,7 +222,7 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
             max_num_ref_frames
         )));
     }
-    let _gaps_in_frame_num_allowed = br.read_bit()?;
+    let gaps_in_frame_num_value_allowed_flag = br.read_bit()? == 1;
 
     // 图像尺寸 (宏块单位)
     let pic_width_in_mbs = read_ue(&mut br)? + 1;
@@ -310,6 +312,7 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
         bit_depth_luma,
         bit_depth_chroma,
         max_num_ref_frames,
+        gaps_in_frame_num_value_allowed_flag,
         width,
         height,
         frame_mbs_only,

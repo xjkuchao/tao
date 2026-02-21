@@ -362,12 +362,12 @@ impl H264Decoder {
             .retain(|pic| pic.long_term_frame_idx.is_none_or(|idx| idx <= max_idx));
     }
 
-    fn frame_num_wrap_for_short_term(&self, frame_num: u32) -> i32 {
+    fn frame_num_wrap_for_short_term(&self, frame_num: u32, cur_frame_num: u32) -> i32 {
         let max_frame_num = self.max_frame_num_modulo();
         if max_frame_num == 0 {
             return 0;
         }
-        let cur = self.last_frame_num % max_frame_num;
+        let cur = cur_frame_num % max_frame_num;
         let val = frame_num % max_frame_num;
         if val > cur {
             val as i32 - max_frame_num as i32
@@ -376,13 +376,16 @@ impl H264Decoder {
         }
     }
 
-    pub(super) fn remove_short_term_with_lowest_frame_num_wrap(&mut self) -> bool {
+    pub(super) fn remove_short_term_with_lowest_frame_num_wrap_for(
+        &mut self,
+        cur_frame_num: u32,
+    ) -> bool {
         if let Some((idx, _)) = self
             .reference_frames
             .iter()
             .enumerate()
             .filter(|(_, pic)| pic.long_term_frame_idx.is_none())
-            .min_by_key(|(_, pic)| self.frame_num_wrap_for_short_term(pic.frame_num))
+            .min_by_key(|(_, pic)| self.frame_num_wrap_for_short_term(pic.frame_num, cur_frame_num))
         {
             self.reference_frames.remove(idx);
             return true;
@@ -390,21 +393,42 @@ impl H264Decoder {
         false
     }
 
-    fn apply_sliding_window_if_needed(&mut self) {
+    fn apply_sliding_window_if_needed_for(&mut self, cur_frame_num: u32) {
         if self.reference_frames.len() < self.max_reference_frames {
             return;
         }
-        if !self.remove_short_term_with_lowest_frame_num_wrap() {
+        if !self.remove_short_term_with_lowest_frame_num_wrap_for(cur_frame_num) {
             let _ = self.reference_frames.pop_front();
         }
     }
 
-    pub(super) fn enforce_reference_capacity(&mut self) {
+    fn apply_sliding_window_if_needed(&mut self) {
+        self.apply_sliding_window_if_needed_for(self.last_frame_num);
+    }
+
+    fn enforce_reference_capacity_for(&mut self, cur_frame_num: u32) {
         while self.reference_frames.len() > self.max_reference_frames {
-            if !self.remove_short_term_with_lowest_frame_num_wrap() {
+            if !self.remove_short_term_with_lowest_frame_num_wrap_for(cur_frame_num) {
                 let _ = self.reference_frames.pop_front();
             }
         }
+    }
+
+    pub(super) fn enforce_reference_capacity(&mut self) {
+        self.enforce_reference_capacity_for(self.last_frame_num);
+    }
+
+    pub(super) fn push_non_existing_short_term_reference(&mut self, frame_num: u32, poc: i32) {
+        self.apply_sliding_window_if_needed_for(frame_num);
+        self.reference_frames.push_back(ReferencePicture {
+            y: vec![128u8; self.ref_y.len()],
+            u: vec![128u8; self.ref_u.len()],
+            v: vec![128u8; self.ref_v.len()],
+            frame_num,
+            poc,
+            long_term_frame_idx: None,
+        });
+        self.enforce_reference_capacity_for(frame_num);
     }
 
     pub(super) fn push_current_reference(&mut self, long_term_frame_idx: Option<u32>) {
