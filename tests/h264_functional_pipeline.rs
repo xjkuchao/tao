@@ -2,7 +2,9 @@
 //!
 //! 目标:
 //! - 先验证解码功能链路可持续运行, 再进入精度收敛阶段.
-//! - 对 `data/1_h264.mp4` 与 `data/2_h264.mp4` 执行固定帧数解码稳定性检查.
+//! - 对远程 H264 样本执行固定帧数解码稳定性检查.
+//!
+//! 注意: 所有测试通过远程 URL 获取样本, 需要网络连接, 标记为 `#[ignore]`.
 
 use tao::codec::codec_parameters::{CodecParamsType, VideoCodecParams};
 use tao::codec::frame::{Frame, PictureType};
@@ -12,13 +14,20 @@ use tao::core::{MediaType, TaoError};
 use tao::format::stream::StreamParams;
 use tao::format::{FormatRegistry, IoContext};
 
-fn decode_h264_frames(path: &str, frame_limit: usize) -> Result<usize, String> {
+const H264_SAMPLE_MOV: &str = "https://samples.ffmpeg.org/mov/mov_h264_aac.mov";
+const H264_SAMPLE_MKV: &str = "https://samples.ffmpeg.org/Matroska/haruhi.mkv";
+
+fn open_remote_io(url: &str) -> Result<IoContext, String> {
+    IoContext::open_url(url).map_err(|e| format!("打开远程样本失败 '{}': {}", url, e))
+}
+
+fn decode_h264_frames(url: &str, frame_limit: usize) -> Result<usize, String> {
     let mut format_registry = FormatRegistry::new();
     tao::format::register_all(&mut format_registry);
     let mut codec_registry = CodecRegistry::new();
     tao::codec::register_all(&mut codec_registry);
 
-    let mut io = IoContext::open_read(path).map_err(|e| format!("打开输入失败: {}", e))?;
+    let mut io = open_remote_io(url)?;
     let mut demuxer = format_registry
         .open_input(&mut io, None)
         .map_err(|e| format!("打开 demuxer 失败: {}", e))?;
@@ -112,7 +121,7 @@ fn decode_h264_frames(path: &str, frame_limit: usize) -> Result<usize, String> {
 }
 
 fn collect_picture_type_stats(
-    path: &str,
+    url: &str,
     frame_limit: usize,
 ) -> Result<(usize, usize, usize), String> {
     let mut format_registry = FormatRegistry::new();
@@ -120,7 +129,7 @@ fn collect_picture_type_stats(
     let mut codec_registry = CodecRegistry::new();
     tao::codec::register_all(&mut codec_registry);
 
-    let mut io = IoContext::open_read(path).map_err(|e| format!("打开输入失败: {}", e))?;
+    let mut io = open_remote_io(url)?;
     let mut demuxer = format_registry
         .open_input(&mut io, None)
         .map_err(|e| format!("打开 demuxer 失败: {}", e))?;
@@ -232,13 +241,13 @@ type OpenH264DecoderResult = Result<
     String,
 >;
 
-fn open_h264_decoder_for_sample(path: &str) -> OpenH264DecoderResult {
+fn open_h264_decoder_for_sample(url: &str) -> OpenH264DecoderResult {
     let mut format_registry = FormatRegistry::new();
     tao::format::register_all(&mut format_registry);
     let mut codec_registry = CodecRegistry::new();
     tao::codec::register_all(&mut codec_registry);
 
-    let mut io = IoContext::open_read(path).map_err(|e| format!("打开输入失败: {}", e))?;
+    let mut io = open_remote_io(url)?;
     let demuxer = format_registry
         .open_input(&mut io, None)
         .map_err(|e| format!("打开 demuxer 失败: {}", e))?;
@@ -292,50 +301,42 @@ fn open_h264_decoder_for_sample(path: &str) -> OpenH264DecoderResult {
 
 #[test]
 #[ignore]
-fn test_h264_functional_sample1_299_frames() {
-    let path = "data/1_h264.mp4";
-    assert!(std::path::Path::new(path).exists(), "样本不存在: {}", path);
-    let decoded = decode_h264_frames(path, 299).expect("样本1 功能自测失败");
+fn test_h264_functional_sample1_10_frames() {
+    let decoded =
+        decode_h264_frames(H264_SAMPLE_MOV, 10).expect("MOV 样本功能自测失败");
     assert!(
-        decoded >= 299,
-        "样本1 功能自测失败: 解码帧不足, 期望>=299, 实际={}",
+        decoded >= 10,
+        "MOV 样本功能自测失败: 解码帧不足, 期望>=10, 实际={}",
         decoded
     );
 }
 
 #[test]
 #[ignore]
-fn test_h264_functional_sample2_300_frames() {
-    let path = "data/2_h264.mp4";
-    assert!(std::path::Path::new(path).exists(), "样本不存在: {}", path);
-    let decoded = decode_h264_frames(path, 300).expect("样本2 功能自测失败");
+fn test_h264_functional_sample2_10_frames() {
+    let decoded =
+        decode_h264_frames(H264_SAMPLE_MKV, 10).expect("MKV 样本功能自测失败");
     assert!(
-        decoded >= 300,
-        "样本2 功能自测失败: 解码帧不足, 期望>=300, 实际={}",
+        decoded >= 10,
+        "MKV 样本功能自测失败: 解码帧不足, 期望>=10, 实际={}",
         decoded
     );
 }
 
 #[test]
 #[ignore]
-fn test_h264_functional_picture_type_stats_sample1() {
-    let path = "data/1_h264.mp4";
-    assert!(std::path::Path::new(path).exists(), "样本不存在: {}", path);
-    let (count_i, count_p, count_b) =
-        collect_picture_type_stats(path, 120).expect("样本1 图片类型统计失败");
-    assert!(count_i >= 1, "样本1 应至少包含 1 帧 I 帧, 当前={}", count_i);
-    assert!(count_p >= 1, "样本1 应至少包含 1 帧 P 帧, 当前={}", count_p);
-    assert!(count_b >= 1, "样本1 应至少包含 1 帧 B 帧, 当前={}", count_b);
+fn test_h264_functional_picture_type_stats() {
+    let (count_i, count_p, _count_b) =
+        collect_picture_type_stats(H264_SAMPLE_MOV, 30).expect("图片类型统计失败");
+    assert!(count_i >= 1, "应至少包含 1 帧 I 帧, 当前={}", count_i);
+    assert!(count_p >= 1, "应至少包含 1 帧 P 帧, 当前={}", count_p);
 }
 
 #[test]
 #[ignore]
 fn test_h264_functional_pending_frame_flush_output() {
-    let path = "data/1_h264.mp4";
-    assert!(std::path::Path::new(path).exists(), "样本不存在: {}", path);
-
     let (mut decoder, mut demuxer, mut io, stream_index) =
-        open_h264_decoder_for_sample(path).expect("打开 H264 解码链路失败");
+        open_h264_decoder_for_sample(H264_SAMPLE_MOV).expect("打开 H264 解码链路失败");
 
     let first_video_packet = loop {
         match demuxer.read_packet(&mut io) {

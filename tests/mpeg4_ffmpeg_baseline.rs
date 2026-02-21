@@ -10,17 +10,15 @@ use ffmpeg_compare::{FfmpegComparer, FrameDiff};
 use std::fs;
 use std::path::PathBuf;
 
-// 配置选项
-const TEST_OUTPUT_DIR: &str = "data/ffmpeg_baselines";
-const PSNR_THRESHOLD_BASIC: f64 = 38.0; // 基础测试: PSNR >= 38 dB
-const PSNR_THRESHOLD_ADVANCED: f64 = 32.0; // 高级功能: PSNR >= 32 dB
-const MAX_COMPARE_FRAMES: u32 = 10; // 对比的最大帧数
+const PSNR_THRESHOLD_BASIC: f64 = 38.0;
+const PSNR_THRESHOLD_ADVANCED: f64 = 32.0;
+const MAX_COMPARE_FRAMES: u32 = 10;
 
 /// 初始化测试环境
 ///
-/// 创建输出目录并检查 FFmpeg 可用性
+/// 创建临时输出目录并检查 FFmpeg 可用性
 fn init_test_environment() -> Result<PathBuf, String> {
-    let output_dir = PathBuf::from(TEST_OUTPUT_DIR);
+    let output_dir = std::env::temp_dir().join("tao_ffmpeg_baselines");
     fs::create_dir_all(&output_dir).map_err(|e| format!("无法创建输出目录: {}", e))?;
 
     if !FfmpegComparer::check_ffmpeg_available() {
@@ -331,7 +329,7 @@ cargo test --test mpeg4_part2_pipeline --features http -- --nocapture
 ## 参考帧目录结构
 
 ```
-data/ffmpeg_baselines/
+<临时目录>/tao_ffmpeg_baselines/
 ├── reference_frames.yuv           # FFmpeg 参考输出 (YUV420p)
 ├── reference_frames_1_1.yuv       # Test 1.1 参考帧
 ├── reference_frames_2_1.yuv       # Test 2.1 参考帧

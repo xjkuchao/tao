@@ -11,6 +11,9 @@ mod config;
 mod deblock;
 mod intra;
 mod macroblock_inter;
+mod macroblock_inter_cache;
+mod macroblock_inter_mv;
+mod macroblock_inter_weight;
 mod macroblock_intra;
 mod macroblock_state;
 mod output;
@@ -18,6 +21,7 @@ mod parameter_sets;
 mod residual;
 mod sei;
 mod slice_decode;
+mod slice_parse;
 mod syntax;
 #[cfg(test)]
 mod tests;

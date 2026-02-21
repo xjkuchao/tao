@@ -1,8 +1,10 @@
 //! Vorbis 解码管线阶段性测试.
 //!
 //! 当前用于验证:
-//! - data/1.ogg 和 data/2.ogg 的 Vorbis 头包与 setup 解析能通过
-//! - 音频包可产出基础音频帧 (当前为占位静音输出)
+//! - 远程 Ogg Vorbis 样本的头包与 setup 解析能通过
+//! - 音频包可产出基础音频帧
+//!
+//! 注意: 测试通过远程 URL 获取样本, 需要网络连接, 标记为 `#[ignore]`.
 
 use tao::codec::codec_parameters::{AudioCodecParams, CodecParamsType};
 use tao::codec::frame::Frame;
@@ -10,14 +12,16 @@ use tao::codec::{CodecId, CodecParameters, CodecRegistry};
 use tao::core::{ChannelLayout, SampleFormat, TaoError};
 use tao::format::{FormatRegistry, IoContext};
 
-fn run_vorbis_until_output_frames(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+const VORBIS_SAMPLE_URL: &str = "https://samples.ffmpeg.org/ogg/Vorbis/test6.ogg";
+
+fn run_vorbis_until_output_frames(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut format_registry = FormatRegistry::new();
     tao::format::register_all(&mut format_registry);
     let mut codec_registry = CodecRegistry::new();
     tao::codec::register_all(&mut codec_registry);
 
-    let mut io = IoContext::open_read(path)?;
-    let mut demuxer = format_registry.open_input(&mut io, Some(path))?;
+    let mut io = IoContext::open_url(url)?;
+    let mut demuxer = format_registry.open_input(&mut io, Some(url))?;
     demuxer.open(&mut io)?;
 
     let stream = demuxer
@@ -83,11 +87,7 @@ fn run_vorbis_until_output_frames(path: &str) -> Result<(), Box<dyn std::error::
 }
 
 #[test]
-fn test_vorbis_data1_header_and_setup_parse_ok() {
-    run_vorbis_until_output_frames("data/1.ogg").expect("data/1.ogg 解析失败");
-}
-
-#[test]
-fn test_vorbis_data2_header_and_setup_parse_ok() {
-    run_vorbis_until_output_frames("data/2.ogg").expect("data/2.ogg 解析失败");
+#[ignore]
+fn test_vorbis_remote_header_and_setup_parse_ok() {
+    run_vorbis_until_output_frames(VORBIS_SAMPLE_URL).expect("远程 Vorbis 样本解析失败");
 }

@@ -1,7 +1,6 @@
 #![cfg(feature = "http")]
 
 use std::fs;
-use std::path::PathBuf;
 use std::process::Command;
 use tao_codec::codec_parameters::{CodecParameters, CodecParamsType, VideoCodecParams};
 use tao_core::{MediaType, TaoError};
@@ -13,15 +12,13 @@ mod ffmpeg_compare;
 use ffmpeg_compare::{FfmpegComparer, FrameDiff};
 
 const SAMPLE_URL: &str = "https://samples.ffmpeg.org/V-codecs/MPEG4/color16.avi";
-const OUTPUT_DIR: &str = "data/debug_color16";
 
 #[test]
 #[cfg(feature = "http")]
 fn debug_color16_comparison() {
     println!("=== Debugging color16.avi ===");
 
-    // 1. Setup output directory
-    let output_dir = PathBuf::from(OUTPUT_DIR);
+    let output_dir = std::env::temp_dir().join("tao_debug_color16");
     fs::create_dir_all(&output_dir).expect("Failed to create output dir");
 
     // Download sample if not exists
