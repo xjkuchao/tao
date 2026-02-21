@@ -399,66 +399,51 @@ fn predict_4x4_diagonal_down_left(plane: &mut [u8], stride: usize, x0: usize, y0
 
 /// 模式 4: 对角线向下右 (Diagonal Down-Right)
 fn predict_4x4_diagonal_down_right(plane: &mut [u8], stride: usize, x0: usize, y0: usize) {
-    let mut ref_top = [128u8; 5];
-    let mut ref_left = [128u8; 5];
-
-    if y0 > 0 {
-        ref_top[0] = if x0 > 0 {
-            plane[(y0 - 1) * stride + x0 - 1]
-        } else {
-            128
-        };
-        for i in 0..4 {
-            let idx = (y0 - 1) * stride + x0 + i;
-            if idx < plane.len() {
-                ref_top[i + 1] = plane[idx];
-            }
-        }
-    }
-    if x0 > 0 {
-        ref_left[0] = ref_top[0];
-        for i in 0..4 {
-            let idx = (y0 + i) * stride + x0 - 1;
-            if idx < plane.len() {
-                ref_left[i + 1] = plane[idx];
-            }
-        }
+    if x0 == 0 || y0 == 0 {
+        fill_block(plane, stride, x0, y0, 4, 4, 128);
+        return;
     }
 
-    let get_top = |idx: isize| -> u8 {
-        if (0..=4).contains(&idx) {
-            ref_top[idx as usize]
+    let top_left_idx = (y0 - 1) * stride + x0 - 1;
+    if top_left_idx >= plane.len() {
+        fill_block(plane, stride, x0, y0, 4, 4, 128);
+        return;
+    }
+
+    let x = plane[top_left_idx];
+    let mut top = [x; 5];
+    let mut left = [x; 5];
+
+    for i in 0..4 {
+        let col = x0 + i;
+        let top_idx = (y0 - 1) * stride + col;
+        if col < stride && top_idx < plane.len() {
+            top[i + 1] = plane[top_idx];
         } else {
-            128
+            top[i + 1] = top[i];
         }
-    };
-    let get_left = |idx: isize| -> u8 {
-        if (0..=4).contains(&idx) {
-            ref_left[idx as usize]
+    }
+    for i in 0..4 {
+        let left_idx = (y0 + i) * stride + x0 - 1;
+        if left_idx < plane.len() {
+            left[i + 1] = plane[left_idx];
         } else {
-            128
+            left[i + 1] = left[i];
         }
-    };
+    }
+
+    let filt = |a: u8, b: u8, c: u8| -> u8 { ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8 };
 
     for dy in 0..4 {
         for dx in 0..4 {
-            let val = if dy > dx {
-                let base = (dy as isize) - (dx as isize);
-                let a = get_left(base);
-                let b = get_left(base + 1);
-                let c = get_left(base + 2);
-                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
-            } else if dy == dx {
-                let a = ref_left[0];
-                let b = ref_top[0];
-                let c = ref_top[1];
-                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
+            let val = if dx > dy {
+                let k = dx - dy;
+                filt(top[k - 1], top[k], top[k + 1])
+            } else if dx == dy {
+                filt(left[1], top[0], top[1])
             } else {
-                let base = (dx as isize) - (dy as isize);
-                let a = get_top(base);
-                let b = get_top(base + 1);
-                let c = get_top(base + 2);
-                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
+                let k = dy - dx;
+                filt(left[k + 1], left[k], left[k - 1])
             };
             let idx = (y0 + dy) * stride + x0 + dx;
             if idx < plane.len() {
@@ -779,5 +764,51 @@ mod tests {
         let expect = [[128u8; 4]; 4];
 
         assert_eq!(got, expect, "无上方参考时模式3应回退为128填充");
+    }
+
+    #[test]
+    fn test_intra4x4_mode4_diagonal_down_right_matches_spec_mapping() {
+        let stride = 16;
+        let x0 = 4;
+        let y0 = 4;
+        let mut plane = vec![0u8; stride * stride];
+
+        plane[(y0 - 1) * stride + x0 - 1] = 10;
+        plane[(y0 - 1) * stride + x0] = 20;
+        plane[(y0 - 1) * stride + x0 + 1] = 30;
+        plane[(y0 - 1) * stride + x0 + 2] = 40;
+        plane[(y0 - 1) * stride + x0 + 3] = 50;
+        plane[y0 * stride + x0 - 1] = 60;
+        plane[(y0 + 1) * stride + x0 - 1] = 70;
+        plane[(y0 + 2) * stride + x0 - 1] = 80;
+        plane[(y0 + 3) * stride + x0 - 1] = 90;
+
+        predict_4x4(&mut plane, stride, x0, y0, 4);
+        let got = read_block_4x4(&plane, stride, x0, y0);
+        let expect = [
+            [25, 20, 30, 40],
+            [50, 25, 20, 30],
+            [70, 50, 25, 20],
+            [80, 70, 50, 25],
+        ];
+
+        assert_eq!(
+            got, expect,
+            "模式4应按规范使用左/左上/上样本的对角线向下右映射"
+        );
+    }
+
+    #[test]
+    fn test_intra4x4_mode4_without_left_or_top_falls_back_to_128() {
+        let stride = 16;
+        let x0 = 0;
+        let y0 = 4;
+        let mut plane = vec![9u8; stride * stride];
+
+        predict_4x4(&mut plane, stride, x0, y0, 4);
+        let got = read_block_4x4(&plane, stride, x0, y0);
+        let expect = [[128u8; 4]; 4];
+
+        assert_eq!(got, expect, "模式4在缺少左或上参考时应回退为128填充");
     }
 }
