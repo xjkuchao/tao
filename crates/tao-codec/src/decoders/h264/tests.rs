@@ -3348,6 +3348,7 @@ fn test_decode_cavlc_slice_data_p_skip_run_uses_predicted_mv_from_left_neighbor(
     dec.mv_l0_x[0] = 4;
     dec.mv_l0_y[0] = 0;
     dec.ref_idx_l0[0] = 0;
+    dec.set_l0_motion_block_4x4(0, 0, 16, 16, 4, 0, 0);
     dec.mb_types[0] = 200;
 
     let mut header = build_test_slice_header(0, 1, false, None);
@@ -3907,6 +3908,59 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_8x16_directional_mvp_uses_left_
 
     assert_eq!(dec.ref_y[0], 1, "8x16 左分区应按 +1 像素位移采样");
     assert_eq!(dec.ref_y[8], 9, "8x16 右分区应复用左分区预测 MV");
+}
+
+#[test]
+fn test_predict_mv_l0_partition_prefers_single_ref_match_and_fallback_to_d() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+
+    // 目标宏块是 (1,1): A=左(0,1), B=上(1,0), C 不可用时回退 D=左上(0,0).
+    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 4, 0, 1);
+    dec.set_l0_motion_block_4x4(16, 0, 16, 16, 8, 0, 0);
+    dec.set_l0_motion_block_4x4(0, 0, 16, 16, 12, 0, 0);
+
+    let mv_ref1 = dec.predict_mv_l0_partition(1, 1, 0, 0, 4, 1);
+    assert_eq!(mv_ref1, (4, 0), "仅左邻 ref_idx 匹配时应直接选用左邻 MV");
+
+    let mv_no_match = dec.predict_mv_l0_partition(1, 1, 0, 0, 4, 2);
+    assert_eq!(mv_no_match, (8, 0), "无匹配参考时应回落到 A/B/C 的中值预测");
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_p_non_skip_inter_16x16_prefers_single_ref_match_mvp() {
+    use ExpGolombValue::{Se, Ue};
+
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+    dec.reference_frames.clear();
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    // 预置目标宏块(1,1)的邻居运动信息:
+    // A(ref=1,mv=+1px), B(ref=0,mv=+2px), D(ref=0,mv=+3px).
+    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 4, 0, 1);
+    dec.set_l0_motion_block_4x4(16, 0, 16, 16, 8, 0, 0);
+    dec.set_l0_motion_block_4x4(0, 0, 16, 16, 12, 0, 0);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.first_mb = 3; // 仅解码右下宏块
+    header.data_bit_offset = 0;
+    header.num_ref_idx_l0 = 2;
+
+    // mb_skip_run=0, mb_type=0(P_L0_16x16), ref_idx_l0=1, mvd=(0,0)
+    let rbsp = build_rbsp_from_exp_golomb(&[Ue(0), Ue(0), Ue(1), Se(0), Se(0)]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    let base = 16 + 16 * dec.stride_y;
+    assert_eq!(
+        dec.ref_y[base], 17,
+        "P_L0_16x16 应优先使用与 ref_idx 匹配的左邻候选 MV"
+    );
 }
 
 #[test]
