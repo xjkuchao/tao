@@ -2167,6 +2167,8 @@ fn test_decode_cavlc_slice_data_b_non_skip_b_l0_l1_8x16_ref_idx_alignment() {
 
 #[test]
 fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l0_ref_idx_alignment() {
+    use ExpGolombValue::{Se, Ue};
+
     let mut dec = build_test_decoder();
     let sps_resize = build_sps_nalu(0, 32, 16);
     dec.handle_sps(&sps_resize);
@@ -2181,9 +2183,30 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l0_ref_idx_alignment() {
     header.num_ref_idx_l0 = 2;
     header.num_ref_idx_l1 = 2;
 
-    // mb0: skip_run=0, mb_type=22(B_8x8), sub_mb_type 全为 1(L0_8x8), ref_idx_l0=[0,1,1,0]
+    // mb0: skip_run=0, mb_type=22(B_8x8), sub_mb_type 全为 1(L0_8x8), ref_idx_l0=[0,1,1,0], mvd 全 0
     // mb1: skip_run=0, mb_type=23(intra), 用于验证位流消费对齐。
-    let rbsp = build_rbsp_from_ues(&[0, 22, 1, 1, 1, 1, 0, 1, 1, 0, 0, 23]);
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0),
+        Ue(22),
+        Ue(1),
+        Ue(1),
+        Ue(1),
+        Ue(1),
+        Ue(0),
+        Se(0),
+        Se(0),
+        Ue(1),
+        Se(0),
+        Se(0),
+        Ue(1),
+        Se(0),
+        Se(0),
+        Ue(0),
+        Se(0),
+        Se(0),
+        Ue(0),
+        Ue(23),
+    ]);
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(dec.ref_y[0], 20, "左上 8x8 应使用 L0 ref_idx=0");
@@ -2203,6 +2226,8 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l0_ref_idx_alignment() {
 
 #[test]
 fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l1_ref_idx_alignment() {
+    use ExpGolombValue::{Se, Ue};
+
     let mut dec = build_test_decoder();
     let sps_resize = build_sps_nalu(0, 32, 16);
     dec.handle_sps(&sps_resize);
@@ -2217,9 +2242,30 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l1_ref_idx_alignment() {
     header.num_ref_idx_l0 = 2;
     header.num_ref_idx_l1 = 2;
 
-    // mb0: skip_run=0, mb_type=22(B_8x8), sub_mb_type 全为 2(L1_8x8), ref_idx_l1=[0,1,1,0]
+    // mb0: skip_run=0, mb_type=22(B_8x8), sub_mb_type 全为 2(L1_8x8), ref_idx_l1=[0,1,1,0], mvd 全 0
     // mb1: skip_run=0, mb_type=23(intra), 用于验证位流消费对齐。
-    let rbsp = build_rbsp_from_ues(&[0, 22, 2, 2, 2, 2, 0, 1, 1, 0, 0, 23]);
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0),
+        Ue(22),
+        Ue(2),
+        Ue(2),
+        Ue(2),
+        Ue(2),
+        Ue(0),
+        Se(0),
+        Se(0),
+        Ue(1),
+        Se(0),
+        Se(0),
+        Ue(1),
+        Se(0),
+        Se(0),
+        Ue(0),
+        Se(0),
+        Se(0),
+        Ue(0),
+        Ue(23),
+    ]);
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(dec.ref_y[0], 100, "左上 8x8 应使用 L1 ref_idx=0");
@@ -2239,6 +2285,8 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l1_ref_idx_alignment() {
 
 #[test]
 fn test_decode_cavlc_slice_data_b_non_skip_b8x8_mixed_sub_mb_types_alignment() {
+    use ExpGolombValue::{Se, Ue};
+
     let mut dec = build_test_decoder();
     let sps_resize = build_sps_nalu(0, 32, 16);
     dec.handle_sps(&sps_resize);
@@ -2256,8 +2304,60 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_mixed_sub_mb_types_alignment() {
     // mb0: skip_run=0, mb_type=22(B_8x8)
     // sub_mb_type: [4(L0_8x4), 6(L1_8x4), 8(Bi_8x4), 12(Bi_4x4)]
     // ref_idx 顺序: sub0(L0=1), sub1(L1=1), sub2(L0=0,L1=1), sub3(L0=1,L1=0)
+    // 所有分区 mvd 均为 0, 用于验证语法消费顺序。
     // mb1: skip_run=0, mb_type=23(intra), 用于验证语法消费对齐。
-    let rbsp = build_rbsp_from_ues(&[0, 22, 4, 6, 8, 12, 1, 1, 0, 1, 1, 0, 0, 23]);
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0),
+        Ue(22),
+        Ue(4),
+        Ue(6),
+        Ue(8),
+        Ue(12),
+        // sub0: type4(L0_8x4), ref_idx_l0=1, 2 个子分区 mvd_l0
+        Ue(1),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        // sub1: type6(L1_8x4), ref_idx_l1=1, 2 个子分区 mvd_l1
+        Ue(1),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        // sub2: type8(Bi_8x4), ref_idx_l0=0, ref_idx_l1=1, 2 个子分区 mvd_l0+l1
+        Ue(0),
+        Ue(1),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        // sub3: type12(Bi_4x4), ref_idx_l0=1, ref_idx_l1=0, 4 个子分区 mvd_l0+l1
+        Ue(1),
+        Ue(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Ue(0),
+        Ue(23),
+    ]);
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(dec.ref_y[0], 100, "左上 8x8 应使用 L0 ref_idx=1");

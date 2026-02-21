@@ -928,47 +928,60 @@ impl H264Decoder {
                             let use_l0 = matches!(sub_mb_type, 1 | 3 | 4 | 5 | 8 | 9 | 10 | 12);
                             let use_l1 = matches!(sub_mb_type, 2 | 3 | 6 | 7 | 8 | 9 | 11 | 12);
 
-                            let mut l0_motion = None;
-                            let mut l1_motion = None;
-                            if use_l0 {
-                                let mut ref_idx_l0 = 0usize;
-                                if header.num_ref_idx_l0 > 1 {
-                                    ref_idx_l0 = read_ue(&mut br).unwrap_or(0) as usize;
-                                }
-                                l0_motion = Some(BMotion {
-                                    mv_x: 0,
-                                    mv_y: 0,
-                                    ref_idx: ref_idx_l0.min(i8::MAX as usize) as i8,
-                                });
+                            let sub_part_count = match sub_mb_type {
+                                4..=9 => 2usize,
+                                10..=12 => 4usize,
+                                _ => 1usize,
+                            };
+                            let mut ref_idx_l0 = 0usize;
+                            let mut ref_idx_l1 = 0usize;
+                            if use_l0 && header.num_ref_idx_l0 > 1 {
+                                ref_idx_l0 = read_ue(&mut br).unwrap_or(0) as usize;
                             }
-                            if use_l1 {
-                                let mut ref_idx_l1 = 0usize;
-                                if header.num_ref_idx_l1 > 1 {
-                                    ref_idx_l1 = read_ue(&mut br).unwrap_or(0) as usize;
-                                }
-                                l1_motion = Some(BMotion {
-                                    mv_x: 0,
-                                    mv_y: 0,
-                                    ref_idx: ref_idx_l1.min(i8::MAX as usize) as i8,
-                                });
+                            if use_l1 && header.num_ref_idx_l1 > 1 {
+                                ref_idx_l1 = read_ue(&mut br).unwrap_or(0) as usize;
                             }
-                            if l0_motion.is_none() && l1_motion.is_none() {
-                                l0_motion = Some(BMotion {
+
+                            let mut l0_motions = [None; 4];
+                            let mut l1_motions = [None; 4];
+                            for part_idx in 0..sub_part_count {
+                                if use_l0 {
+                                    let mv_x = read_se(&mut br).unwrap_or(0);
+                                    let mv_y = read_se(&mut br).unwrap_or(0);
+                                    l0_motions[part_idx] = Some(BMotion {
+                                        mv_x,
+                                        mv_y,
+                                        ref_idx: ref_idx_l0.min(i8::MAX as usize) as i8,
+                                    });
+                                }
+                                if use_l1 {
+                                    let mv_x = read_se(&mut br).unwrap_or(0);
+                                    let mv_y = read_se(&mut br).unwrap_or(0);
+                                    l1_motions[part_idx] = Some(BMotion {
+                                        mv_x,
+                                        mv_y,
+                                        ref_idx: ref_idx_l1.min(i8::MAX as usize) as i8,
+                                    });
+                                }
+                            }
+                            if !use_l0 && !use_l1 {
+                                l0_motions[0] = Some(BMotion {
                                     mv_x: 0,
                                     mv_y: 0,
                                     ref_idx: 0,
                                 });
-                                l1_motion = Some(BMotion {
+                                l1_motions[0] = Some(BMotion {
                                     mv_x: 0,
                                     mv_y: 0,
                                     ref_idx: 0,
                                 });
                             }
+
                             match sub_mb_type {
                                 4 | 6 | 8 => {
                                     let _ = self.apply_b_prediction_block(
-                                        l0_motion,
-                                        l1_motion,
+                                        l0_motions[0],
+                                        l1_motions[0],
                                         &header.l0_weights,
                                         &header.l1_weights,
                                         header.luma_log2_weight_denom,
@@ -981,8 +994,8 @@ impl H264Decoder {
                                         4,
                                     );
                                     let _ = self.apply_b_prediction_block(
-                                        l0_motion,
-                                        l1_motion,
+                                        l0_motions[1],
+                                        l1_motions[1],
                                         &header.l0_weights,
                                         &header.l1_weights,
                                         header.luma_log2_weight_denom,
@@ -997,8 +1010,8 @@ impl H264Decoder {
                                 }
                                 5 | 7 | 9 => {
                                     let _ = self.apply_b_prediction_block(
-                                        l0_motion,
-                                        l1_motion,
+                                        l0_motions[0],
+                                        l1_motions[0],
                                         &header.l0_weights,
                                         &header.l1_weights,
                                         header.luma_log2_weight_denom,
@@ -1011,8 +1024,8 @@ impl H264Decoder {
                                         8,
                                     );
                                     let _ = self.apply_b_prediction_block(
-                                        l0_motion,
-                                        l1_motion,
+                                        l0_motions[1],
+                                        l1_motions[1],
                                         &header.l0_weights,
                                         &header.l1_weights,
                                         header.luma_log2_weight_denom,
@@ -1027,8 +1040,8 @@ impl H264Decoder {
                                 }
                                 10..=12 => {
                                     let _ = self.apply_b_prediction_block(
-                                        l0_motion,
-                                        l1_motion,
+                                        l0_motions[0],
+                                        l1_motions[0],
                                         &header.l0_weights,
                                         &header.l1_weights,
                                         header.luma_log2_weight_denom,
@@ -1041,8 +1054,8 @@ impl H264Decoder {
                                         4,
                                     );
                                     let _ = self.apply_b_prediction_block(
-                                        l0_motion,
-                                        l1_motion,
+                                        l0_motions[1],
+                                        l1_motions[1],
                                         &header.l0_weights,
                                         &header.l1_weights,
                                         header.luma_log2_weight_denom,
@@ -1055,8 +1068,8 @@ impl H264Decoder {
                                         4,
                                     );
                                     let _ = self.apply_b_prediction_block(
-                                        l0_motion,
-                                        l1_motion,
+                                        l0_motions[2],
+                                        l1_motions[2],
                                         &header.l0_weights,
                                         &header.l1_weights,
                                         header.luma_log2_weight_denom,
@@ -1069,8 +1082,8 @@ impl H264Decoder {
                                         4,
                                     );
                                     let _ = self.apply_b_prediction_block(
-                                        l0_motion,
-                                        l1_motion,
+                                        l0_motions[3],
+                                        l1_motions[3],
                                         &header.l0_weights,
                                         &header.l1_weights,
                                         header.luma_log2_weight_denom,
@@ -1085,8 +1098,8 @@ impl H264Decoder {
                                 }
                                 _ => {
                                     let _ = self.apply_b_prediction_block(
-                                        l0_motion,
-                                        l1_motion,
+                                        l0_motions[0],
+                                        l1_motions[0],
                                         &header.l0_weights,
                                         &header.l1_weights,
                                         header.luma_log2_weight_denom,
