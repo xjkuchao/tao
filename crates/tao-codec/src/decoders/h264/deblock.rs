@@ -294,6 +294,9 @@ fn boundary_strength_vertical(
     let mb_y = y / mb_step;
     let mb_x_l = (x - 1) / mb_step;
     let mb_x_r = x / mb_step;
+    if mb_step == 16 {
+        return boundary_strength_between_mb_vertical_4x4(ctx, x, y, mb_x_l, mb_y, mb_x_r);
+    }
     boundary_strength_between_mb(ctx, mb_x_l, mb_y, mb_x_r, mb_y)
 }
 
@@ -317,6 +320,9 @@ fn boundary_strength_horizontal(
     let mb_x = x / mb_step;
     let mb_y_t = (y - 1) / mb_step;
     let mb_y_b = y / mb_step;
+    if mb_step == 16 {
+        return boundary_strength_between_mb_horizontal_4x4(ctx, x, y, mb_x, mb_y_t, mb_y_b);
+    }
     boundary_strength_between_mb(ctx, mb_x, mb_y_t, mb_x, mb_y_b)
 }
 
@@ -442,6 +448,80 @@ fn motion_boundary_strength(ctx: &DeblockMbContext<'_>, idx_a: usize, idx_b: usi
     0
 }
 
+fn boundary_strength_between_mb_vertical_4x4(
+    ctx: &DeblockMbContext<'_>,
+    x: usize,
+    y: usize,
+    mb_x_l: usize,
+    mb_y: usize,
+    mb_x_r: usize,
+) -> u8 {
+    let idx_a = mb_index(ctx.mb_width, ctx.mb_height, mb_x_l, mb_y);
+    let idx_b = mb_index(ctx.mb_width, ctx.mb_height, mb_x_r, mb_y);
+    let (Some(i_a), Some(i_b)) = (idx_a, idx_b) else {
+        return 2;
+    };
+    let ty_a = *ctx.mb_types.get(i_a).unwrap_or(&255);
+    let ty_b = *ctx.mb_types.get(i_b).unwrap_or(&255);
+    if is_intra_mb(ty_a) || is_intra_mb(ty_b) {
+        return 4;
+    }
+
+    let x4_a = x / 4 - 1;
+    let x4_b = x / 4;
+    let y4 = y / 4;
+    if luma_cbf_non_zero_across_boundary(ctx, x4_a, y4, x4_b, y4) {
+        return 2;
+    }
+    if let Some(bs) = motion_boundary_strength_4x4(ctx, x4_a, y4, x4_b, y4) {
+        return bs;
+    }
+
+    let cbp_a = *ctx.mb_cbp.get(i_a).unwrap_or(&0);
+    let cbp_b = *ctx.mb_cbp.get(i_b).unwrap_or(&0);
+    if cbp_a != 0 || cbp_b != 0 {
+        return 2;
+    }
+    motion_boundary_strength(ctx, i_a, i_b)
+}
+
+fn boundary_strength_between_mb_horizontal_4x4(
+    ctx: &DeblockMbContext<'_>,
+    x: usize,
+    y: usize,
+    mb_x: usize,
+    mb_y_t: usize,
+    mb_y_b: usize,
+) -> u8 {
+    let idx_a = mb_index(ctx.mb_width, ctx.mb_height, mb_x, mb_y_t);
+    let idx_b = mb_index(ctx.mb_width, ctx.mb_height, mb_x, mb_y_b);
+    let (Some(i_a), Some(i_b)) = (idx_a, idx_b) else {
+        return 2;
+    };
+    let ty_a = *ctx.mb_types.get(i_a).unwrap_or(&255);
+    let ty_b = *ctx.mb_types.get(i_b).unwrap_or(&255);
+    if is_intra_mb(ty_a) || is_intra_mb(ty_b) {
+        return 4;
+    }
+
+    let x4 = x / 4;
+    let y4_a = y / 4 - 1;
+    let y4_b = y / 4;
+    if luma_cbf_non_zero_across_boundary(ctx, x4, y4_a, x4, y4_b) {
+        return 2;
+    }
+    if let Some(bs) = motion_boundary_strength_4x4(ctx, x4, y4_a, x4, y4_b) {
+        return bs;
+    }
+
+    let cbp_a = *ctx.mb_cbp.get(i_a).unwrap_or(&0);
+    let cbp_b = *ctx.mb_cbp.get(i_b).unwrap_or(&0);
+    if cbp_a != 0 || cbp_b != 0 {
+        return 2;
+    }
+    motion_boundary_strength(ctx, i_a, i_b)
+}
+
 fn luma4x4_index(mb_width: usize, mb_height: usize, x4: usize, y4: usize) -> Option<usize> {
     let stride = mb_width.checked_mul(4)?;
     let h4 = mb_height.checked_mul(4)?;
@@ -553,8 +633,8 @@ const TC0_TABLE: [[u8; 3]; 52] = [
 mod tests {
     use super::{
         DeblockMbContext, DeblockSliceParams, alpha_threshold, apply_adaptive_deblock_plane,
-        apply_deblock_yuv420_with_slice_params, beta_threshold, boundary_strength_vertical,
-        filter_edge_with_bs,
+        apply_deblock_yuv420_with_slice_params, beta_threshold, boundary_strength_horizontal,
+        boundary_strength_vertical, filter_edge_with_bs,
     };
 
     #[test]
@@ -810,6 +890,108 @@ mod tests {
         };
         let bs = boundary_strength_vertical(16, 0, 16, Some(&ctx));
         assert_eq!(bs, 1, "跨宏块参考索引不一致时应保留弱滤波");
+    }
+
+    #[test]
+    fn test_boundary_strength_vertical_mb_boundary_follows_4x4_rows() {
+        let mb_types = [255u8, 255u8];
+        let mb_cbp = [0u8, 0u8];
+        let cbf_luma = [false; 32];
+        let mv_l0_x = [0i16; 2];
+        let mv_l0_y = [0i16; 2];
+        let ref_idx_l0 = [0i8; 2];
+        let mv_l0_x_4x4 = [0i16; 32];
+        let mv_l0_y_4x4 = [0i16; 32];
+        let mut ref_idx_l0_4x4 = [0i8; 32];
+        // y4=0 这一行跨边界参考不一致, y4=2 保持一致.
+        ref_idx_l0_4x4[3] = 0;
+        ref_idx_l0_4x4[4] = 1;
+        ref_idx_l0_4x4[19] = 0;
+        ref_idx_l0_4x4[20] = 0;
+        let ctx = DeblockMbContext {
+            mb_width: 2,
+            mb_height: 1,
+            mb_types: &mb_types,
+            mb_cbp: &mb_cbp,
+            mv_l0_x: Some(&mv_l0_x),
+            mv_l0_y: Some(&mv_l0_y),
+            ref_idx_l0: Some(&ref_idx_l0),
+            cbf_luma: Some(&cbf_luma),
+            mv_l0_x_4x4: Some(&mv_l0_x_4x4),
+            mv_l0_y_4x4: Some(&mv_l0_y_4x4),
+            ref_idx_l0_4x4: Some(&ref_idx_l0_4x4),
+        };
+
+        let bs_top_row = boundary_strength_vertical(16, 2, 16, Some(&ctx));
+        let bs_mid_row = boundary_strength_vertical(16, 10, 16, Some(&ctx));
+        assert_eq!(bs_top_row, 1, "跨宏块边界应按对应 4x4 行判定参考差异");
+        assert_eq!(bs_mid_row, 0, "未命中差异的 4x4 行应允许 bs=0");
+    }
+
+    #[test]
+    fn test_boundary_strength_vertical_mb_boundary_4x4_cbf_non_zero_is_two() {
+        let mb_types = [255u8, 255u8];
+        let mb_cbp = [0u8, 0u8];
+        let mut cbf_luma = [false; 32];
+        cbf_luma[4] = true;
+        let mv_l0_x = [0i16; 2];
+        let mv_l0_y = [0i16; 2];
+        let ref_idx_l0 = [0i8; 2];
+        let mv_l0_x_4x4 = [0i16; 32];
+        let mv_l0_y_4x4 = [0i16; 32];
+        let ref_idx_l0_4x4 = [0i8; 32];
+        let ctx = DeblockMbContext {
+            mb_width: 2,
+            mb_height: 1,
+            mb_types: &mb_types,
+            mb_cbp: &mb_cbp,
+            mv_l0_x: Some(&mv_l0_x),
+            mv_l0_y: Some(&mv_l0_y),
+            ref_idx_l0: Some(&ref_idx_l0),
+            cbf_luma: Some(&cbf_luma),
+            mv_l0_x_4x4: Some(&mv_l0_x_4x4),
+            mv_l0_y_4x4: Some(&mv_l0_y_4x4),
+            ref_idx_l0_4x4: Some(&ref_idx_l0_4x4),
+        };
+
+        let bs = boundary_strength_vertical(16, 2, 16, Some(&ctx));
+        assert_eq!(bs, 2, "跨宏块边界任一侧 4x4 CBF 非零时应返回 bs=2");
+    }
+
+    #[test]
+    fn test_boundary_strength_horizontal_mb_boundary_follows_4x4_columns() {
+        let mb_types = [255u8, 255u8];
+        let mb_cbp = [0u8, 0u8];
+        let cbf_luma = [false; 32];
+        let mv_l0_x = [0i16; 2];
+        let mv_l0_y = [0i16; 2];
+        let ref_idx_l0 = [0i8; 2];
+        let mv_l0_x_4x4 = [0i16; 32];
+        let mv_l0_y_4x4 = [0i16; 32];
+        let mut ref_idx_l0_4x4 = [0i8; 32];
+        // x4=0 这一列跨边界参考不一致, x4=2 保持一致.
+        ref_idx_l0_4x4[12] = 0;
+        ref_idx_l0_4x4[16] = 1;
+        ref_idx_l0_4x4[14] = 0;
+        ref_idx_l0_4x4[18] = 0;
+        let ctx = DeblockMbContext {
+            mb_width: 1,
+            mb_height: 2,
+            mb_types: &mb_types,
+            mb_cbp: &mb_cbp,
+            mv_l0_x: Some(&mv_l0_x),
+            mv_l0_y: Some(&mv_l0_y),
+            ref_idx_l0: Some(&ref_idx_l0),
+            cbf_luma: Some(&cbf_luma),
+            mv_l0_x_4x4: Some(&mv_l0_x_4x4),
+            mv_l0_y_4x4: Some(&mv_l0_y_4x4),
+            ref_idx_l0_4x4: Some(&ref_idx_l0_4x4),
+        };
+
+        let bs_left_col = boundary_strength_horizontal(2, 16, 16, Some(&ctx));
+        let bs_right_col = boundary_strength_horizontal(10, 16, 16, Some(&ctx));
+        assert_eq!(bs_left_col, 1, "跨宏块水平边界应按对应 4x4 列判定参考差异");
+        assert_eq!(bs_right_col, 0, "未命中差异的 4x4 列应允许 bs=0");
     }
 
     #[test]
