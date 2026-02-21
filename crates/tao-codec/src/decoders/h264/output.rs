@@ -522,6 +522,10 @@ impl H264Decoder {
                     slice_qp: self.last_slice_qp,
                     alpha_offset_div2: self.last_slice_alpha_c0_offset_div2,
                     beta_offset_div2: self.last_slice_beta_offset_div2,
+                    mb_width: self.mb_width,
+                    mb_height: self.mb_height,
+                    mb_types: Some(&self.mb_types),
+                    mb_cbp: Some(&self.mb_cbp),
                 },
             );
         }
