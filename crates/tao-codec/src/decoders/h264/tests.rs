@@ -2187,7 +2187,7 @@ fn test_store_reference_with_marking_mmco_clear_all_resets_frame_num_and_poc() {
 }
 
 #[test]
-fn test_store_reference_with_marking_capacity_evicts_lowest_pic_num_short_term() {
+fn test_store_reference_with_marking_sliding_window_evicts_lowest_frame_num_wrap() {
     let mut dec = build_test_decoder();
     dec.max_reference_frames = 2;
     push_dummy_reference(&mut dec, 10);
@@ -2201,23 +2201,23 @@ fn test_store_reference_with_marking_capacity_evicts_lowest_pic_num_short_term()
 
     dec.store_reference_with_marking();
 
-    assert_eq!(dec.reference_frames.len(), 2, "参考帧容量应被限制到 2");
+    assert_eq!(dec.reference_frames.len(), 2, "滑动窗口后参考帧容量应为 2");
     assert!(
-        dec.reference_frames.iter().any(|pic| pic.frame_num == 10),
-        "应保留 pic_num 更大的短期参考帧"
+        dec.reference_frames.iter().any(|pic| pic.frame_num == 2),
+        "滑动窗口应保留 frame_num_wrap 更大的短期参考帧"
     );
     assert!(
         dec.reference_frames.iter().any(|pic| pic.frame_num == 3),
-        "应保留当前入队的短期参考帧"
+        "滑动窗口应保留当前入队的短期参考帧"
     );
     assert!(
-        dec.reference_frames.iter().all(|pic| pic.frame_num != 2),
-        "容量不足时应优先淘汰最小 pic_num 的短期参考帧"
+        dec.reference_frames.iter().all(|pic| pic.frame_num != 10),
+        "滑动窗口应淘汰最小 frame_num_wrap 的短期参考帧"
     );
 }
 
 #[test]
-fn test_store_reference_with_marking_capacity_prefers_keep_long_term() {
+fn test_store_reference_with_marking_sliding_window_prefers_keep_long_term() {
     let mut dec = build_test_decoder();
     dec.max_reference_frames = 2;
     push_dummy_reference_with_long_term(&mut dec, 6, Some(0));
@@ -2231,20 +2231,54 @@ fn test_store_reference_with_marking_capacity_prefers_keep_long_term() {
 
     dec.store_reference_with_marking();
 
-    assert_eq!(dec.reference_frames.len(), 2, "参考帧容量应被限制到 2");
+    assert_eq!(dec.reference_frames.len(), 2, "滑动窗口后参考帧容量应为 2");
     assert!(
         dec.reference_frames
             .iter()
             .any(|pic| pic.long_term_frame_idx == Some(0)),
-        "存在短期参考帧时不应优先淘汰长期参考帧"
+        "滑动窗口应优先淘汰短期参考帧, 长期参考应保留"
     );
     assert!(
         dec.reference_frames.iter().any(|pic| pic.frame_num == 8),
-        "当前短期参考帧应成功入队"
+        "滑动窗口后当前短期参考帧应成功入队"
     );
     assert!(
         dec.reference_frames.iter().all(|pic| pic.frame_num != 7),
-        "容量淘汰应先移除短期参考帧"
+        "滑动窗口应先移除短期参考帧"
+    );
+}
+
+#[test]
+fn test_store_reference_with_marking_sliding_window_wrap_around() {
+    let mut dec = build_test_decoder();
+    dec.max_reference_frames = 2;
+    push_dummy_reference(&mut dec, 15);
+    push_dummy_reference(&mut dec, 0);
+
+    dec.last_slice_type = 0;
+    dec.last_nal_ref_idc = 1;
+    dec.last_frame_num = 1;
+    dec.last_poc = 1;
+    dec.last_dec_ref_pic_marking = DecRefPicMarking::default();
+
+    dec.store_reference_with_marking();
+
+    assert_eq!(
+        dec.reference_frames.len(),
+        2,
+        "回绕场景下滑动窗口后容量应为 2"
+    );
+    assert!(
+        dec.reference_frames.iter().all(|pic| pic.frame_num != 15),
+        "回绕时 frame_num=15 的 frame_num_wrap 更小, 应被优先淘汰"
+    );
+    assert!(
+        dec.reference_frames.iter().any(|pic| pic.frame_num == 0),
+        "回绕场景应保留较新的短期参考帧"
+    );
+    assert!(
+        dec.reference_frames.iter().any(|pic| pic.frame_num == 1),
+        "回绕场景应保留当前短期参考帧"
     );
 }
 

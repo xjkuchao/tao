@@ -362,17 +362,46 @@ impl H264Decoder {
             .retain(|pic| pic.long_term_frame_idx.is_none_or(|idx| idx <= max_idx));
     }
 
+    fn frame_num_wrap_for_short_term(&self, frame_num: u32) -> i32 {
+        let max_frame_num = self.max_frame_num_modulo();
+        if max_frame_num == 0 {
+            return 0;
+        }
+        let cur = self.last_frame_num % max_frame_num;
+        let val = frame_num % max_frame_num;
+        if val > cur {
+            val as i32 - max_frame_num as i32
+        } else {
+            val as i32
+        }
+    }
+
+    pub(super) fn remove_short_term_with_lowest_frame_num_wrap(&mut self) -> bool {
+        if let Some((idx, _)) = self
+            .reference_frames
+            .iter()
+            .enumerate()
+            .filter(|(_, pic)| pic.long_term_frame_idx.is_none())
+            .min_by_key(|(_, pic)| self.frame_num_wrap_for_short_term(pic.frame_num))
+        {
+            self.reference_frames.remove(idx);
+            return true;
+        }
+        false
+    }
+
+    fn apply_sliding_window_if_needed(&mut self) {
+        if self.reference_frames.len() < self.max_reference_frames {
+            return;
+        }
+        if !self.remove_short_term_with_lowest_frame_num_wrap() {
+            let _ = self.reference_frames.pop_front();
+        }
+    }
+
     pub(super) fn enforce_reference_capacity(&mut self) {
         while self.reference_frames.len() > self.max_reference_frames {
-            if let Some((idx, _)) = self
-                .reference_frames
-                .iter()
-                .enumerate()
-                .filter(|(_, pic)| pic.long_term_frame_idx.is_none())
-                .min_by_key(|(_, pic)| self.pic_num_from_frame_num(pic.frame_num))
-            {
-                self.reference_frames.remove(idx);
-            } else {
+            if !self.remove_short_term_with_lowest_frame_num_wrap() {
                 let _ = self.reference_frames.pop_front();
             }
         }
@@ -472,6 +501,8 @@ impl H264Decoder {
                     }
                 }
             }
+        } else if current_long_term_idx.is_none() {
+            self.apply_sliding_window_if_needed();
         }
 
         if let Some(idx) = current_long_term_idx {

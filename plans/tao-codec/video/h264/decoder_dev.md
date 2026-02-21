@@ -238,7 +238,7 @@ crates/tao-codec/src/decoders/h264/
 
 - [x] MMCO op1-op6 + 长期参考管理 + 单测.
 - [x] MMCO op5(清除全部 + frame_num 重置 + POC 重置).
-- [ ] 滑动窗口(超 max_num_ref_frames 自动淘汰, 规范 8.2.5.3).
+- [x] 滑动窗口(超 max_num_ref_frames 自动淘汰, 规范 8.2.5.3).
 - [ ] 帧号间隙(gaps_in_frame_num_allowed_flag, 插入"不存在"参考帧).
 - [ ] op5 + 滑动窗口 + 帧号间隙单测.
 
