@@ -1,24 +1,64 @@
 use super::*;
 
 impl H264Decoder {
+    fn is_zero_direct_neighbor_mb(&self, mb_idx: usize) -> bool {
+        let l0_zero = self.ref_idx_l0.get(mb_idx).copied().unwrap_or(-1) == 0
+            && self.mv_l0_x.get(mb_idx).copied().unwrap_or(0) == 0
+            && self.mv_l0_y.get(mb_idx).copied().unwrap_or(0) == 0;
+        let l1_zero = self.ref_idx_l1.get(mb_idx).copied().unwrap_or(-1) == 0
+            && self.mv_l1_x.get(mb_idx).copied().unwrap_or(0) == 0
+            && self.mv_l1_y.get(mb_idx).copied().unwrap_or(0) == 0;
+        l0_zero && l1_zero
+    }
+
+    fn spatial_direct_zero_mv_condition(&self, mb_x: usize, mb_y: usize) -> bool {
+        let left = if mb_x > 0 {
+            self.mb_index(mb_x - 1, mb_y)
+        } else {
+            None
+        };
+        let top = if mb_y > 0 {
+            self.mb_index(mb_x, mb_y - 1)
+        } else {
+            None
+        };
+        if let (Some(left_idx), Some(top_idx)) = (left, top) {
+            return self.is_zero_direct_neighbor_mb(left_idx)
+                && self.is_zero_direct_neighbor_mb(top_idx);
+        }
+        false
+    }
+
     /// 构建 B-slice Direct 预测的最小运动信息.
     ///
     /// 目前 temporal direct 路径先复用 list0 预测, spatial direct 路径使用 list0/list1 双向预测.
+    ///
+    /// spatial direct 最小实现:
+    /// - 当左/上邻居都存在且二者均为 list0/list1 的 `ref_idx=0 && mv=(0,0)` 时, 直接输出零 MV.
+    /// - 其它情况使用输入预测 MV.
     pub(super) fn build_b_direct_motion(
         &self,
+        mb_x: usize,
+        mb_y: usize,
         mv_x: i32,
         mv_y: i32,
         direct_spatial_mv_pred_flag: bool,
     ) -> (Option<BMotion>, Option<BMotion>) {
+        let (direct_mv_x, direct_mv_y) =
+            if direct_spatial_mv_pred_flag && self.spatial_direct_zero_mv_condition(mb_x, mb_y) {
+                (0, 0)
+            } else {
+                (mv_x, mv_y)
+            };
         let motion_l0 = Some(BMotion {
-            mv_x,
-            mv_y,
+            mv_x: direct_mv_x,
+            mv_y: direct_mv_y,
             ref_idx: 0,
         });
         let motion_l1 = if direct_spatial_mv_pred_flag {
             Some(BMotion {
-                mv_x,
-                mv_y,
+                mv_x: direct_mv_x,
+                mv_y: direct_mv_y,
                 ref_idx: 0,
             })
         } else {
@@ -1489,8 +1529,13 @@ impl H264Decoder {
                 self.reset_chroma_cbf_mb(mb_x, mb_y);
                 self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
                 let (pred_x, pred_y) = self.predict_mv_l0_16x16(mb_x, mb_y);
-                let (motion_l0, motion_l1) =
-                    self.build_b_direct_motion(pred_x, pred_y, direct_spatial_mv_pred_flag);
+                let (motion_l0, motion_l1) = self.build_b_direct_motion(
+                    mb_x,
+                    mb_y,
+                    pred_x,
+                    pred_y,
+                    direct_spatial_mv_pred_flag,
+                );
                 let (mv_x, mv_y, ref_idx) = self.apply_b_prediction_block(
                     motion_l0,
                     motion_l1,
@@ -1874,8 +1919,13 @@ impl H264Decoder {
         match mb_type_idx {
             None => {
                 self.mb_types[mb_idx] = 254;
-                let (motion_l0, motion_l1) =
-                    self.build_b_direct_motion(pred_mv_x, pred_mv_y, direct_spatial_mv_pred_flag);
+                let (motion_l0, motion_l1) = self.build_b_direct_motion(
+                    mb_x,
+                    mb_y,
+                    pred_mv_x,
+                    pred_mv_y,
+                    direct_spatial_mv_pred_flag,
+                );
                 let (mv_x, mv_y, ref_idx) = self.apply_b_prediction_block(
                     motion_l0,
                     motion_l1,

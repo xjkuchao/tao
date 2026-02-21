@@ -3980,6 +3980,64 @@ fn test_predict_p_skip_mv_uses_partition_predict_when_neighbors_not_both_zero() 
 }
 
 #[test]
+fn test_build_b_direct_motion_spatial_returns_zero_when_left_top_neighbors_are_zero() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+
+    let left_mb = dec.mb_index(0, 1).expect("左邻索引应存在");
+    let top_mb = dec.mb_index(1, 0).expect("上邻索引应存在");
+    for idx in [left_mb, top_mb] {
+        dec.mv_l0_x[idx] = 0;
+        dec.mv_l0_y[idx] = 0;
+        dec.ref_idx_l0[idx] = 0;
+        dec.mv_l1_x[idx] = 0;
+        dec.mv_l1_y[idx] = 0;
+        dec.ref_idx_l1[idx] = 0;
+    }
+
+    let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true);
+    let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
+    let motion_l1 = motion_l1.expect("spatial direct 应提供 L1 运动信息");
+    assert_eq!(motion_l0.mv_x, 0, "零向量条件满足时 L0 MV(x) 应归零");
+    assert_eq!(motion_l0.mv_y, 0, "零向量条件满足时 L0 MV(y) 应归零");
+    assert_eq!(motion_l1.mv_x, 0, "零向量条件满足时 L1 MV(x) 应归零");
+    assert_eq!(motion_l1.mv_y, 0, "零向量条件满足时 L1 MV(y) 应归零");
+}
+
+#[test]
+fn test_build_b_direct_motion_spatial_keeps_pred_mv_when_zero_condition_not_met() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+
+    let left_mb = dec.mb_index(0, 1).expect("左邻索引应存在");
+    let top_mb = dec.mb_index(1, 0).expect("上邻索引应存在");
+    dec.mv_l0_x[left_mb] = 0;
+    dec.mv_l0_y[left_mb] = 0;
+    dec.ref_idx_l0[left_mb] = 0;
+    dec.mv_l1_x[left_mb] = 0;
+    dec.mv_l1_y[left_mb] = 0;
+    dec.ref_idx_l1[left_mb] = 0;
+    dec.mv_l0_x[top_mb] = 0;
+    dec.mv_l0_y[top_mb] = 0;
+    dec.ref_idx_l0[top_mb] = 0;
+    dec.mv_l1_x[top_mb] = 0;
+    dec.mv_l1_y[top_mb] = 0;
+    dec.ref_idx_l1[top_mb] = 1;
+
+    let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true);
+    let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
+    let motion_l1 = motion_l1.expect("spatial direct 应提供 L1 运动信息");
+    assert_eq!(motion_l0.mv_x, 12, "零向量条件不满足时应保留预测 MV(x)");
+    assert_eq!(motion_l0.mv_y, -8, "零向量条件不满足时应保留预测 MV(y)");
+    assert_eq!(motion_l1.mv_x, 12, "零向量条件不满足时应保留预测 MV(x)");
+    assert_eq!(motion_l1.mv_y, -8, "零向量条件不满足时应保留预测 MV(y)");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_p_non_skip_inter_16x16_prefers_single_ref_match_mvp() {
     use ExpGolombValue::{Se, Ue};
 

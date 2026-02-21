@@ -1078,6 +1078,8 @@ impl H264Decoder {
                 self.mb_cbp[mb_idx] = 0;
                 if is_b {
                     let (motion_l0, motion_l1) = self.build_b_direct_motion(
+                        mb_x,
+                        mb_y,
                         b_pred_mv_x,
                         b_pred_mv_y,
                         header.direct_spatial_mv_pred_flag,
@@ -1206,6 +1208,8 @@ impl H264Decoder {
                             }
                             if !use_l0[sub_idx] && !use_l1[sub_idx] {
                                 let (motion_l0, motion_l1) = self.build_b_direct_motion(
+                                    mb_x,
+                                    mb_y,
                                     b_pred_mv_x,
                                     b_pred_mv_y,
                                     header.direct_spatial_mv_pred_flag,
@@ -1493,6 +1497,8 @@ impl H264Decoder {
                     let mut l1_motion = None;
                     if mb_type == 0 {
                         (l0_motion, l1_motion) = self.build_b_direct_motion(
+                            mb_x,
+                            mb_y,
                             b_pred_mv_x,
                             b_pred_mv_y,
                             header.direct_spatial_mv_pred_flag,

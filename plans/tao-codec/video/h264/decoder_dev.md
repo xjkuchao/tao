@@ -215,6 +215,7 @@ crates/tao-codec/src/decoders/h264/
 - [ ] Spatial Direct:
     - [ ] 邻居 MV/ref_idx 收集.
     - [ ] 零 MV 条件判定.
+    - [x] 最小零 MV 判定接入: 左/上邻居均为 list0/list1 的 `ref_idx=0 && mv=(0,0)` 时输出零 MV.
     - [ ] L0/L1 方向独立推导.
     - [ ] 16x16/8x8 粒度(direct_8x8_inference_flag).
     - [ ] Spatial Direct 单测.
