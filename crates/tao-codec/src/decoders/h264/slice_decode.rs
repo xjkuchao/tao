@@ -1207,15 +1207,24 @@ impl H264Decoder {
                                 }
                             }
                             if !use_l0[sub_idx] && !use_l1[sub_idx] {
-                                let (motion_l0, motion_l1) = self.build_b_direct_motion(
+                                let sub_off_x = (sub_idx % 2) * 8;
+                                let sub_off_y = (sub_idx / 2) * 8;
+                                let _ = self.apply_b_direct_sub_8x8(
                                     mb_x,
                                     mb_y,
+                                    sub_off_x,
+                                    sub_off_y,
                                     b_pred_mv_x,
                                     b_pred_mv_y,
                                     header.direct_spatial_mv_pred_flag,
+                                    &header.l0_weights,
+                                    &header.l1_weights,
+                                    header.luma_log2_weight_denom,
+                                    header.chroma_log2_weight_denom,
+                                    &ref_l0_list,
+                                    &ref_l1_list,
                                 );
-                                l0_motions[0] = motion_l0;
-                                l1_motions[0] = motion_l1;
+                                continue;
                             }
 
                             match sub_mb_type {

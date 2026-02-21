@@ -142,6 +142,102 @@ impl H264Decoder {
         (motion_l0, motion_l1)
     }
 
+    pub(super) fn direct_8x8_inference_enabled(&self) -> bool {
+        self.sps
+            .as_ref()
+            .map(|sps| sps.direct_8x8_inference_flag)
+            .unwrap_or(true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn apply_b_direct_sub_8x8(
+        &mut self,
+        mb_x: usize,
+        mb_y: usize,
+        sub_x: usize,
+        sub_y: usize,
+        pred_mv_x: i32,
+        pred_mv_y: i32,
+        direct_spatial_mv_pred_flag: bool,
+        l0_weights: &[PredWeightL0],
+        l1_weights: &[PredWeightL0],
+        luma_log2_weight_denom: u8,
+        chroma_log2_weight_denom: u8,
+        ref_l0_list: &[RefPlanes],
+        ref_l1_list: &[RefPlanes],
+    ) -> (i32, i32, i8) {
+        if self.direct_8x8_inference_enabled() {
+            let (motion_l0, motion_l1) = self.build_b_direct_motion(
+                mb_x,
+                mb_y,
+                pred_mv_x,
+                pred_mv_y,
+                direct_spatial_mv_pred_flag,
+            );
+            return self.apply_b_prediction_block(
+                motion_l0,
+                motion_l1,
+                l0_weights,
+                l1_weights,
+                luma_log2_weight_denom,
+                chroma_log2_weight_denom,
+                ref_l0_list,
+                ref_l1_list,
+                mb_x * 16 + sub_x,
+                mb_y * 16 + sub_y,
+                8,
+                8,
+            );
+        }
+
+        let base_part_x4 = sub_x / 4;
+        let base_part_y4 = sub_y / 4;
+        let mut part_pred_mv_x = [[0i32; 2]; 2];
+        let mut part_pred_mv_y = [[0i32; 2]; 2];
+        for part_y in 0..2usize {
+            for part_x in 0..2usize {
+                (
+                    part_pred_mv_x[part_y][part_x],
+                    part_pred_mv_y[part_y][part_x],
+                ) = self.predict_mv_l0_partition(
+                    mb_x,
+                    mb_y,
+                    base_part_x4 + part_x,
+                    base_part_y4 + part_y,
+                    1,
+                    0,
+                );
+            }
+        }
+        let mut last_mv = (pred_mv_x, pred_mv_y, 0i8);
+        for part_y in 0..2usize {
+            for part_x in 0..2usize {
+                let (motion_l0, motion_l1) = self.build_b_direct_motion(
+                    mb_x,
+                    mb_y,
+                    part_pred_mv_x[part_y][part_x],
+                    part_pred_mv_y[part_y][part_x],
+                    direct_spatial_mv_pred_flag,
+                );
+                last_mv = self.apply_b_prediction_block(
+                    motion_l0,
+                    motion_l1,
+                    l0_weights,
+                    l1_weights,
+                    luma_log2_weight_denom,
+                    chroma_log2_weight_denom,
+                    ref_l0_list,
+                    ref_l1_list,
+                    mb_x * 16 + sub_x + part_x * 4,
+                    mb_y * 16 + sub_y + part_y * 4,
+                    4,
+                    4,
+                );
+            }
+        }
+        last_mv
+    }
+
     /// 推导 P_Skip 的 L0 运动向量.
     ///
     /// 规则:
@@ -2029,6 +2125,27 @@ impl H264Decoder {
                     let sx = (sub & 1) * 8;
                     let sy = (sub >> 1) * 8;
                     let (part_w, part_h, part_count, dir) = Self::b_sub_mb_info(sub_type);
+                    if matches!(dir, BPredDir::Direct) {
+                        let (mv_x, mv_y, ref_idx) = self.apply_b_direct_sub_8x8(
+                            mb_x,
+                            mb_y,
+                            sx,
+                            sy,
+                            pred_mv_x,
+                            pred_mv_y,
+                            direct_spatial_mv_pred_flag,
+                            l0_weights,
+                            l1_weights,
+                            luma_log2_weight_denom,
+                            chroma_log2_weight_denom,
+                            ref_l0_list,
+                            ref_l1_list,
+                        );
+                        final_mv_x = mv_x;
+                        final_mv_y = mv_y;
+                        final_ref_idx = ref_idx;
+                        continue;
+                    }
                     for part in 0..part_count {
                         let (part_off_x, part_off_y) = match (part_w, part_h, part_count) {
                             (8, 8, _) => (0, 0),

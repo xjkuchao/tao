@@ -5123,6 +5123,12 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_direct_uses_predicted_mv_from_le
     let mut dec = build_test_decoder();
     let sps_resize = build_sps_nalu(0, 32, 16);
     dec.handle_sps(&sps_resize);
+    if let Some(sps) = dec.sps.as_mut() {
+        sps.direct_8x8_inference_flag = true;
+    }
+    if let Some(sps) = dec.sps_map.get_mut(&0) {
+        sps.direct_8x8_inference_flag = true;
+    }
     dec.last_slice_type = 1;
     dec.last_poc = 5;
     push_horizontal_gradient_reference(&mut dec, 3, 3, None);
@@ -5152,6 +5158,69 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_direct_uses_predicted_mv_from_le
     assert_eq!(dec.ref_y[24], 25, "Direct_8x8 右上块应复用左邻 MVP");
     assert_eq!(dec.mv_l0_x[1], 4, "Direct_8x8 宏块应写入预测后的 MV(x)");
     assert_eq!(dec.mv_l0_y[1], 0, "Direct_8x8 宏块应写入预测后的 MV(y)");
+}
+
+#[test]
+fn test_apply_b_direct_sub_8x8_respects_direct_8x8_inference_flag() {
+    fn apply_with_direct_8x8_inference_flag(flag: bool) -> (u8, i16) {
+        let mut dec = build_test_decoder();
+        let sps_resize = build_sps_nalu(0, 32, 16);
+        dec.handle_sps(&sps_resize);
+        if let Some(sps) = dec.sps.as_mut() {
+            sps.direct_8x8_inference_flag = flag;
+        }
+        if let Some(sps) = dec.sps_map.get_mut(&0) {
+            sps.direct_8x8_inference_flag = flag;
+        }
+        dec.last_slice_type = 1;
+        dec.last_poc = 5;
+        push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+        // 左邻宏块预置 +1px 的 L0 运动, 用于构造 16x16 预测输入.
+        dec.set_l0_motion_block_4x4(0, 0, 16, 16, 4, 0, 0);
+
+        let (pred_mv_x, pred_mv_y) = dec.predict_mv_l0_16x16(1, 0);
+        let ref_l0_list = dec.build_reference_list_l0_with_mod(1, &[], 0);
+        let ref_l1_list: Vec<RefPlanes> = Vec::new();
+        let _ = dec.apply_b_direct_sub_8x8(
+            1,
+            0,
+            8,
+            0,
+            pred_mv_x,
+            pred_mv_y,
+            false,
+            &[],
+            &[],
+            0,
+            0,
+            &ref_l0_list,
+            &ref_l1_list,
+        );
+
+        (dec.ref_y[24], dec.mv_l0_x[1])
+    }
+
+    let (pix_true, mv_true) = apply_with_direct_8x8_inference_flag(true);
+    let (pix_false, mv_false) = apply_with_direct_8x8_inference_flag(false);
+
+    assert_eq!(
+        pix_true, 25,
+        "direct_8x8_inference_flag=1 时应沿用 8x8 预测 MV(+1px)"
+    );
+    assert_eq!(
+        mv_true, 4,
+        "direct_8x8_inference_flag=1 时应记录 8x8 预测 MV(x)=4"
+    );
+
+    assert_eq!(
+        pix_false, 24,
+        "direct_8x8_inference_flag=0 时应按 4x4 粒度独立预测并回落到零 MV"
+    );
+    assert_eq!(
+        mv_false, 0,
+        "direct_8x8_inference_flag=0 时最后分区应记录独立 4x4 MV(x)=0"
+    );
 }
 
 #[test]
