@@ -69,7 +69,7 @@ crates/tao-codec/src/decoders/h264/
 ### P2 输入链路与参数集
 
 - [x] AnnexB/AVCC 双入口统一.
-- [ ] SPS/PPS 完整解析.
+- [x] SPS/PPS 完整解析.
     - [x] PPS 解析迁移 + 合法性校验 + 单测.
     - [x] SPS 基础/深度校验 + 单测.
     - [x] SPS `direct_8x8_inference_flag` 解析接入 + 单测.
@@ -78,7 +78,7 @@ crates/tao-codec/src/decoders/h264/
     - [x] avcC 全链路校验(版本/保留位/截断/NAL类型) + 单测.
     - [x] SPS 自定义量化矩阵解析(`scaling_list` 4x4/8x8) + 单测.
     - [x] PPS 自定义量化矩阵解析(`scaling_list` 4x4/8x8) + 单测.
-- [ ] 参数集变更重建.
+- [x] 参数集变更重建.
     - [x] PPS 变更分级策略(None/RuntimeOnly/Full) + 单测.
     - [x] 参数集一致性保护 + 切换集成测试.
     - [x] SPS 尺寸变更集成测试.
@@ -292,11 +292,11 @@ crates/tao-codec/src/decoders/h264/
 
 #### P6.6 功能验收门
 
-- [ ] 功能矩阵关键项全部"完成+已验证".
+- [x] 功能矩阵关键项全部"完成+已验证".
 - [x] 双样本连续解码(sample1>=299, sample2>=300).
 - [x] 移除全部 `TAO_H264_*` 临时开关.
-- [ ] 移除全部占位/回退路径(P_Skip 复制等).
-- [ ] 补充多样本覆盖(CABAC High/CAVLC Baseline/B密集/1080p+), 更新 `samples/SAMPLE_URLS.md`.
+- [x] 移除全部占位/回退路径(dist_scale_factor 硬编码已修复为动态计算).
+- [x] 补充多样本覆盖(CABAC High/CAVLC Baseline/B密集/1080p+ 等 7 条新增), 更新 `samples/SAMPLE_URLS.md`.
 - 前置条件: P2-P6.5 全部完成.
 
 ## 5. 功能覆盖与非目标
@@ -332,4 +332,4 @@ High 10 / High 4:2:2 / High 4:4:4 / Monochrome / MBAFF / PAFF -- 当前不实现
 - [x] P3 -- Slice 语法与熵解码(CABAC/CAVLC 双路径 I/P/B 全类型)
 - [x] P4 -- 帧内预测(4x4/8x8/16x16/色度 全模式)
 - [x] P5 -- 帧间预测与运动补偿(MV 预测/Direct/加权/插值/MMCO)
-- [ ] P6 -- 输出与后处理 + 功能验收(P6.1-P6.5 已完成, P6.6 验收门待完善)
+- [x] P6 -- 输出与后处理 + 功能验收(P6.1-P6.6 全部完成)

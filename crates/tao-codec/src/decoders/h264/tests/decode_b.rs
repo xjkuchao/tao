@@ -60,11 +60,13 @@ fn test_decode_cavlc_slice_data_b_skip_run_temporal_direct_uses_colocated_mv() {
     // mb_skip_run = 1, 覆盖单宏块帧
     let rbsp = build_rbsp_from_ues(&[1]);
     dec.decode_cavlc_slice_data(&rbsp, &header);
+    // 规范 8.4.1.2.3: dist_scale_factor = 128 (tb=3, td=6),
+    // col_mv_x=4 缩放后 mv_l0_x = (128*4+128)>>8 = 2 (0.5 整像素, 向下取整=0).
     assert_eq!(
-        dec.ref_y[0], 1,
-        "temporal direct 应使用共定位宏块 MV(+1px)驱动 L0 参考采样"
+        dec.ref_y[0], 0,
+        "temporal direct 缩放后 mv_l0_x=2(0.5px), 整像素采样应为 0"
     );
-    assert_eq!(dec.mv_l0_x[0], 4, "宏块记录的 L0 MV(x) 应来自共定位宏块");
+    assert_eq!(dec.mv_l0_x[0], 2, "宏块记录的 L0 MV(x) 应为规范缩放后的值");
 }
 
 #[test]

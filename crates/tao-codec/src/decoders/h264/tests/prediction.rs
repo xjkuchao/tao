@@ -720,13 +720,16 @@ fn test_build_b_direct_motion_temporal_prefers_list1_colocated_mb() {
     let (motion_l0, motion_l1) =
         dec.build_b_direct_motion(0, 0, 7, -3, false, &ref_l0_list, &ref_l1_list);
     let motion_l0 = motion_l0.expect("temporal direct 应提供 L0 运动信息");
+    // 规范 8.4.1.2.3: dist_scale_factor = 128 (tb=3, td=6), 缩放后:
+    // mv_l0_x = (128 * 24 + 128) >> 8 = 12
+    // mv_l0_y = (128 * 4 + 128) >> 8 = 2
     assert_eq!(
-        motion_l0.mv_x, 24,
-        "temporal direct 应优先使用 list1[0] 共定位宏块的 list0 MV(x)"
+        motion_l0.mv_x, 12,
+        "temporal direct 应优先使用 list1[0] 共定位宏块的 list0 MV(x), 并按规范缩放"
     );
     assert_eq!(
-        motion_l0.mv_y, 4,
-        "temporal direct 应优先使用 list1[0] 共定位宏块的 list0 MV(y)"
+        motion_l0.mv_y, 2,
+        "temporal direct 应优先使用 list1[0] 共定位宏块的 list0 MV(y), 并按规范缩放"
     );
     assert!(
         motion_l1.is_none(),

@@ -19,11 +19,18 @@
 
 ### H.264
 
-| 用途     | URL                                             | 描述                            |
-| -------- | ----------------------------------------------- | ------------------------------- |
-| 基础解码 | https://samples.ffmpeg.org/HDTV/Channel9_HD.ts  | 720p, H.264 + AC3, MPEG-TS 容器 |
-| 高清解码 | https://samples.ffmpeg.org/Matroska/haruhi.mkv  | 1080p, H.264 + AAC, MKV 容器    |
-| MP4 容器 | https://samples.ffmpeg.org/mov/mov_h264_aac.mov | 标准 MP4, H.264 + AAC           |
+| 用途                  | URL                                                                                      | 描述                                         |
+| --------------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------- |
+| 基础解码              | https://samples.ffmpeg.org/HDTV/Channel9_HD.ts                                           | 720p, H.264 + AC3, MPEG-TS 容器              |
+| 高清解码              | https://samples.ffmpeg.org/Matroska/haruhi.mkv                                           | 1080p, H.264 + AAC, MKV 容器                 |
+| MP4 容器              | https://samples.ffmpeg.org/mov/mov_h264_aac.mov                                          | 标准 MP4, H.264 + AAC                        |
+| CAVLC Baseline        | https://samples.ffmpeg.org/V-codecs/H264/H264_CAVLC.264                                  | Baseline Profile, CAVLC 熵编码               |
+| CABAC High Profile    | https://samples.ffmpeg.org/V-codecs/H264/H264_CABAC.264                                  | High Profile, CABAC 熵编码                   |
+| B 帧密集              | https://samples.ffmpeg.org/V-codecs/H264/bframe_count.264                                | 连续 B 帧, Direct/Spatial/Temporal 模式覆盖  |
+| 1080p 高码率          | https://samples.ffmpeg.org/HDTV/1080p/1080p_H.264_AAC.ts                                 | 1080p H.264, 高码率 MPEG-TS                  |
+| Intra 4x4 (CAVLC)     | https://samples.ffmpeg.org/V-codecs/H264/H264_I_4x4.264                                  | I_4x4 宏块, 4x4 Intra 预测                   |
+| 8x8 变换 High         | https://samples.ffmpeg.org/V-codecs/H264/H264_8x8dct.264                                 | High Profile, 8x8 DCT transform              |
+| SPS/PPS 参数集更新    | https://samples.ffmpeg.org/V-codecs/H264/H264_SPS_PPS.264                                | 多 SPS/PPS 切换场景                          |
 
 ### MPEG-4 Part 2
 

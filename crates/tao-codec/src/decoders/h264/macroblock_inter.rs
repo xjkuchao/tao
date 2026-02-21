@@ -166,14 +166,29 @@ impl H264Decoder {
                     self.predict_spatial_direct_mv_for_list(mb_x, mb_y, true, mv_x, mv_y);
                 (l0_mv_x, l0_mv_y, l1_mv_x, l1_mv_y)
             } else {
-                // Temporal Direct 最小实现:
-                // 先定位共定位宏块并读取其 list0 MV, 缩放仍暂用 dist_scale_factor=256.
+                // Temporal Direct: 按规范用 dist_scale_factor 缩放共定位 MV.
                 let (col_mv_x, col_mv_y) = self
                     .temporal_direct_colocated_l0_motion(mb_x, mb_y, ref_l0_list, ref_l1_list)
                     .unwrap_or((mv_x, mv_y));
-                let (l0_mv_x, _) = self.scale_temporal_direct_mv_pair_component(col_mv_x, 256);
-                let (l0_mv_y, _) = self.scale_temporal_direct_mv_pair_component(col_mv_y, 256);
-                (l0_mv_x, l0_mv_y, l0_mv_x, l0_mv_y)
+                // 只有当 list0[0] 与 list1[0] 均能找到有效参考帧时才动态计算缩放因子,
+                // 否则回退 dist_scale_factor=256(等效于不缩放,规范 8.4.1.2.3 兜底).
+                let l0_ref = ref_l0_list
+                    .first()
+                    .and_then(|p| self.find_reference_picture_for_planes(p));
+                let l1_ref = ref_l1_list
+                    .first()
+                    .and_then(|p| self.find_reference_picture_for_planes(p));
+                let dist_scale_factor = match (l0_ref, l1_ref) {
+                    (Some(r0), Some(r1)) => self
+                        .temporal_direct_dist_scale_factor(r0.poc, r1.poc)
+                        .unwrap_or(256),
+                    _ => 256,
+                };
+                let (l0_mv_x, l1_mv_x) =
+                    self.scale_temporal_direct_mv_pair_component(col_mv_x, dist_scale_factor);
+                let (l0_mv_y, l1_mv_y) =
+                    self.scale_temporal_direct_mv_pair_component(col_mv_y, dist_scale_factor);
+                (l0_mv_x, l0_mv_y, l1_mv_x, l1_mv_y)
             };
         let motion_l0 = Some(BMotion {
             mv_x: direct_l0_mv_x,
