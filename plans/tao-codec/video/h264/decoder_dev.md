@@ -117,6 +117,7 @@
     - [x] 补齐 CAVLC 最小路径单元测试(I-slice 最小路径, P-slice skip_run 参考复制)。
     - [x] CAVLC B-slice 最小路径接入 list0/list1 预测融合(含显式加权), 并补 skip_run 单元测试。
     - [x] CAVLC P-slice 非 skip `I` 宏块(`mb_type>=5`)接入帧内预测路径, 并补单元测试。
+    - [x] CAVLC P-slice 非 skip `P_L0_16x16` 接入 `ref_idx_l0` 语法消费与参考帧选择, 并补单元测试。
 - [ ] 残差逆变换/反量化覆盖 4x4/8x8 关键路径。
 - [ ] I_NxN 8x8 最小路径已接入(含 `transform_size_8x8_flag` 与近似残差), 需升级为规范 8x8 残差路径。
 - 验收: I/P/B slice 均可进入重建流程, 不再使用占位回退路径。

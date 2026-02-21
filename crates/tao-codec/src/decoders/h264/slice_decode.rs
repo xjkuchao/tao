@@ -970,7 +970,6 @@ impl H264Decoder {
                 }
                 continue;
             }
-            self.mb_types[mb_idx] = 255;
             self.mb_cbp[mb_idx] = 0;
             if mb_type >= 5 {
                 self.mb_types[mb_idx] = 1;
@@ -1000,7 +999,13 @@ impl H264Decoder {
                     mb_y > 0,
                 );
             } else {
-                self.copy_macroblock_from_planes(mb_x, mb_y, &ref_l0);
+                self.mb_types[mb_idx] = 200u8.saturating_add((mb_type as u8).min(3));
+                let mut ref_idx_l0 = 0usize;
+                if mb_type == 0 && header.num_ref_idx_l0 > 1 {
+                    ref_idx_l0 = read_ue(&mut br).unwrap_or(0) as usize;
+                }
+                let selected_ref = ref_l0_list.get(ref_idx_l0).unwrap_or(&ref_l0);
+                self.copy_macroblock_from_planes(mb_x, mb_y, selected_ref);
             }
         }
     }

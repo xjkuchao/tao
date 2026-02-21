@@ -1692,6 +1692,27 @@ fn test_decode_cavlc_slice_data_p_non_skip_intra_mb_type() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_p_non_skip_inter_ref_idx_l0() {
+    let mut dec = build_test_decoder();
+    push_custom_reference(&mut dec, 3, 3, 33, None);
+    push_custom_reference(&mut dec, 2, 2, 99, None);
+
+    let mut header = build_test_slice_header(4, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.data_bit_offset = 0;
+    header.num_ref_idx_l0 = 2;
+
+    // mb_skip_run=0, mb_type=0(P_L0_16x16), ref_idx_l0=1
+    let rbsp = build_rbsp_from_ues(&[0, 0, 1]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+    assert_eq!(
+        dec.ref_y[0], 99,
+        "P-slice 非 skip 互预测应按 ref_idx_l0 选择参考帧"
+    );
+    assert_eq!(dec.mb_types[0], 200, "P_L0_16x16 应标记为互预测宏块");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_b_skip_run_blend_l0_l1() {
     let mut dec = build_test_decoder();
     dec.last_slice_type = 1;
