@@ -120,6 +120,7 @@
     - [x] CAVLC B-slice 非 skip `mb_type=1/2` 接入 `ref_idx_l0/ref_idx_l1` 语法消费与参考帧选择, 并补单元测试。
     - [x] CAVLC P-slice 非 skip `I` 宏块(`mb_type>=5`)接入帧内预测路径, 并补单元测试。
     - [x] CAVLC P-slice 非 skip `P_L0_16x16` 接入 `ref_idx_l0` 语法消费与参考帧选择, 并补单元测试。
+    - [x] CAVLC P-slice 非 skip `P_L0_L0_16x8/8x16` 接入分区级 `ref_idx_l0` 语法消费与预测重建, 并补单元测试。
 - [ ] 残差逆变换/反量化覆盖 4x4/8x8 关键路径。
 - [ ] I_NxN 8x8 最小路径已接入(含 `transform_size_8x8_flag` 与近似残差), 需升级为规范 8x8 残差路径。
 - 验收: I/P/B slice 均可进入重建流程, 不再使用占位回退路径。

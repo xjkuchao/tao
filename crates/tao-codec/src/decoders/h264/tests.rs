@@ -1713,6 +1713,46 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_ref_idx_l0() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_p_non_skip_inter_16x8_partition_ref_idx() {
+    let mut dec = build_test_decoder();
+    push_custom_reference(&mut dec, 3, 3, 20, None);
+    push_custom_reference(&mut dec, 2, 2, 90, None);
+
+    let mut header = build_test_slice_header(4, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.data_bit_offset = 0;
+    header.num_ref_idx_l0 = 2;
+
+    // mb_skip_run=0, mb_type=1(P_L0_L0_16x8), top ref_idx=0, bottom ref_idx=1
+    let rbsp = build_rbsp_from_ues(&[0, 1, 0, 1]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+    assert_eq!(dec.ref_y[0], 20, "16x8 顶部分区应使用 ref_idx=0");
+    assert_eq!(
+        dec.ref_y[8 * dec.stride_y],
+        90,
+        "16x8 底部分区应使用 ref_idx=1"
+    );
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_p_non_skip_inter_8x16_partition_ref_idx() {
+    let mut dec = build_test_decoder();
+    push_custom_reference(&mut dec, 3, 3, 20, None);
+    push_custom_reference(&mut dec, 2, 2, 90, None);
+
+    let mut header = build_test_slice_header(4, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.data_bit_offset = 0;
+    header.num_ref_idx_l0 = 2;
+
+    // mb_skip_run=0, mb_type=2(P_L0_L0_8x16), left ref_idx=0, right ref_idx=1
+    let rbsp = build_rbsp_from_ues(&[0, 2, 0, 1]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+    assert_eq!(dec.ref_y[0], 20, "8x16 左分区应使用 ref_idx=0");
+    assert_eq!(dec.ref_y[8], 90, "8x16 右分区应使用 ref_idx=1");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_b_skip_run_blend_l0_l1() {
     let mut dec = build_test_decoder();
     dec.last_slice_type = 1;

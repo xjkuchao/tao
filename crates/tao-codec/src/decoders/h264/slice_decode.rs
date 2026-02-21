@@ -1015,12 +1015,100 @@ impl H264Decoder {
                 );
             } else {
                 self.mb_types[mb_idx] = 200u8.saturating_add((mb_type as u8).min(3));
-                let mut ref_idx_l0 = 0usize;
-                if mb_type == 0 && header.num_ref_idx_l0 > 1 {
-                    ref_idx_l0 = read_ue(&mut br).unwrap_or(0) as usize;
+                let base_x = mb_x * 16;
+                let base_y = mb_y * 16;
+                match mb_type {
+                    0 => {
+                        let mut ref_idx_l0 = 0u32;
+                        if header.num_ref_idx_l0 > 1 {
+                            ref_idx_l0 = read_ue(&mut br).unwrap_or(0);
+                        }
+                        self.apply_inter_block_l0(
+                            &ref_l0_list,
+                            ref_idx_l0,
+                            base_x,
+                            base_y,
+                            16,
+                            16,
+                            0,
+                            0,
+                            &header.l0_weights,
+                            header.luma_log2_weight_denom,
+                            header.chroma_log2_weight_denom,
+                        );
+                    }
+                    1 => {
+                        let mut ref_idx_top = 0u32;
+                        let mut ref_idx_bottom = 0u32;
+                        if header.num_ref_idx_l0 > 1 {
+                            ref_idx_top = read_ue(&mut br).unwrap_or(0);
+                            ref_idx_bottom = read_ue(&mut br).unwrap_or(0);
+                        }
+                        self.apply_inter_block_l0(
+                            &ref_l0_list,
+                            ref_idx_top,
+                            base_x,
+                            base_y,
+                            16,
+                            8,
+                            0,
+                            0,
+                            &header.l0_weights,
+                            header.luma_log2_weight_denom,
+                            header.chroma_log2_weight_denom,
+                        );
+                        self.apply_inter_block_l0(
+                            &ref_l0_list,
+                            ref_idx_bottom,
+                            base_x,
+                            base_y + 8,
+                            16,
+                            8,
+                            0,
+                            0,
+                            &header.l0_weights,
+                            header.luma_log2_weight_denom,
+                            header.chroma_log2_weight_denom,
+                        );
+                    }
+                    2 => {
+                        let mut ref_idx_left = 0u32;
+                        let mut ref_idx_right = 0u32;
+                        if header.num_ref_idx_l0 > 1 {
+                            ref_idx_left = read_ue(&mut br).unwrap_or(0);
+                            ref_idx_right = read_ue(&mut br).unwrap_or(0);
+                        }
+                        self.apply_inter_block_l0(
+                            &ref_l0_list,
+                            ref_idx_left,
+                            base_x,
+                            base_y,
+                            8,
+                            16,
+                            0,
+                            0,
+                            &header.l0_weights,
+                            header.luma_log2_weight_denom,
+                            header.chroma_log2_weight_denom,
+                        );
+                        self.apply_inter_block_l0(
+                            &ref_l0_list,
+                            ref_idx_right,
+                            base_x + 8,
+                            base_y,
+                            8,
+                            16,
+                            0,
+                            0,
+                            &header.l0_weights,
+                            header.luma_log2_weight_denom,
+                            header.chroma_log2_weight_denom,
+                        );
+                    }
+                    _ => {
+                        self.copy_macroblock_from_planes(mb_x, mb_y, &ref_l0);
+                    }
                 }
-                let selected_ref = ref_l0_list.get(ref_idx_l0).unwrap_or(&ref_l0);
-                self.copy_macroblock_from_planes(mb_x, mb_y, selected_ref);
             }
         }
     }
