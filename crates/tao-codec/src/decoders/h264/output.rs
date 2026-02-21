@@ -481,14 +481,19 @@ impl H264Decoder {
         let h = self.height as usize;
 
         if self.last_disable_deblocking_filter_idc != 1 {
-            deblock::apply_simple_deblock_yuv420(
+            deblock::apply_deblock_yuv420_with_slice_params(
                 &mut self.ref_y,
                 &mut self.ref_u,
                 &mut self.ref_v,
-                self.stride_y,
-                self.stride_c,
-                w,
-                h,
+                deblock::DeblockSliceParams {
+                    stride_y: self.stride_y,
+                    stride_c: self.stride_c,
+                    width: w,
+                    height: h,
+                    slice_qp: self.last_slice_qp,
+                    alpha_offset_div2: self.last_slice_alpha_c0_offset_div2,
+                    beta_offset_div2: self.last_slice_beta_offset_div2,
+                },
             );
         }
 

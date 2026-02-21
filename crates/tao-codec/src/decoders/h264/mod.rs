@@ -104,6 +104,8 @@ struct SliceHeader {
     delta_poc_0: i32,
     delta_poc_1: i32,
     disable_deblocking_filter_idc: u32,
+    slice_alpha_c0_offset_div2: i32,
+    slice_beta_offset_div2: i32,
     dec_ref_pic_marking: DecRefPicMarking,
 }
 
@@ -276,8 +278,14 @@ pub struct H264Decoder {
     last_nal_ref_idc: u8,
     /// 最近一次 slice 的 POC.
     last_poc: i32,
+    /// 最近一次 slice 的量化参数.
+    last_slice_qp: i32,
     /// 最近一次 slice 的去块滤波控制.
     last_disable_deblocking_filter_idc: u32,
+    /// 最近一次 slice 的去块滤波 alpha 偏移.
+    last_slice_alpha_c0_offset_div2: i32,
+    /// 最近一次 slice 的去块滤波 beta 偏移.
+    last_slice_beta_offset_div2: i32,
     /// 最近一次参考帧的 POC MSB(type0).
     prev_ref_poc_msb: i32,
     /// 最近一次参考帧的 POC LSB(type0).
@@ -344,7 +352,10 @@ impl H264Decoder {
             last_frame_num: 0,
             last_nal_ref_idc: 0,
             last_poc: 0,
+            last_slice_qp: 26,
             last_disable_deblocking_filter_idc: 0,
+            last_slice_alpha_c0_offset_div2: 0,
+            last_slice_beta_offset_div2: 0,
             prev_ref_poc_msb: 0,
             prev_ref_poc_lsb: 0,
             prev_frame_num_offset_type1: 0,
@@ -583,7 +594,10 @@ impl Decoder for H264Decoder {
         self.last_frame_num = 0;
         self.last_nal_ref_idc = 0;
         self.last_poc = 0;
+        self.last_slice_qp = 26;
         self.last_disable_deblocking_filter_idc = 0;
+        self.last_slice_alpha_c0_offset_div2 = 0;
+        self.last_slice_beta_offset_div2 = 0;
         self.prev_ref_poc_msb = 0;
         self.prev_ref_poc_lsb = 0;
         self.prev_frame_num_offset_type1 = 0;
@@ -715,7 +729,10 @@ impl Decoder for H264Decoder {
         self.last_frame_num = 0;
         self.last_nal_ref_idc = 0;
         self.last_poc = 0;
+        self.last_slice_qp = 26;
         self.last_disable_deblocking_filter_idc = 0;
+        self.last_slice_alpha_c0_offset_div2 = 0;
+        self.last_slice_beta_offset_div2 = 0;
         self.prev_ref_poc_msb = 0;
         self.prev_ref_poc_lsb = 0;
         self.prev_frame_num_offset_type1 = 0;

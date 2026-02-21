@@ -142,6 +142,7 @@
     - [x] 接入基础 in-loop 去块滤波模块 `deblock.rs`(YUV420 亮度/色度边界平滑)并在输出前执行。
     - [x] 补齐去块滤波单元测试(小边界平滑/大边界保持/整帧入口)。
     - [x] 去块滤波按 `disable_deblocking_filter_idc` 生效, 并补状态单测。
+    - [x] 接入 `slice_qp + slice_alpha_c0_offset_div2 + slice_beta_offset_div2` 参数化阈值路径, 并补偏移边界/强度单测。
 - [ ] 容错与边界保护(坏 NAL、缺参考帧、越界)。
 - 验收: 两个样本可长时间稳定解码, 时序正确, 无明显错序/跳帧。
 

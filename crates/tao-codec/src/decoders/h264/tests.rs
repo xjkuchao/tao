@@ -95,6 +95,8 @@ fn build_test_slice_header(
         delta_poc_0: 0,
         delta_poc_1: 0,
         disable_deblocking_filter_idc: 0,
+        slice_alpha_c0_offset_div2: 0,
+        slice_beta_offset_div2: 0,
         dec_ref_pic_marking: DecRefPicMarking::default(),
     }
 }
@@ -138,7 +140,10 @@ fn build_test_decoder() -> H264Decoder {
         last_frame_num: 0,
         last_nal_ref_idc: 0,
         last_poc: 0,
+        last_slice_qp: 26,
         last_disable_deblocking_filter_idc: 0,
+        last_slice_alpha_c0_offset_div2: 0,
+        last_slice_beta_offset_div2: 0,
         prev_ref_poc_msb: 0,
         prev_ref_poc_lsb: 0,
         prev_frame_num_offset_type1: 0,
@@ -334,20 +339,44 @@ fn build_p_slice_header_rbsp(
     qp_delta: i32,
     disable_deblocking_filter_idc: u32,
 ) -> Vec<u8> {
+    build_p_slice_header_rbsp_with_deblock_offsets(PSliceHeaderRbspSpec {
+        pps_id,
+        frame_num,
+        poc_lsb,
+        cabac_init_idc,
+        qp_delta,
+        disable_deblocking_filter_idc,
+        alpha_offset_div2: 0,
+        beta_offset_div2: 0,
+    })
+}
+
+struct PSliceHeaderRbspSpec {
+    pps_id: u32,
+    frame_num: u32,
+    poc_lsb: u32,
+    cabac_init_idc: u32,
+    qp_delta: i32,
+    disable_deblocking_filter_idc: u32,
+    alpha_offset_div2: i32,
+    beta_offset_div2: i32,
+}
+
+fn build_p_slice_header_rbsp_with_deblock_offsets(spec: PSliceHeaderRbspSpec) -> Vec<u8> {
     let mut bits = Vec::new();
     write_ue(&mut bits, 0); // first_mb_in_slice
     write_ue(&mut bits, 0); // slice_type=P
-    write_ue(&mut bits, pps_id);
-    push_bits_fixed(&mut bits, frame_num, 4);
-    push_bits_fixed(&mut bits, poc_lsb, 4);
+    write_ue(&mut bits, spec.pps_id);
+    push_bits_fixed(&mut bits, spec.frame_num, 4);
+    push_bits_fixed(&mut bits, spec.poc_lsb, 4);
     bits.push(false); // num_ref_idx_active_override_flag
     bits.push(false); // ref_pic_list_modification_flag_l0
-    write_ue(&mut bits, cabac_init_idc);
-    write_se(&mut bits, qp_delta); // slice_qp_delta
-    write_ue(&mut bits, disable_deblocking_filter_idc);
-    if disable_deblocking_filter_idc != 1 {
-        write_se(&mut bits, 0); // slice_alpha_c0_offset_div2
-        write_se(&mut bits, 0); // slice_beta_offset_div2
+    write_ue(&mut bits, spec.cabac_init_idc);
+    write_se(&mut bits, spec.qp_delta); // slice_qp_delta
+    write_ue(&mut bits, spec.disable_deblocking_filter_idc);
+    if spec.disable_deblocking_filter_idc != 1 {
+        write_se(&mut bits, spec.alpha_offset_div2);
+        write_se(&mut bits, spec.beta_offset_div2);
     }
     bits.push(true); // rbsp_trailing_bits stop bit
     while bits.len() % 8 != 0 {
@@ -722,6 +751,111 @@ fn test_parse_slice_header_accept_deblocking_idc_1() {
         header.disable_deblocking_filter_idc, 1,
         "slice header 应保存 disable_deblocking_filter_idc"
     );
+    assert_eq!(
+        header.slice_alpha_c0_offset_div2, 0,
+        "disable_deblocking_filter_idc=1 时 alpha offset 应默认为 0"
+    );
+    assert_eq!(
+        header.slice_beta_offset_div2, 0,
+        "disable_deblocking_filter_idc=1 时 beta offset 应默认为 0"
+    );
+}
+
+#[test]
+fn test_parse_slice_header_reject_alpha_offset_out_of_range() {
+    let mut dec = build_test_decoder();
+    let sps0 = build_test_sps(0);
+    dec.sps_map.insert(0, sps0);
+
+    let pps0 = build_test_pps();
+    dec.pps_map.insert(0, pps0);
+
+    let rbsp = build_p_slice_header_rbsp_with_deblock_offsets(PSliceHeaderRbspSpec {
+        pps_id: 0,
+        frame_num: 0,
+        poc_lsb: 0,
+        cabac_init_idc: 0,
+        qp_delta: 0,
+        disable_deblocking_filter_idc: 0,
+        alpha_offset_div2: 7,
+        beta_offset_div2: 0,
+    });
+    let nalu = NalUnit::parse(&[0x01]).expect("测试构造 slice NAL 失败");
+    let err = match dec.parse_slice_header(&rbsp, &nalu) {
+        Ok(_) => panic!("alpha offset 超范围应失败"),
+        Err(err) => err,
+    };
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("slice_alpha_c0_offset_div2"),
+        "错误信息应包含 alpha offset 字段, actual={}",
+        msg
+    );
+}
+
+#[test]
+fn test_parse_slice_header_reject_beta_offset_out_of_range() {
+    let mut dec = build_test_decoder();
+    let sps0 = build_test_sps(0);
+    dec.sps_map.insert(0, sps0);
+
+    let pps0 = build_test_pps();
+    dec.pps_map.insert(0, pps0);
+
+    let rbsp = build_p_slice_header_rbsp_with_deblock_offsets(PSliceHeaderRbspSpec {
+        pps_id: 0,
+        frame_num: 0,
+        poc_lsb: 0,
+        cabac_init_idc: 0,
+        qp_delta: 0,
+        disable_deblocking_filter_idc: 0,
+        alpha_offset_div2: 0,
+        beta_offset_div2: -7,
+    });
+    let nalu = NalUnit::parse(&[0x01]).expect("测试构造 slice NAL 失败");
+    let err = match dec.parse_slice_header(&rbsp, &nalu) {
+        Ok(_) => panic!("beta offset 超范围应失败"),
+        Err(err) => err,
+    };
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("slice_beta_offset_div2"),
+        "错误信息应包含 beta offset 字段, actual={}",
+        msg
+    );
+}
+
+#[test]
+fn test_parse_slice_header_store_deblocking_offsets() {
+    let mut dec = build_test_decoder();
+    let sps0 = build_test_sps(0);
+    dec.sps_map.insert(0, sps0);
+
+    let pps0 = build_test_pps();
+    dec.pps_map.insert(0, pps0);
+
+    let rbsp = build_p_slice_header_rbsp_with_deblock_offsets(PSliceHeaderRbspSpec {
+        pps_id: 0,
+        frame_num: 1,
+        poc_lsb: 2,
+        cabac_init_idc: 0,
+        qp_delta: 0,
+        disable_deblocking_filter_idc: 0,
+        alpha_offset_div2: 2,
+        beta_offset_div2: -1,
+    });
+    let nalu = NalUnit::parse(&[0x01]).expect("测试构造 slice NAL 失败");
+    let header = dec
+        .parse_slice_header(&rbsp, &nalu)
+        .expect("带 deblock offset 的 slice header 应可解析");
+    assert_eq!(
+        header.slice_alpha_c0_offset_div2, 2,
+        "slice header 应保存 alpha offset"
+    );
+    assert_eq!(
+        header.slice_beta_offset_div2, -1,
+        "slice header 应保存 beta offset"
+    );
 }
 
 #[test]
@@ -1044,8 +1178,10 @@ fn test_build_output_frame_respects_disable_deblocking_filter_idc() {
 
     for y in 0..dec.height as usize {
         let row = y * dec.stride_y;
+        dec.ref_y[row + 2] = 40;
         dec.ref_y[row + 3] = 40;
         dec.ref_y[row + 4] = 48;
+        dec.ref_y[row + 5] = 48;
     }
 
     dec.last_disable_deblocking_filter_idc = 1;
@@ -1059,8 +1195,10 @@ fn test_build_output_frame_respects_disable_deblocking_filter_idc() {
 
     for y in 0..dec.height as usize {
         let row = y * dec.stride_y;
+        dec.ref_y[row + 2] = 40;
         dec.ref_y[row + 3] = 40;
         dec.ref_y[row + 4] = 48;
+        dec.ref_y[row + 5] = 48;
     }
     dec.last_disable_deblocking_filter_idc = 0;
     dec.build_output_frame(1, Rational::new(1, 25), true);

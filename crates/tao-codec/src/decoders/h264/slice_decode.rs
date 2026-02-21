@@ -13,7 +13,10 @@ impl H264Decoder {
             let prev_frame_num = self.last_frame_num;
             self.last_slice_type = header.slice_type;
             self.last_nal_ref_idc = header.nal_ref_idc;
+            self.last_slice_qp = header.slice_qp;
             self.last_disable_deblocking_filter_idc = header.disable_deblocking_filter_idc;
+            self.last_slice_alpha_c0_offset_div2 = header.slice_alpha_c0_offset_div2;
+            self.last_slice_beta_offset_div2 = header.slice_beta_offset_div2;
             self.last_poc = self.compute_slice_poc(&header, prev_frame_num);
             self.last_frame_num = header.frame_num;
             self.last_dec_ref_pic_marking = header.dec_ref_pic_marking.clone();
@@ -157,6 +160,8 @@ impl H264Decoder {
 
         // 跳过去块效应滤波器参数
         let mut disable_deblocking_filter_idc = 0u32;
+        let mut slice_alpha_c0_offset_div2 = 0i32;
+        let mut slice_beta_offset_div2 = 0i32;
         if pps.deblocking_filter_control {
             let disable = read_ue(&mut br)?;
             if disable > 2 {
@@ -167,8 +172,22 @@ impl H264Decoder {
             }
             disable_deblocking_filter_idc = disable;
             if disable != 1 {
-                let _alpha = read_se(&mut br)?;
-                let _beta = read_se(&mut br)?;
+                let alpha = read_se(&mut br)?;
+                let beta = read_se(&mut br)?;
+                if !(-6..=6).contains(&alpha) {
+                    return Err(TaoError::InvalidData(format!(
+                        "H264: slice_alpha_c0_offset_div2 超出范围, value={}",
+                        alpha
+                    )));
+                }
+                if !(-6..=6).contains(&beta) {
+                    return Err(TaoError::InvalidData(format!(
+                        "H264: slice_beta_offset_div2 超出范围, value={}",
+                        beta
+                    )));
+                }
+                slice_alpha_c0_offset_div2 = alpha;
+                slice_beta_offset_div2 = beta;
             }
         }
 
@@ -221,6 +240,8 @@ impl H264Decoder {
             delta_poc_0,
             delta_poc_1,
             disable_deblocking_filter_idc,
+            slice_alpha_c0_offset_div2,
+            slice_beta_offset_div2,
             dec_ref_pic_marking,
         })
     }
