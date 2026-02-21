@@ -30,6 +30,8 @@ fn build_test_pps() -> Pps {
         weighted_bipred_idc: 0,
         redundant_pic_cnt_present: false,
         transform_8x8_mode: false,
+        scaling_list_4x4: None,
+        scaling_list_8x8: None,
     }
 }
 

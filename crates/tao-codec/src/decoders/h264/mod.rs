@@ -66,6 +66,10 @@ struct Pps {
     weighted_bipred_idc: u32,
     redundant_pic_cnt_present: bool,
     transform_8x8_mode: bool,
+    /// PPS 显式覆盖的 4x4 量化矩阵.
+    scaling_list_4x4: Option<[[u8; 16]; 6]>,
+    /// PPS 显式覆盖的 8x8 量化矩阵.
+    scaling_list_8x8: Option<Vec<[u8; 64]>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -653,7 +657,9 @@ impl H264Decoder {
             || old.num_ref_idx_l1_default_active != new.num_ref_idx_l1_default_active
             || old.weighted_pred != new.weighted_pred
             || old.weighted_bipred_idc != new.weighted_bipred_idc
-            || old.redundant_pic_cnt_present != new.redundant_pic_cnt_present;
+            || old.redundant_pic_cnt_present != new.redundant_pic_cnt_present
+            || old.scaling_list_4x4 != new.scaling_list_4x4
+            || old.scaling_list_8x8 != new.scaling_list_8x8;
         if need_runtime_only {
             ParameterSetRebuildAction::RuntimeOnly
         } else {

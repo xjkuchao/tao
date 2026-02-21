@@ -5,6 +5,28 @@
 use tao_core::bitreader::BitReader;
 use tao_core::{TaoError, TaoResult};
 
+const DEFAULT_SCALING_4X4_INTRA: [u8; 16] = [
+    6, 13, 20, 28, 13, 20, 28, 32, 20, 28, 32, 37, 28, 32, 37, 42,
+];
+
+const DEFAULT_SCALING_4X4_INTER: [u8; 16] = [
+    10, 14, 20, 24, 14, 20, 24, 27, 20, 24, 27, 30, 24, 27, 30, 34,
+];
+
+const DEFAULT_SCALING_8X8_INTRA: [u8; 64] = [
+    6, 10, 13, 16, 18, 23, 25, 27, 10, 11, 16, 18, 23, 25, 27, 29, 13, 16, 18, 23, 25, 27, 29, 31,
+    16, 18, 23, 25, 27, 29, 31, 33, 18, 23, 25, 27, 29, 31, 33, 36, 23, 25, 27, 29, 31, 33, 36, 38,
+    25, 27, 29, 31, 33, 36, 38, 40, 27, 29, 31, 33, 36, 38, 40, 42,
+];
+
+const DEFAULT_SCALING_8X8_INTER: [u8; 64] = [
+    9, 13, 15, 17, 19, 21, 22, 24, 13, 13, 17, 19, 21, 22, 24, 25, 15, 17, 19, 21, 22, 24, 25, 27,
+    17, 19, 21, 22, 24, 25, 27, 28, 19, 21, 22, 24, 25, 27, 28, 30, 21, 22, 24, 25, 27, 28, 30, 32,
+    22, 24, 25, 27, 28, 30, 32, 33, 24, 25, 27, 28, 30, 32, 33, 35,
+];
+
+type ParsedPpsScalingLists = ([[u8; 16]; 6], Vec<[u8; 64]>);
+
 /// 解析 PPS 参数.
 pub(super) fn parse_pps(rbsp: &[u8]) -> TaoResult<super::Pps> {
     if rbsp.is_empty() {
@@ -94,12 +116,16 @@ pub(super) fn parse_pps(rbsp: &[u8]) -> TaoResult<super::Pps> {
 
     let mut transform_8x8_mode = false;
     let mut second_chroma_qp_index_offset = chroma_qp_index_offset;
+    let mut scaling_list_4x4 = None;
+    let mut scaling_list_8x8 = None;
 
     if has_more_rbsp_data(&mut br) {
         transform_8x8_mode = br.read_bit()? == 1;
         let pic_scaling_matrix_present = br.read_bit()? == 1;
         if pic_scaling_matrix_present {
-            skip_pps_scaling_lists(&mut br, transform_8x8_mode)?;
+            let (list4x4, list8x8) = parse_pps_scaling_lists(&mut br, transform_8x8_mode)?;
+            scaling_list_4x4 = Some(list4x4);
+            scaling_list_8x8 = Some(list8x8);
         }
         second_chroma_qp_index_offset = super::read_se(&mut br)?;
         validate_chroma_offset(
@@ -123,6 +149,8 @@ pub(super) fn parse_pps(rbsp: &[u8]) -> TaoResult<super::Pps> {
         weighted_bipred_idc,
         redundant_pic_cnt_present,
         transform_8x8_mode,
+        scaling_list_4x4,
+        scaling_list_8x8,
     })
 }
 
@@ -199,35 +227,129 @@ fn has_more_rbsp_data(br: &mut BitReader) -> bool {
     rest != trailing
 }
 
-/// 跳过 PPS scaling list 语法.
-fn skip_pps_scaling_lists(br: &mut BitReader, transform_8x8_mode: bool) -> TaoResult<()> {
+fn default_scaling_list_4x4_by_idx(idx: usize) -> [u8; 16] {
+    if idx < 3 {
+        DEFAULT_SCALING_4X4_INTRA
+    } else {
+        DEFAULT_SCALING_4X4_INTER
+    }
+}
+
+fn default_scaling_list_8x8_by_idx(idx: usize) -> [u8; 64] {
+    if idx % 2 == 0 {
+        DEFAULT_SCALING_8X8_INTRA
+    } else {
+        DEFAULT_SCALING_8X8_INTER
+    }
+}
+
+fn parse_pps_scaling_lists(
+    br: &mut BitReader,
+    transform_8x8_mode: bool,
+) -> TaoResult<ParsedPpsScalingLists> {
+    let mut lists4x4 = [
+        DEFAULT_SCALING_4X4_INTRA,
+        DEFAULT_SCALING_4X4_INTRA,
+        DEFAULT_SCALING_4X4_INTRA,
+        DEFAULT_SCALING_4X4_INTER,
+        DEFAULT_SCALING_4X4_INTER,
+        DEFAULT_SCALING_4X4_INTER,
+    ];
+    let mut lists8x8 = if transform_8x8_mode {
+        vec![DEFAULT_SCALING_8X8_INTRA, DEFAULT_SCALING_8X8_INTER]
+    } else {
+        Vec::new()
+    };
     let list_count = if transform_8x8_mode { 8 } else { 6 };
-    for i in 0..list_count {
+    for list_idx in 0..list_count {
         let present = br.read_bit()?;
-        if present == 1 {
-            let size = if i < 6 { 16 } else { 64 };
-            skip_scaling_list(br, size)?;
+        if present == 0 {
+            apply_pps_absent_scaling_list_fallback(list_idx, &mut lists4x4, &mut lists8x8)?;
+            continue;
+        }
+
+        if list_idx < 6 {
+            let (parsed, use_default) = parse_scaling_list(br, 16)?;
+            lists4x4[list_idx] = if use_default {
+                default_scaling_list_4x4_by_idx(list_idx)
+            } else {
+                parsed
+            };
+        } else {
+            let idx8 = list_idx - 6;
+            let (parsed, use_default) = parse_scaling_list(br, 64)?;
+            lists8x8[idx8] = if use_default {
+                default_scaling_list_8x8_by_idx(idx8)
+            } else {
+                parsed
+            };
         }
     }
+    Ok((lists4x4, lists8x8))
+}
+
+fn apply_pps_absent_scaling_list_fallback(
+    list_idx: usize,
+    lists4x4: &mut [[u8; 16]; 6],
+    lists8x8: &mut [[u8; 64]],
+) -> TaoResult<()> {
+    if list_idx < 6 {
+        lists4x4[list_idx] = if list_idx == 0 || list_idx == 3 {
+            default_scaling_list_4x4_by_idx(list_idx)
+        } else {
+            lists4x4[list_idx - 1]
+        };
+        return Ok(());
+    }
+
+    let idx8 = list_idx - 6;
+    if idx8 >= lists8x8.len() {
+        return Err(TaoError::InvalidData(format!(
+            "H264: PPS scaling_list_8x8 索引越界, idx={}",
+            idx8
+        )));
+    }
+    lists8x8[idx8] = if idx8 == 0 || idx8 == 1 {
+        default_scaling_list_8x8_by_idx(idx8)
+    } else {
+        lists8x8[idx8 - 1]
+    };
     Ok(())
 }
 
-/// 跳过单个 scaling list.
-fn skip_scaling_list(br: &mut BitReader, size: usize) -> TaoResult<()> {
+fn parse_scaling_list<const N: usize>(
+    br: &mut BitReader,
+    size: usize,
+) -> TaoResult<([u8; N], bool)> {
+    if size != N {
+        return Err(TaoError::InvalidData(format!(
+            "H264: scaling_list 大小不匹配, expect={}, got={}",
+            N, size
+        )));
+    }
+    let mut list = [0u8; N];
     let mut last_scale = 8i32;
     let mut next_scale = 8i32;
-    for _ in 0..size {
+    let mut use_default = false;
+
+    for (idx, slot) in list.iter_mut().enumerate().take(size) {
         if next_scale != 0 {
             let delta_scale = super::read_se(br)?;
-            next_scale = (last_scale + delta_scale + 256) % 256;
+            let sum = i64::from(last_scale) + i64::from(delta_scale) + 256;
+            next_scale = sum.rem_euclid(256) as i32;
+            if idx == 0 && next_scale == 0 {
+                use_default = true;
+            }
         }
-        last_scale = if next_scale == 0 {
+        let cur_scale = if next_scale == 0 {
             last_scale
         } else {
             next_scale
         };
+        *slot = cur_scale as u8;
+        last_scale = cur_scale;
     }
-    Ok(())
+    Ok((list, use_default))
 }
 
 #[cfg(test)]
@@ -312,6 +434,14 @@ mod tests {
             "redundant_pic_cnt_present 解析错误"
         );
         assert!(!pps.transform_8x8_mode, "transform_8x8_mode 默认值错误");
+        assert!(
+            pps.scaling_list_4x4.is_none(),
+            "未携带扩展时不应有 PPS 4x4 scaling_list 覆盖"
+        );
+        assert!(
+            pps.scaling_list_8x8.is_none(),
+            "未携带扩展时不应有 PPS 8x8 scaling_list 覆盖"
+        );
     }
 
     #[test]
@@ -356,6 +486,54 @@ mod tests {
             "second_chroma_qp_index_offset 解析错误"
         );
         assert!(pps.transform_8x8_mode, "transform_8x8_mode 扩展解析错误");
+        assert!(
+            pps.scaling_list_4x4.is_none(),
+            "pic_scaling_matrix_present_flag=0 时不应输出 4x4 scaling_list 覆盖"
+        );
+        assert!(
+            pps.scaling_list_8x8.is_none(),
+            "pic_scaling_matrix_present_flag=0 时不应输出 8x8 scaling_list 覆盖"
+        );
+    }
+
+    #[test]
+    fn test_parse_pps_scaling_lists_custom_and_fallback() {
+        let rbsp = build_pps_rbsp_with_custom_scaling_lists();
+        let pps = parse_pps(&rbsp).expect("PPS scaling_list 解析失败");
+        assert!(pps.transform_8x8_mode, "transform_8x8_mode 应为 true");
+
+        let list4 = pps
+            .scaling_list_4x4
+            .as_ref()
+            .expect("应包含 PPS 4x4 scaling_list 覆盖");
+        let list8 = pps
+            .scaling_list_8x8
+            .as_ref()
+            .expect("应包含 PPS 8x8 scaling_list 覆盖");
+        assert_eq!(list8.len(), 2, "transform_8x8_mode=true 时应解析 2 组 8x8");
+
+        assert_eq!(
+            list4[0],
+            super::DEFAULT_SCALING_4X4_INTRA,
+            "list0 useDefault 应回退到默认 Intra 4x4"
+        );
+        assert_eq!(list4[1], list4[0], "list1 absent 应回退到 list0");
+        assert_eq!(
+            list4[3],
+            super::DEFAULT_SCALING_4X4_INTER,
+            "list3 useDefault 应回退到默认 Inter 4x4"
+        );
+        assert_eq!(list4[4], list4[3], "list4 absent 应回退到 list3");
+
+        assert!(
+            list8[0].iter().all(|v| *v == 8),
+            "list6 自定义常量 8 解析错误"
+        );
+        assert_eq!(
+            list8[1],
+            super::DEFAULT_SCALING_8X8_INTER,
+            "list7 absent 应回退到默认 Inter 8x8"
+        );
     }
 
     #[test]
@@ -547,5 +725,69 @@ mod tests {
             }
         }
         out
+    }
+
+    fn write_scaling_list_use_default(bits: &mut Vec<bool>) {
+        write_se(bits, -8);
+    }
+
+    fn write_scaling_list_constant_8(bits: &mut Vec<bool>, size: usize) {
+        for _ in 0..size {
+            write_se(bits, 0);
+        }
+    }
+
+    fn build_pps_rbsp_with_custom_scaling_lists() -> Vec<u8> {
+        let mut bits = Vec::<bool>::new();
+
+        // 与基础 PPS 保持一致的最小字段.
+        write_ue(&mut bits, 0); // pps_id
+        write_ue(&mut bits, 0); // sps_id
+        write_bit(&mut bits, true); // entropy_coding_mode_flag
+        write_bit(&mut bits, false); // pic_order_present_flag
+        write_ue(&mut bits, 0); // num_slice_groups_minus1
+        write_ue(&mut bits, 0); // num_ref_idx_l0_default_active_minus1
+        write_ue(&mut bits, 0); // num_ref_idx_l1_default_active_minus1
+        write_bit(&mut bits, false); // weighted_pred_flag
+        write_bits(&mut bits, 0, 2); // weighted_bipred_idc
+        write_se(&mut bits, 0); // pic_init_qp_minus26
+        write_se(&mut bits, 0); // pic_init_qs_minus26
+        write_se(&mut bits, 0); // chroma_qp_index_offset
+        write_bit(&mut bits, true); // deblocking_filter_control_present_flag
+        write_bit(&mut bits, false); // constrained_intra_pred_flag
+        write_bit(&mut bits, false); // redundant_pic_cnt_present_flag
+
+        // 扩展字段.
+        write_bit(&mut bits, true); // transform_8x8_mode_flag
+        write_bit(&mut bits, true); // pic_scaling_matrix_present_flag
+
+        // 共 8 组 list: 0..5 为 4x4, 6..7 为 8x8
+        // list0 present + useDefault
+        write_bit(&mut bits, true);
+        write_scaling_list_use_default(&mut bits);
+        // list1 absent -> fallback list0
+        write_bit(&mut bits, false);
+        // list2 absent -> fallback list1
+        write_bit(&mut bits, false);
+        // list3 present + useDefault
+        write_bit(&mut bits, true);
+        write_scaling_list_use_default(&mut bits);
+        // list4 absent -> fallback list3
+        write_bit(&mut bits, false);
+        // list5 absent -> fallback list4
+        write_bit(&mut bits, false);
+        // list6 present + 常量 8
+        write_bit(&mut bits, true);
+        write_scaling_list_constant_8(&mut bits, 64);
+        // list7 absent -> 默认 Inter 8x8
+        write_bit(&mut bits, false);
+
+        write_se(&mut bits, 0); // second_chroma_qp_index_offset
+        write_bit(&mut bits, true); // rbsp_trailing_bits
+        while !bits.len().is_multiple_of(8) {
+            write_bit(&mut bits, false);
+        }
+
+        bits_to_bytes(&bits)
     }
 }
