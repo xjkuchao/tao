@@ -581,40 +581,38 @@ fn predict_4x4_horizontal_down(plane: &mut [u8], stride: usize, x0: usize, y0: u
 
 /// 模式 7: 竖直-左 (Vertical-Left)
 fn predict_4x4_vertical_left(plane: &mut [u8], stride: usize, x0: usize, y0: usize) {
-    let mut ref_vals = [128u8; 8];
-
-    if y0 > 0 {
-        for (i, ref_val) in ref_vals.iter_mut().enumerate().take(4) {
-            let idx = (y0 - 1) * stride + x0 + i;
-            if idx < plane.len() {
-                *ref_val = plane[idx];
-            }
-        }
-        if x0 + 4 < stride && (y0 - 1) * stride + x0 + 4 < plane.len() {
-            ref_vals[4] = plane[(y0 - 1) * stride + x0 + 4];
-        }
+    if y0 == 0 {
+        fill_block(plane, stride, x0, y0, 4, 4, 128);
+        return;
     }
-    if x0 > 0 {
-        for i in 0..4 {
-            let idx = (y0 + i) * stride + x0 - 1;
-            if idx < plane.len() {
-                ref_vals[i + 1] = plane[idx];
-            }
+
+    let mut top = [128u8; 8];
+    let mut last = 128u8;
+    for (i, item) in top.iter_mut().enumerate() {
+        let col = x0 + i;
+        let idx = (y0 - 1) * stride + col;
+        if col < stride && idx < plane.len() {
+            last = plane[idx];
+            *item = last;
+        } else {
+            *item = last;
         }
     }
 
-    for dy in 0..4 {
-        for dx in 0..4 {
-            let val = if dy % 2 == 0 {
-                let a = ref_vals[dx + dy / 2];
-                let b = ref_vals[dx + dy / 2 + 1];
-                let c = ref_vals.get(dx + dy / 2 + 2).copied().unwrap_or(128);
-                ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8
-            } else {
-                let a = ref_vals[dx + dy.div_ceil(2)];
-                let b = ref_vals[dx + dy.div_ceil(2) + 1];
-                (a as u32 + b as u32).div_ceil(2) as u8
-            };
+    let avg2 = |a: u8, b: u8| -> u8 { (a as u32 + b as u32).div_ceil(2) as u8 };
+    let avg3 = |a: u8, b: u8, c: u8| -> u8 { ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8 };
+    let avg2_at = |i: usize| -> u8 { avg2(top[i], top[i + 1]) };
+    let avg3_at = |i: usize| -> u8 { avg3(top[i], top[i + 1], top[i + 2]) };
+
+    let preds = [
+        [avg2_at(0), avg2_at(1), avg2_at(2), avg2_at(3)],
+        [avg3_at(0), avg3_at(1), avg3_at(2), avg3_at(3)],
+        [avg2_at(1), avg2_at(2), avg2_at(3), avg2_at(4)],
+        [avg3_at(1), avg3_at(2), avg3_at(3), avg3_at(4)],
+    ];
+
+    for (dy, row) in preds.iter().enumerate() {
+        for (dx, &val) in row.iter().enumerate() {
             let idx = (y0 + dy) * stride + x0 + dx;
             if idx < plane.len() {
                 plane[idx] = val;
@@ -880,5 +878,49 @@ mod tests {
         let expect = [[128u8; 4]; 4];
 
         assert_eq!(got, expect, "模式6在缺少左或上参考时应回退为128填充");
+    }
+
+    #[test]
+    fn test_intra4x4_mode7_vertical_left_matches_spec_mapping() {
+        let stride = 16;
+        let x0 = 4;
+        let y0 = 4;
+        let mut plane = vec![0u8; stride * stride];
+
+        let top_ref = [20u8, 30, 40, 50, 60, 70, 80, 90];
+        for (i, val) in top_ref.iter().enumerate() {
+            plane[(y0 - 1) * stride + x0 + i] = *val;
+        }
+        for row in 0..4 {
+            plane[(y0 + row) * stride + x0 - 1] = 200 + row as u8;
+        }
+
+        predict_4x4(&mut plane, stride, x0, y0, 7);
+        let got = read_block_4x4(&plane, stride, x0, y0);
+        let expect = [
+            [25, 35, 45, 55],
+            [30, 40, 50, 60],
+            [35, 45, 55, 65],
+            [40, 50, 60, 70],
+        ];
+
+        assert_eq!(
+            got, expect,
+            "模式7应按规范使用上方与右上样本进行竖直-左预测"
+        );
+    }
+
+    #[test]
+    fn test_intra4x4_mode7_without_top_falls_back_to_128() {
+        let stride = 16;
+        let x0 = 4;
+        let y0 = 0;
+        let mut plane = vec![15u8; stride * stride];
+
+        predict_4x4(&mut plane, stride, x0, y0, 7);
+        let got = read_block_4x4(&plane, stride, x0, y0);
+        let expect = [[128u8; 4]; 4];
+
+        assert_eq!(got, expect, "模式7在缺少上方参考时应回退为128填充");
     }
 }
