@@ -192,6 +192,7 @@ struct RefPlanes {
     u: Vec<u8>,
     v: Vec<u8>,
     poc: i32,
+    is_long_term: bool,
 }
 
 struct ReorderFrameEntry {

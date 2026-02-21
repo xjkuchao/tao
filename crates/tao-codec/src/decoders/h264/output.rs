@@ -28,6 +28,7 @@ impl H264Decoder {
             u: vec![128u8; self.ref_u.len()],
             v: vec![128u8; self.ref_v.len()],
             poc: self.last_poc,
+            is_long_term: false,
         }
     }
 
@@ -93,6 +94,7 @@ impl H264Decoder {
             u: pic.u.clone(),
             v: pic.v.clone(),
             poc: pic.poc,
+            is_long_term: pic.long_term_frame_idx.is_some(),
         }
     }
 

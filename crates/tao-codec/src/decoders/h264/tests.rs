@@ -251,6 +251,7 @@ fn build_constant_ref_planes(dec: &H264Decoder, y: u8, u: u8, v: u8) -> RefPlane
         u: vec![u; dec.ref_u.len()],
         v: vec![v; dec.ref_v.len()],
         poc: 0,
+        is_long_term: false,
     }
 }
 
@@ -2382,7 +2383,13 @@ fn test_apply_inter_block_l0_padding_clamps_to_top_left() {
             v[idx] = ((idx % 200) + 3) as u8;
         }
     }
-    let refs = vec![RefPlanes { y, u, v, poc: 0 }];
+    let refs = vec![RefPlanes {
+        y,
+        u,
+        v,
+        poc: 0,
+        is_long_term: false,
+    }];
 
     dec.apply_inter_block_l0(&refs, 0, 0, 0, 4, 4, -400, -400, &[], 0, 0);
 
@@ -2423,7 +2430,13 @@ fn test_apply_inter_block_l0_padding_clamps_to_bottom_right() {
             v[idx] = ((idx % 200) + 3) as u8;
         }
     }
-    let refs = vec![RefPlanes { y, u, v, poc: 0 }];
+    let refs = vec![RefPlanes {
+        y,
+        u,
+        v,
+        poc: 0,
+        is_long_term: false,
+    }];
 
     dec.apply_inter_block_l0(&refs, 0, 0, 0, 4, 4, 400, 400, &[], 0, 0);
 
@@ -2528,6 +2541,103 @@ fn test_apply_b_prediction_block_default_bi_weighted_rounding() {
     assert_eq!(dec.ref_y[0], 51, "默认双向加权亮度应为 (L0+L1+1)>>1");
     assert_eq!(dec.ref_u[0], 61, "默认双向加权 U 应为 (L0+L1+1)>>1");
     assert_eq!(dec.ref_v[0], 71, "默认双向加权 V 应为 (L0+L1+1)>>1");
+}
+
+#[test]
+fn test_implicit_bi_weights_from_poc_distance() {
+    let mut dec = build_test_decoder();
+    dec.last_poc = 6;
+
+    let (w0, w1) = dec.implicit_bi_weights(0, 8, false, false);
+    assert_eq!(w0, 16, "隐式权重 w0 应按 tb/td 距离推导");
+    assert_eq!(w1, 48, "隐式权重 w1 应按 tb/td 距离推导");
+
+    let (lt_w0, lt_w1) = dec.implicit_bi_weights(0, 8, true, false);
+    assert_eq!(lt_w0, 32, "长期参考参与隐式加权时应回退默认权重");
+    assert_eq!(lt_w1, 32, "长期参考参与隐式加权时应回退默认权重");
+}
+
+#[test]
+fn test_apply_b_prediction_block_implicit_bi_weighted() {
+    let mut dec = build_test_decoder();
+    let mut pps = build_test_pps();
+    pps.weighted_bipred_idc = 2;
+    dec.pps = Some(pps);
+    dec.last_poc = 6;
+
+    let mut l0 = build_constant_ref_planes(&dec, 10, 20, 30);
+    l0.poc = 0;
+    let mut l1 = build_constant_ref_planes(&dec, 90, 100, 110);
+    l1.poc = 8;
+
+    dec.apply_b_prediction_block(
+        Some(BMotion {
+            mv_x: 0,
+            mv_y: 0,
+            ref_idx: 0,
+        }),
+        Some(BMotion {
+            mv_x: 0,
+            mv_y: 0,
+            ref_idx: 0,
+        }),
+        &[],
+        &[],
+        0,
+        0,
+        &[l0],
+        &[l1],
+        0,
+        0,
+        4,
+        4,
+    );
+
+    assert_eq!(dec.ref_y[0], 70, "隐式双向加权亮度应使用推导出的 w0/w1");
+    assert_eq!(dec.ref_u[0], 80, "隐式双向加权 U 应使用推导出的 w0/w1");
+    assert_eq!(dec.ref_v[0], 90, "隐式双向加权 V 应使用推导出的 w0/w1");
+}
+
+#[test]
+fn test_apply_b_prediction_block_implicit_long_term_fallback_default() {
+    let mut dec = build_test_decoder();
+    let mut pps = build_test_pps();
+    pps.weighted_bipred_idc = 2;
+    dec.pps = Some(pps);
+    dec.last_poc = 6;
+
+    let mut l0 = build_constant_ref_planes(&dec, 10, 20, 30);
+    l0.poc = 0;
+    l0.is_long_term = true;
+    let mut l1 = build_constant_ref_planes(&dec, 90, 100, 110);
+    l1.poc = 8;
+
+    dec.apply_b_prediction_block(
+        Some(BMotion {
+            mv_x: 0,
+            mv_y: 0,
+            ref_idx: 0,
+        }),
+        Some(BMotion {
+            mv_x: 0,
+            mv_y: 0,
+            ref_idx: 0,
+        }),
+        &[],
+        &[],
+        0,
+        0,
+        &[l0],
+        &[l1],
+        0,
+        0,
+        4,
+        4,
+    );
+
+    assert_eq!(dec.ref_y[0], 50, "长期参考参与隐式加权时亮度应回退默认平均");
+    assert_eq!(dec.ref_u[0], 60, "长期参考参与隐式加权时 U 应回退默认平均");
+    assert_eq!(dec.ref_v[0], 70, "长期参考参与隐式加权时 V 应回退默认平均");
 }
 
 #[test]

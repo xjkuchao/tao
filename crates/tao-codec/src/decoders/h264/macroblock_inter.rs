@@ -740,7 +740,16 @@ impl H264Decoder {
         );
     }
 
-    pub(super) fn implicit_bi_weights(&self, ref_l0_poc: i32, ref_l1_poc: i32) -> (i32, i32) {
+    pub(super) fn implicit_bi_weights(
+        &self,
+        ref_l0_poc: i32,
+        ref_l1_poc: i32,
+        ref_l0_is_long_term: bool,
+        ref_l1_is_long_term: bool,
+    ) -> (i32, i32) {
+        if ref_l0_is_long_term || ref_l1_is_long_term {
+            return (32, 32);
+        }
         let td = (ref_l1_poc - ref_l0_poc).clamp(-128, 127);
         if td == 0 {
             return (32, 32);
@@ -1515,7 +1524,12 @@ impl H264Decoder {
                     .map(|p| p.weighted_bipred_idc)
                     .unwrap_or(0);
                 if weighted_bipred_idc == 2 {
-                    let (w0, w1) = self.implicit_bi_weights(ref_l0.poc, ref_l1.poc);
+                    let (w0, w1) = self.implicit_bi_weights(
+                        ref_l0.poc,
+                        ref_l1.poc,
+                        ref_l0.is_long_term,
+                        ref_l1.is_long_term,
+                    );
                     self.apply_bi_weighted_block(
                         ref_l0.y.as_slice(),
                         ref_l0.u.as_slice(),

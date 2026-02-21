@@ -224,7 +224,7 @@ crates/tao-codec/src/decoders/h264/
 #### P5.3 加权预测
 
 - [x] 显式加权(weighted_pred_flag=1, weighted_bipred_idc=1).
-- [ ] 隐式加权(weighted_bipred_idc=2): POC 距离推导, 对齐 FFmpeg `implicit_weight()` + 单测.
+- [x] 隐式加权(weighted_bipred_idc=2): POC 距离推导, 对齐 FFmpeg `implicit_weight()` + 单测.
 - [x] 默认加权(无标志): `(L0 + L1 + 1) >> 1`.
 
 #### P5.4 运动补偿插值
