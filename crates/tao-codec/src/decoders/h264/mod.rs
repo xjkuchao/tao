@@ -406,15 +406,24 @@ impl H264Decoder {
     /// 处理 SPS NAL 单元
     fn handle_sps(&mut self, nalu: &NalUnit) {
         let rbsp = nalu.rbsp();
-        if let Ok(sps) = parse_sps(&rbsp) {
-            debug!(
-                "H264: SPS {}x{} profile={} level={}",
-                sps.width, sps.height, sps.profile_idc, sps.level_idc
-            );
-            let sps_id = sps.sps_id;
-            self.sps_map.insert(sps_id, sps.clone());
-            if self.active_sps_id.map(|id| id == sps_id).unwrap_or(true) {
-                self.activate_sps(sps_id);
+        match parse_sps(&rbsp) {
+            Ok(sps) => {
+                if let Err(err) = Self::validate_sps_support(&sps) {
+                    warn!("H264: 忽略不支持的 SPS, sps_id={}, err={}", sps.sps_id, err);
+                    return;
+                }
+                debug!(
+                    "H264: SPS {}x{} profile={} level={}",
+                    sps.width, sps.height, sps.profile_idc, sps.level_idc
+                );
+                let sps_id = sps.sps_id;
+                self.sps_map.insert(sps_id, sps.clone());
+                if self.active_sps_id.map(|id| id == sps_id).unwrap_or(true) {
+                    self.activate_sps(sps_id);
+                }
+            }
+            Err(err) => {
+                warn!("H264: SPS 解析失败, err={}", err);
             }
         }
     }

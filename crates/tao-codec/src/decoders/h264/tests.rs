@@ -373,6 +373,53 @@ fn build_sps_nalu(sps_id: u32, width: u32, height: u32) -> NalUnit {
     NalUnit::parse(&data).expect("测试构造 SPS NAL 失败")
 }
 
+fn build_high_profile_sps_nalu(
+    sps_id: u32,
+    chroma_format_idc: u32,
+    frame_mbs_only: bool,
+    bit_depth_luma: u32,
+    bit_depth_chroma: u32,
+) -> NalUnit {
+    let mut bits = Vec::new();
+    push_bits_u8(&mut bits, 100); // profile_idc: High
+    push_bits_u8(&mut bits, 0); // constraint_set_flags
+    push_bits_u8(&mut bits, 40); // level_idc
+    write_ue(&mut bits, sps_id);
+
+    write_ue(&mut bits, chroma_format_idc);
+    if chroma_format_idc == 3 {
+        bits.push(false); // separate_colour_plane_flag
+    }
+    write_ue(&mut bits, bit_depth_luma.saturating_sub(8));
+    write_ue(&mut bits, bit_depth_chroma.saturating_sub(8));
+    bits.push(false); // qpprime_y_zero_transform_bypass_flag
+    bits.push(false); // seq_scaling_matrix_present_flag
+
+    write_ue(&mut bits, 0); // log2_max_frame_num_minus4
+    write_ue(&mut bits, 0); // pic_order_cnt_type
+    write_ue(&mut bits, 0); // log2_max_pic_order_cnt_lsb_minus4
+    write_ue(&mut bits, 4); // max_num_ref_frames
+    bits.push(false); // gaps_in_frame_num_value_allowed_flag
+    write_ue(&mut bits, 0); // pic_width_in_mbs_minus1 => 16
+    write_ue(&mut bits, 0); // pic_height_in_map_units_minus1 => 16
+    bits.push(frame_mbs_only); // frame_mbs_only_flag
+    if !frame_mbs_only {
+        bits.push(false); // mb_adaptive_frame_field_flag
+    }
+    bits.push(false); // direct_8x8_inference_flag
+    bits.push(false); // frame_cropping_flag
+    bits.push(false); // vui_parameters_present_flag
+    bits.push(true); // rbsp_trailing_bits stop bit
+    while bits.len() % 8 != 0 {
+        bits.push(false);
+    }
+
+    let mut data = Vec::with_capacity(1 + bits.len().div_ceil(8));
+    data.push(0x67); // nal_ref_idc=3, nal_unit_type=7(SPS)
+    data.extend_from_slice(&bits_to_bytes(&bits));
+    NalUnit::parse(&data).expect("测试构造 High Profile SPS NAL 失败")
+}
+
 fn build_p_slice_header_rbsp(
     pps_id: u32,
     frame_num: u32,
@@ -1623,6 +1670,34 @@ fn test_handle_sps_same_id_size_change_resets_reference_state() {
     assert_eq!(
         dec.decode_order_counter, 0,
         "尺寸变化应重置 decode_order_counter"
+    );
+}
+
+#[test]
+fn test_handle_sps_same_id_unsupported_update_keeps_previous_sps() {
+    let mut dec = build_test_decoder();
+    let sps0 = build_test_sps(0);
+    dec.sps_map.insert(0, sps0.clone());
+    dec.sps = Some(sps0);
+    dec.active_sps_id = Some(0);
+    dec.activate_sps(0);
+    assert_eq!(dec.width, 16, "基线 SPS 激活后宽度应为 16");
+    assert_eq!(dec.height, 16, "基线 SPS 激活后高度应为 16");
+
+    let unsupported_same_id = build_high_profile_sps_nalu(0, 2, true, 8, 8);
+    dec.handle_sps(&unsupported_same_id);
+
+    assert_eq!(
+        dec.active_sps_id,
+        Some(0),
+        "同 id 的不支持 SPS 不应改变 active_sps_id"
+    );
+    assert_eq!(dec.width, 16, "不支持 SPS 不应修改当前解码宽度");
+    assert_eq!(dec.height, 16, "不支持 SPS 不应修改当前解码高度");
+    let stored = dec.sps_map.get(&0).expect("应保留原有 sps_id=0 的 SPS");
+    assert_eq!(
+        stored.chroma_format_idc, 1,
+        "不支持 SPS 不应覆盖已缓存的可用 SPS"
     );
 }
 
