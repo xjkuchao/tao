@@ -601,6 +601,14 @@ impl H264Decoder {
 
         const MAX_MMCO_OPS: usize = 64;
         let max_long_term_frame_idx = self.max_reference_frames.saturating_sub(1) as u32;
+        let max_difference_of_pic_nums_minus1 = self
+            .sps
+            .as_ref()
+            .and_then(|sps| {
+                1u32.checked_shl(sps.log2_max_frame_num)
+                    .map(|max_pic_num| max_pic_num.saturating_sub(1))
+            })
+            .unwrap_or(u32::MAX);
         loop {
             let op = read_ue(br)?;
             match op {
@@ -613,6 +621,12 @@ impl H264Decoder {
                         )));
                     }
                     let difference = read_ue(br)?;
+                    if difference > max_difference_of_pic_nums_minus1 {
+                        return Err(TaoError::InvalidData(format!(
+                            "H264: MMCO1 difference_of_pic_nums_minus1 超范围, value={}, max={}",
+                            difference, max_difference_of_pic_nums_minus1
+                        )));
+                    }
                     marking.ops.push(MmcoOp::ForgetShort {
                         difference_of_pic_nums_minus1: difference,
                     });
@@ -641,6 +655,12 @@ impl H264Decoder {
                         )));
                     }
                     let difference = read_ue(br)?;
+                    if difference > max_difference_of_pic_nums_minus1 {
+                        return Err(TaoError::InvalidData(format!(
+                            "H264: MMCO3 difference_of_pic_nums_minus1 超范围, value={}, max={}",
+                            difference, max_difference_of_pic_nums_minus1
+                        )));
+                    }
                     let long_term_frame_idx = read_ue(br)?;
                     if long_term_frame_idx > max_long_term_frame_idx {
                         return Err(TaoError::InvalidData(format!(

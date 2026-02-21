@@ -911,6 +911,69 @@ fn test_parse_dec_ref_pic_marking_reject_too_many_mmco_ops() {
 }
 
 #[test]
+fn test_parse_dec_ref_pic_marking_reject_mmco1_difference_out_of_range() {
+    let mut dec = build_test_decoder();
+    dec.sps = Some(build_test_sps(0)); // log2_max_frame_num=4 => max difference=15
+    let nalu = NalUnit::parse(&[0x61]).expect("测试构造非 IDR slice NAL 失败");
+
+    let mut bits = Vec::new();
+    bits.push(true); // adaptive_ref_pic_marking_mode_flag
+    write_ue(&mut bits, 1); // MMCO1
+    write_ue(&mut bits, 16); // difference_of_pic_nums_minus1, 超过 max=15
+    write_ue(&mut bits, 0); // 结束符
+    let rbsp = bits_to_bytes(&bits);
+    let mut br = BitReader::new(&rbsp);
+
+    let err = match dec.parse_dec_ref_pic_marking(&mut br, &nalu) {
+        Ok(_) => panic!("MMCO1 difference 超范围应失败"),
+        Err(err) => err,
+    };
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("MMCO1"),
+        "错误信息应包含 MMCO1, actual={}",
+        msg
+    );
+    assert!(
+        msg.contains("difference_of_pic_nums_minus1"),
+        "错误信息应包含 difference_of_pic_nums_minus1, actual={}",
+        msg
+    );
+}
+
+#[test]
+fn test_parse_dec_ref_pic_marking_reject_mmco3_difference_out_of_range() {
+    let mut dec = build_test_decoder();
+    dec.sps = Some(build_test_sps(0)); // log2_max_frame_num=4 => max difference=15
+    let nalu = NalUnit::parse(&[0x61]).expect("测试构造非 IDR slice NAL 失败");
+
+    let mut bits = Vec::new();
+    bits.push(true); // adaptive_ref_pic_marking_mode_flag
+    write_ue(&mut bits, 3); // MMCO3
+    write_ue(&mut bits, 16); // difference_of_pic_nums_minus1, 超过 max=15
+    write_ue(&mut bits, 0); // long_term_frame_idx
+    write_ue(&mut bits, 0); // 结束符
+    let rbsp = bits_to_bytes(&bits);
+    let mut br = BitReader::new(&rbsp);
+
+    let err = match dec.parse_dec_ref_pic_marking(&mut br, &nalu) {
+        Ok(_) => panic!("MMCO3 difference 超范围应失败"),
+        Err(err) => err,
+    };
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("MMCO3"),
+        "错误信息应包含 MMCO3, actual={}",
+        msg
+    );
+    assert!(
+        msg.contains("difference_of_pic_nums_minus1"),
+        "错误信息应包含 difference_of_pic_nums_minus1, actual={}",
+        msg
+    );
+}
+
+#[test]
 fn test_parse_dec_ref_pic_marking_reject_mmco2_long_term_pic_num_out_of_range() {
     let dec = build_test_decoder();
     let nalu = NalUnit::parse(&[0x61]).expect("测试构造非 IDR slice NAL 失败");
