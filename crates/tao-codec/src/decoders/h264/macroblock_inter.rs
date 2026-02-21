@@ -126,8 +126,8 @@ impl H264Decoder {
             } else {
                 // Temporal Direct 的共定位 td/tb 缩放尚未完成接入.
                 // 先通过 dist_scale_factor=256 走统一缩放路径, 保持当前最小行为不变.
-                let l0_mv_x = self.scale_temporal_direct_mv_component(mv_x, 256);
-                let l0_mv_y = self.scale_temporal_direct_mv_component(mv_y, 256);
+                let (l0_mv_x, _) = self.scale_temporal_direct_mv_pair_component(mv_x, 256);
+                let (l0_mv_y, _) = self.scale_temporal_direct_mv_pair_component(mv_y, 256);
                 (l0_mv_x, l0_mv_y, l0_mv_x, l0_mv_y)
             };
         let motion_l0 = Some(BMotion {
@@ -1062,6 +1062,16 @@ impl H264Decoder {
         dist_scale_factor: i32,
     ) -> i32 {
         ((dist_scale_factor * col_mv_qpel + 128) >> 8).clamp(i16::MIN as i32, i16::MAX as i32)
+    }
+
+    pub(super) fn scale_temporal_direct_mv_pair_component(
+        &self,
+        col_mv_qpel: i32,
+        dist_scale_factor: i32,
+    ) -> (i32, i32) {
+        let mv_l0 = self.scale_temporal_direct_mv_component(col_mv_qpel, dist_scale_factor);
+        let mv_l1 = (mv_l0 - col_mv_qpel).clamp(i16::MIN as i32, i16::MAX as i32);
+        (mv_l0, mv_l1)
     }
 
     #[allow(clippy::too_many_arguments)]

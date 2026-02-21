@@ -3070,6 +3070,22 @@ fn test_scale_temporal_direct_mv_component_rounding_and_sign() {
 }
 
 #[test]
+fn test_scale_temporal_direct_mv_pair_component_splits_l0_l1() {
+    let dec = build_test_decoder();
+    let (mv_l0_pos, mv_l1_pos) = dec.scale_temporal_direct_mv_pair_component(16, 192);
+    assert_eq!(mv_l0_pos, 12, "L0 分量应按 dist_scale_factor 缩放");
+    assert_eq!(mv_l1_pos, -4, "L1 分量应按 (mv_l0 - mv_col) 计算");
+
+    let (mv_l0_neg, mv_l1_neg) = dec.scale_temporal_direct_mv_pair_component(-16, 192);
+    assert_eq!(mv_l0_neg, -12, "负向 L0 分量应按同一缩放公式计算");
+    assert_eq!(mv_l1_neg, 4, "负向输入时 L1 分量应保持符号关系");
+
+    let (mv_l0_identity, mv_l1_identity) = dec.scale_temporal_direct_mv_pair_component(11, 256);
+    assert_eq!(mv_l0_identity, 11, "dist_scale_factor=256 时 L0 应保持原值");
+    assert_eq!(mv_l1_identity, 0, "dist_scale_factor=256 时 L1 应回落为 0");
+}
+
+#[test]
 fn test_apply_b_prediction_block_implicit_bi_weighted() {
     let mut dec = build_test_decoder();
     let mut pps = build_test_pps();
