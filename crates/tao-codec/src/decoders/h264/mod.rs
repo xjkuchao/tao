@@ -540,8 +540,15 @@ impl H264Decoder {
     }
 
     fn derive_reorder_depth_from_sps(sps: Option<&Sps>) -> usize {
-        sps.map(|cur| cur.max_num_ref_frames.saturating_sub(1).min(16) as usize)
-            .unwrap_or(2)
+        sps.map(|cur| {
+            let by_ref = cur.max_num_ref_frames.saturating_sub(1).min(16) as usize;
+            if let Some(max_num_reorder_frames) = cur.max_num_reorder_frames {
+                by_ref.min(max_num_reorder_frames.min(16) as usize)
+            } else {
+                by_ref
+            }
+        })
+        .unwrap_or(2)
     }
 
     fn max_dpb_mbs_by_level(level_idc: u8) -> usize {

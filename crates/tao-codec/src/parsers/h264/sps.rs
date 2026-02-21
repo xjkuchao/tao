@@ -47,6 +47,8 @@ pub struct Sps {
     pub vui_present: bool,
     /// 帧率 (如果 VUI 中有 timing_info)
     pub fps: Option<Rational>,
+    /// VUI `bitstream_restriction_flag` 中的 `max_num_reorder_frames`.
+    pub max_num_reorder_frames: Option<u32>,
     /// SAR (Sample Aspect Ratio, 像素宽高比)
     pub sar: Rational,
     /// pic_width_in_mbs_minus1
@@ -327,14 +329,16 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
     // VUI 参数
     let mut vui_present = false;
     let mut fps = None;
+    let mut max_num_reorder_frames = None;
     let mut sar = Rational::new(1, 1);
 
     let vui_flag = br.read_bit()?;
     if vui_flag == 1 {
         vui_present = true;
-        let (parsed_sar, parsed_fps) = parse_vui(&mut br)?;
+        let (parsed_sar, parsed_fps, parsed_max_num_reorder_frames) = parse_vui(&mut br)?;
         sar = parsed_sar;
         fps = parsed_fps;
+        max_num_reorder_frames = parsed_max_num_reorder_frames;
     }
 
     Ok(Sps {
@@ -352,6 +356,7 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
         frame_mbs_only,
         vui_present,
         fps,
+        max_num_reorder_frames,
         sar,
         pic_width_in_mbs,
         pic_height_in_map_units,
@@ -584,9 +589,10 @@ fn parse_scaling_list_8x8(br: &mut BitReader) -> TaoResult<([u8; 64], bool)> {
 
 /// 解析 VUI 参数 (部分)
 ///
-/// 返回 (SAR, fps)
-fn parse_vui(br: &mut BitReader) -> TaoResult<(Rational, Option<Rational>)> {
+/// 返回 (SAR, fps, max_num_reorder_frames)
+fn parse_vui(br: &mut BitReader) -> TaoResult<(Rational, Option<Rational>, Option<u32>)> {
     let mut sar = Rational::new(1, 1);
+    let mut max_num_reorder_frames = None;
 
     // aspect_ratio_info_present_flag
     let ar_present = br.read_bit()?;
@@ -662,7 +668,76 @@ fn parse_vui(br: &mut BitReader) -> TaoResult<(Rational, Option<Rational>)> {
         fps = Some(Rational::new(time_scale as i32, (num_units * 2) as i32));
     }
 
-    Ok((sar, fps))
+    if br.bits_left() == 0 {
+        return Ok((sar, fps, max_num_reorder_frames));
+    }
+
+    // nal_hrd_parameters_present_flag
+    let nal_hrd_present = br.read_bit()?;
+    if nal_hrd_present == 1 {
+        skip_hrd_parameters(br)?;
+    }
+
+    if br.bits_left() == 0 {
+        return Ok((sar, fps, max_num_reorder_frames));
+    }
+    // vcl_hrd_parameters_present_flag
+    let vcl_hrd_present = br.read_bit()?;
+    if vcl_hrd_present == 1 {
+        skip_hrd_parameters(br)?;
+    }
+
+    // low_delay_hrd_flag (当任一 hrd_parameters_present_flag 为 1 时存在)
+    if (nal_hrd_present == 1 || vcl_hrd_present == 1) && br.bits_left() > 0 {
+        br.skip_bits(1)?;
+    }
+
+    if br.bits_left() == 0 {
+        return Ok((sar, fps, max_num_reorder_frames));
+    }
+    // pic_struct_present_flag
+    br.skip_bits(1)?;
+
+    if br.bits_left() == 0 {
+        return Ok((sar, fps, max_num_reorder_frames));
+    }
+    // bitstream_restriction_flag
+    let bitstream_restriction_flag = br.read_bit()?;
+    if bitstream_restriction_flag == 1 {
+        br.skip_bits(1)?; // motion_vectors_over_pic_boundaries_flag
+        let _max_bytes_per_pic_denom = read_ue(br)?;
+        let _max_bits_per_mb_denom = read_ue(br)?;
+        let _log2_max_mv_length_horizontal = read_ue(br)?;
+        let _log2_max_mv_length_vertical = read_ue(br)?;
+        max_num_reorder_frames = Some(read_ue(br)?);
+        let _max_dec_frame_buffering = read_ue(br)?;
+    }
+
+    Ok((sar, fps, max_num_reorder_frames))
+}
+
+fn skip_hrd_parameters(br: &mut BitReader) -> TaoResult<()> {
+    let cpb_cnt_minus1 = read_ue(br)?;
+    if cpb_cnt_minus1 > 31 {
+        return Err(TaoError::InvalidData(format!(
+            "H.264: VUI cpb_cnt_minus1 超出范围, value={}",
+            cpb_cnt_minus1
+        )));
+    }
+    br.skip_bits(4)?; // bit_rate_scale
+    br.skip_bits(4)?; // cpb_size_scale
+
+    for _ in 0..=cpb_cnt_minus1 {
+        let _bit_rate_value_minus1 = read_ue(br)?;
+        let _cpb_size_value_minus1 = read_ue(br)?;
+        br.skip_bits(1)?; // cbr_flag
+    }
+
+    br.skip_bits(5)?; // initial_cpb_removal_delay_length_minus1
+    br.skip_bits(5)?; // cpb_removal_delay_length_minus1
+    br.skip_bits(5)?; // dpb_output_delay_length_minus1
+    br.skip_bits(5)?; // time_offset_length
+    Ok(())
 }
 
 #[cfg(test)]
@@ -778,6 +853,17 @@ mod tests {
         // time_scale=60000, num_units=1001 → fps=60000/2002≈29.97
         assert_eq!(fps.num, 60000);
         assert_eq!(fps.den, 2002);
+    }
+
+    #[test]
+    fn test_sps_parse_vui_max_num_reorder_frames() {
+        let rbsp = build_test_sps_with_reorder_restriction(2, 4);
+        let sps = parse_sps(&rbsp).expect("带 max_num_reorder_frames 的 SPS 解析失败");
+        assert_eq!(
+            sps.max_num_reorder_frames,
+            Some(2),
+            "应解析出 VUI bitstream_restriction 的 max_num_reorder_frames"
+        );
     }
 
     #[test]
@@ -1476,6 +1562,65 @@ mod tests {
         } else {
             bits.push(false);
         }
+
+        bits_to_bytes(&bits)
+    }
+
+    fn build_test_sps_with_reorder_restriction(
+        max_num_reorder_frames: u32,
+        max_dec_frame_buffering: u32,
+    ) -> Vec<u8> {
+        let mut bits = Vec::new();
+
+        // profile_idc=66, constraints=0, level=30
+        for i in (0..8).rev() {
+            bits.push(((66u8 >> i) & 1) != 0);
+        }
+        bits.extend(std::iter::repeat_n(false, 8));
+        for i in (0..8).rev() {
+            bits.push(((30u8 >> i) & 1) != 0);
+        }
+
+        // 最小 SPS 主体
+        write_ue(&mut bits, 0); // sps_id
+        write_ue(&mut bits, 0); // log2_max_frame_num_minus4
+        write_ue(&mut bits, 0); // pic_order_cnt_type
+        write_ue(&mut bits, 0); // log2_max_pic_order_cnt_lsb_minus4
+        write_ue(&mut bits, 4); // max_num_ref_frames
+        bits.push(false); // gaps
+        write_ue(&mut bits, 19); // width=320
+        write_ue(&mut bits, 14); // height=240
+        bits.push(true); // frame_mbs_only
+        bits.push(false); // direct_8x8
+        bits.push(false); // frame_cropping_flag
+
+        // vui_parameters_present_flag = 1
+        bits.push(true);
+        // aspect_ratio_info_present_flag = 0
+        bits.push(false);
+        // overscan_info_present_flag = 0
+        bits.push(false);
+        // video_signal_type_present_flag = 0
+        bits.push(false);
+        // chroma_loc_info_present_flag = 0
+        bits.push(false);
+        // timing_info_present_flag = 0
+        bits.push(false);
+        // nal_hrd_parameters_present_flag = 0
+        bits.push(false);
+        // vcl_hrd_parameters_present_flag = 0
+        bits.push(false);
+        // pic_struct_present_flag = 0
+        bits.push(false);
+        // bitstream_restriction_flag = 1
+        bits.push(true);
+        bits.push(true); // motion_vectors_over_pic_boundaries_flag
+        write_ue(&mut bits, 0); // max_bytes_per_pic_denom
+        write_ue(&mut bits, 0); // max_bits_per_mb_denom
+        write_ue(&mut bits, 0); // log2_max_mv_length_horizontal
+        write_ue(&mut bits, 0); // log2_max_mv_length_vertical
+        write_ue(&mut bits, max_num_reorder_frames);
+        write_ue(&mut bits, max_dec_frame_buffering);
 
         bits_to_bytes(&bits)
     }

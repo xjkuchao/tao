@@ -51,6 +51,7 @@ fn build_test_sps(sps_id: u32) -> Sps {
         frame_mbs_only: true,
         vui_present: false,
         fps: None,
+        max_num_reorder_frames: None,
         sar: Rational::new(1, 1),
         pic_width_in_mbs: 1,
         pic_height_in_map_units: 1,
@@ -2132,6 +2133,25 @@ fn test_activate_sps_reorder_depth_override_has_priority() {
     assert_eq!(
         dec.reorder_depth, 5,
         "配置了 TAO_H264_REORDER_DEPTH 时应优先使用覆盖值"
+    );
+}
+
+#[test]
+fn test_activate_sps_reorder_depth_clamped_by_max_num_reorder_frames() {
+    let mut dec = build_test_decoder();
+    dec.reorder_depth_override = None;
+    dec.reorder_depth = 9;
+
+    let mut sps = build_test_sps(7);
+    sps.max_num_ref_frames = 4;
+    sps.max_num_reorder_frames = Some(1);
+    dec.sps_map.insert(7, sps);
+
+    dec.activate_sps(7);
+
+    assert_eq!(
+        dec.reorder_depth, 1,
+        "未配置覆盖时, reorder_depth 应被 max_num_reorder_frames 进一步约束"
     );
 }
 

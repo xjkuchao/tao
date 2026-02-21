@@ -256,7 +256,7 @@ crates/tao-codec/src/decoders/h264/
 
 - [x] 短期/长期淘汰策略.
 - [x] Level 限制 max_dpb_frames(规范 A.3.1) + 单测.
-- [ ] max_num_reorder_frames 约束 + 单测.
+- [x] max_num_reorder_frames 约束 + 单测.
 
 #### P6.3 去块滤波
 
