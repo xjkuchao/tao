@@ -857,6 +857,54 @@ fn test_activate_parameter_sets_reject_unsupported_bound_sps() {
 }
 
 #[test]
+fn test_parse_sps_pps_from_config_accept_supported_parameter_sets() {
+    let mut dec = build_test_decoder();
+    let sps = build_sps_nalu(0, 16, 16);
+    let pps = build_pps_nalu(0, 0, true, 0);
+    let avcc = crate::parsers::h264::build_avcc_config(
+        std::slice::from_ref(&sps.data),
+        std::slice::from_ref(&pps.data),
+        4,
+    )
+    .expect("构造 avcC 配置失败");
+    let config = crate::parsers::h264::parse_avcc_config(&avcc).expect("解析 avcC 配置失败");
+
+    dec.parse_sps_pps_from_config(&config)
+        .expect("受支持参数集应可激活");
+
+    assert_eq!(dec.active_sps_id, Some(0), "应激活 sps_id=0");
+    assert_eq!(dec.active_pps_id, Some(0), "应激活 pps_id=0");
+    assert!(dec.sps.is_some(), "应缓存受支持 SPS");
+    assert!(dec.pps.is_some(), "应缓存受支持 PPS");
+}
+
+#[test]
+fn test_parse_sps_pps_from_config_reject_all_unsupported_sps() {
+    let mut dec = build_test_decoder();
+    let unsupported_sps = build_high_profile_sps_nalu(0, 2, true, 8, 8); // 4:2:2, 当前不支持
+    let pps = build_pps_nalu(0, 0, true, 0);
+    let avcc = crate::parsers::h264::build_avcc_config(
+        std::slice::from_ref(&unsupported_sps.data),
+        std::slice::from_ref(&pps.data),
+        4,
+    )
+    .expect("构造 avcC 配置失败");
+    let config = crate::parsers::h264::parse_avcc_config(&avcc).expect("解析 avcC 配置失败");
+
+    let err = dec
+        .parse_sps_pps_from_config(&config)
+        .expect_err("全部 SPS 不受支持时应失败");
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("未找到受支持的 SPS"),
+        "错误信息应提示未找到受支持 SPS, actual={}",
+        msg
+    );
+    assert!(dec.sps.is_none(), "失败后不应缓存不支持的 SPS");
+    assert!(dec.pps.is_none(), "失败后不应激活依赖无效 SPS 的 PPS");
+}
+
+#[test]
 fn test_handle_pps_same_id_runtime_update_keeps_references() {
     let mut dec = build_test_decoder();
     let sps0 = build_test_sps(0);

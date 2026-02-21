@@ -96,6 +96,7 @@
     - [x] SPS 深度校验补齐(POC type1 循环上限、VUI `aspect_ratio_idc`/`Extended_SAR`/timing 零值校验)并补充失败用例单测。
     - [x] SPS 激活阶段增加能力门禁(仅支持 `4:2:0 + 8-bit + frame_mbs_only`), 不支持配置返回 `NotImplemented` 并保持当前激活参数集不变。
     - [x] `handle_sps` 在缓存前执行能力校验, 防止“同 `sps_id` 的不支持 SPS”覆盖已激活参数集, 并补齐回归单测。
+    - [x] `avcC` 配置入口新增早期失败保护: 若配置内全部 `SPS` 均不受支持则直接报错, 并补齐通过/失败两条配置路径单测。
 - [ ] 参数集变更时上下文重建。
     - [x] 新增 `PPS` 变更重建分级策略(`None/RuntimeOnly/Full`)并接入 `activate_parameter_sets`。
     - [x] 覆盖 `PPS` 关键字段变更单元测试(熵编码/SPS绑定触发 Full, QP/加权预测触发 RuntimeOnly)。
