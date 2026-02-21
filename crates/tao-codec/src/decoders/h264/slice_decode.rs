@@ -964,20 +964,142 @@ impl H264Decoder {
                                     ref_idx: 0,
                                 });
                             }
-                            let _ = self.apply_b_prediction_block(
-                                l0_motion,
-                                l1_motion,
-                                &header.l0_weights,
-                                &header.l1_weights,
-                                header.luma_log2_weight_denom,
-                                header.chroma_log2_weight_denom,
-                                &ref_l0_list,
-                                &ref_l1_list,
-                                sub_x,
-                                sub_y,
-                                8,
-                                8,
-                            );
+                            match sub_mb_type {
+                                4 | 6 | 8 => {
+                                    let _ = self.apply_b_prediction_block(
+                                        l0_motion,
+                                        l1_motion,
+                                        &header.l0_weights,
+                                        &header.l1_weights,
+                                        header.luma_log2_weight_denom,
+                                        header.chroma_log2_weight_denom,
+                                        &ref_l0_list,
+                                        &ref_l1_list,
+                                        sub_x,
+                                        sub_y,
+                                        8,
+                                        4,
+                                    );
+                                    let _ = self.apply_b_prediction_block(
+                                        l0_motion,
+                                        l1_motion,
+                                        &header.l0_weights,
+                                        &header.l1_weights,
+                                        header.luma_log2_weight_denom,
+                                        header.chroma_log2_weight_denom,
+                                        &ref_l0_list,
+                                        &ref_l1_list,
+                                        sub_x,
+                                        sub_y + 4,
+                                        8,
+                                        4,
+                                    );
+                                }
+                                5 | 7 | 9 => {
+                                    let _ = self.apply_b_prediction_block(
+                                        l0_motion,
+                                        l1_motion,
+                                        &header.l0_weights,
+                                        &header.l1_weights,
+                                        header.luma_log2_weight_denom,
+                                        header.chroma_log2_weight_denom,
+                                        &ref_l0_list,
+                                        &ref_l1_list,
+                                        sub_x,
+                                        sub_y,
+                                        4,
+                                        8,
+                                    );
+                                    let _ = self.apply_b_prediction_block(
+                                        l0_motion,
+                                        l1_motion,
+                                        &header.l0_weights,
+                                        &header.l1_weights,
+                                        header.luma_log2_weight_denom,
+                                        header.chroma_log2_weight_denom,
+                                        &ref_l0_list,
+                                        &ref_l1_list,
+                                        sub_x + 4,
+                                        sub_y,
+                                        4,
+                                        8,
+                                    );
+                                }
+                                10..=12 => {
+                                    let _ = self.apply_b_prediction_block(
+                                        l0_motion,
+                                        l1_motion,
+                                        &header.l0_weights,
+                                        &header.l1_weights,
+                                        header.luma_log2_weight_denom,
+                                        header.chroma_log2_weight_denom,
+                                        &ref_l0_list,
+                                        &ref_l1_list,
+                                        sub_x,
+                                        sub_y,
+                                        4,
+                                        4,
+                                    );
+                                    let _ = self.apply_b_prediction_block(
+                                        l0_motion,
+                                        l1_motion,
+                                        &header.l0_weights,
+                                        &header.l1_weights,
+                                        header.luma_log2_weight_denom,
+                                        header.chroma_log2_weight_denom,
+                                        &ref_l0_list,
+                                        &ref_l1_list,
+                                        sub_x + 4,
+                                        sub_y,
+                                        4,
+                                        4,
+                                    );
+                                    let _ = self.apply_b_prediction_block(
+                                        l0_motion,
+                                        l1_motion,
+                                        &header.l0_weights,
+                                        &header.l1_weights,
+                                        header.luma_log2_weight_denom,
+                                        header.chroma_log2_weight_denom,
+                                        &ref_l0_list,
+                                        &ref_l1_list,
+                                        sub_x,
+                                        sub_y + 4,
+                                        4,
+                                        4,
+                                    );
+                                    let _ = self.apply_b_prediction_block(
+                                        l0_motion,
+                                        l1_motion,
+                                        &header.l0_weights,
+                                        &header.l1_weights,
+                                        header.luma_log2_weight_denom,
+                                        header.chroma_log2_weight_denom,
+                                        &ref_l0_list,
+                                        &ref_l1_list,
+                                        sub_x + 4,
+                                        sub_y + 4,
+                                        4,
+                                        4,
+                                    );
+                                }
+                                _ => {
+                                    let _ = self.apply_b_prediction_block(
+                                        l0_motion,
+                                        l1_motion,
+                                        &header.l0_weights,
+                                        &header.l1_weights,
+                                        header.luma_log2_weight_denom,
+                                        header.chroma_log2_weight_denom,
+                                        &ref_l0_list,
+                                        &ref_l1_list,
+                                        sub_x,
+                                        sub_y,
+                                        8,
+                                        8,
+                                    );
+                                }
+                            }
                         }
                         continue;
                     }

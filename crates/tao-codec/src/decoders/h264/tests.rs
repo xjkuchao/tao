@@ -1982,6 +1982,76 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l1_ref_idx_alignment() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_b_non_skip_b8x8_mixed_sub_mb_types_alignment() {
+    let mut dec = build_test_decoder();
+    let sps_resize = build_sps_nalu(0, 32, 16);
+    dec.handle_sps(&sps_resize);
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_custom_reference(&mut dec, 1, 2, 20, None);
+    push_custom_reference(&mut dec, 2, 8, 100, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+    header.num_ref_idx_l0 = 2;
+    header.num_ref_idx_l1 = 2;
+
+    // mb0: skip_run=0, mb_type=22(B_8x8)
+    // sub_mb_type: [4(L0_8x4), 6(L1_8x4), 8(Bi_8x4), 12(Bi_4x4)]
+    // ref_idx 顺序: sub0(L0=1), sub1(L1=1), sub2(L0=0,L1=1), sub3(L0=1,L1=0)
+    // mb1: skip_run=0, mb_type=23(intra), 用于验证语法消费对齐。
+    let rbsp = build_rbsp_from_ues(&[0, 22, 4, 6, 8, 12, 1, 1, 0, 1, 1, 0, 0, 23]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    assert_eq!(dec.ref_y[0], 100, "左上 8x8 应使用 L0 ref_idx=1");
+    assert_eq!(dec.ref_y[8], 20, "右上 8x8 应使用 L1 ref_idx=1");
+    assert_eq!(dec.ref_y[8 * dec.stride_y], 20, "左下 8x8 应使用 Bi(20,20)");
+    assert_eq!(
+        dec.ref_y[8 * dec.stride_y + 8],
+        100,
+        "右下 8x8 应使用 Bi(100,100)"
+    );
+    assert_eq!(dec.mb_types[1], 1, "第二个宏块应解析为帧内宏块");
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_b_non_skip_b8x8_direct_no_ref_idx_parse() {
+    let mut dec = build_test_decoder();
+    let sps_resize = build_sps_nalu(0, 32, 16);
+    dec.handle_sps(&sps_resize);
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_custom_reference(&mut dec, 1, 2, 20, None);
+    push_custom_reference(&mut dec, 2, 8, 100, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+    header.num_ref_idx_l0 = 2;
+    header.num_ref_idx_l1 = 2;
+
+    // mb0: skip_run=0, mb_type=22(B_8x8), sub_mb_type 全为 0(Direct_8x8), 不应读取 ref_idx
+    // mb1: skip_run=0, mb_type=23(intra), 用于验证语法消费对齐。
+    let rbsp = build_rbsp_from_ues(&[0, 22, 0, 0, 0, 0, 0, 23]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    assert_eq!(dec.ref_y[0], 60, "Direct_8x8 最小路径应使用双向融合");
+    assert_eq!(dec.ref_y[8], 60, "Direct_8x8 最小路径应使用双向融合");
+    assert_eq!(
+        dec.ref_y[8 * dec.stride_y],
+        60,
+        "Direct_8x8 最小路径应使用双向融合"
+    );
+    assert_eq!(
+        dec.ref_y[8 * dec.stride_y + 8],
+        60,
+        "Direct_8x8 最小路径应使用双向融合"
+    );
+    assert_eq!(dec.mb_types[1], 1, "第二个宏块应解析为帧内宏块");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_b_skip_run_explicit_weighted() {
     let mut dec = build_test_decoder();
     dec.last_slice_type = 1;
