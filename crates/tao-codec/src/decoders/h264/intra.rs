@@ -70,22 +70,33 @@ fn compute_dc_16x16(
     has_left: bool,
     has_top: bool,
 ) -> u8 {
-    let mut sum = 0u32;
-    let mut count = 0u32;
+    let top_available = has_top && y0 > 0;
+    let left_available = has_left && x0 > 0;
 
-    if has_top && y0 > 0 {
-        for dx in 0..16 {
-            sum += plane[(y0 - 1) * stride + x0 + dx] as u32;
-            count += 1;
-        }
+    let sum_top = if top_available {
+        (0..16)
+            .map(|dx| plane[(y0 - 1) * stride + x0 + dx] as u32)
+            .sum::<u32>()
+    } else {
+        0
+    };
+    let sum_left = if left_available {
+        (0..16)
+            .map(|dy| plane[(y0 + dy) * stride + x0 - 1] as u32)
+            .sum::<u32>()
+    } else {
+        0
+    };
+
+    if top_available && left_available {
+        ((sum_top + sum_left + 16) >> 5) as u8
+    } else if top_available {
+        ((sum_top + 8) >> 4) as u8
+    } else if left_available {
+        ((sum_left + 8) >> 4) as u8
+    } else {
+        128
     }
-    if has_left && x0 > 0 {
-        for dy in 0..16 {
-            sum += plane[(y0 + dy) * stride + x0 - 1] as u32;
-            count += 1;
-        }
-    }
-    if count > 0 { (sum / count) as u8 } else { 128 }
 }
 
 /// 模式 3: 平面预测 (Plane prediction)
@@ -711,7 +722,7 @@ pub fn fill_block(
 
 #[cfg(test)]
 mod tests {
-    use super::{predict_4x4, predict_chroma_8x8};
+    use super::{predict_4x4, predict_16x16, predict_chroma_8x8};
 
     fn read_block_4x4(plane: &[u8], stride: usize, x0: usize, y0: usize) -> [[u8; 4]; 4] {
         let mut block = [[0u8; 4]; 4];
@@ -731,6 +742,137 @@ mod tests {
             }
         }
         block
+    }
+
+    fn read_block_16x16(plane: &[u8], stride: usize, x0: usize, y0: usize) -> [[u8; 16]; 16] {
+        let mut block = [[0u8; 16]; 16];
+        for dy in 0..16 {
+            for dx in 0..16 {
+                block[dy][dx] = plane[(y0 + dy) * stride + x0 + dx];
+            }
+        }
+        block
+    }
+
+    #[test]
+    fn test_intra16x16_mode0_without_top_falls_back_to_128() {
+        let stride = 32;
+        let x0 = 8;
+        let y0 = 8;
+        let mut plane = vec![99u8; stride * stride];
+
+        predict_16x16(&mut plane, stride, x0, y0, 0, true, false);
+        let got = read_block_16x16(&plane, stride, x0, y0);
+        let expect = [[128u8; 16]; 16];
+
+        assert_eq!(got, expect, "16x16 模式0在上参考不可用时应回退为128填充");
+    }
+
+    #[test]
+    fn test_intra16x16_mode1_without_left_falls_back_to_128() {
+        let stride = 32;
+        let x0 = 8;
+        let y0 = 8;
+        let mut plane = vec![77u8; stride * stride];
+
+        predict_16x16(&mut plane, stride, x0, y0, 1, false, true);
+        let got = read_block_16x16(&plane, stride, x0, y0);
+        let expect = [[128u8; 16]; 16];
+
+        assert_eq!(got, expect, "16x16 模式1在左参考不可用时应回退为128填充");
+    }
+
+    #[test]
+    fn test_intra16x16_mode2_dc_both_neighbors_uses_rounding_rule() {
+        let stride = 32;
+        let x0 = 8;
+        let y0 = 8;
+        let mut plane = vec![0u8; stride * stride];
+
+        for i in 0..16 {
+            plane[(y0 - 1) * stride + x0 + i] = (i + 1) as u8;
+            plane[(y0 + i) * stride + x0 - 1] = (i + 17) as u8;
+        }
+
+        predict_16x16(&mut plane, stride, x0, y0, 2, true, true);
+        let got = read_block_16x16(&plane, stride, x0, y0);
+        let expect = [[17u8; 16]; 16];
+
+        assert_eq!(
+            got, expect,
+            "16x16 模式2在上左都可用时应使用(sum_top+sum_left+16)>>5"
+        );
+    }
+
+    #[test]
+    fn test_intra16x16_mode2_dc_top_only_variant() {
+        let stride = 32;
+        let x0 = 8;
+        let y0 = 8;
+        let mut plane = vec![0u8; stride * stride];
+
+        for i in 0..16 {
+            plane[(y0 - 1) * stride + x0 + i] = (i + 1) as u8;
+        }
+
+        predict_16x16(&mut plane, stride, x0, y0, 2, false, true);
+        let got = read_block_16x16(&plane, stride, x0, y0);
+        let expect = [[9u8; 16]; 16];
+
+        assert_eq!(got, expect, "16x16 模式2在仅上可用时应使用(sum_top+8)>>4");
+    }
+
+    #[test]
+    fn test_intra16x16_mode2_dc_left_only_variant() {
+        let stride = 32;
+        let x0 = 8;
+        let y0 = 8;
+        let mut plane = vec![0u8; stride * stride];
+
+        for i in 0..16 {
+            plane[(y0 + i) * stride + x0 - 1] = (i + 17) as u8;
+        }
+
+        predict_16x16(&mut plane, stride, x0, y0, 2, true, false);
+        let got = read_block_16x16(&plane, stride, x0, y0);
+        let expect = [[25u8; 16]; 16];
+
+        assert_eq!(got, expect, "16x16 模式2在仅左可用时应使用(sum_left+8)>>4");
+    }
+
+    #[test]
+    fn test_intra16x16_mode2_dc_none_variant_128() {
+        let stride = 32;
+        let x0 = 8;
+        let y0 = 8;
+        let mut plane = vec![55u8; stride * stride];
+
+        predict_16x16(&mut plane, stride, x0, y0, 2, false, false);
+        let got = read_block_16x16(&plane, stride, x0, y0);
+        let expect = [[128u8; 16]; 16];
+
+        assert_eq!(got, expect, "16x16 模式2在上左都不可用时应使用DC-128变体");
+    }
+
+    #[test]
+    fn test_intra16x16_mode3_plane_without_top_or_left_falls_back_to_dc_variant() {
+        let stride = 32;
+        let x0 = 8;
+        let y0 = 8;
+        let mut plane = vec![0u8; stride * stride];
+
+        for i in 0..16 {
+            plane[(y0 + i) * stride + x0 - 1] = (i + 17) as u8;
+        }
+
+        predict_16x16(&mut plane, stride, x0, y0, 3, true, false);
+        let got = read_block_16x16(&plane, stride, x0, y0);
+        let expect = [[25u8; 16]; 16];
+
+        assert_eq!(
+            got, expect,
+            "16x16 模式3在缺少上参考时应回退到DC并使用可用邻居变体"
+        );
     }
 
     #[test]
