@@ -4007,7 +4007,7 @@ fn test_build_b_direct_motion_spatial_returns_zero_when_left_top_neighbors_are_z
 }
 
 #[test]
-fn test_build_b_direct_motion_spatial_keeps_pred_mv_when_zero_condition_not_met() {
+fn test_build_b_direct_motion_spatial_keeps_pred_mv_when_l1_neighbors_absent() {
     let mut dec = build_test_decoder();
     dec.width = 32;
     dec.height = 32;
@@ -4018,15 +4018,11 @@ fn test_build_b_direct_motion_spatial_keeps_pred_mv_when_zero_condition_not_met(
     dec.mv_l0_x[left_mb] = 0;
     dec.mv_l0_y[left_mb] = 0;
     dec.ref_idx_l0[left_mb] = 0;
-    dec.mv_l1_x[left_mb] = 0;
-    dec.mv_l1_y[left_mb] = 0;
-    dec.ref_idx_l1[left_mb] = 0;
+    dec.ref_idx_l1[left_mb] = -1;
     dec.mv_l0_x[top_mb] = 0;
     dec.mv_l0_y[top_mb] = 0;
     dec.ref_idx_l0[top_mb] = 0;
-    dec.mv_l1_x[top_mb] = 0;
-    dec.mv_l1_y[top_mb] = 0;
-    dec.ref_idx_l1[top_mb] = 1;
+    dec.ref_idx_l1[top_mb] = -1;
 
     let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true);
     let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
@@ -4035,6 +4031,39 @@ fn test_build_b_direct_motion_spatial_keeps_pred_mv_when_zero_condition_not_met(
     assert_eq!(motion_l0.mv_y, -8, "零向量条件不满足时应保留预测 MV(y)");
     assert_eq!(motion_l1.mv_x, 12, "零向量条件不满足时应保留预测 MV(x)");
     assert_eq!(motion_l1.mv_y, -8, "零向量条件不满足时应保留预测 MV(y)");
+}
+
+#[test]
+fn test_build_b_direct_motion_spatial_uses_independent_l1_neighbor_mv() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+
+    let left_mb = dec.mb_index(0, 1).expect("左邻索引应存在");
+    let top_mb = dec.mb_index(1, 0).expect("上邻索引应存在");
+
+    dec.mv_l0_x[left_mb] = 0;
+    dec.mv_l0_y[left_mb] = 0;
+    dec.ref_idx_l0[left_mb] = 0;
+    dec.mv_l0_x[top_mb] = 0;
+    dec.mv_l0_y[top_mb] = 0;
+    dec.ref_idx_l0[top_mb] = 0;
+
+    dec.mv_l1_x[left_mb] = 20;
+    dec.mv_l1_y[left_mb] = 0;
+    dec.ref_idx_l1[left_mb] = 0;
+    dec.mv_l1_x[top_mb] = 20;
+    dec.mv_l1_y[top_mb] = 0;
+    dec.ref_idx_l1[top_mb] = 0;
+
+    let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true);
+    let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
+    let motion_l1 = motion_l1.expect("spatial direct 应提供 L1 运动信息");
+    assert_eq!(motion_l0.mv_x, 12, "L0 应保留输入预测 MV(x)");
+    assert_eq!(motion_l0.mv_y, -8, "L0 应保留输入预测 MV(y)");
+    assert_eq!(motion_l1.mv_x, 20, "L1 应独立使用邻居预测 MV(x)");
+    assert_eq!(motion_l1.mv_y, 0, "L1 应独立使用邻居预测 MV(y)");
 }
 
 #[test]

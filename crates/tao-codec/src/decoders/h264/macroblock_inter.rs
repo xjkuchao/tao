@@ -1,6 +1,26 @@
 use super::*;
 
 impl H264Decoder {
+    fn direct_neighbor_mv_for_list(&self, mb_idx: usize, list1: bool) -> Option<(i32, i32)> {
+        if list1 {
+            if self.ref_idx_l1.get(mb_idx).copied().unwrap_or(-1) < 0 {
+                return None;
+            }
+            Some((
+                self.mv_l1_x.get(mb_idx).copied().unwrap_or(0) as i32,
+                self.mv_l1_y.get(mb_idx).copied().unwrap_or(0) as i32,
+            ))
+        } else {
+            if self.ref_idx_l0.get(mb_idx).copied().unwrap_or(-1) < 0 {
+                return None;
+            }
+            Some((
+                self.mv_l0_x.get(mb_idx).copied().unwrap_or(0) as i32,
+                self.mv_l0_y.get(mb_idx).copied().unwrap_or(0) as i32,
+            ))
+        }
+    }
+
     fn is_zero_direct_neighbor_mb(&self, mb_idx: usize) -> bool {
         let l0_zero = self.ref_idx_l0.get(mb_idx).copied().unwrap_or(-1) == 0
             && self.mv_l0_x.get(mb_idx).copied().unwrap_or(0) == 0
@@ -29,13 +49,65 @@ impl H264Decoder {
         false
     }
 
+    fn predict_spatial_direct_l1_mv(
+        &self,
+        mb_x: usize,
+        mb_y: usize,
+        fallback_mv_x: i32,
+        fallback_mv_y: i32,
+    ) -> (i32, i32) {
+        let cand_a = if mb_x > 0 {
+            self.mb_index(mb_x - 1, mb_y)
+                .and_then(|idx| self.direct_neighbor_mv_for_list(idx, true))
+        } else {
+            None
+        };
+        let cand_b = if mb_y > 0 {
+            self.mb_index(mb_x, mb_y - 1)
+                .and_then(|idx| self.direct_neighbor_mv_for_list(idx, true))
+        } else {
+            None
+        };
+        let cand_c = if mb_x + 1 < self.mb_width && mb_y > 0 {
+            self.mb_index(mb_x + 1, mb_y - 1)
+                .and_then(|idx| self.direct_neighbor_mv_for_list(idx, true))
+        } else {
+            None
+        }
+        .or_else(|| {
+            if mb_x > 0 && mb_y > 0 {
+                self.mb_index(mb_x - 1, mb_y - 1)
+                    .and_then(|idx| self.direct_neighbor_mv_for_list(idx, true))
+            } else {
+                None
+            }
+        });
+
+        let mut matched = [(0i32, 0i32); 3];
+        let mut count = 0usize;
+        for cand in [cand_a, cand_b, cand_c].into_iter().flatten() {
+            matched[count] = cand;
+            count += 1;
+        }
+        if count == 0 {
+            return (fallback_mv_x, fallback_mv_y);
+        }
+        if count == 1 {
+            return matched[0];
+        }
+        let a = matched[0];
+        let b = matched[1];
+        let c = if count == 3 { matched[2] } else { matched[1] };
+        (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1))
+    }
+
     /// 构建 B-slice Direct 预测的最小运动信息.
     ///
     /// 目前 temporal direct 路径先复用 list0 预测, spatial direct 路径使用 list0/list1 双向预测.
     ///
     /// spatial direct 最小实现:
     /// - 当左/上邻居都存在且二者均为 list0/list1 的 `ref_idx=0 && mv=(0,0)` 时, 直接输出零 MV.
-    /// - 其它情况使用输入预测 MV.
+    /// - 其它情况: L0 使用输入预测 MV; L1 独立使用邻居预测(缺失时回退输入预测 MV).
     pub(super) fn build_b_direct_motion(
         &self,
         mb_x: usize,
@@ -44,21 +116,24 @@ impl H264Decoder {
         mv_y: i32,
         direct_spatial_mv_pred_flag: bool,
     ) -> (Option<BMotion>, Option<BMotion>) {
-        let (direct_mv_x, direct_mv_y) =
+        let (direct_l0_mv_x, direct_l0_mv_y, direct_l1_mv_x, direct_l1_mv_y) =
             if direct_spatial_mv_pred_flag && self.spatial_direct_zero_mv_condition(mb_x, mb_y) {
-                (0, 0)
+                (0, 0, 0, 0)
+            } else if direct_spatial_mv_pred_flag {
+                let (l1_mv_x, l1_mv_y) = self.predict_spatial_direct_l1_mv(mb_x, mb_y, mv_x, mv_y);
+                (mv_x, mv_y, l1_mv_x, l1_mv_y)
             } else {
-                (mv_x, mv_y)
+                (mv_x, mv_y, mv_x, mv_y)
             };
         let motion_l0 = Some(BMotion {
-            mv_x: direct_mv_x,
-            mv_y: direct_mv_y,
+            mv_x: direct_l0_mv_x,
+            mv_y: direct_l0_mv_y,
             ref_idx: 0,
         });
         let motion_l1 = if direct_spatial_mv_pred_flag {
             Some(BMotion {
-                mv_x: direct_mv_x,
-                mv_y: direct_mv_y,
+                mv_x: direct_l1_mv_x,
+                mv_y: direct_l1_mv_y,
                 ref_idx: 0,
             })
         } else {
