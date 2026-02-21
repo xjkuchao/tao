@@ -2136,6 +2136,56 @@ fn test_store_reference_with_marking_mmco_convert_short_to_long() {
 }
 
 #[test]
+fn test_store_reference_with_marking_mmco_clear_all_resets_frame_num_and_poc() {
+    let mut dec = build_test_decoder();
+    push_dummy_reference(&mut dec, 2);
+    push_dummy_reference_with_long_term(&mut dec, 6, Some(0));
+    dec.prev_ref_poc_msb = 32;
+    dec.prev_ref_poc_lsb = 7;
+    dec.prev_frame_num_offset_type1 = 16;
+    dec.prev_frame_num_offset_type2 = 24;
+
+    dec.last_slice_type = 0;
+    dec.last_nal_ref_idc = 1;
+    dec.last_frame_num = 11;
+    dec.last_poc = 21;
+    dec.last_dec_ref_pic_marking = DecRefPicMarking {
+        is_idr: false,
+        no_output_of_prior_pics: false,
+        long_term_reference_flag: false,
+        adaptive: true,
+        ops: vec![MmcoOp::ClearAll],
+    };
+
+    dec.store_reference_with_marking();
+
+    assert_eq!(dec.last_frame_num, 0, "MMCO5 应重置当前 frame_num 为 0");
+    assert_eq!(dec.last_poc, 0, "MMCO5 应重置当前 POC 为 0");
+    assert_eq!(dec.prev_ref_poc_msb, 0, "MMCO5 应重置 prev_ref_poc_msb");
+    assert_eq!(dec.prev_ref_poc_lsb, 0, "MMCO5 应重置 prev_ref_poc_lsb");
+    assert_eq!(
+        dec.prev_frame_num_offset_type1, 0,
+        "MMCO5 应重置 POC type1 的 frame_num_offset"
+    );
+    assert_eq!(
+        dec.prev_frame_num_offset_type2, 0,
+        "MMCO5 应重置 POC type2 的 frame_num_offset"
+    );
+    assert_eq!(
+        dec.max_long_term_frame_idx, None,
+        "MMCO5 应清空长期参考索引上限"
+    );
+    assert_eq!(dec.reference_frames.len(), 1, "MMCO5 后仅应保留当前参考帧");
+    let current = dec.reference_frames.back().expect("应存在当前参考帧");
+    assert_eq!(current.frame_num, 0, "MMCO5 后当前参考帧 frame_num 应为 0");
+    assert_eq!(current.poc, 0, "MMCO5 后当前参考帧 POC 应为 0");
+    assert_eq!(
+        current.long_term_frame_idx, None,
+        "MMCO5 后当前参考帧默认应为短期参考"
+    );
+}
+
+#[test]
 fn test_store_reference_with_marking_capacity_evicts_lowest_pic_num_short_term() {
     let mut dec = build_test_decoder();
     dec.max_reference_frames = 2;

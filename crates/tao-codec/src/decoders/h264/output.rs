@@ -400,6 +400,7 @@ impl H264Decoder {
 
         let marking = self.last_dec_ref_pic_marking.clone();
         let mut current_long_term_idx = None;
+        let mut has_mmco5 = false;
 
         if marking.is_idr {
             if marking.no_output_of_prior_pics {
@@ -458,6 +459,9 @@ impl H264Decoder {
                         self.prev_ref_poc_lsb = 0;
                         self.prev_frame_num_offset_type1 = 0;
                         self.prev_frame_num_offset_type2 = 0;
+                        self.last_frame_num = 0;
+                        self.last_poc = 0;
+                        has_mmco5 = true;
                     }
                     MmcoOp::MarkCurrentLong {
                         long_term_frame_idx,
@@ -477,6 +481,13 @@ impl H264Decoder {
             }
         } else {
             self.push_current_reference(None);
+        }
+
+        if has_mmco5 {
+            if let Some(current) = self.reference_frames.back_mut() {
+                current.frame_num = 0;
+                current.poc = 0;
+            }
         }
         self.enforce_reference_capacity();
     }
