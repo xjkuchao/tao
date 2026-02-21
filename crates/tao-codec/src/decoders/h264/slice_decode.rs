@@ -972,7 +972,36 @@ impl H264Decoder {
             }
             self.mb_types[mb_idx] = 255;
             self.mb_cbp[mb_idx] = 0;
-            self.copy_macroblock_from_planes(mb_x, mb_y, &ref_l0);
+            if mb_type >= 5 {
+                self.mb_types[mb_idx] = 1;
+                intra::predict_16x16(
+                    &mut self.ref_y,
+                    self.stride_y,
+                    mb_x * 16,
+                    mb_y * 16,
+                    2,
+                    mb_x > 0,
+                    mb_y > 0,
+                );
+                intra::predict_chroma_dc(
+                    &mut self.ref_u,
+                    self.stride_c,
+                    mb_x * 8,
+                    mb_y * 8,
+                    mb_x > 0,
+                    mb_y > 0,
+                );
+                intra::predict_chroma_dc(
+                    &mut self.ref_v,
+                    self.stride_c,
+                    mb_x * 8,
+                    mb_y * 8,
+                    mb_x > 0,
+                    mb_y > 0,
+                );
+            } else {
+                self.copy_macroblock_from_planes(mb_x, mb_y, &ref_l0);
+            }
         }
     }
 }

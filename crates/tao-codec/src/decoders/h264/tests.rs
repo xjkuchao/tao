@@ -1670,6 +1670,28 @@ fn test_decode_cavlc_slice_data_p_skip_run_copy_reference() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_p_non_skip_intra_mb_type() {
+    let mut dec = build_test_decoder();
+    push_custom_reference(&mut dec, 3, 3, 77, None);
+    dec.ref_y.fill(0);
+    dec.ref_u.fill(0);
+    dec.ref_v.fill(0);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.data_bit_offset = 0;
+
+    // mb_skip_run = 0, mb_type = 5(I_4x4 in P-slice domain)
+    let rbsp = build_rbsp_from_ues(&[0, 5]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+    assert_eq!(
+        dec.mb_types[0], 1,
+        "P-slice 非 skip 且 I 宏块应进入帧内路径"
+    );
+    assert_eq!(dec.ref_y[0], 128, "帧内预测应生成默认 DC 值");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_b_skip_run_blend_l0_l1() {
     let mut dec = build_test_decoder();
     dec.last_slice_type = 1;
