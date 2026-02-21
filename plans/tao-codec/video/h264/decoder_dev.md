@@ -250,7 +250,7 @@ crates/tao-codec/src/decoders/h264/
 
 - [x] POC type0/1/2 计算.
 - [x] reorder_depth 自适应.
-- [ ] 输出重排完整语义(DPB 满/flush 按 POC 升序) + 单测.
+- [x] 输出重排完整语义(DPB 满/flush 按 POC 升序) + 单测.
 
 #### P6.2 DPB 管理
 

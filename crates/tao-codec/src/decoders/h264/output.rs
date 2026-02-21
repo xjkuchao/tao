@@ -560,7 +560,21 @@ impl H264Decoder {
             cur.poc < entry.poc || (cur.poc == entry.poc && cur.decode_order <= entry.decode_order)
         });
         self.reorder_buffer.insert(insert_pos, entry);
+
+        // 先满足重排深度限制, 再满足 DPB 容量限制.
         while self.reorder_buffer.len() > self.reorder_depth {
+            let out = self.reorder_buffer.remove(0);
+            self.output_queue.push_back(Frame::Video(out.frame));
+        }
+
+        let dpb_capacity = self.max_reference_frames.max(1);
+        while !self.reorder_buffer.is_empty()
+            && self
+                .reference_frames
+                .len()
+                .saturating_add(self.reorder_buffer.len())
+                > dpb_capacity
+        {
             let out = self.reorder_buffer.remove(0);
             self.output_queue.push_back(Frame::Video(out.frame));
         }

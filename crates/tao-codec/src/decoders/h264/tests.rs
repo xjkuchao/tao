@@ -1,10 +1,10 @@
 use std::collections::{HashMap, VecDeque};
 
-use tao_core::Rational;
 use tao_core::bitreader::BitReader;
+use tao_core::{PixelFormat, Rational};
 
 use crate::decoder::Decoder;
-use crate::frame::Frame;
+use crate::frame::{Frame, VideoFrame};
 use crate::packet::Packet;
 
 use super::{
@@ -262,6 +262,13 @@ fn build_constant_ref_planes(dec: &H264Decoder, y: u8, u: u8, v: u8) -> RefPlane
         poc: 0,
         is_long_term: false,
     }
+}
+
+fn build_test_video_frame_with_pts(pts: i64) -> VideoFrame {
+    let mut vf = VideoFrame::new(16, 16, PixelFormat::Yuv420p);
+    vf.pts = pts;
+    vf.time_base = Rational::new(1, 25);
+    vf
 }
 
 fn write_ue(bits: &mut Vec<bool>, value: u32) {
@@ -3202,6 +3209,55 @@ fn test_build_output_frame_respects_disable_deblocking_filter_idc() {
         frame_filter.data[0][4] < 48,
         "启用去块时右边界值应被平滑回拉"
     );
+}
+
+#[test]
+fn test_push_video_for_output_releases_lowest_poc_when_dpb_full() {
+    let mut dec = build_test_decoder();
+    dec.max_reference_frames = 1;
+    dec.reorder_depth = 8;
+
+    dec.push_video_for_output(build_test_video_frame_with_pts(20), 20);
+    assert!(dec.output_queue.is_empty(), "DPB 未满时不应提前输出重排帧");
+
+    dec.push_video_for_output(build_test_video_frame_with_pts(10), 10);
+    let out = match dec.output_queue.pop_front() {
+        Some(Frame::Video(vf)) => vf,
+        _ => panic!("DPB 满时应输出视频帧"),
+    };
+    assert_eq!(out.pts, 10, "DPB 满时应优先输出 POC 更小的帧");
+    assert_eq!(dec.reorder_buffer.len(), 1, "输出后应仅保留一帧待重排");
+    assert_eq!(
+        dec.reorder_buffer[0].poc, 20,
+        "输出后重排缓存中应保留较大的 POC"
+    );
+}
+
+#[test]
+fn test_drain_reorder_buffer_outputs_frames_by_poc_ascending() {
+    let mut dec = build_test_decoder();
+    dec.max_reference_frames = 16;
+    dec.reorder_depth = 16;
+
+    dec.push_video_for_output(build_test_video_frame_with_pts(30), 30);
+    dec.push_video_for_output(build_test_video_frame_with_pts(10), 10);
+    dec.push_video_for_output(build_test_video_frame_with_pts(20), 20);
+
+    assert!(
+        dec.output_queue.is_empty(),
+        "flush 前不应提前输出, 以便验证 drain 行为"
+    );
+
+    dec.drain_reorder_buffer_to_output();
+    let mut pts_list = Vec::new();
+    while let Some(frame) = dec.output_queue.pop_front() {
+        match frame {
+            Frame::Video(vf) => pts_list.push(vf.pts),
+            Frame::Audio(_) => panic!("重排缓冲仅应输出视频帧"),
+        }
+    }
+    assert_eq!(pts_list, vec![10, 20, 30], "flush 输出应按 POC 升序");
+    assert!(dec.reorder_buffer.is_empty(), "drain 后重排缓冲应被清空");
 }
 
 #[test]
