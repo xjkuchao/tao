@@ -99,13 +99,53 @@ impl H264Decoder {
         (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1))
     }
 
+    fn find_reference_picture_for_planes(&self, planes: &RefPlanes) -> Option<&ReferencePicture> {
+        self.reference_frames.iter().rev().find(|pic| {
+            pic.poc == planes.poc && (pic.long_term_frame_idx.is_some() == planes.is_long_term)
+        })
+    }
+
+    fn temporal_direct_colocated_l0_motion(
+        &self,
+        mb_x: usize,
+        mb_y: usize,
+        ref_l0_list: &[RefPlanes],
+        ref_l1_list: &[RefPlanes],
+    ) -> Option<(i32, i32)> {
+        let mb_idx = self.mb_index(mb_x, mb_y)?;
+        for col_planes in [ref_l1_list.first(), ref_l0_list.first()]
+            .into_iter()
+            .flatten()
+        {
+            let Some(col_pic) = self.find_reference_picture_for_planes(col_planes) else {
+                continue;
+            };
+            let Some(&ref_idx) = col_pic.ref_idx_l0.get(mb_idx) else {
+                continue;
+            };
+            if ref_idx < 0 {
+                continue;
+            }
+            let Some(&mv_x) = col_pic.mv_l0_x.get(mb_idx) else {
+                continue;
+            };
+            let Some(&mv_y) = col_pic.mv_l0_y.get(mb_idx) else {
+                continue;
+            };
+            return Some((mv_x as i32, mv_y as i32));
+        }
+        None
+    }
+
     /// 构建 B-slice Direct 预测的最小运动信息.
     ///
-    /// 目前 temporal direct 路径先复用 list0 预测, spatial direct 路径使用 list0/list1 双向预测.
+    /// temporal direct 路径按 list1[0] 优先定位共定位宏块并读取其 list0 MV,
+    /// 若共定位信息不可用则回退输入预测; spatial direct 路径使用 list0/list1 双向预测.
     ///
     /// spatial direct 最小实现:
     /// - 当左/上邻居都存在且二者均为 list0/list1 的 `ref_idx=0 && mv=(0,0)` 时, 直接输出零 MV.
     /// - 其它情况: L0/L1 均独立使用邻居预测(缺失时回退输入预测 MV).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn build_b_direct_motion(
         &self,
         mb_x: usize,
@@ -113,6 +153,8 @@ impl H264Decoder {
         mv_x: i32,
         mv_y: i32,
         direct_spatial_mv_pred_flag: bool,
+        ref_l0_list: &[RefPlanes],
+        ref_l1_list: &[RefPlanes],
     ) -> (Option<BMotion>, Option<BMotion>) {
         let (direct_l0_mv_x, direct_l0_mv_y, direct_l1_mv_x, direct_l1_mv_y) =
             if direct_spatial_mv_pred_flag && self.spatial_direct_zero_mv_condition(mb_x, mb_y) {
@@ -124,10 +166,13 @@ impl H264Decoder {
                     self.predict_spatial_direct_mv_for_list(mb_x, mb_y, true, mv_x, mv_y);
                 (l0_mv_x, l0_mv_y, l1_mv_x, l1_mv_y)
             } else {
-                // Temporal Direct 的共定位 td/tb 缩放尚未完成接入.
-                // 先通过 dist_scale_factor=256 走统一缩放路径, 保持当前最小行为不变.
-                let (l0_mv_x, _) = self.scale_temporal_direct_mv_pair_component(mv_x, 256);
-                let (l0_mv_y, _) = self.scale_temporal_direct_mv_pair_component(mv_y, 256);
+                // Temporal Direct 最小实现:
+                // 先定位共定位宏块并读取其 list0 MV, 缩放仍暂用 dist_scale_factor=256.
+                let (col_mv_x, col_mv_y) = self
+                    .temporal_direct_colocated_l0_motion(mb_x, mb_y, ref_l0_list, ref_l1_list)
+                    .unwrap_or((mv_x, mv_y));
+                let (l0_mv_x, _) = self.scale_temporal_direct_mv_pair_component(col_mv_x, 256);
+                let (l0_mv_y, _) = self.scale_temporal_direct_mv_pair_component(col_mv_y, 256);
                 (l0_mv_x, l0_mv_y, l0_mv_x, l0_mv_y)
             };
         let motion_l0 = Some(BMotion {
@@ -178,6 +223,8 @@ impl H264Decoder {
                 pred_mv_x,
                 pred_mv_y,
                 direct_spatial_mv_pred_flag,
+                ref_l0_list,
+                ref_l1_list,
             );
             return self.apply_b_prediction_block(
                 motion_l0,
@@ -223,6 +270,8 @@ impl H264Decoder {
                     part_pred_mv_x[part_y][part_x],
                     part_pred_mv_y[part_y][part_x],
                     direct_spatial_mv_pred_flag,
+                    ref_l0_list,
+                    ref_l1_list,
                 );
                 last_mv = self.apply_b_prediction_block(
                     motion_l0,
@@ -1741,6 +1790,8 @@ impl H264Decoder {
                     pred_x,
                     pred_y,
                     direct_spatial_mv_pred_flag,
+                    ref_l0_list,
+                    ref_l1_list,
                 );
                 let (mv_x, mv_y, ref_idx) = self.apply_b_prediction_block(
                     motion_l0,
@@ -2131,6 +2182,8 @@ impl H264Decoder {
                     pred_mv_x,
                     pred_mv_y,
                     direct_spatial_mv_pred_flag,
+                    ref_l0_list,
+                    ref_l1_list,
                 );
                 let (mv_x, mv_y, ref_idx) = self.apply_b_prediction_block(
                     motion_l0,

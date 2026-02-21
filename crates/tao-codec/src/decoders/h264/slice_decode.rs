@@ -1083,6 +1083,8 @@ impl H264Decoder {
                         b_pred_mv_x,
                         b_pred_mv_y,
                         header.direct_spatial_mv_pred_flag,
+                        &ref_l0_list,
+                        &ref_l1_list,
                     );
                     let _ = self.apply_b_prediction_block(
                         motion_l0,
@@ -1511,6 +1513,8 @@ impl H264Decoder {
                             b_pred_mv_x,
                             b_pred_mv_y,
                             header.direct_spatial_mv_pred_flag,
+                            &ref_l0_list,
+                            &ref_l1_list,
                         );
                     } else {
                         let use_l0 = mb_type == 1 || mb_type == 3;

@@ -179,6 +179,12 @@ struct ReferencePicture {
     y: Vec<u8>,
     u: Vec<u8>,
     v: Vec<u8>,
+    /// 参考帧宏块级 list0 MV X (1/4 像素).
+    mv_l0_x: Vec<i16>,
+    /// 参考帧宏块级 list0 MV Y (1/4 像素).
+    mv_l0_y: Vec<i16>,
+    /// 参考帧宏块级 list0 ref_idx.
+    ref_idx_l0: Vec<i8>,
     frame_num: u32,
     poc: i32,
     long_term_frame_idx: Option<u32>,

@@ -216,10 +216,14 @@ fn push_dummy_reference_with_long_term(
     frame_num: u32,
     long_term_frame_idx: Option<u32>,
 ) {
+    let total_mb = dec.mb_width * dec.mb_height;
     dec.reference_frames.push_back(ReferencePicture {
         y: vec![0u8; dec.ref_y.len()],
         u: vec![0u8; dec.ref_u.len()],
         v: vec![0u8; dec.ref_v.len()],
+        mv_l0_x: vec![0i16; total_mb],
+        mv_l0_y: vec![0i16; total_mb],
+        ref_idx_l0: vec![-1i8; total_mb],
         frame_num,
         poc: frame_num as i32,
         long_term_frame_idx,
@@ -233,10 +237,44 @@ fn push_custom_reference(
     y_value: u8,
     long_term_frame_idx: Option<u32>,
 ) {
+    let total_mb = dec.mb_width * dec.mb_height;
     dec.reference_frames.push_back(ReferencePicture {
         y: vec![y_value; dec.ref_y.len()],
         u: vec![128u8; dec.ref_u.len()],
         v: vec![128u8; dec.ref_v.len()],
+        mv_l0_x: vec![0i16; total_mb],
+        mv_l0_y: vec![0i16; total_mb],
+        ref_idx_l0: vec![-1i8; total_mb],
+        frame_num,
+        poc,
+        long_term_frame_idx,
+    });
+}
+
+fn push_custom_reference_with_l0_motion(
+    dec: &mut H264Decoder,
+    frame_num: u32,
+    poc: i32,
+    y_value: u8,
+    long_term_frame_idx: Option<u32>,
+    motion: (i16, i16, i8),
+) {
+    let total_mb = dec.mb_width * dec.mb_height;
+    let mut mv_l0_x = vec![0i16; total_mb];
+    let mut mv_l0_y = vec![0i16; total_mb];
+    let mut ref_idx_l0 = vec![-1i8; total_mb];
+    if total_mb > 0 {
+        mv_l0_x[0] = motion.0;
+        mv_l0_y[0] = motion.1;
+        ref_idx_l0[0] = motion.2;
+    }
+    dec.reference_frames.push_back(ReferencePicture {
+        y: vec![y_value; dec.ref_y.len()],
+        u: vec![128u8; dec.ref_u.len()],
+        v: vec![128u8; dec.ref_v.len()],
+        mv_l0_x,
+        mv_l0_y,
+        ref_idx_l0,
         frame_num,
         poc,
         long_term_frame_idx,
@@ -249,6 +287,7 @@ fn push_horizontal_gradient_reference(
     poc: i32,
     long_term_frame_idx: Option<u32>,
 ) {
+    let total_mb = dec.mb_width * dec.mb_height;
     let mut y = vec![0u8; dec.ref_y.len()];
     for row in 0..dec.height as usize {
         for col in 0..dec.width as usize {
@@ -259,6 +298,9 @@ fn push_horizontal_gradient_reference(
         y,
         u: vec![128u8; dec.ref_u.len()],
         v: vec![128u8; dec.ref_v.len()],
+        mv_l0_x: vec![0i16; total_mb],
+        mv_l0_y: vec![0i16; total_mb],
+        ref_idx_l0: vec![-1i8; total_mb],
         frame_num,
         poc,
         long_term_frame_idx,
@@ -4051,7 +4093,7 @@ fn test_build_b_direct_motion_spatial_returns_zero_when_left_top_neighbors_are_z
         dec.ref_idx_l1[idx] = 0;
     }
 
-    let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true);
+    let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true, &[], &[]);
     let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
     let motion_l1 = motion_l1.expect("spatial direct 应提供 L1 运动信息");
     assert_eq!(motion_l0.mv_x, 0, "零向量条件满足时 L0 MV(x) 应归零");
@@ -4079,7 +4121,7 @@ fn test_build_b_direct_motion_spatial_zero_condition_uses_top_and_diagonal_neigh
         dec.ref_idx_l1[idx] = 0;
     }
 
-    let (motion_l0, motion_l1) = dec.build_b_direct_motion(0, 1, 12, -8, true);
+    let (motion_l0, motion_l1) = dec.build_b_direct_motion(0, 1, 12, -8, true, &[], &[]);
     let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
     let motion_l1 = motion_l1.expect("spatial direct 应提供 L1 运动信息");
     assert_eq!(motion_l0.mv_x, 0, "上邻与对角邻均零向量时 L0 MV(x) 应归零");
@@ -4106,7 +4148,7 @@ fn test_build_b_direct_motion_spatial_l1_fallback_keeps_input_when_neighbors_abs
     dec.ref_idx_l0[top_mb] = 0;
     dec.ref_idx_l1[top_mb] = -1;
 
-    let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true);
+    let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true, &[], &[]);
     let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
     let motion_l1 = motion_l1.expect("spatial direct 应提供 L1 运动信息");
     assert_eq!(
@@ -4145,7 +4187,7 @@ fn test_build_b_direct_motion_spatial_uses_independent_l1_neighbor_mv() {
     dec.mv_l1_y[top_mb] = 0;
     dec.ref_idx_l1[top_mb] = 0;
 
-    let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true);
+    let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true, &[], &[]);
     let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
     let motion_l1 = motion_l1.expect("spatial direct 应提供 L1 运动信息");
     assert_eq!(motion_l0.mv_x, 0, "L0 应独立使用 list0 邻居预测 MV(x)");
@@ -4173,13 +4215,63 @@ fn test_build_b_direct_motion_spatial_uses_independent_l0_neighbor_mv() {
     dec.ref_idx_l1[left_mb] = -1;
     dec.ref_idx_l1[top_mb] = -1;
 
-    let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true);
+    let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true, &[], &[]);
     let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
     let motion_l1 = motion_l1.expect("spatial direct 应提供 L1 运动信息");
     assert_eq!(motion_l0.mv_x, 20, "L0 应独立使用 list0 邻居预测 MV(x)");
     assert_eq!(motion_l0.mv_y, 0, "L0 应独立使用 list0 邻居预测 MV(y)");
     assert_eq!(motion_l1.mv_x, 12, "L1 邻居缺失时应回退输入预测 MV(x)");
     assert_eq!(motion_l1.mv_y, -8, "L1 邻居缺失时应回退输入预测 MV(y)");
+}
+
+#[test]
+fn test_build_b_direct_motion_temporal_prefers_list1_colocated_mb() {
+    let mut dec = build_test_decoder();
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_custom_reference_with_l0_motion(&mut dec, 1, 2, 20, None, (12, -8, 0));
+    push_custom_reference_with_l0_motion(&mut dec, 2, 8, 100, None, (24, 4, 0));
+
+    let ref_l0_list = dec.build_reference_list_l0_with_mod(1, &[], 0);
+    let ref_l1_list = dec.build_reference_list_l1_with_mod(1, &[], 0);
+
+    let (motion_l0, motion_l1) =
+        dec.build_b_direct_motion(0, 0, 7, -3, false, &ref_l0_list, &ref_l1_list);
+    let motion_l0 = motion_l0.expect("temporal direct 应提供 L0 运动信息");
+    assert_eq!(
+        motion_l0.mv_x, 24,
+        "temporal direct 应优先使用 list1[0] 共定位宏块的 list0 MV(x)"
+    );
+    assert_eq!(
+        motion_l0.mv_y, 4,
+        "temporal direct 应优先使用 list1[0] 共定位宏块的 list0 MV(y)"
+    );
+    assert!(
+        motion_l1.is_none(),
+        "最小 temporal direct 路径仍应保持 L1 为空"
+    );
+}
+
+#[test]
+fn test_build_b_direct_motion_temporal_fallbacks_to_l0_colocated_mb() {
+    let mut dec = build_test_decoder();
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_custom_reference_with_l0_motion(&mut dec, 1, 2, 20, None, (14, -6, 0));
+
+    let ref_l0_list = dec.build_reference_list_l0_with_mod(1, &[], 0);
+    let ref_l1_list = vec![dec.zero_reference_planes()];
+
+    let (motion_l0, _) = dec.build_b_direct_motion(0, 0, 3, 1, false, &ref_l0_list, &ref_l1_list);
+    let motion_l0 = motion_l0.expect("temporal direct 应提供 L0 运动信息");
+    assert_eq!(
+        motion_l0.mv_x, 14,
+        "list1 共定位不可定位时应回退到 list0[0] 共定位宏块 MV(x)"
+    );
+    assert_eq!(
+        motion_l0.mv_y, -6,
+        "list1 共定位不可定位时应回退到 list0[0] 共定位宏块 MV(y)"
+    );
 }
 
 #[test]

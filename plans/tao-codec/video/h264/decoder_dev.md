@@ -225,7 +225,7 @@ crates/tao-codec/src/decoders/h264/
     - [x] CAVLC B_Direct_16x16 单测: 覆盖零 MV 条件与 L1 独立邻居预测.
 - [ ] Temporal Direct:
     - [x] 共定位 MV 缩放(td/tb): 接入 dist_scale_factor 与分量缩放函数 + 单测.
-    - [ ] 共定位宏块定位.
+    - [x] 共定位宏块定位: 接入 list1[0] 优先定位 + list0 回退的宏块级共定位 MV 读取逻辑与单测.
     - [x] L0/L1 分别缩放: 接入 `mv_l0=scale(mv_col)`, `mv_l1=mv_l0-mv_col` 分量函数 + 单测.
     - [ ] Temporal Direct 单测.
 - [ ] B_Skip/B_Direct_16x16/B_Direct_8x8 接入.

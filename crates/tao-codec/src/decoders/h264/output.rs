@@ -522,10 +522,14 @@ impl H264Decoder {
 
     pub(super) fn push_non_existing_short_term_reference(&mut self, frame_num: u32, poc: i32) {
         self.apply_sliding_window_if_needed_for(frame_num);
+        let total_mb = self.mb_width * self.mb_height;
         self.reference_frames.push_back(ReferencePicture {
             y: vec![128u8; self.ref_y.len()],
             u: vec![128u8; self.ref_u.len()],
             v: vec![128u8; self.ref_v.len()],
+            mv_l0_x: vec![0i16; total_mb],
+            mv_l0_y: vec![0i16; total_mb],
+            ref_idx_l0: vec![-1i8; total_mb],
             frame_num,
             poc,
             long_term_frame_idx: None,
@@ -544,6 +548,9 @@ impl H264Decoder {
             y: self.ref_y.clone(),
             u: self.ref_u.clone(),
             v: self.ref_v.clone(),
+            mv_l0_x: self.mv_l0_x.clone(),
+            mv_l0_y: self.mv_l0_y.clone(),
+            ref_idx_l0: self.ref_idx_l0.clone(),
             frame_num: self.last_frame_num,
             poc: self.last_poc,
             long_term_frame_idx,
