@@ -295,7 +295,13 @@ pub fn parse_avcc_config(data: &[u8]) -> TaoResult<AvccConfig> {
         ));
     }
 
-    let _version = data[0];
+    let version = data[0];
+    if version != 1 {
+        return Err(tao_core::TaoError::InvalidData(format!(
+            "H.264: avcC configurationVersion 非法, value={}, 期望=1",
+            version
+        )));
+    }
     let _profile = data[1];
     let _compat = data[2];
     let _level = data[3];
@@ -811,6 +817,18 @@ mod tests {
         assert!(
             msg.contains("SPS 长度字段截断"),
             "错误信息应包含 SPS 长度字段截断, actual={}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_parse_avcc_config_reject_invalid_version() {
+        let data = [0x00, 0x64, 0x00, 0x1E, 0xFF, 0xE0, 0x00];
+        let err = parse_avcc_config(&data).expect_err("configurationVersion!=1 应返回错误");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("configurationVersion"),
+            "错误信息应包含 configurationVersion, actual={}",
             msg
         );
     }
