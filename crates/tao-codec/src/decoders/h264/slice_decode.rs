@@ -1104,6 +1104,124 @@ impl H264Decoder {
                         continue;
                     }
 
+                    if (4..=21).contains(&mb_type) {
+                        const MODE_L0: u8 = 0;
+                        const MODE_L1: u8 = 1;
+                        const MODE_BI: u8 = 2;
+
+                        let (part0_mode, part1_mode) = match mb_type {
+                            4 | 5 => (MODE_L0, MODE_L0),
+                            6 | 7 => (MODE_L1, MODE_L1),
+                            8 | 9 => (MODE_L0, MODE_L1),
+                            10 | 11 => (MODE_L1, MODE_L0),
+                            12 | 13 => (MODE_L0, MODE_BI),
+                            14 | 15 => (MODE_L1, MODE_BI),
+                            16 | 17 => (MODE_BI, MODE_L0),
+                            18 | 19 => (MODE_BI, MODE_L1),
+                            20 | 21 => (MODE_BI, MODE_BI),
+                            _ => (MODE_BI, MODE_BI),
+                        };
+                        let split_16x8 = mb_type & 1 == 0;
+
+                        let mut read_partition_motion =
+                            |pred_mode: u8| -> (Option<BMotion>, Option<BMotion>) {
+                                let use_l0 = pred_mode == MODE_L0 || pred_mode == MODE_BI;
+                                let use_l1 = pred_mode == MODE_L1 || pred_mode == MODE_BI;
+
+                                let l0_motion = if use_l0 {
+                                    let mut ref_idx_l0 = 0usize;
+                                    if header.num_ref_idx_l0 > 1 {
+                                        ref_idx_l0 = read_ue(&mut br).unwrap_or(0) as usize;
+                                    }
+                                    Some(BMotion {
+                                        mv_x: 0,
+                                        mv_y: 0,
+                                        ref_idx: ref_idx_l0.min(i8::MAX as usize) as i8,
+                                    })
+                                } else {
+                                    None
+                                };
+
+                                let l1_motion = if use_l1 {
+                                    let mut ref_idx_l1 = 0usize;
+                                    if header.num_ref_idx_l1 > 1 {
+                                        ref_idx_l1 = read_ue(&mut br).unwrap_or(0) as usize;
+                                    }
+                                    Some(BMotion {
+                                        mv_x: 0,
+                                        mv_y: 0,
+                                        ref_idx: ref_idx_l1.min(i8::MAX as usize) as i8,
+                                    })
+                                } else {
+                                    None
+                                };
+                                (l0_motion, l1_motion)
+                            };
+
+                        let (part0_l0_motion, part0_l1_motion) = read_partition_motion(part0_mode);
+                        let (part1_l0_motion, part1_l1_motion) = read_partition_motion(part1_mode);
+                        if split_16x8 {
+                            let _ = self.apply_b_prediction_block(
+                                part0_l0_motion,
+                                part0_l1_motion,
+                                &header.l0_weights,
+                                &header.l1_weights,
+                                header.luma_log2_weight_denom,
+                                header.chroma_log2_weight_denom,
+                                &ref_l0_list,
+                                &ref_l1_list,
+                                mb_x * 16,
+                                mb_y * 16,
+                                16,
+                                8,
+                            );
+                            let _ = self.apply_b_prediction_block(
+                                part1_l0_motion,
+                                part1_l1_motion,
+                                &header.l0_weights,
+                                &header.l1_weights,
+                                header.luma_log2_weight_denom,
+                                header.chroma_log2_weight_denom,
+                                &ref_l0_list,
+                                &ref_l1_list,
+                                mb_x * 16,
+                                mb_y * 16 + 8,
+                                16,
+                                8,
+                            );
+                        } else {
+                            let _ = self.apply_b_prediction_block(
+                                part0_l0_motion,
+                                part0_l1_motion,
+                                &header.l0_weights,
+                                &header.l1_weights,
+                                header.luma_log2_weight_denom,
+                                header.chroma_log2_weight_denom,
+                                &ref_l0_list,
+                                &ref_l1_list,
+                                mb_x * 16,
+                                mb_y * 16,
+                                8,
+                                16,
+                            );
+                            let _ = self.apply_b_prediction_block(
+                                part1_l0_motion,
+                                part1_l1_motion,
+                                &header.l0_weights,
+                                &header.l1_weights,
+                                header.luma_log2_weight_denom,
+                                header.chroma_log2_weight_denom,
+                                &ref_l0_list,
+                                &ref_l1_list,
+                                mb_x * 16 + 8,
+                                mb_y * 16,
+                                8,
+                                16,
+                            );
+                        }
+                        continue;
+                    }
+
                     let mut l0_ref_idx = 0usize;
                     let mut l1_ref_idx = 0usize;
                     if (mb_type == 1 || mb_type == 3) && header.num_ref_idx_l0 > 1 {
