@@ -63,6 +63,8 @@ fn build_test_sps(sps_id: u32) -> Sps {
         offset_for_non_ref_pic: 0,
         offset_for_top_to_bottom_field: 0,
         offset_for_ref_frame: Vec::new(),
+        scaling_list_4x4: [[16; 16]; 6],
+        scaling_list_8x8: vec![[16; 64]; 2],
     }
 }
 

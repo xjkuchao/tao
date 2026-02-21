@@ -73,7 +73,7 @@ crates/tao-codec/src/decoders/h264/
     - [x] SPS 能力门禁(4:2:0 + 8-bit + frame_mbs_only).
     - [x] `handle_sps` 缓存前能力校验 + 单测.
     - [x] avcC 全链路校验(版本/保留位/截断/NAL类型) + 单测.
-    - [ ] SPS 自定义量化矩阵解析(`scaling_list` 4x4/8x8) + 单测.
+    - [x] SPS 自定义量化矩阵解析(`scaling_list` 4x4/8x8) + 单测.
     - [ ] PPS 自定义量化矩阵解析(`scaling_list` 4x4/8x8) + 单测.
 - [ ] 参数集变更重建.
     - [x] PPS 变更分级策略(None/RuntimeOnly/Full) + 单测.

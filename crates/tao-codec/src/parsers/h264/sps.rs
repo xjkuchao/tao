@@ -75,6 +75,10 @@ pub struct Sps {
     pub offset_for_top_to_bottom_field: i32,
     /// `poc_type==1` 时的 offset_for_ref_frame 列表.
     pub offset_for_ref_frame: Vec<i32>,
+    /// 4x4 量化矩阵列表 (6 组, 已应用默认/回退规则).
+    pub scaling_list_4x4: [[u8; 16]; 6],
+    /// 8x8 量化矩阵列表 (4:2:0/4:2:2 为 2 组, 4:4:4 为 6 组, 已应用默认/回退规则).
+    pub scaling_list_8x8: Vec<[u8; 64]>,
 }
 
 /// 预定义的 SAR 表 (ITU-T H.264 表 E-1)
@@ -96,6 +100,26 @@ const SAR_TABLE: [(u32, u32); 17] = [
     (4, 3),    // 14: 4:3
     (3, 2),    // 15: 3:2
     (2, 1),    // 16: 2:1
+];
+
+const DEFAULT_SCALING_4X4_INTRA: [u8; 16] = [
+    6, 13, 20, 28, 13, 20, 28, 32, 20, 28, 32, 37, 28, 32, 37, 42,
+];
+
+const DEFAULT_SCALING_4X4_INTER: [u8; 16] = [
+    10, 14, 20, 24, 14, 20, 24, 27, 20, 24, 27, 30, 24, 27, 30, 34,
+];
+
+const DEFAULT_SCALING_8X8_INTRA: [u8; 64] = [
+    6, 10, 13, 16, 18, 23, 25, 27, 10, 11, 16, 18, 23, 25, 27, 29, 13, 16, 18, 23, 25, 27, 29, 31,
+    16, 18, 23, 25, 27, 29, 31, 33, 18, 23, 25, 27, 29, 31, 33, 36, 23, 25, 27, 29, 31, 33, 36, 38,
+    25, 27, 29, 31, 33, 36, 38, 40, 27, 29, 31, 33, 36, 38, 40, 42,
+];
+
+const DEFAULT_SCALING_8X8_INTER: [u8; 64] = [
+    9, 13, 15, 17, 19, 21, 22, 24, 13, 13, 17, 19, 21, 22, 24, 25, 15, 17, 19, 21, 22, 24, 25, 27,
+    17, 19, 21, 22, 24, 25, 27, 28, 19, 21, 22, 24, 25, 27, 28, 30, 21, 22, 24, 25, 27, 28, 30, 32,
+    22, 24, 25, 27, 28, 30, 32, 33, 24, 25, 27, 28, 30, 32, 33, 35,
 ];
 
 /// 从 RBSP 数据解析 SPS
@@ -125,6 +149,8 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
     let mut separate_colour_plane_flag = false;
     let mut bit_depth_luma = 8;
     let mut bit_depth_chroma = 8;
+    let mut scaling_list_4x4 = default_scaling_lists_4x4();
+    let mut scaling_list_8x8 = default_scaling_lists_8x8(chroma_format_idc);
 
     // High profile 及以上有额外字段
     if is_high_profile(profile_idc) {
@@ -138,6 +164,7 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
         if chroma_format_idc == 3 {
             separate_colour_plane_flag = br.read_bit()? == 1;
         }
+        scaling_list_8x8 = default_scaling_lists_8x8(chroma_format_idc);
         bit_depth_luma = read_ue(&mut br)? + 8;
         bit_depth_chroma = read_ue(&mut br)? + 8;
         if !(8..=14).contains(&bit_depth_luma) {
@@ -157,8 +184,12 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
         // seq_scaling_matrix_present_flag
         let scaling_present = br.read_bit()?;
         if scaling_present == 1 {
-            let count = if chroma_format_idc != 3 { 8 } else { 12 };
-            skip_scaling_lists(&mut br, count)?;
+            parse_seq_scaling_lists(
+                &mut br,
+                chroma_format_idc,
+                &mut scaling_list_4x4,
+                &mut scaling_list_8x8,
+            )?;
         }
     }
 
@@ -332,6 +363,8 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
         offset_for_non_ref_pic,
         offset_for_top_to_bottom_field,
         offset_for_ref_frame,
+        scaling_list_4x4,
+        scaling_list_8x8,
     })
 }
 
@@ -396,35 +429,153 @@ fn cropping_unit(chroma_format_idc: u32, frame_mbs_only: bool) -> (u32, u32) {
     (sub_width, sub_height * height_mult)
 }
 
-/// 跳过 scaling list
-fn skip_scaling_lists(br: &mut BitReader, count: usize) -> TaoResult<()> {
-    for i in 0..count {
+fn default_scaling_lists_4x4() -> [[u8; 16]; 6] {
+    [
+        DEFAULT_SCALING_4X4_INTRA,
+        DEFAULT_SCALING_4X4_INTRA,
+        DEFAULT_SCALING_4X4_INTRA,
+        DEFAULT_SCALING_4X4_INTER,
+        DEFAULT_SCALING_4X4_INTER,
+        DEFAULT_SCALING_4X4_INTER,
+    ]
+}
+
+fn default_scaling_lists_8x8(chroma_format_idc: u32) -> Vec<[u8; 64]> {
+    let list_count = if chroma_format_idc == 3 { 6 } else { 2 };
+    let mut lists = Vec::with_capacity(list_count);
+    for idx in 0..list_count {
+        lists.push(default_scaling_list_8x8_by_idx(idx));
+    }
+    lists
+}
+
+fn default_scaling_list_4x4_by_idx(idx: usize) -> [u8; 16] {
+    if idx < 3 {
+        DEFAULT_SCALING_4X4_INTRA
+    } else {
+        DEFAULT_SCALING_4X4_INTER
+    }
+}
+
+fn default_scaling_list_8x8_by_idx(idx: usize) -> [u8; 64] {
+    if idx % 2 == 0 {
+        DEFAULT_SCALING_8X8_INTRA
+    } else {
+        DEFAULT_SCALING_8X8_INTER
+    }
+}
+
+fn parse_seq_scaling_lists(
+    br: &mut BitReader,
+    chroma_format_idc: u32,
+    scaling_list_4x4: &mut [[u8; 16]; 6],
+    scaling_list_8x8: &mut [[u8; 64]],
+) -> TaoResult<()> {
+    let list_count = if chroma_format_idc != 3 { 8 } else { 12 };
+    for list_idx in 0..list_count {
         let present = br.read_bit()?;
-        if present == 1 {
-            let size = if i < 6 { 16 } else { 64 };
-            skip_scaling_list(br, size)?;
+        if present == 0 {
+            apply_absent_scaling_list_fallback(list_idx, scaling_list_4x4, scaling_list_8x8)?;
+            continue;
+        }
+
+        if list_idx < 6 {
+            let (list, use_default) = parse_scaling_list_4x4(br)?;
+            scaling_list_4x4[list_idx] = if use_default {
+                default_scaling_list_4x4_by_idx(list_idx)
+            } else {
+                list
+            };
+        } else {
+            let idx8 = list_idx - 6;
+            let (list, use_default) = parse_scaling_list_8x8(br)?;
+            scaling_list_8x8[idx8] = if use_default {
+                default_scaling_list_8x8_by_idx(idx8)
+            } else {
+                list
+            };
         }
     }
     Ok(())
 }
 
-/// 跳过单个 scaling list
-fn skip_scaling_list(br: &mut BitReader, size: usize) -> TaoResult<()> {
-    let mut last_scale: i32 = 8;
-    let mut next_scale: i32 = 8;
+fn apply_absent_scaling_list_fallback(
+    list_idx: usize,
+    scaling_list_4x4: &mut [[u8; 16]; 6],
+    scaling_list_8x8: &mut [[u8; 64]],
+) -> TaoResult<()> {
+    if list_idx < 6 {
+        scaling_list_4x4[list_idx] = if list_idx == 0 || list_idx == 3 {
+            default_scaling_list_4x4_by_idx(list_idx)
+        } else {
+            scaling_list_4x4[list_idx - 1]
+        };
+        return Ok(());
+    }
 
-    for _ in 0..size {
+    let idx8 = list_idx - 6;
+    if idx8 >= scaling_list_8x8.len() {
+        return Err(TaoError::InvalidData(format!(
+            "H.264: SPS scaling_list_8x8 索引越界, idx={}",
+            idx8
+        )));
+    }
+    scaling_list_8x8[idx8] = if idx8 < 2 {
+        default_scaling_list_8x8_by_idx(idx8)
+    } else {
+        scaling_list_8x8[idx8 - 2]
+    };
+    Ok(())
+}
+
+fn parse_scaling_list_4x4(br: &mut BitReader) -> TaoResult<([u8; 16], bool)> {
+    let mut list = [0u8; 16];
+    let mut last_scale = 8i32;
+    let mut next_scale = 8i32;
+    let mut use_default = false;
+    for (idx, slot) in list.iter_mut().enumerate() {
         if next_scale != 0 {
-            let delta = read_se(br)?;
-            next_scale = (last_scale + delta + 256) % 256;
+            let delta_scale = read_se(br)?;
+            let sum = i64::from(last_scale) + i64::from(delta_scale) + 256;
+            next_scale = sum.rem_euclid(256) as i32;
+            if idx == 0 && next_scale == 0 {
+                use_default = true;
+            }
         }
-        last_scale = if next_scale == 0 {
+        let cur_scale = if next_scale == 0 {
             last_scale
         } else {
             next_scale
         };
+        *slot = cur_scale as u8;
+        last_scale = cur_scale;
     }
-    Ok(())
+    Ok((list, use_default))
+}
+
+fn parse_scaling_list_8x8(br: &mut BitReader) -> TaoResult<([u8; 64], bool)> {
+    let mut list = [0u8; 64];
+    let mut last_scale = 8i32;
+    let mut next_scale = 8i32;
+    let mut use_default = false;
+    for (idx, slot) in list.iter_mut().enumerate() {
+        if next_scale != 0 {
+            let delta_scale = read_se(br)?;
+            let sum = i64::from(last_scale) + i64::from(delta_scale) + 256;
+            next_scale = sum.rem_euclid(256) as i32;
+            if idx == 0 && next_scale == 0 {
+                use_default = true;
+            }
+        }
+        let cur_scale = if next_scale == 0 {
+            last_scale
+        } else {
+            next_scale
+        };
+        *slot = cur_scale as u8;
+        last_scale = cur_scale;
+    }
+    Ok((list, use_default))
 }
 
 /// 解析 VUI 参数 (部分)
@@ -753,6 +904,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_sps_parse_scaling_lists_non444_custom_and_fallback() {
+        let rbsp = build_test_high_profile_sps_with_scaling_lists(1);
+        let sps = parse_sps(&rbsp).expect("带 scaling_list 的 SPS 解析失败");
+
+        assert_eq!(
+            sps.scaling_list_4x4[0], DEFAULT_SCALING_4X4_INTRA,
+            "list0 useDefault 应回退到默认 Intra 4x4 矩阵"
+        );
+        assert_eq!(
+            sps.scaling_list_4x4[1], DEFAULT_SCALING_4X4_INTRA,
+            "list1 未显式给出时应回退到 list0"
+        );
+        assert_eq!(
+            sps.scaling_list_4x4[3], DEFAULT_SCALING_4X4_INTER,
+            "list3 useDefault 应回退到默认 Inter 4x4 矩阵"
+        );
+        assert_eq!(
+            sps.scaling_list_8x8.len(),
+            2,
+            "4:2:0 应仅有 2 组 8x8 scaling_list"
+        );
+
+        assert!(
+            sps.scaling_list_8x8[0].iter().all(|v| *v == 8),
+            "自定义 list6 应解析为常量 8"
+        );
+        assert_eq!(
+            sps.scaling_list_8x8[1], DEFAULT_SCALING_8X8_INTER,
+            "list7 未显式给出时应使用默认 Inter 8x8 矩阵"
+        );
+    }
+
+    #[test]
+    fn test_sps_parse_scaling_lists_444_absent_uses_same_parity_fallback() {
+        let rbsp = build_test_high_profile_sps_with_scaling_lists(3);
+        let sps = parse_sps(&rbsp).expect("4:4:4 scaling_list SPS 解析失败");
+
+        assert_eq!(
+            sps.scaling_list_8x8.len(),
+            6,
+            "4:4:4 应有 6 组 8x8 scaling_list"
+        );
+        assert!(
+            sps.scaling_list_8x8[0].iter().all(|v| *v == 8),
+            "list6 自定义常量 8 解析错误"
+        );
+        assert_eq!(
+            sps.scaling_list_8x8[1], DEFAULT_SCALING_8X8_INTER,
+            "list7 useDefault 应回退到默认 Inter 8x8 矩阵"
+        );
+        assert_eq!(
+            sps.scaling_list_8x8[2], sps.scaling_list_8x8[0],
+            "list8 未显式给出时应回退到同奇偶的 list6"
+        );
+        assert_eq!(
+            sps.scaling_list_8x8[3], sps.scaling_list_8x8[1],
+            "list9 未显式给出时应回退到同奇偶的 list7"
+        );
+    }
+
     // ============================================================
     // 测试辅助: 构造 SPS RBSP 数据
     // ============================================================
@@ -773,6 +985,16 @@ mod tests {
         for i in (0..num_bits).rev() {
             bits.push(((code >> i) & 1) != 0);
         }
+    }
+
+    /// 写入 se(v)
+    fn write_se(bits: &mut Vec<bool>, val: i32) {
+        let code_num = if val <= 0 {
+            (-2 * val) as u32
+        } else {
+            (2 * val - 1) as u32
+        };
+        write_ue(bits, code_num);
     }
 
     /// 将 bit 向量转为字节
@@ -969,6 +1191,83 @@ mod tests {
         for _ in 0..num_ref_in_cycle {
             write_ue(&mut bits, 0); // offset_for_ref_frame[i]
         }
+        write_ue(&mut bits, 4); // max_num_ref_frames
+        bits.push(false); // gaps_in_frame_num_value_allowed_flag
+        write_ue(&mut bits, 19); // width=320
+        write_ue(&mut bits, 14); // height=240
+        bits.push(true); // frame_mbs_only_flag
+        bits.push(false); // direct_8x8_inference_flag
+        bits.push(false); // frame_cropping_flag
+        bits.push(false); // vui_parameters_present_flag
+
+        bits_to_bytes(&bits)
+    }
+
+    /// 构造带 `scaling_list` 语法的 High Profile SPS.
+    ///
+    /// 语法设计:
+    /// - list0: useDefault(4x4 Intra)
+    /// - list1/list2: absent, 触发回退
+    /// - list3: useDefault(4x4 Inter)
+    /// - list4/list5: absent, 触发回退
+    /// - list6: 自定义常量 8
+    /// - list7: absent(4:2:0/4:2:2) 或 useDefault(4:4:4)
+    /// - list8..11(仅 4:4:4): absent, 触发同奇偶回退
+    fn build_test_high_profile_sps_with_scaling_lists(chroma_format_idc: u32) -> Vec<u8> {
+        let mut bits = Vec::new();
+
+        // profile_idc=100(High), constraints=0, level=40
+        for i in (0..8).rev() {
+            bits.push(((100u8 >> i) & 1) != 0);
+        }
+        bits.extend(std::iter::repeat_n(false, 8));
+        for i in (0..8).rev() {
+            bits.push(((40u8 >> i) & 1) != 0);
+        }
+
+        write_ue(&mut bits, 0); // sps_id
+        write_ue(&mut bits, chroma_format_idc);
+        if chroma_format_idc == 3 {
+            bits.push(false); // separate_colour_plane_flag
+        }
+        write_ue(&mut bits, 0); // bit_depth_luma_minus8
+        write_ue(&mut bits, 0); // bit_depth_chroma_minus8
+        bits.push(false); // qpprime_y_zero_transform_bypass_flag
+        bits.push(true); // seq_scaling_matrix_present_flag
+
+        let list_count = if chroma_format_idc == 3 { 12 } else { 8 };
+        for idx in 0..list_count {
+            match idx {
+                0 => {
+                    bits.push(true);
+                    write_se(&mut bits, -8); // useDefaultScalingMatrixFlag
+                }
+                1 | 2 | 4 | 5 => bits.push(false),
+                3 => {
+                    bits.push(true);
+                    write_se(&mut bits, -8); // useDefaultScalingMatrixFlag
+                }
+                6 => {
+                    bits.push(true);
+                    for _ in 0..64 {
+                        write_se(&mut bits, 0); // 解析为常量 8
+                    }
+                }
+                7 => {
+                    if chroma_format_idc == 3 {
+                        bits.push(true);
+                        write_se(&mut bits, -8); // useDefaultScalingMatrixFlag
+                    } else {
+                        bits.push(false);
+                    }
+                }
+                _ => bits.push(false),
+            }
+        }
+
+        write_ue(&mut bits, 0); // log2_max_frame_num_minus4
+        write_ue(&mut bits, 0); // pic_order_cnt_type
+        write_ue(&mut bits, 0); // log2_max_pic_order_cnt_lsb_minus4
         write_ue(&mut bits, 4); // max_num_ref_frames
         bits.push(false); // gaps_in_frame_num_value_allowed_flag
         write_ue(&mut bits, 19); // width=320
