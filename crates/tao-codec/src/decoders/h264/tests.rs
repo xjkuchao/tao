@@ -4021,6 +4021,34 @@ fn test_build_b_direct_motion_spatial_returns_zero_when_left_top_neighbors_are_z
 }
 
 #[test]
+fn test_build_b_direct_motion_spatial_zero_condition_uses_top_and_diagonal_neighbors() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+
+    // 目标宏块为 (0,1), 无左邻, 依赖上邻与 C 对角邻居.
+    let top_mb = dec.mb_index(0, 0).expect("上邻索引应存在");
+    let diag_mb = dec.mb_index(1, 0).expect("对角邻索引应存在");
+    for idx in [top_mb, diag_mb] {
+        dec.mv_l0_x[idx] = 0;
+        dec.mv_l0_y[idx] = 0;
+        dec.ref_idx_l0[idx] = 0;
+        dec.mv_l1_x[idx] = 0;
+        dec.mv_l1_y[idx] = 0;
+        dec.ref_idx_l1[idx] = 0;
+    }
+
+    let (motion_l0, motion_l1) = dec.build_b_direct_motion(0, 1, 12, -8, true);
+    let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
+    let motion_l1 = motion_l1.expect("spatial direct 应提供 L1 运动信息");
+    assert_eq!(motion_l0.mv_x, 0, "上邻与对角邻均零向量时 L0 MV(x) 应归零");
+    assert_eq!(motion_l0.mv_y, 0, "上邻与对角邻均零向量时 L0 MV(y) 应归零");
+    assert_eq!(motion_l1.mv_x, 0, "上邻与对角邻均零向量时 L1 MV(x) 应归零");
+    assert_eq!(motion_l1.mv_y, 0, "上邻与对角邻均零向量时 L1 MV(y) 应归零");
+}
+
+#[test]
 fn test_build_b_direct_motion_spatial_l1_fallback_keeps_input_when_neighbors_absent() {
     let mut dec = build_test_decoder();
     dec.width = 32;

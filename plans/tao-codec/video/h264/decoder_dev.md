@@ -214,8 +214,8 @@ crates/tao-codec/src/decoders/h264/
 
 - [ ] 新建 `direct.rs`.
 - [ ] Spatial Direct:
-    - [ ] 邻居 MV/ref_idx 收集.
-    - [ ] 零 MV 条件判定.
+    - [x] 邻居 MV/ref_idx 收集: 统一 A/B/C|D 邻居索引采集并复用到 Direct 预测路径.
+    - [x] 零 MV 条件判定: 使用已收集邻居集合判定零 MV 条件(含边界仅上/对角邻场景).
     - [x] 最小零 MV 判定接入: 左/上邻居均为 list0/list1 的 `ref_idx=0 && mv=(0,0)` 时输出零 MV.
     - [x] L0/L1 方向独立推导(最小实现).
     - [x] 最小 L0 独立推导: Spatial Direct 下 L0 使用左/上/C|D 邻居中值, 缺失时回退输入预测.

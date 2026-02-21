@@ -31,7 +31,11 @@ impl H264Decoder {
         l0_zero && l1_zero
     }
 
-    fn spatial_direct_zero_mv_condition(&self, mb_x: usize, mb_y: usize) -> bool {
+    fn spatial_direct_neighbor_mb_indices(
+        &self,
+        mb_x: usize,
+        mb_y: usize,
+    ) -> (Option<usize>, Option<usize>, Option<usize>) {
         let left = if mb_x > 0 {
             self.mb_index(mb_x - 1, mb_y)
         } else {
@@ -42,11 +46,26 @@ impl H264Decoder {
         } else {
             None
         };
-        if let (Some(left_idx), Some(top_idx)) = (left, top) {
-            return self.is_zero_direct_neighbor_mb(left_idx)
-                && self.is_zero_direct_neighbor_mb(top_idx);
+        let diag = if mb_x + 1 < self.mb_width && mb_y > 0 {
+            self.mb_index(mb_x + 1, mb_y - 1)
+        } else if mb_x > 0 && mb_y > 0 {
+            self.mb_index(mb_x - 1, mb_y - 1)
+        } else {
+            None
+        };
+        (left, top, diag)
+    }
+
+    fn spatial_direct_zero_mv_condition(&self, mb_x: usize, mb_y: usize) -> bool {
+        let (left, top, diag) = self.spatial_direct_neighbor_mb_indices(mb_x, mb_y);
+        let mut has_neighbor = false;
+        for idx in [left, top, diag].into_iter().flatten() {
+            has_neighbor = true;
+            if !self.is_zero_direct_neighbor_mb(idx) {
+                return false;
+            }
         }
-        false
+        has_neighbor
     }
 
     fn predict_spatial_direct_mv_for_list(
@@ -57,32 +76,10 @@ impl H264Decoder {
         fallback_mv_x: i32,
         fallback_mv_y: i32,
     ) -> (i32, i32) {
-        let cand_a = if mb_x > 0 {
-            self.mb_index(mb_x - 1, mb_y)
-                .and_then(|idx| self.direct_neighbor_mv_for_list(idx, list1))
-        } else {
-            None
-        };
-        let cand_b = if mb_y > 0 {
-            self.mb_index(mb_x, mb_y - 1)
-                .and_then(|idx| self.direct_neighbor_mv_for_list(idx, list1))
-        } else {
-            None
-        };
-        let cand_c = if mb_x + 1 < self.mb_width && mb_y > 0 {
-            self.mb_index(mb_x + 1, mb_y - 1)
-                .and_then(|idx| self.direct_neighbor_mv_for_list(idx, list1))
-        } else {
-            None
-        }
-        .or_else(|| {
-            if mb_x > 0 && mb_y > 0 {
-                self.mb_index(mb_x - 1, mb_y - 1)
-                    .and_then(|idx| self.direct_neighbor_mv_for_list(idx, list1))
-            } else {
-                None
-            }
-        });
+        let (left, top, diag) = self.spatial_direct_neighbor_mb_indices(mb_x, mb_y);
+        let cand_a = left.and_then(|idx| self.direct_neighbor_mv_for_list(idx, list1));
+        let cand_b = top.and_then(|idx| self.direct_neighbor_mv_for_list(idx, list1));
+        let cand_c = diag.and_then(|idx| self.direct_neighbor_mv_for_list(idx, list1));
 
         let mut matched = [(0i32, 0i32); 3];
         let mut count = 0usize;
