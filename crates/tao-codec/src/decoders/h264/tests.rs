@@ -8,7 +8,7 @@ use crate::frame::Frame;
 use super::{
     BMotion, DecRefPicMarking, H264Decoder, MmcoOp, NalUnit, ParameterSetRebuildAction,
     PendingFrameMeta, Pps, PredWeightL0, RefPicListMod, RefPlanes, ReferencePicture, SliceHeader,
-    Sps, sample_h264_luma_qpel,
+    Sps, sample_h264_chroma_qpel, sample_h264_luma_qpel,
 };
 
 fn build_test_pps() -> Pps {
@@ -3346,4 +3346,28 @@ fn test_sample_h264_luma_qpel_horizontal_quarter_average() {
     let sample_q3 = sample_h264_luma_qpel(&plane, width, width, height, 3, 2, 3, 0);
     assert_eq!(sample_q1, 33, "1/4 像素应为整像素与半像素平均");
     assert_eq!(sample_q3, 38, "3/4 像素应为半像素与下一整像素平均");
+}
+
+#[test]
+fn test_sample_h264_chroma_qpel_bilinear_weighting() {
+    let width = 4usize;
+    let height = 4usize;
+    let mut plane = vec![0u8; width * height];
+    plane[width + 1] = 10;
+    plane[width + 2] = 20;
+    plane[2 * width + 1] = 30;
+    plane[2 * width + 2] = 50;
+
+    let sample = sample_h264_chroma_qpel(&plane, width, width, height, 1, 1, 3, 5);
+    assert_eq!(sample, 29, "色度双线性加权结果应符合 H264 1/8 插值公式");
+}
+
+#[test]
+fn test_sample_h264_chroma_qpel_edge_clamp() {
+    let width = 2usize;
+    let height = 2usize;
+    let plane = vec![10u8, 20u8, 30u8, 40u8];
+
+    let sample = sample_h264_chroma_qpel(&plane, width, width, height, -1, -1, 7, 7);
+    assert_eq!(sample, 10, "越界色度采样应按边界复制后再执行插值");
 }

@@ -147,10 +147,10 @@
     - [x] P-slice 互预测路径按 `ref_idx_l0` 选择参考列表项, 不再固定使用 `L0 rank0`。
     - [x] 补齐 `ref_idx_l0` 参考选择单元测试(`test_apply_inter_block_l0_selects_ref_by_ref_idx`)。
     - [x] B-slice 显式加权预测(`weighted_bipred_idc=1`)接入 list0/list1 权重路径, 并补双向/单向 L1 单测。
-- [ ] 整数/半像素/四分之一像素插值。
+- [x] 整数/半像素/四分之一像素插值。
     - [x] 亮度路径接入 H264 6-tap + qpel 16 位置组合采样(`sample_h264_luma_qpel`), 并替换 P/B 帧间重建、双向预测与加权预测中的亮度采样入口。
     - [x] 补齐亮度 qpel 单元测试(整像素透传/半像素 6-tap/1/4 与 3/4 像素平均)。
-    - [ ] 色度仍为双线性近似, 后续需补齐规范边界与权重细节。
+    - [x] 色度路径补齐 H264 专用 1/8 双线性采样(`sample_h264_chroma_qpel`), 并接入色度复制/融合/加权入口, 补齐加权与边界单测。
 - [ ] 多参考帧与基本 MMCO。
     - [x] 接入 `dec_ref_pic_marking` 解析和基础 MMCO(`op1-op6`)执行路径。
     - [x] 接入长期参考帧(`long_term_frame_idx`)管理和短期/长期参考列表拼接策略。

@@ -254,6 +254,58 @@ pub(super) fn sample_bilinear_clamped(
     ((sum + den / 2) / den).clamp(0, 255) as u8
 }
 
+/// H.264 色度 1/8 分数像素双线性采样 (4:2:0).
+///
+/// `frac_x/frac_y` 取值范围为 `[0, 7]`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn sample_h264_chroma_qpel(
+    src: &[u8],
+    stride: usize,
+    src_w: usize,
+    src_h: usize,
+    base_x: i32,
+    base_y: i32,
+    frac_x: u8,
+    frac_y: u8,
+) -> u8 {
+    let fx = i32::from(frac_x & 7);
+    let fy = i32::from(frac_y & 7);
+    if fx == 0 && fy == 0 {
+        return sample_clamped(src, stride, src_w, src_h, base_x, base_y);
+    }
+
+    let p00 = i32::from(sample_clamped(src, stride, src_w, src_h, base_x, base_y));
+    let p10 = i32::from(sample_clamped(
+        src,
+        stride,
+        src_w,
+        src_h,
+        base_x + 1,
+        base_y,
+    ));
+    let p01 = i32::from(sample_clamped(
+        src,
+        stride,
+        src_w,
+        src_h,
+        base_x,
+        base_y + 1,
+    ));
+    let p11 = i32::from(sample_clamped(
+        src,
+        stride,
+        src_w,
+        src_h,
+        base_x + 1,
+        base_y + 1,
+    ));
+
+    let wx0 = 8 - fx;
+    let wy0 = 8 - fy;
+    let sum = p00 * wx0 * wy0 + p10 * fx * wy0 + p01 * wx0 * fy + p11 * fx * fy;
+    ((sum + 32) >> 6).clamp(0, 255) as u8
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn copy_luma_block_with_h264_qpel(
     src: &[u8],
@@ -409,17 +461,30 @@ pub(super) fn copy_block_with_qpel_bilinear(
             let dy = dst_y + y;
             let dst_idx = dy * dst_stride + dx;
             if dst_idx < dst.len() {
-                dst[dst_idx] = sample_bilinear_clamped(
-                    src,
-                    src_stride,
-                    src_w,
-                    src_h,
-                    src_x + x as i32,
-                    src_y + y as i32,
-                    frac_x,
-                    frac_y,
-                    frac_base,
-                );
+                dst[dst_idx] = if frac_base == 8 {
+                    sample_h264_chroma_qpel(
+                        src,
+                        src_stride,
+                        src_w,
+                        src_h,
+                        src_x + x as i32,
+                        src_y + y as i32,
+                        frac_x,
+                        frac_y,
+                    )
+                } else {
+                    sample_bilinear_clamped(
+                        src,
+                        src_stride,
+                        src_w,
+                        src_h,
+                        src_x + x as i32,
+                        src_y + y as i32,
+                        frac_x,
+                        frac_y,
+                        frac_base,
+                    )
+                };
             }
         }
     }
@@ -452,17 +517,30 @@ pub(super) fn blend_block_with_qpel_bilinear(
             let dy = dst_y + y;
             let dst_idx = dy * dst_stride + dx;
             if dst_idx < dst.len() {
-                let sample = sample_bilinear_clamped(
-                    src,
-                    src_stride,
-                    src_w,
-                    src_h,
-                    src_x + x as i32,
-                    src_y + y as i32,
-                    frac_x,
-                    frac_y,
-                    frac_base,
-                );
+                let sample = if frac_base == 8 {
+                    sample_h264_chroma_qpel(
+                        src,
+                        src_stride,
+                        src_w,
+                        src_h,
+                        src_x + x as i32,
+                        src_y + y as i32,
+                        frac_x,
+                        frac_y,
+                    )
+                } else {
+                    sample_bilinear_clamped(
+                        src,
+                        src_stride,
+                        src_w,
+                        src_h,
+                        src_x + x as i32,
+                        src_y + y as i32,
+                        frac_x,
+                        frac_y,
+                        frac_base,
+                    )
+                };
                 let blended = ((u16::from(dst[dst_idx]) + u16::from(sample) + 1) >> 1) as u8;
                 dst[dst_idx] = blended;
             }
@@ -500,17 +578,30 @@ pub(super) fn weighted_copy_block_with_qpel_bilinear(
             let dy = dst_y + y;
             let dst_idx = dy * dst_stride + dx;
             if dst_idx < dst.len() {
-                let sample = sample_bilinear_clamped(
-                    src,
-                    src_stride,
-                    src_w,
-                    src_h,
-                    src_x + x as i32,
-                    src_y + y as i32,
-                    frac_x,
-                    frac_y,
-                    frac_base,
-                );
+                let sample = if frac_base == 8 {
+                    sample_h264_chroma_qpel(
+                        src,
+                        src_stride,
+                        src_w,
+                        src_h,
+                        src_x + x as i32,
+                        src_y + y as i32,
+                        frac_x,
+                        frac_y,
+                    )
+                } else {
+                    sample_bilinear_clamped(
+                        src,
+                        src_stride,
+                        src_w,
+                        src_h,
+                        src_x + x as i32,
+                        src_y + y as i32,
+                        frac_x,
+                        frac_y,
+                        frac_base,
+                    )
+                };
                 dst[dst_idx] = apply_weighted_sample(sample, weight, offset, log2_denom);
             }
         }
