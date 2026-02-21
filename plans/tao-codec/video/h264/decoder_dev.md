@@ -266,7 +266,7 @@ crates/tao-codec/src/decoders/h264/
     - [x] 对齐 FFmpeg 4x4 级 BS.
 - [x] 强滤波(bs=4): 亮度 4 像素 + 色度 2 像素, 对齐规范公式.
 - [x] idc=2: 不跨 slice 边界(first_mb 边界检测).
-- [ ] B-slice 双列表 BS(ref_idx_l0/l1 + mv_l0/l1 完整比较).
+- [x] B-slice 双列表 BS(ref_idx_l0/l1 + mv_l0/l1 完整比较).
 - [x] 色度 QP 映射(chroma_qp_from_luma_with_offset).
 - [x] 4x4 内部 BS / 强滤波 / idc=2 单测.
 

@@ -620,10 +620,16 @@ impl H264Decoder {
                     mv_l0_x: Some(&self.mv_l0_x),
                     mv_l0_y: Some(&self.mv_l0_y),
                     ref_idx_l0: Some(&self.ref_idx_l0),
+                    mv_l1_x: Some(&self.mv_l1_x),
+                    mv_l1_y: Some(&self.mv_l1_y),
+                    ref_idx_l1: Some(&self.ref_idx_l1),
                     cbf_luma: Some(&self.cbf_luma),
                     mv_l0_x_4x4: Some(&self.mv_l0_x_4x4),
                     mv_l0_y_4x4: Some(&self.mv_l0_y_4x4),
                     ref_idx_l0_4x4: Some(&self.ref_idx_l0_4x4),
+                    mv_l1_x_4x4: Some(&self.mv_l1_x_4x4),
+                    mv_l1_y_4x4: Some(&self.mv_l1_y_4x4),
+                    ref_idx_l1_4x4: Some(&self.ref_idx_l1_4x4),
                 },
             );
         }

@@ -1486,6 +1486,34 @@ impl H264Decoder {
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn set_b_motion_cache_block(
+        &mut self,
+        dst_x: usize,
+        dst_y: usize,
+        w: usize,
+        h: usize,
+        motion_l0: Option<BMotion>,
+        motion_l1: Option<BMotion>,
+    ) {
+        let (l0_mv_x, l0_mv_y, l0_ref_idx) = motion_l0
+            .map(|m| (m.mv_x, m.mv_y, m.ref_idx))
+            .unwrap_or((0, 0, -1));
+        let (l1_mv_x, l1_mv_y, l1_ref_idx) = motion_l1
+            .map(|m| (m.mv_x, m.mv_y, m.ref_idx))
+            .unwrap_or((0, 0, -1));
+        self.set_l0_motion_block_4x4(dst_x, dst_y, w, h, l0_mv_x, l0_mv_y, l0_ref_idx);
+        self.set_l1_motion_block_4x4(dst_x, dst_y, w, h, l1_mv_x, l1_mv_y, l1_ref_idx);
+        if let Some(mb_idx) = self.mb_index(dst_x / 16, dst_y / 16) {
+            self.mv_l0_x[mb_idx] = l0_mv_x.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            self.mv_l0_y[mb_idx] = l0_mv_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            self.ref_idx_l0[mb_idx] = l0_ref_idx;
+            self.mv_l1_x[mb_idx] = l1_mv_x.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            self.mv_l1_y[mb_idx] = l1_mv_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            self.ref_idx_l1[mb_idx] = l1_ref_idx;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn apply_b_prediction_block(
         &mut self,
         motion_l0: Option<BMotion>,
@@ -1625,7 +1653,7 @@ impl H264Decoder {
                         m1.mv_y,
                     );
                 }
-                self.set_l0_motion_block_4x4(dst_x, dst_y, w, h, m0.mv_x, m0.mv_y, m0.ref_idx);
+                self.set_b_motion_cache_block(dst_x, dst_y, w, h, Some(m0), Some(m1));
                 (m0.mv_x, m0.mv_y, m0.ref_idx)
             }
             (Some(m0), None) => {
@@ -1664,7 +1692,7 @@ impl H264Decoder {
                     luma_log2_weight_denom,
                     chroma_log2_weight_denom,
                 );
-                self.set_l0_motion_block_4x4(dst_x, dst_y, w, h, m0.mv_x, m0.mv_y, m0.ref_idx);
+                self.set_b_motion_cache_block(dst_x, dst_y, w, h, Some(m0), None);
                 (m0.mv_x, m0.mv_y, m0.ref_idx)
             }
             (None, Some(m1)) => {
@@ -1703,11 +1731,11 @@ impl H264Decoder {
                     luma_log2_weight_denom,
                     chroma_log2_weight_denom,
                 );
-                self.set_l0_motion_block_4x4(dst_x, dst_y, w, h, 0, 0, -1);
+                self.set_b_motion_cache_block(dst_x, dst_y, w, h, None, Some(m1));
                 (m1.mv_x, m1.mv_y, m1.ref_idx)
             }
             (None, None) => {
-                self.set_l0_motion_block_4x4(dst_x, dst_y, w, h, 0, 0, -1);
+                self.set_b_motion_cache_block(dst_x, dst_y, w, h, None, None);
                 (0, 0, 0)
             }
         }

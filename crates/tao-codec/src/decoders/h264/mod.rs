@@ -276,6 +276,18 @@ pub struct H264Decoder {
     mv_l0_y_4x4: Vec<i16>,
     /// 每个 luma 4x4 块 list0 参考索引 (-1 表示不可用)
     ref_idx_l0_4x4: Vec<i8>,
+    /// 每个宏块 list1 运动向量 X (1/4 像素单位)
+    mv_l1_x: Vec<i16>,
+    /// 每个宏块 list1 运动向量 Y (1/4 像素单位)
+    mv_l1_y: Vec<i16>,
+    /// 每个宏块 list1 参考索引 (-1 表示不可用)
+    ref_idx_l1: Vec<i8>,
+    /// 每个 luma 4x4 块 list1 运动向量 X (1/4 像素单位)
+    mv_l1_x_4x4: Vec<i16>,
+    /// 每个 luma 4x4 块 list1 运动向量 Y (1/4 像素单位)
+    mv_l1_y_4x4: Vec<i16>,
+    /// 每个 luma 4x4 块 list1 参考索引 (-1 表示不可用)
+    ref_idx_l1_4x4: Vec<i8>,
     /// 每个宏块所属 slice 的 first_mb 标识, 用于 idc=2 去块边界判断.
     mb_slice_first_mb: Vec<u32>,
     /// 最近一次成功解析的 slice_type
@@ -366,6 +378,12 @@ impl H264Decoder {
             mv_l0_x_4x4: Vec::new(),
             mv_l0_y_4x4: Vec::new(),
             ref_idx_l0_4x4: Vec::new(),
+            mv_l1_x: Vec::new(),
+            mv_l1_y: Vec::new(),
+            ref_idx_l1: Vec::new(),
+            mv_l1_x_4x4: Vec::new(),
+            mv_l1_y_4x4: Vec::new(),
+            ref_idx_l1_4x4: Vec::new(),
             mb_slice_first_mb: Vec::new(),
             last_slice_type: 0,
             last_frame_num: 0,
@@ -426,6 +444,12 @@ impl H264Decoder {
         self.mv_l0_x_4x4 = vec![0i16; self.mb_width * 4 * self.mb_height * 4];
         self.mv_l0_y_4x4 = vec![0i16; self.mb_width * 4 * self.mb_height * 4];
         self.ref_idx_l0_4x4 = vec![-1i8; self.mb_width * 4 * self.mb_height * 4];
+        self.mv_l1_x = vec![0i16; total_mb];
+        self.mv_l1_y = vec![0i16; total_mb];
+        self.ref_idx_l1 = vec![-1i8; total_mb];
+        self.mv_l1_x_4x4 = vec![0i16; self.mb_width * 4 * self.mb_height * 4];
+        self.mv_l1_y_4x4 = vec![0i16; self.mb_width * 4 * self.mb_height * 4];
+        self.ref_idx_l1_4x4 = vec![-1i8; self.mb_width * 4 * self.mb_height * 4];
         self.mb_slice_first_mb = vec![u32::MAX; total_mb];
     }
 
@@ -543,6 +567,12 @@ impl H264Decoder {
         self.mv_l0_x_4x4.fill(0);
         self.mv_l0_y_4x4.fill(0);
         self.ref_idx_l0_4x4.fill(-1);
+        self.mv_l1_x.fill(0);
+        self.mv_l1_y.fill(0);
+        self.ref_idx_l1.fill(-1);
+        self.mv_l1_x_4x4.fill(0);
+        self.mv_l1_y_4x4.fill(0);
+        self.ref_idx_l1_4x4.fill(-1);
         self.mb_slice_first_mb.fill(u32::MAX);
         self.prev_qp_delta_nz = false;
     }
@@ -1002,6 +1032,12 @@ impl Decoder for H264Decoder {
         self.mv_l0_x_4x4.fill(0);
         self.mv_l0_y_4x4.fill(0);
         self.ref_idx_l0_4x4.fill(-1);
+        self.mv_l1_x.fill(0);
+        self.mv_l1_y.fill(0);
+        self.ref_idx_l1.fill(-1);
+        self.mv_l1_x_4x4.fill(0);
+        self.mv_l1_y_4x4.fill(0);
+        self.ref_idx_l1_4x4.fill(-1);
         self.mb_slice_first_mb.fill(u32::MAX);
     }
 }

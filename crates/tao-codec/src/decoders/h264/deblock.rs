@@ -29,10 +29,16 @@ pub(super) struct DeblockSliceParams<'a> {
     pub(super) mv_l0_x: Option<&'a [i16]>,
     pub(super) mv_l0_y: Option<&'a [i16]>,
     pub(super) ref_idx_l0: Option<&'a [i8]>,
+    pub(super) mv_l1_x: Option<&'a [i16]>,
+    pub(super) mv_l1_y: Option<&'a [i16]>,
+    pub(super) ref_idx_l1: Option<&'a [i8]>,
     pub(super) cbf_luma: Option<&'a [bool]>,
     pub(super) mv_l0_x_4x4: Option<&'a [i16]>,
     pub(super) mv_l0_y_4x4: Option<&'a [i16]>,
     pub(super) ref_idx_l0_4x4: Option<&'a [i8]>,
+    pub(super) mv_l1_x_4x4: Option<&'a [i16]>,
+    pub(super) mv_l1_y_4x4: Option<&'a [i16]>,
+    pub(super) ref_idx_l1_4x4: Option<&'a [i8]>,
 }
 
 /// 对 YUV420 帧执行带 slice 参数的去块滤波.
@@ -61,10 +67,16 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
         mv_l0_x,
         mv_l0_y,
         ref_idx_l0,
+        mv_l1_x,
+        mv_l1_y,
+        ref_idx_l1,
         cbf_luma,
         mv_l0_x_4x4,
         mv_l0_y_4x4,
         ref_idx_l0_4x4,
+        mv_l1_x_4x4,
+        mv_l1_y_4x4,
+        ref_idx_l1_4x4,
     } = params;
     if width == 0 || height == 0 {
         return;
@@ -100,10 +112,16 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
                     mv_l0_x,
                     mv_l0_y,
                     ref_idx_l0,
+                    mv_l1_x,
+                    mv_l1_y,
+                    ref_idx_l1,
                     cbf_luma,
                     mv_l0_x_4x4,
                     mv_l0_y_4x4,
                     ref_idx_l0_4x4,
+                    mv_l1_x_4x4,
+                    mv_l1_y_4x4,
+                    ref_idx_l1_4x4,
                 })
             }
         })
@@ -158,10 +176,16 @@ struct DeblockMbContext<'a> {
     mv_l0_x: Option<&'a [i16]>,
     mv_l0_y: Option<&'a [i16]>,
     ref_idx_l0: Option<&'a [i8]>,
+    mv_l1_x: Option<&'a [i16]>,
+    mv_l1_y: Option<&'a [i16]>,
+    ref_idx_l1: Option<&'a [i8]>,
     cbf_luma: Option<&'a [bool]>,
     mv_l0_x_4x4: Option<&'a [i16]>,
     mv_l0_y_4x4: Option<&'a [i16]>,
     ref_idx_l0_4x4: Option<&'a [i8]>,
+    mv_l1_x_4x4: Option<&'a [i16]>,
+    mv_l1_y_4x4: Option<&'a [i16]>,
+    ref_idx_l1_4x4: Option<&'a [i8]>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -529,24 +553,11 @@ fn boundary_strength_within_mb_common(
 }
 
 fn motion_boundary_strength(ctx: &DeblockMbContext<'_>, idx_a: usize, idx_b: usize) -> u8 {
-    let (Some(ref_idx), Some(mv_x), Some(mv_y)) = (ctx.ref_idx_l0, ctx.mv_l0_x, ctx.mv_l0_y) else {
-        return 1;
-    };
-    if idx_a >= ref_idx.len() || idx_b >= ref_idx.len() {
-        return 1;
-    }
-    if idx_a >= mv_x.len() || idx_b >= mv_x.len() || idx_a >= mv_y.len() || idx_b >= mv_y.len() {
-        return 1;
-    }
-    if ref_idx[idx_a] != ref_idx[idx_b] {
-        return 1;
-    }
-    let mv_dx = (i32::from(mv_x[idx_a]) - i32::from(mv_x[idx_b])).abs();
-    let mv_dy = (i32::from(mv_y[idx_a]) - i32::from(mv_y[idx_b])).abs();
-    if mv_dx >= 4 || mv_dy >= 4 {
-        return 1;
-    }
-    0
+    combine_motion_list_mismatch(
+        list_motion_mismatch(ctx.ref_idx_l0, ctx.mv_l0_x, ctx.mv_l0_y, idx_a, idx_b),
+        list_motion_mismatch(ctx.ref_idx_l1, ctx.mv_l1_x, ctx.mv_l1_y, idx_a, idx_b),
+    )
+    .unwrap_or(1)
 }
 
 fn boundary_strength_between_mb_vertical_4x4(
@@ -654,6 +665,43 @@ fn cross_slice_boundary_is_disabled(
     sid_a != u32::MAX && sid_b != u32::MAX && sid_a != sid_b
 }
 
+fn list_motion_mismatch(
+    ref_idx: Option<&[i8]>,
+    mv_x: Option<&[i16]>,
+    mv_y: Option<&[i16]>,
+    idx_a: usize,
+    idx_b: usize,
+) -> Option<bool> {
+    let (Some(ref_idx), Some(mv_x), Some(mv_y)) = (ref_idx, mv_x, mv_y) else {
+        return None;
+    };
+    if idx_a >= ref_idx.len() || idx_b >= ref_idx.len() {
+        return None;
+    }
+    if idx_a >= mv_x.len() || idx_b >= mv_x.len() || idx_a >= mv_y.len() || idx_b >= mv_y.len() {
+        return None;
+    }
+    if ref_idx[idx_a] != ref_idx[idx_b] {
+        return Some(true);
+    }
+    if ref_idx[idx_a] < 0 {
+        return Some(false);
+    }
+    let mv_dx = (i32::from(mv_x[idx_a]) - i32::from(mv_x[idx_b])).abs();
+    let mv_dy = (i32::from(mv_y[idx_a]) - i32::from(mv_y[idx_b])).abs();
+    Some(mv_dx >= 4 || mv_dy >= 4)
+}
+
+fn combine_motion_list_mismatch(list0: Option<bool>, list1: Option<bool>) -> Option<u8> {
+    if list0.unwrap_or(false) || list1.unwrap_or(false) {
+        return Some(1);
+    }
+    if list0.is_some() || list1.is_some() {
+        return Some(0);
+    }
+    None
+}
+
 fn luma_cbf_non_zero_across_boundary(
     ctx: &DeblockMbContext<'_>,
     x4_a: usize,
@@ -682,28 +730,24 @@ fn motion_boundary_strength_4x4(
     x4_b: usize,
     y4_b: usize,
 ) -> Option<u8> {
-    let (Some(ref_idx), Some(mv_x), Some(mv_y)) =
-        (ctx.ref_idx_l0_4x4, ctx.mv_l0_x_4x4, ctx.mv_l0_y_4x4)
-    else {
-        return None;
-    };
     let idx_a = luma4x4_index(ctx.mb_width, ctx.mb_height, x4_a, y4_a)?;
     let idx_b = luma4x4_index(ctx.mb_width, ctx.mb_height, x4_b, y4_b)?;
-    if idx_a >= ref_idx.len() || idx_b >= ref_idx.len() {
-        return None;
-    }
-    if idx_a >= mv_x.len() || idx_b >= mv_x.len() || idx_a >= mv_y.len() || idx_b >= mv_y.len() {
-        return None;
-    }
-    if ref_idx[idx_a] != ref_idx[idx_b] {
-        return Some(1);
-    }
-    let mv_dx = (i32::from(mv_x[idx_a]) - i32::from(mv_x[idx_b])).abs();
-    let mv_dy = (i32::from(mv_y[idx_a]) - i32::from(mv_y[idx_b])).abs();
-    if mv_dx >= 4 || mv_dy >= 4 {
-        return Some(1);
-    }
-    Some(0)
+    combine_motion_list_mismatch(
+        list_motion_mismatch(
+            ctx.ref_idx_l0_4x4,
+            ctx.mv_l0_x_4x4,
+            ctx.mv_l0_y_4x4,
+            idx_a,
+            idx_b,
+        ),
+        list_motion_mismatch(
+            ctx.ref_idx_l1_4x4,
+            ctx.mv_l1_x_4x4,
+            ctx.mv_l1_y_4x4,
+            idx_a,
+            idx_b,
+        ),
+    )
 }
 
 fn mb_index(mb_width: usize, mb_height: usize, mb_x: usize, mb_y: usize) -> Option<usize> {
@@ -840,10 +884,16 @@ mod tests {
                 mv_l0_x: None,
                 mv_l0_y: None,
                 ref_idx_l0: None,
+                mv_l1_x: None,
+                mv_l1_y: None,
+                ref_idx_l1: None,
                 cbf_luma: None,
                 mv_l0_x_4x4: None,
                 mv_l0_y_4x4: None,
                 ref_idx_l0_4x4: None,
+                mv_l1_x_4x4: None,
+                mv_l1_y_4x4: None,
+                ref_idx_l1_4x4: None,
             },
         );
 
@@ -873,10 +923,16 @@ mod tests {
                 mv_l0_x: None,
                 mv_l0_y: None,
                 ref_idx_l0: None,
+                mv_l1_x: None,
+                mv_l1_y: None,
+                ref_idx_l1: None,
                 cbf_luma: None,
                 mv_l0_x_4x4: None,
                 mv_l0_y_4x4: None,
                 ref_idx_l0_4x4: None,
+                mv_l1_x_4x4: None,
+                mv_l1_y_4x4: None,
+                ref_idx_l1_4x4: None,
             },
         );
 
@@ -946,10 +1002,16 @@ mod tests {
                 mv_l0_x: None,
                 mv_l0_y: None,
                 ref_idx_l0: None,
+                mv_l1_x: None,
+                mv_l1_y: None,
+                ref_idx_l1: None,
                 cbf_luma: None,
                 mv_l0_x_4x4: None,
                 mv_l0_y_4x4: None,
                 ref_idx_l0_4x4: None,
+                mv_l1_x_4x4: None,
+                mv_l1_y_4x4: None,
+                ref_idx_l1_4x4: None,
             },
         );
 
@@ -1010,10 +1072,16 @@ mod tests {
                 mv_l0_x: None,
                 mv_l0_y: None,
                 ref_idx_l0: None,
+                mv_l1_x: None,
+                mv_l1_y: None,
+                ref_idx_l1: None,
                 cbf_luma: None,
                 mv_l0_x_4x4: None,
                 mv_l0_y_4x4: None,
                 ref_idx_l0_4x4: None,
+                mv_l1_x_4x4: None,
+                mv_l1_y_4x4: None,
+                ref_idx_l1_4x4: None,
             },
         );
 
@@ -1036,10 +1104,16 @@ mod tests {
             mv_l0_x: None,
             mv_l0_y: None,
             ref_idx_l0: None,
+            mv_l1_x: None,
+            mv_l1_y: None,
+            ref_idx_l1: None,
             cbf_luma: None,
             mv_l0_x_4x4: None,
             mv_l0_y_4x4: None,
             ref_idx_l0_4x4: None,
+            mv_l1_x_4x4: None,
+            mv_l1_y_4x4: None,
+            ref_idx_l1_4x4: None,
         };
         let bs = boundary_strength_vertical(16, 0, 16, Some(&ctx));
         assert_eq!(bs, 4, "宏块边界任一侧为帧内宏块时应走强滤波");
@@ -1062,10 +1136,16 @@ mod tests {
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
+            mv_l1_x: None,
+            mv_l1_y: None,
+            ref_idx_l1: None,
             cbf_luma: None,
             mv_l0_x_4x4: None,
             mv_l0_y_4x4: None,
             ref_idx_l0_4x4: None,
+            mv_l1_x_4x4: None,
+            mv_l1_y_4x4: None,
+            ref_idx_l1_4x4: None,
         };
         let bs = boundary_strength_vertical(16, 0, 16, Some(&ctx));
         assert_eq!(bs, 0, "同参考且运动向量接近时应允许跳过滤波");
@@ -1088,10 +1168,16 @@ mod tests {
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
+            mv_l1_x: None,
+            mv_l1_y: None,
+            ref_idx_l1: None,
             cbf_luma: None,
             mv_l0_x_4x4: None,
             mv_l0_y_4x4: None,
             ref_idx_l0_4x4: None,
+            mv_l1_x_4x4: None,
+            mv_l1_y_4x4: None,
+            ref_idx_l1_4x4: None,
         };
         let bs = boundary_strength_vertical(16, 0, 16, Some(&ctx));
         assert_eq!(bs, 1, "跨宏块参考索引不一致时应保留弱滤波");
@@ -1115,10 +1201,16 @@ mod tests {
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
+            mv_l1_x: None,
+            mv_l1_y: None,
+            ref_idx_l1: None,
             cbf_luma: None,
             mv_l0_x_4x4: None,
             mv_l0_y_4x4: None,
             ref_idx_l0_4x4: None,
+            mv_l1_x_4x4: None,
+            mv_l1_y_4x4: None,
+            ref_idx_l1_4x4: None,
         };
         let ctx_idc2 = DeblockMbContext {
             mb_width: 2,
@@ -1130,10 +1222,16 @@ mod tests {
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
+            mv_l1_x: None,
+            mv_l1_y: None,
+            ref_idx_l1: None,
             cbf_luma: None,
             mv_l0_x_4x4: None,
             mv_l0_y_4x4: None,
             ref_idx_l0_4x4: None,
+            mv_l1_x_4x4: None,
+            mv_l1_y_4x4: None,
+            ref_idx_l1_4x4: None,
         };
         let bs_idc0 = boundary_strength_vertical(16, 0, 16, Some(&ctx_idc0));
         let bs_idc2 = boundary_strength_vertical(16, 0, 16, Some(&ctx_idc2));
@@ -1167,10 +1265,16 @@ mod tests {
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
+            mv_l1_x: None,
+            mv_l1_y: None,
+            ref_idx_l1: None,
             cbf_luma: Some(&cbf_luma),
             mv_l0_x_4x4: Some(&mv_l0_x_4x4),
             mv_l0_y_4x4: Some(&mv_l0_y_4x4),
             ref_idx_l0_4x4: Some(&ref_idx_l0_4x4),
+            mv_l1_x_4x4: None,
+            mv_l1_y_4x4: None,
+            ref_idx_l1_4x4: None,
         };
 
         let bs_top_row = boundary_strength_vertical(16, 2, 16, Some(&ctx));
@@ -1201,10 +1305,16 @@ mod tests {
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
+            mv_l1_x: None,
+            mv_l1_y: None,
+            ref_idx_l1: None,
             cbf_luma: Some(&cbf_luma),
             mv_l0_x_4x4: Some(&mv_l0_x_4x4),
             mv_l0_y_4x4: Some(&mv_l0_y_4x4),
             ref_idx_l0_4x4: Some(&ref_idx_l0_4x4),
+            mv_l1_x_4x4: None,
+            mv_l1_y_4x4: None,
+            ref_idx_l1_4x4: None,
         };
 
         let bs = boundary_strength_vertical(16, 2, 16, Some(&ctx));
@@ -1237,10 +1347,16 @@ mod tests {
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
+            mv_l1_x: None,
+            mv_l1_y: None,
+            ref_idx_l1: None,
             cbf_luma: Some(&cbf_luma),
             mv_l0_x_4x4: Some(&mv_l0_x_4x4),
             mv_l0_y_4x4: Some(&mv_l0_y_4x4),
             ref_idx_l0_4x4: Some(&ref_idx_l0_4x4),
+            mv_l1_x_4x4: None,
+            mv_l1_y_4x4: None,
+            ref_idx_l1_4x4: None,
         };
 
         let bs_left_col = boundary_strength_horizontal(2, 16, 16, Some(&ctx));
@@ -1268,10 +1384,16 @@ mod tests {
             mv_l0_x: None,
             mv_l0_y: None,
             ref_idx_l0: None,
+            mv_l1_x: None,
+            mv_l1_y: None,
+            ref_idx_l1: None,
             cbf_luma: Some(&cbf_luma),
             mv_l0_x_4x4: Some(&mv_l0_x_4x4),
             mv_l0_y_4x4: Some(&mv_l0_y_4x4),
             ref_idx_l0_4x4: Some(&ref_idx_l0_4x4),
+            mv_l1_x_4x4: None,
+            mv_l1_y_4x4: None,
+            ref_idx_l1_4x4: None,
         };
         let bs = boundary_strength_vertical(4, 2, 16, Some(&ctx));
         assert_eq!(bs, 2, "4x4 内部边界任一侧 cbf!=0 时应返回 bs=2");
@@ -1297,10 +1419,16 @@ mod tests {
             mv_l0_x: None,
             mv_l0_y: None,
             ref_idx_l0: None,
+            mv_l1_x: None,
+            mv_l1_y: None,
+            ref_idx_l1: None,
             cbf_luma: Some(&cbf_luma),
             mv_l0_x_4x4: Some(&mv_l0_x_4x4_ref_mismatch),
             mv_l0_y_4x4: Some(&mv_l0_y_4x4_ref_mismatch),
             ref_idx_l0_4x4: Some(&ref_idx_l0_4x4_ref_mismatch),
+            mv_l1_x_4x4: None,
+            mv_l1_y_4x4: None,
+            ref_idx_l1_4x4: None,
         };
         let bs_ref = boundary_strength_vertical(4, 2, 16, Some(&ctx_ref));
         assert_eq!(bs_ref, 1, "4x4 内部边界 ref_idx 不同应返回 bs=1");
@@ -1319,13 +1447,91 @@ mod tests {
             mv_l0_x: None,
             mv_l0_y: None,
             ref_idx_l0: None,
+            mv_l1_x: None,
+            mv_l1_y: None,
+            ref_idx_l1: None,
             cbf_luma: Some(&cbf_luma),
             mv_l0_x_4x4: Some(&mv_l0_x_4x4_mv_mismatch),
             mv_l0_y_4x4: Some(&mv_l0_y_4x4_mv_mismatch),
             ref_idx_l0_4x4: Some(&ref_idx_l0_4x4_mv_mismatch),
+            mv_l1_x_4x4: None,
+            mv_l1_y_4x4: None,
+            ref_idx_l1_4x4: None,
         };
         let bs_mv = boundary_strength_vertical(4, 2, 16, Some(&ctx_mv));
         assert_eq!(bs_mv, 1, "4x4 内部边界 MV 差>=4 时应返回 bs=1");
+    }
+
+    #[test]
+    fn test_boundary_strength_vertical_inter_mb_list1_ref_mismatch_is_non_zero() {
+        let mb_types = [255u8, 255u8];
+        let mb_cbp = [0u8, 0u8];
+        let mv_l0_x = [8i16, 8i16];
+        let mv_l0_y = [4i16, 4i16];
+        let ref_idx_l0 = [0i8, 0i8];
+        let mv_l1_x = [6i16, 6i16];
+        let mv_l1_y = [2i16, 2i16];
+        let ref_idx_l1 = [0i8, 1i8];
+        let ctx = DeblockMbContext {
+            mb_width: 2,
+            mb_height: 1,
+            mb_types: &mb_types,
+            mb_cbp: &mb_cbp,
+            mb_slice_first_mb: None,
+            disable_cross_slice_boundary_filter: false,
+            mv_l0_x: Some(&mv_l0_x),
+            mv_l0_y: Some(&mv_l0_y),
+            ref_idx_l0: Some(&ref_idx_l0),
+            mv_l1_x: Some(&mv_l1_x),
+            mv_l1_y: Some(&mv_l1_y),
+            ref_idx_l1: Some(&ref_idx_l1),
+            cbf_luma: None,
+            mv_l0_x_4x4: None,
+            mv_l0_y_4x4: None,
+            ref_idx_l0_4x4: None,
+            mv_l1_x_4x4: None,
+            mv_l1_y_4x4: None,
+            ref_idx_l1_4x4: None,
+        };
+        let bs = boundary_strength_vertical(16, 0, 16, Some(&ctx));
+        assert_eq!(bs, 1, "跨宏块 list1 参考索引不一致时应返回 bs=1");
+    }
+
+    #[test]
+    fn test_boundary_strength_vertical_within_mb_list1_mv_mismatch_is_one() {
+        let mb_types = [255u8];
+        let mb_cbp = [0u8];
+        let cbf_luma = [false; 16];
+        let mv_l0_x_4x4 = [0i16; 16];
+        let mv_l0_y_4x4 = [0i16; 16];
+        let ref_idx_l0_4x4 = [0i8; 16];
+        let mut mv_l1_x_4x4 = [0i16; 16];
+        let mv_l1_y_4x4 = [0i16; 16];
+        let ref_idx_l1_4x4 = [0i8; 16];
+        mv_l1_x_4x4[1] = 4;
+        let ctx = DeblockMbContext {
+            mb_width: 1,
+            mb_height: 1,
+            mb_types: &mb_types,
+            mb_cbp: &mb_cbp,
+            mb_slice_first_mb: None,
+            disable_cross_slice_boundary_filter: false,
+            mv_l0_x: None,
+            mv_l0_y: None,
+            ref_idx_l0: None,
+            mv_l1_x: None,
+            mv_l1_y: None,
+            ref_idx_l1: None,
+            cbf_luma: Some(&cbf_luma),
+            mv_l0_x_4x4: Some(&mv_l0_x_4x4),
+            mv_l0_y_4x4: Some(&mv_l0_y_4x4),
+            ref_idx_l0_4x4: Some(&ref_idx_l0_4x4),
+            mv_l1_x_4x4: Some(&mv_l1_x_4x4),
+            mv_l1_y_4x4: Some(&mv_l1_y_4x4),
+            ref_idx_l1_4x4: Some(&ref_idx_l1_4x4),
+        };
+        let bs = boundary_strength_vertical(4, 2, 16, Some(&ctx));
+        assert_eq!(bs, 1, "4x4 内部边界 list1 MV 差>=4 时应返回 bs=1");
     }
 
     #[test]
@@ -1346,10 +1552,16 @@ mod tests {
             mv_l0_x: None,
             mv_l0_y: None,
             ref_idx_l0: None,
+            mv_l1_x: None,
+            mv_l1_y: None,
+            ref_idx_l1: None,
             cbf_luma: Some(&cbf_luma),
             mv_l0_x_4x4: Some(&mv_l0_x_4x4),
             mv_l0_y_4x4: Some(&mv_l0_y_4x4),
             ref_idx_l0_4x4: Some(&ref_idx_l0_4x4),
+            mv_l1_x_4x4: None,
+            mv_l1_y_4x4: None,
+            ref_idx_l1_4x4: None,
         };
         let bs = boundary_strength_vertical(4, 2, 16, Some(&ctx));
         assert_eq!(bs, 0, "4x4 内部边界同参考且 MV 接近时应返回 bs=0");

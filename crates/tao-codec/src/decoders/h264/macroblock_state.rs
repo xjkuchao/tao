@@ -376,6 +376,70 @@ impl H264Decoder {
         }
     }
 
+    pub(super) fn motion_l1_4x4_stride(&self) -> usize {
+        self.mb_width * 4
+    }
+
+    pub(super) fn motion_l1_4x4_index(&self, x4: usize, y4: usize) -> Option<usize> {
+        let stride = self.motion_l1_4x4_stride();
+        if stride == 0 {
+            return None;
+        }
+        let h4 = self.mb_height * 4;
+        if x4 >= stride || y4 >= h4 {
+            return None;
+        }
+        Some(y4 * stride + x4)
+    }
+
+    pub(super) fn set_l1_motion_4x4(
+        &mut self,
+        x4: usize,
+        y4: usize,
+        mv_x: i16,
+        mv_y: i16,
+        ref_idx: i8,
+    ) {
+        if let Some(idx) = self.motion_l1_4x4_index(x4, y4) {
+            if let Some(slot) = self.mv_l1_x_4x4.get_mut(idx) {
+                *slot = mv_x;
+            }
+            if let Some(slot) = self.mv_l1_y_4x4.get_mut(idx) {
+                *slot = mv_y;
+            }
+            if let Some(slot) = self.ref_idx_l1_4x4.get_mut(idx) {
+                *slot = ref_idx;
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn set_l1_motion_block_4x4(
+        &mut self,
+        dst_x: usize,
+        dst_y: usize,
+        w: usize,
+        h: usize,
+        mv_x_qpel: i32,
+        mv_y_qpel: i32,
+        ref_idx: i8,
+    ) {
+        if w == 0 || h == 0 {
+            return;
+        }
+        let x4_start = dst_x / 4;
+        let y4_start = dst_y / 4;
+        let x4_end = (dst_x + w).div_ceil(4);
+        let y4_end = (dst_y + h).div_ceil(4);
+        let mv_x = mv_x_qpel.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let mv_y = mv_y_qpel.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        for y4 in y4_start..y4_end {
+            for x4 in x4_start..x4_end {
+                self.set_l1_motion_4x4(x4, y4, mv_x, mv_y, ref_idx);
+            }
+        }
+    }
+
     pub(super) fn i4x4_mode_stride(&self) -> usize {
         self.mb_width * 4
     }
