@@ -98,6 +98,7 @@
 - [ ] 参数集变更时上下文重建。
     - [x] 新增 `PPS` 变更重建分级策略(`None/RuntimeOnly/Full`)并接入 `activate_parameter_sets`。
     - [x] 覆盖 `PPS` 关键字段变更单元测试(熵编码/SPS绑定触发 Full, QP/加权预测触发 RuntimeOnly)。
+    - [x] `activate_parameter_sets` 增加参数集一致性保护: 当 `PPS` 绑定的 `SPS` 不受支持时拒绝激活并保持当前 active 参数集不变。
     - [x] 补充参数集切换集成测试(走 `handle_pps` NAL 解析路径验证同 `pps_id` 的 RuntimeOnly/Full 切换行为)。
     - [x] 补充 `handle_sps` 同 `sps_id` 尺寸变更集成测试, 验证缓冲重建与参考状态重置。
 - 验收: 两个样本稳定进入 slice 解码, 参数切换无崩溃。

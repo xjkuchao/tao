@@ -546,6 +546,12 @@ impl H264Decoder {
             .cloned()
             .ok_or_else(|| TaoError::InvalidData(format!("H264: 未找到 PPS id={}", pps_id)))?;
         self.activate_sps(pps.sps_id);
+        if self.active_sps_id != Some(pps.sps_id) {
+            return Err(TaoError::NotImplemented(format!(
+                "H264: PPS id={} 依赖的 SPS id={} 当前不受支持",
+                pps_id, pps.sps_id
+            )));
+        }
 
         let rebuild_action = prev_pps
             .as_ref()

@@ -767,6 +767,49 @@ fn test_activate_parameter_sets_full_resets_references() {
 }
 
 #[test]
+fn test_activate_parameter_sets_reject_unsupported_bound_sps() {
+    let mut dec = build_test_decoder();
+    let sps0 = build_test_sps(0);
+    dec.sps_map.insert(0, sps0.clone());
+    dec.sps = Some(sps0);
+    dec.active_sps_id = Some(0);
+
+    let pps0 = build_test_pps();
+    dec.pps_map.insert(0, pps0.clone());
+    dec.pps = Some(pps0);
+    dec.active_pps_id = Some(0);
+
+    let mut sps1 = build_test_sps(1);
+    sps1.frame_mbs_only = false;
+    dec.sps_map.insert(1, sps1);
+
+    let mut pps1 = build_test_pps();
+    pps1.pps_id = 1;
+    pps1.sps_id = 1;
+    dec.pps_map.insert(1, pps1);
+
+    let err = dec
+        .activate_parameter_sets(1)
+        .expect_err("绑定到不支持 SPS 的 PPS 激活应失败");
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("不受支持"),
+        "错误信息应提示 SPS 不受支持, actual={}",
+        msg
+    );
+    assert_eq!(
+        dec.active_sps_id,
+        Some(0),
+        "失败后不应覆盖当前 active_sps_id"
+    );
+    assert_eq!(
+        dec.active_pps_id,
+        Some(0),
+        "失败后不应覆盖当前 active_pps_id"
+    );
+}
+
+#[test]
 fn test_handle_pps_same_id_runtime_update_keeps_references() {
     let mut dec = build_test_decoder();
     let sps0 = build_test_sps(0);
