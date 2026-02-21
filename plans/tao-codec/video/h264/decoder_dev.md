@@ -173,6 +173,7 @@
     - [x] `dec_ref_pic_marking` 增加 MMCO 操作数量上限防护, 并补齐 IDR 标志位/超上限失败路径单测。
     - [x] `dec_ref_pic_marking` 增加 MMCO `op1/op3` 的 `difference_of_pic_nums_minus1` 范围校验, 并补齐超范围失败单测。
     - [x] `dec_ref_pic_marking` 增加 MMCO `op2/op3/op4/op6` 长期索引范围校验, 并补齐超范围失败单测。
+    - [x] 缺参考帧容错补齐: 当参考列表为空或 `ref_idx` 越界时, 统一回退零参考平面并记录回退计数, 补齐回退行为单测。
 - 验收: 两个样本可长时间稳定解码, 时序正确, 无明显错序/跳帧。
 
 ### P6 功能完整性验收门

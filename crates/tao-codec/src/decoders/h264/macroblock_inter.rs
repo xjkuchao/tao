@@ -600,7 +600,26 @@ impl H264Decoder {
         luma_log2_weight_denom: u8,
         chroma_log2_weight_denom: u8,
     ) {
-        let ref_src = select_ref_planes(ref_l0_list, ref_idx.min(i8::MAX as u32) as i8);
+        let fallback = self.zero_reference_planes();
+        let ref_src = if let Ok(ref_idx_i8) = i8::try_from(ref_idx) {
+            if let Some(found) = select_ref_planes(ref_l0_list, ref_idx_i8) {
+                found
+            } else {
+                self.record_missing_reference_fallback(
+                    "apply_inter_block_l0",
+                    ref_idx_i8 as i32,
+                    ref_l0_list.len(),
+                );
+                &fallback
+            }
+        } else {
+            self.record_missing_reference_fallback(
+                "apply_inter_block_l0",
+                ref_idx as i32,
+                ref_l0_list.len(),
+            );
+            &fallback
+        };
         self.apply_inter_block(
             ref_src.y.as_slice(),
             ref_src.u.as_slice(),
@@ -1445,8 +1464,28 @@ impl H264Decoder {
     ) -> (i32, i32, i8) {
         match (motion_l0, motion_l1) {
             (Some(m0), Some(m1)) => {
-                let ref_l1 = select_ref_planes(ref_l1_list, m1.ref_idx);
-                let ref_l0 = select_ref_planes(ref_l0_list, m0.ref_idx);
+                let fallback_l0 = self.zero_reference_planes();
+                let fallback_l1 = self.zero_reference_planes();
+                let ref_l0 = if let Some(found) = select_ref_planes(ref_l0_list, m0.ref_idx) {
+                    found
+                } else {
+                    self.record_missing_reference_fallback(
+                        "apply_b_prediction_block_l0",
+                        m0.ref_idx as i32,
+                        ref_l0_list.len(),
+                    );
+                    &fallback_l0
+                };
+                let ref_l1 = if let Some(found) = select_ref_planes(ref_l1_list, m1.ref_idx) {
+                    found
+                } else {
+                    self.record_missing_reference_fallback(
+                        "apply_b_prediction_block_l1",
+                        m1.ref_idx as i32,
+                        ref_l1_list.len(),
+                    );
+                    &fallback_l1
+                };
                 let weighted_bipred_idc = self
                     .pps
                     .as_ref()
@@ -1545,7 +1584,17 @@ impl H264Decoder {
                 (m0.mv_x, m0.mv_y, m0.ref_idx)
             }
             (Some(m0), None) => {
-                let ref_l0 = select_ref_planes(ref_l0_list, m0.ref_idx);
+                let fallback_l0 = self.zero_reference_planes();
+                let ref_l0 = if let Some(found) = select_ref_planes(ref_l0_list, m0.ref_idx) {
+                    found
+                } else {
+                    self.record_missing_reference_fallback(
+                        "apply_b_prediction_block_l0_only",
+                        m0.ref_idx as i32,
+                        ref_l0_list.len(),
+                    );
+                    &fallback_l0
+                };
                 let weighted_bipred_idc = self
                     .pps
                     .as_ref()
@@ -1573,7 +1622,17 @@ impl H264Decoder {
                 (m0.mv_x, m0.mv_y, m0.ref_idx)
             }
             (None, Some(m1)) => {
-                let ref_l1 = select_ref_planes(ref_l1_list, m1.ref_idx);
+                let fallback_l1 = self.zero_reference_planes();
+                let ref_l1 = if let Some(found) = select_ref_planes(ref_l1_list, m1.ref_idx) {
+                    found
+                } else {
+                    self.record_missing_reference_fallback(
+                        "apply_b_prediction_block_l1_only",
+                        m1.ref_idx as i32,
+                        ref_l1_list.len(),
+                    );
+                    &fallback_l1
+                };
                 let weighted_bipred_idc = self
                     .pps
                     .as_ref()

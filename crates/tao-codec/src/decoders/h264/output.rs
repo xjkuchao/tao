@@ -5,6 +5,23 @@ use super::*;
 // ============================================================
 
 impl H264Decoder {
+    pub(super) fn record_missing_reference_fallback(
+        &mut self,
+        scene: &str,
+        ref_idx: i32,
+        list_len: usize,
+    ) {
+        self.missing_reference_fallbacks = self.missing_reference_fallbacks.saturating_add(1);
+        if self.missing_reference_fallbacks <= 8 {
+            warn!(
+                "H264: 缺失参考帧, scene={}, ref_idx={}, list_len={}, 使用零参考回退",
+                scene, ref_idx, list_len
+            );
+        } else if self.missing_reference_fallbacks == 9 {
+            warn!("H264: 缺失参考帧回退日志过多, 后续同类日志省略");
+        }
+    }
+
     pub(super) fn zero_reference_planes(&self) -> RefPlanes {
         RefPlanes {
             y: vec![128u8; self.ref_y.len()],
@@ -260,7 +277,7 @@ impl H264Decoder {
     }
 
     pub(super) fn build_reference_list_l0_with_mod(
-        &self,
+        &mut self,
         count: u32,
         mods: &[RefPicListMod],
         cur_frame_num: u32,
@@ -268,6 +285,7 @@ impl H264Decoder {
         let target = count.max(1) as usize;
         let mut refs = self.collect_default_reference_list_l0();
         self.apply_ref_pic_list_modifications(&mut refs, mods, cur_frame_num);
+        let refs_empty = refs.is_empty();
         let mut out = Vec::with_capacity(target);
         for rank in 0..target {
             if let Some(pic) = refs.get(rank).copied().or_else(|| refs.first().copied()) {
@@ -276,11 +294,15 @@ impl H264Decoder {
                 out.push(self.zero_reference_planes());
             }
         }
+        drop(refs);
+        if refs_empty {
+            self.record_missing_reference_fallback("build_l0_list_empty", -1, 0);
+        }
         out
     }
 
     pub(super) fn build_reference_list_l1_with_mod(
-        &self,
+        &mut self,
         count: u32,
         mods: &[RefPicListMod],
         cur_frame_num: u32,
@@ -288,6 +310,7 @@ impl H264Decoder {
         let target = count.max(1) as usize;
         let mut refs = self.collect_default_reference_list_l1();
         self.apply_ref_pic_list_modifications(&mut refs, mods, cur_frame_num);
+        let refs_empty = refs.is_empty();
         let mut out = Vec::with_capacity(target);
         for rank in 0..target {
             if let Some(pic) = refs.get(rank).copied().or_else(|| refs.first().copied()) {
@@ -295,6 +318,10 @@ impl H264Decoder {
             } else {
                 out.push(self.zero_reference_planes());
             }
+        }
+        drop(refs);
+        if refs_empty {
+            self.record_missing_reference_fallback("build_l1_list_empty", -1, 0);
         }
         out
     }

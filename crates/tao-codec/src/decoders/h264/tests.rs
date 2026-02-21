@@ -155,6 +155,7 @@ fn build_test_decoder() -> H264Decoder {
         reference_frames: VecDeque::new(),
         max_long_term_frame_idx: None,
         max_reference_frames: 4,
+        missing_reference_fallbacks: 0,
         output_queue: VecDeque::new(),
         reorder_buffer: Vec::new(),
         reorder_depth: 2,
@@ -2107,6 +2108,26 @@ fn test_reference_list_l0_with_long_term_reorder() {
 }
 
 #[test]
+fn test_reference_list_l0_empty_records_missing_reference_fallback() {
+    let mut dec = build_test_decoder();
+    let before = dec.missing_reference_fallbacks;
+
+    let l0 = dec.build_reference_list_l0_with_mod(2, &[], 0);
+
+    assert_eq!(l0.len(), 2, "空参考时仍应构造目标长度的 L0 列表");
+    assert!(
+        l0.iter()
+            .all(|refp| refp.y[0] == 128 && refp.u[0] == 128 && refp.v[0] == 128),
+        "空参考回退应使用零参考平面"
+    );
+    assert_eq!(
+        dec.missing_reference_fallbacks,
+        before + 1,
+        "空参考列表应记录一次缺参考回退"
+    );
+}
+
+#[test]
 fn test_apply_inter_block_l0_selects_ref_by_ref_idx() {
     let mut dec = build_test_decoder();
     let ref0 = build_constant_ref_planes(&dec, 12, 34, 56);
@@ -2117,6 +2138,24 @@ fn test_apply_inter_block_l0_selects_ref_by_ref_idx() {
     assert_eq!(dec.ref_y[0], 201, "ref_idx=1 时亮度应来自第二个参考帧");
     assert_eq!(dec.ref_u[0], 202, "ref_idx=1 时 U 应来自第二个参考帧");
     assert_eq!(dec.ref_v[0], 203, "ref_idx=1 时 V 应来自第二个参考帧");
+}
+
+#[test]
+fn test_apply_inter_block_l0_out_of_range_ref_idx_uses_zero_reference() {
+    let mut dec = build_test_decoder();
+    let refs = vec![build_constant_ref_planes(&dec, 12, 34, 56)];
+    let before = dec.missing_reference_fallbacks;
+
+    dec.apply_inter_block_l0(&refs, 3, 0, 0, 1, 1, 0, 0, &[], 0, 0);
+
+    assert_eq!(dec.ref_y[0], 128, "ref_idx 越界时亮度应回退零参考");
+    assert_eq!(dec.ref_u[0], 128, "ref_idx 越界时 U 应回退零参考");
+    assert_eq!(dec.ref_v[0], 128, "ref_idx 越界时 V 应回退零参考");
+    assert_eq!(
+        dec.missing_reference_fallbacks,
+        before + 1,
+        "ref_idx 越界应记录一次缺参考回退"
+    );
 }
 
 #[test]

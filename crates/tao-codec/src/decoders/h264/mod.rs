@@ -23,7 +23,6 @@ mod tests;
 
 use common::*;
 use std::collections::{HashMap, VecDeque};
-use std::sync::LazyLock;
 use syntax::*;
 
 use log::{debug, warn};
@@ -206,13 +205,6 @@ struct PendingFrameMeta {
     is_keyframe: bool,
 }
 
-static EMPTY_REF_PLANES: LazyLock<RefPlanes> = LazyLock::new(|| RefPlanes {
-    y: Vec::new(),
-    u: Vec::new(),
-    v: Vec::new(),
-    poc: 0,
-});
-
 // ============================================================
 // H.264 解码器
 // ============================================================
@@ -302,6 +294,8 @@ pub struct H264Decoder {
     max_long_term_frame_idx: Option<u32>,
     /// DPB 最大短期参考帧数量.
     max_reference_frames: usize,
+    /// 参考帧缺失回退次数(用于容错统计与单测验证).
+    missing_reference_fallbacks: u64,
     output_queue: VecDeque<Frame>,
     reorder_buffer: Vec<ReorderFrameEntry>,
     reorder_depth: usize,
@@ -364,6 +358,7 @@ impl H264Decoder {
             reference_frames: VecDeque::new(),
             max_long_term_frame_idx: None,
             max_reference_frames: 1,
+            missing_reference_fallbacks: 0,
             output_queue: VecDeque::new(),
             reorder_buffer: Vec::new(),
             reorder_depth: 2,

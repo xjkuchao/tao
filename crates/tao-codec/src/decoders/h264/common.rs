@@ -36,16 +36,11 @@ pub(super) fn p_l1_weight(weights: &[PredWeightL0], ref_idx: u32) -> Option<&Pre
         .and_then(|idx| weights.get(idx))
 }
 
-pub(super) fn select_ref_planes(ref_list: &[RefPlanes], ref_idx: i8) -> &RefPlanes {
-    let Some(first) = ref_list.first() else {
-        return &EMPTY_REF_PLANES;
-    };
-    let idx = if ref_idx <= 0 {
-        0usize
-    } else {
-        usize::from(ref_idx as u8).min(ref_list.len().saturating_sub(1))
-    };
-    ref_list.get(idx).unwrap_or(first)
+pub(super) fn select_ref_planes(ref_list: &[RefPlanes], ref_idx: i8) -> Option<&RefPlanes> {
+    if ref_idx < 0 {
+        return None;
+    }
+    ref_list.get(ref_idx as usize)
 }
 
 pub(super) fn apply_weighted_sample(sample: u8, weight: i32, offset: i32, log2_denom: u8) -> u8 {
