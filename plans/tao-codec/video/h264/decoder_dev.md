@@ -187,10 +187,10 @@ crates/tao-codec/src/decoders/h264/
 #### P4.4 色度帧内预测(4 种模式)
 
 - [x] 模式 0: DC(含不可用变体).
-- [ ] 模式 1: Horizontal.
-- [ ] 模式 2: Vertical.
-- [ ] 模式 3: Plane.
-- [ ] 色度全模式单测.
+- [x] 模式 1: Horizontal.
+- [x] 模式 2: Vertical.
+- [x] 模式 3: Plane.
+- [x] 色度全模式单测.
 
 - 验收: I-slice 全部预测模式正确重建, 无硬编码回退.
 

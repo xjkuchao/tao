@@ -1,6 +1,6 @@
 //! H.264 帧内预测模式实现.
 //!
-//! 提供 Intra_16x16 亮度预测 (4 种模式) 和色度 DC 预测.
+//! 提供 Intra_16x16 亮度预测 (4 种模式) 和色度 8x8 预测 (4 种模式).
 
 /// Intra_16x16 亮度预测: 根据模式分发
 pub fn predict_16x16(
@@ -711,12 +711,22 @@ pub fn fill_block(
 
 #[cfg(test)]
 mod tests {
-    use super::predict_4x4;
+    use super::{predict_4x4, predict_chroma_8x8};
 
     fn read_block_4x4(plane: &[u8], stride: usize, x0: usize, y0: usize) -> [[u8; 4]; 4] {
         let mut block = [[0u8; 4]; 4];
         for dy in 0..4 {
             for dx in 0..4 {
+                block[dy][dx] = plane[(y0 + dy) * stride + x0 + dx];
+            }
+        }
+        block
+    }
+
+    fn read_block_8x8(plane: &[u8], stride: usize, x0: usize, y0: usize) -> [[u8; 8]; 8] {
+        let mut block = [[0u8; 8]; 8];
+        for dy in 0..8 {
+            for dx in 0..8 {
                 block[dy][dx] = plane[(y0 + dy) * stride + x0 + dx];
             }
         }
@@ -1064,5 +1074,113 @@ mod tests {
         let expect = [[128u8; 4]; 4];
 
         assert_eq!(got, expect, "模式2在上左都不可用时应使用DC-128变体");
+    }
+
+    #[test]
+    fn test_chroma_mode1_horizontal_uses_left_samples() {
+        let stride = 16;
+        let x0 = 4;
+        let y0 = 4;
+        let mut plane = vec![0u8; stride * stride];
+
+        for row in 0..8 {
+            plane[(y0 + row) * stride + x0 - 1] = 10 + row as u8;
+        }
+        for col in 0..8 {
+            plane[(y0 - 1) * stride + x0 + col] = 200 + col as u8;
+        }
+
+        predict_chroma_8x8(&mut plane, stride, x0, y0, 1, true, true);
+        let got = read_block_8x8(&plane, stride, x0, y0);
+        for (row, row_vals) in got.iter().enumerate() {
+            let expect = 10 + row as u8;
+            for (col, val) in row_vals.iter().enumerate() {
+                assert_eq!(*val, expect, "mode1 第({}, {})像素应复制左侧样本", row, col);
+            }
+        }
+    }
+
+    #[test]
+    fn test_chroma_mode2_vertical_uses_top_samples() {
+        let stride = 16;
+        let x0 = 4;
+        let y0 = 4;
+        let mut plane = vec![0u8; stride * stride];
+
+        for col in 0..8 {
+            plane[(y0 - 1) * stride + x0 + col] = 20 + col as u8;
+        }
+        for row in 0..8 {
+            plane[(y0 + row) * stride + x0 - 1] = 180 + row as u8;
+        }
+
+        predict_chroma_8x8(&mut plane, stride, x0, y0, 2, true, true);
+        let got = read_block_8x8(&plane, stride, x0, y0);
+        for (row, row_vals) in got.iter().enumerate() {
+            for (col, val) in row_vals.iter().enumerate() {
+                let expect = 20 + col as u8;
+                assert_eq!(*val, expect, "mode2 第({}, {})像素应复制上方样本", row, col);
+            }
+        }
+    }
+
+    #[test]
+    fn test_chroma_mode3_plane_matches_expected_gradient_points() {
+        let stride = 16;
+        let x0 = 4;
+        let y0 = 4;
+        let mut plane = vec![0u8; stride * stride];
+
+        plane[(y0 - 1) * stride + x0 - 1] = 5;
+        let top_ref = [20u8, 30, 40, 50, 60, 70, 80, 90];
+        for (i, val) in top_ref.iter().enumerate() {
+            plane[(y0 - 1) * stride + x0 + i] = *val;
+        }
+        let left_ref = [15u8, 25, 35, 45, 55, 65, 75, 85];
+        for (i, val) in left_ref.iter().enumerate() {
+            plane[(y0 + i) * stride + x0 - 1] = *val;
+        }
+
+        predict_chroma_8x8(&mut plane, stride, x0, y0, 3, true, true);
+        let got = read_block_8x8(&plane, stride, x0, y0);
+
+        assert_eq!(got[0][0], 27, "mode3 左上角像素应符合 plane 公式");
+        assert_eq!(got[0][7], 99, "mode3 右上角像素应符合 plane 公式");
+        assert_eq!(got[7][0], 97, "mode3 左下角像素应符合 plane 公式");
+        assert_eq!(got[7][7], 169, "mode3 右下角像素应符合 plane 公式");
+    }
+
+    #[test]
+    fn test_chroma_predict_8x8_dispatch_covers_all_modes() {
+        let stride = 16;
+        let x0 = 4;
+        let y0 = 4;
+        let mut plane = vec![0u8; stride * stride];
+
+        plane[(y0 - 1) * stride + x0 - 1] = 10;
+        for i in 0..8 {
+            plane[(y0 - 1) * stride + x0 + i] = 20 + i as u8;
+            plane[(y0 + i) * stride + x0 - 1] = 40 + i as u8;
+        }
+
+        let mut mode0 = plane.clone();
+        let mut mode1 = plane.clone();
+        let mut mode2 = plane.clone();
+        let mut mode3 = plane.clone();
+
+        predict_chroma_8x8(&mut mode0, stride, x0, y0, 0, true, true);
+        predict_chroma_8x8(&mut mode1, stride, x0, y0, 1, true, true);
+        predict_chroma_8x8(&mut mode2, stride, x0, y0, 2, true, true);
+        predict_chroma_8x8(&mut mode3, stride, x0, y0, 3, true, true);
+
+        let b0 = read_block_8x8(&mode0, stride, x0, y0);
+        let b1 = read_block_8x8(&mode1, stride, x0, y0);
+        let b2 = read_block_8x8(&mode2, stride, x0, y0);
+        let b3 = read_block_8x8(&mode3, stride, x0, y0);
+
+        assert_eq!(b0[0][0], 33, "mode0 首像素应为 DC 预测结果");
+        assert_eq!(b1[0][0], 40, "mode1 首像素应来自左样本");
+        assert_eq!(b2[0][0], 20, "mode2 首像素应来自上样本");
+        assert_eq!(b3[0][0], 23, "mode3 首像素应来自 plane 预测结果");
     }
 }
