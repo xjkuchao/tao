@@ -167,7 +167,7 @@ crates/tao-codec/src/decoders/h264/
 - [x] 模式 0-2(V/H/DC 含不可用变体).
 - [x] 模式 3: Diagonal Down-Left + 单测.
 - [x] 模式 4: Diagonal Down-Right + 单测.
-- [ ] 模式 5: Vertical-Right + 单测.
+- [x] 模式 5: Vertical-Right + 单测.
 - [ ] 模式 6: Horizontal-Down + 单测.
 - [ ] 模式 7: Vertical-Left + 单测.
 - [ ] 模式 8: Horizontal-Up + 单测.
