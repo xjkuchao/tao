@@ -335,10 +335,12 @@ impl H264Decoder {
 
     pub(super) fn enforce_reference_capacity(&mut self) {
         while self.reference_frames.len() > self.max_reference_frames {
-            if let Some(idx) = self
+            if let Some((idx, _)) = self
                 .reference_frames
                 .iter()
-                .position(|pic| pic.long_term_frame_idx.is_none())
+                .enumerate()
+                .filter(|(_, pic)| pic.long_term_frame_idx.is_none())
+                .min_by_key(|(_, pic)| self.pic_num_from_frame_num(pic.frame_num))
             {
                 self.reference_frames.remove(idx);
             } else {

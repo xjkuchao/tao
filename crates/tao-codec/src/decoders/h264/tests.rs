@@ -1481,6 +1481,68 @@ fn test_store_reference_with_marking_mmco_convert_short_to_long() {
 }
 
 #[test]
+fn test_store_reference_with_marking_capacity_evicts_lowest_pic_num_short_term() {
+    let mut dec = build_test_decoder();
+    dec.max_reference_frames = 2;
+    push_dummy_reference(&mut dec, 10);
+    push_dummy_reference(&mut dec, 2);
+
+    dec.last_slice_type = 0;
+    dec.last_nal_ref_idc = 1;
+    dec.last_frame_num = 3;
+    dec.last_poc = 3;
+    dec.last_dec_ref_pic_marking = DecRefPicMarking::default();
+
+    dec.store_reference_with_marking();
+
+    assert_eq!(dec.reference_frames.len(), 2, "参考帧容量应被限制到 2");
+    assert!(
+        dec.reference_frames.iter().any(|pic| pic.frame_num == 10),
+        "应保留 pic_num 更大的短期参考帧"
+    );
+    assert!(
+        dec.reference_frames.iter().any(|pic| pic.frame_num == 3),
+        "应保留当前入队的短期参考帧"
+    );
+    assert!(
+        dec.reference_frames.iter().all(|pic| pic.frame_num != 2),
+        "容量不足时应优先淘汰最小 pic_num 的短期参考帧"
+    );
+}
+
+#[test]
+fn test_store_reference_with_marking_capacity_prefers_keep_long_term() {
+    let mut dec = build_test_decoder();
+    dec.max_reference_frames = 2;
+    push_dummy_reference_with_long_term(&mut dec, 6, Some(0));
+    push_dummy_reference(&mut dec, 7);
+
+    dec.last_slice_type = 0;
+    dec.last_nal_ref_idc = 1;
+    dec.last_frame_num = 8;
+    dec.last_poc = 8;
+    dec.last_dec_ref_pic_marking = DecRefPicMarking::default();
+
+    dec.store_reference_with_marking();
+
+    assert_eq!(dec.reference_frames.len(), 2, "参考帧容量应被限制到 2");
+    assert!(
+        dec.reference_frames
+            .iter()
+            .any(|pic| pic.long_term_frame_idx == Some(0)),
+        "存在短期参考帧时不应优先淘汰长期参考帧"
+    );
+    assert!(
+        dec.reference_frames.iter().any(|pic| pic.frame_num == 8),
+        "当前短期参考帧应成功入队"
+    );
+    assert!(
+        dec.reference_frames.iter().all(|pic| pic.frame_num != 7),
+        "容量淘汰应先移除短期参考帧"
+    );
+}
+
+#[test]
 fn test_reference_list_l0_short_term_before_long_term() {
     let mut dec = build_test_decoder();
     dec.last_slice_type = 0; // P slice
