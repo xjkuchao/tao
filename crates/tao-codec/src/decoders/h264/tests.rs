@@ -2361,6 +2361,88 @@ fn test_apply_inter_block_l0_out_of_range_ref_idx_uses_zero_reference() {
 }
 
 #[test]
+fn test_apply_inter_block_l0_padding_clamps_to_top_left() {
+    let mut dec = build_test_decoder();
+    dec.ref_y.fill(0);
+    dec.ref_u.fill(0);
+    dec.ref_v.fill(0);
+
+    let mut y = vec![0u8; dec.ref_y.len()];
+    for row in 0..dec.height as usize {
+        for col in 0..dec.width as usize {
+            y[row * dec.stride_y + col] = ((row * dec.width as usize + col) % 200 + 1) as u8;
+        }
+    }
+    let mut u = vec![0u8; dec.ref_u.len()];
+    let mut v = vec![0u8; dec.ref_v.len()];
+    for row in 0..(dec.height as usize / 2) {
+        for col in 0..(dec.width as usize / 2) {
+            let idx = row * dec.stride_c + col;
+            u[idx] = ((idx % 200) + 2) as u8;
+            v[idx] = ((idx % 200) + 3) as u8;
+        }
+    }
+    let refs = vec![RefPlanes { y, u, v, poc: 0 }];
+
+    dec.apply_inter_block_l0(&refs, 0, 0, 0, 4, 4, -400, -400, &[], 0, 0);
+
+    for row in 0..4 {
+        for col in 0..4 {
+            let idx = row * dec.stride_y + col;
+            assert_eq!(dec.ref_y[idx], 1, "左上越界时亮度应复制左上边界像素");
+        }
+    }
+    for row in 0..2 {
+        for col in 0..2 {
+            let idx = row * dec.stride_c + col;
+            assert_eq!(dec.ref_u[idx], 2, "左上越界时 U 应复制左上边界像素");
+            assert_eq!(dec.ref_v[idx], 3, "左上越界时 V 应复制左上边界像素");
+        }
+    }
+}
+
+#[test]
+fn test_apply_inter_block_l0_padding_clamps_to_bottom_right() {
+    let mut dec = build_test_decoder();
+    dec.ref_y.fill(0);
+    dec.ref_u.fill(0);
+    dec.ref_v.fill(0);
+
+    let mut y = vec![0u8; dec.ref_y.len()];
+    for row in 0..dec.height as usize {
+        for col in 0..dec.width as usize {
+            y[row * dec.stride_y + col] = ((row * dec.width as usize + col) % 200 + 1) as u8;
+        }
+    }
+    let mut u = vec![0u8; dec.ref_u.len()];
+    let mut v = vec![0u8; dec.ref_v.len()];
+    for row in 0..(dec.height as usize / 2) {
+        for col in 0..(dec.width as usize / 2) {
+            let idx = row * dec.stride_c + col;
+            u[idx] = ((idx % 200) + 2) as u8;
+            v[idx] = ((idx % 200) + 3) as u8;
+        }
+    }
+    let refs = vec![RefPlanes { y, u, v, poc: 0 }];
+
+    dec.apply_inter_block_l0(&refs, 0, 0, 0, 4, 4, 400, 400, &[], 0, 0);
+
+    for row in 0..4 {
+        for col in 0..4 {
+            let idx = row * dec.stride_y + col;
+            assert_eq!(dec.ref_y[idx], 56, "右下越界时亮度应复制右下边界像素");
+        }
+    }
+    for row in 0..2 {
+        for col in 0..2 {
+            let idx = row * dec.stride_c + col;
+            assert_eq!(dec.ref_u[idx], 65, "右下越界时 U 应复制右下边界像素");
+            assert_eq!(dec.ref_v[idx], 66, "右下越界时 V 应复制右下边界像素");
+        }
+    }
+}
+
+#[test]
 fn test_apply_b_prediction_block_explicit_bi_weighted() {
     let mut dec = build_test_decoder();
     let mut pps = build_test_pps();

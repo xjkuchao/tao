@@ -231,7 +231,7 @@ crates/tao-codec/src/decoders/h264/
 
 - [x] 亮度 6-tap + qpel.
 - [x] 色度 1/8 双线性.
-- [ ] 边界扩展(padding): 参考块越界时边界复制 + 单测.
+- [x] 边界扩展(padding): 参考块越界时边界复制 + 单测.
 - [ ] 双向融合舍入对齐.
 
 #### P5.5 多参考帧与 MMCO
