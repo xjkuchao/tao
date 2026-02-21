@@ -9,18 +9,23 @@ impl H264Decoder {
     pub(super) fn decode_slice(&mut self, nalu: &NalUnit) {
         let rbsp = nalu.rbsp();
 
-        if let Ok(header) = self.parse_slice_header(&rbsp, nalu) {
-            let prev_frame_num = self.last_frame_num;
-            self.last_slice_type = header.slice_type;
-            self.last_nal_ref_idc = header.nal_ref_idc;
-            self.last_slice_qp = header.slice_qp;
-            self.last_disable_deblocking_filter_idc = header.disable_deblocking_filter_idc;
-            self.last_slice_alpha_c0_offset_div2 = header.slice_alpha_c0_offset_div2;
-            self.last_slice_beta_offset_div2 = header.slice_beta_offset_div2;
-            self.last_poc = self.compute_slice_poc(&header, prev_frame_num);
-            self.last_frame_num = header.frame_num;
-            self.last_dec_ref_pic_marking = header.dec_ref_pic_marking.clone();
-            self.decode_slice_data(&rbsp, &header);
+        match self.parse_slice_header(&rbsp, nalu) {
+            Ok(header) => {
+                let prev_frame_num = self.last_frame_num;
+                self.last_slice_type = header.slice_type;
+                self.last_nal_ref_idc = header.nal_ref_idc;
+                self.last_slice_qp = header.slice_qp;
+                self.last_disable_deblocking_filter_idc = header.disable_deblocking_filter_idc;
+                self.last_slice_alpha_c0_offset_div2 = header.slice_alpha_c0_offset_div2;
+                self.last_slice_beta_offset_div2 = header.slice_beta_offset_div2;
+                self.last_poc = self.compute_slice_poc(&header, prev_frame_num);
+                self.last_frame_num = header.frame_num;
+                self.last_dec_ref_pic_marking = header.dec_ref_pic_marking.clone();
+                self.decode_slice_data(&rbsp, &header);
+            }
+            Err(err) => {
+                self.record_malformed_nal_drop("slice_header_parse", &err);
+            }
         }
     }
 

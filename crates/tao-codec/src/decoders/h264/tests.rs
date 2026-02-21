@@ -3,7 +3,9 @@ use std::collections::{HashMap, VecDeque};
 use tao_core::Rational;
 use tao_core::bitreader::BitReader;
 
+use crate::decoder::Decoder;
 use crate::frame::Frame;
+use crate::packet::Packet;
 
 use super::{
     BMotion, DecRefPicMarking, H264Decoder, MmcoOp, NalUnit, ParameterSetRebuildAction,
@@ -156,6 +158,7 @@ fn build_test_decoder() -> H264Decoder {
         max_long_term_frame_idx: None,
         max_reference_frames: 4,
         missing_reference_fallbacks: 0,
+        malformed_nal_drops: 0,
         output_queue: VecDeque::new(),
         reorder_buffer: Vec::new(),
         reorder_depth: 2,
@@ -2354,6 +2357,37 @@ fn test_decode_cavlc_slice_data_b_skip_run_missing_reference_fallback() {
     assert!(
         dec.missing_reference_fallbacks >= before + 2,
         "B-slice L0/L1 均缺参考时应至少记录两次回退"
+    );
+}
+
+#[test]
+fn test_decode_slice_bad_header_records_malformed_nal_drop() {
+    let mut dec = build_test_decoder();
+    let nalu = NalUnit::parse(&[0x65]).expect("NAL 头应可解析");
+    let before = dec.malformed_nal_drops;
+
+    dec.decode_slice(&nalu);
+
+    assert_eq!(
+        dec.malformed_nal_drops,
+        before + 1,
+        "slice header 解析失败时应记录坏 NAL 丢弃计数"
+    );
+    assert_eq!(dec.last_frame_num, 0, "坏 NAL 不应推进帧号状态");
+}
+
+#[test]
+fn test_send_packet_without_valid_nal_records_malformed_nal_drop() {
+    let mut dec = build_test_decoder();
+    let before = dec.malformed_nal_drops;
+    let pkt = Packet::from_data(vec![0x80]);
+
+    <H264Decoder as Decoder>::send_packet(&mut dec, &pkt).expect("坏包应被容错丢弃而非报错");
+
+    assert_eq!(
+        dec.malformed_nal_drops,
+        before + 1,
+        "无法拆出有效 NAL 时应记录坏 NAL 丢弃计数"
     );
 }
 

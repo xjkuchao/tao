@@ -153,7 +153,13 @@ impl NalUnit {
         }
 
         let header = data[0];
-        let _forbidden = (header >> 7) & 1;
+        let forbidden = (header >> 7) & 1;
+        if forbidden != 0 {
+            return Err(tao_core::TaoError::InvalidData(format!(
+                "H.264: forbidden_zero_bit 非法, value={}",
+                forbidden
+            )));
+        }
         let ref_idc = (header >> 5) & 0x03;
         let type_id = header & 0x1F;
 
@@ -498,6 +504,17 @@ mod tests {
     #[test]
     fn test_nal_unit_empty_data_error() {
         assert!(NalUnit::parse(&[]).is_err());
+    }
+
+    #[test]
+    fn test_nal_unit_reject_forbidden_zero_bit_set() {
+        let err = NalUnit::parse(&[0xE7]).expect_err("forbidden_zero_bit=1 应返回错误");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("forbidden_zero_bit"),
+            "错误信息应包含 forbidden_zero_bit, actual={}",
+            msg
+        );
     }
 
     #[test]

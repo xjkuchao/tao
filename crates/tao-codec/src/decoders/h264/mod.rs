@@ -296,6 +296,8 @@ pub struct H264Decoder {
     max_reference_frames: usize,
     /// 参考帧缺失回退次数(用于容错统计与单测验证).
     missing_reference_fallbacks: u64,
+    /// 坏 NAL 丢弃次数(用于容错统计与单测验证).
+    malformed_nal_drops: u64,
     output_queue: VecDeque<Frame>,
     reorder_buffer: Vec<ReorderFrameEntry>,
     reorder_depth: usize,
@@ -359,6 +361,7 @@ impl H264Decoder {
             max_long_term_frame_idx: None,
             max_reference_frames: 1,
             missing_reference_fallbacks: 0,
+            malformed_nal_drops: 0,
             output_queue: VecDeque::new(),
             reorder_buffer: Vec::new(),
             reorder_depth: 2,
@@ -487,6 +490,18 @@ impl H264Decoder {
         self.mv_l0_y.fill(0);
         self.ref_idx_l0.fill(-1);
         self.prev_qp_delta_nz = false;
+    }
+
+    fn record_malformed_nal_drop(&mut self, scene: &str, err: &dyn std::fmt::Display) {
+        self.malformed_nal_drops = self.malformed_nal_drops.saturating_add(1);
+        if self.malformed_nal_drops <= 8 {
+            warn!(
+                "H264: 丢弃坏 NAL, scene={}, err={}, drops={}",
+                scene, err, self.malformed_nal_drops
+            );
+        } else if self.malformed_nal_drops == 9 {
+            warn!("H264: 坏 NAL 丢弃日志过多, 后续同类日志省略");
+        }
     }
 
     fn activate_sps(&mut self, sps_id: u32) {
@@ -638,6 +653,7 @@ impl Decoder for H264Decoder {
         self.prev_frame_num_offset_type1 = 0;
         self.prev_frame_num_offset_type2 = 0;
         self.last_dec_ref_pic_marking = DecRefPicMarking::default();
+        self.malformed_nal_drops = 0;
 
         if !params.extra_data.is_empty() {
             let config = parse_avcc_config(&params.extra_data)?;
@@ -680,6 +696,10 @@ impl Decoder for H264Decoder {
         let mut nalus = split_avcc(&packet.data, self.length_size);
         if nalus.is_empty() {
             nalus = split_annex_b(&packet.data);
+        }
+        if nalus.is_empty() && !packet.data.is_empty() {
+            let err = "输入包中未解析出有效 NAL";
+            self.record_malformed_nal_drop("send_packet_split", &err);
         }
         let debug_packet = std::env::var("TAO_H264_DEBUG_PACKET")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
