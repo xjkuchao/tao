@@ -138,7 +138,7 @@
     - [x] CAVLC P-slice 非 skip `P_8x8/P_8x8ref0` 接入 `sub_mb_type` 语法消费、子分区重建与 `ref_idx_l0`(仅 `P_8x8`)路径, 并补单元测试。
     - [x] CAVLC P-slice 非 skip `mb_type=0/1/2/3/4` 接入 `mvd_l0` 语法消费与最小运动向量重建, 并补对齐单测。
 - [ ] 残差逆变换/反量化覆盖 4x4/8x8 关键路径。
-- [ ] I_NxN 8x8 最小路径已接入(含 `transform_size_8x8_flag` 与近似残差), 需升级为规范 8x8 残差路径。
+    - [x] I_NxN `transform_size_8x8_flag` 路径升级为规范 8x8 残差实现: 移除 4x4 近似拆分与临时开关, 接入 `dequant_8x8_ac + idct_8x8 + apply_8x8_ac_residual`, 并补 8x8 残差单测。
 - 验收: I/P/B slice 均可进入重建流程, 不再使用占位回退路径。
 
 ### P4 帧间预测与运动补偿完整实现

@@ -1255,7 +1255,7 @@ impl H264Decoder {
         self.set_transform_8x8_flag(mb_x, mb_y, use_8x8);
 
         if use_8x8 {
-            self.decode_i8x8_residual_fallback(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp, false);
+            self.decode_i8x8_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp, false);
         } else {
             self.decode_inter_4x4_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp);
         }
@@ -1777,7 +1777,7 @@ impl H264Decoder {
         self.set_transform_8x8_flag(mb_x, mb_y, use_8x8);
 
         if use_8x8 {
-            self.decode_i8x8_residual_fallback(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp, false);
+            self.decode_i8x8_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp, false);
         } else {
             self.decode_inter_4x4_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp);
         }

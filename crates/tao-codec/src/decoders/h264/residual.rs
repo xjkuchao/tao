@@ -93,19 +93,6 @@ pub const CAT_LUMA_8X8: BlockCat = BlockCat {
     use_sig_map_8x8: true,
 };
 
-/// Luma 8x8 近似块类别.
-///
-/// 仅用于诊断时跳过 coded_block_flag.
-pub const CAT_LUMA_8X8_FALLBACK: BlockCat = BlockCat {
-    cbf_offset: 1012,
-    sig_offset: 402,
-    last_offset: 417,
-    abs_offset: 426,
-    max_coeff: 64,
-    skip_cbf: true,
-    use_sig_map_8x8: true,
-};
-
 // ============================================================
 // CABAC 残差块解码
 // ============================================================
@@ -431,6 +418,93 @@ pub fn idct_4x4(coeffs: &[i32; 16], out: &mut [i32; 16]) {
     }
 }
 
+/// 8x8 AC 系数反量化.
+///
+/// 输入系数需为 raster 顺序.
+pub fn dequant_8x8_ac(coeffs: &mut [i32; 64], qp: i32) {
+    let qp_per = qp / 6;
+    let qp_rem = qp % 6;
+    let rem_idx = qp_rem as usize;
+
+    for (idx, coeff) in coeffs.iter_mut().enumerate() {
+        if *coeff == 0 {
+            continue;
+        }
+
+        let scale_idx = DEQUANT_8X8_SCALE_INDEX[idx];
+        let scale = LEVEL_SCALE_8X8[rem_idx][scale_idx];
+        let scaled = *coeff * scale;
+        if qp_per >= 6 {
+            *coeff = scaled << (qp_per - 6);
+        } else {
+            let shift = 6 - qp_per;
+            *coeff = (scaled + (1 << (shift - 1))) >> shift;
+        }
+    }
+}
+
+/// H.264 8x8 反整数变换.
+pub fn idct_8x8(coeffs: &[i32; 64], out: &mut [i32; 64]) {
+    let mut tmp = [0i32; 64];
+
+    for row in 0..8 {
+        let mut src = [0i32; 8];
+        src.copy_from_slice(&coeffs[row * 8..row * 8 + 8]);
+        let dst = inverse_transform_1d_8(src);
+        tmp[row * 8..row * 8 + 8].copy_from_slice(&dst);
+    }
+
+    for col in 0..8 {
+        let src = [
+            tmp[col],
+            tmp[8 + col],
+            tmp[16 + col],
+            tmp[24 + col],
+            tmp[32 + col],
+            tmp[40 + col],
+            tmp[48 + col],
+            tmp[56 + col],
+        ];
+        let dst = inverse_transform_1d_8(src);
+        for row in 0..8 {
+            out[row * 8 + col] = (dst[row] + 32) >> 6;
+        }
+    }
+}
+
+fn inverse_transform_1d_8(src: [i32; 8]) -> [i32; 8] {
+    let a0 = src[0] + src[4];
+    let a2 = src[0] - src[4];
+    let a4 = (src[2] >> 1) - src[6];
+    let a6 = src[2] + (src[6] >> 1);
+
+    let b0 = a0 + a6;
+    let b2 = a2 + a4;
+    let b4 = a2 - a4;
+    let b6 = a0 - a6;
+
+    let a1 = -src[3] + src[5] - src[7] - (src[7] >> 1);
+    let a3 = src[1] + src[7] - src[3] - (src[3] >> 1);
+    let a5 = -src[1] + src[7] + src[5] + (src[5] >> 1);
+    let a7 = src[3] + src[5] + src[1] + (src[1] >> 1);
+
+    let b1 = a1 + (a7 >> 2);
+    let b7 = a7 - (a1 >> 2);
+    let b3 = a3 + (a5 >> 2);
+    let b5 = (a3 >> 2) - a5;
+
+    [
+        b0 + b7,
+        b2 + b5,
+        b4 + b3,
+        b6 + b1,
+        b6 - b1,
+        b4 - b3,
+        b2 - b5,
+        b0 - b7,
+    ]
+}
+
 // ============================================================
 // 扫描顺序表
 // ============================================================
@@ -483,6 +557,25 @@ const LEVEL_SCALE: [[i32; 3]; 6] = [
     [18, 23, 29],
 ];
 
+/// 8x8 反量化缩放表 (H.264 Table 8-16, 默认 scaling list).
+///
+/// 索引顺序:
+/// `0=V0, 1=V1, 2=V2, 3=V3, 4=V4, 5=V5`.
+const LEVEL_SCALE_8X8: [[i32; 6]; 6] = [
+    [20, 18, 32, 19, 25, 24],
+    [22, 19, 35, 21, 28, 26],
+    [26, 23, 42, 24, 33, 31],
+    [28, 25, 45, 26, 35, 33],
+    [32, 28, 51, 30, 40, 38],
+    [36, 32, 58, 34, 46, 43],
+];
+
+/// 8x8 反量化位置映射 (raster idx -> scale idx).
+const DEQUANT_8X8_SCALE_INDEX: [usize; 64] = [
+    0, 3, 4, 3, 0, 3, 4, 3, 3, 1, 5, 1, 3, 1, 5, 1, 4, 5, 2, 5, 4, 5, 2, 5, 3, 1, 5, 1, 3, 1, 5, 1,
+    0, 3, 4, 3, 0, 3, 4, 3, 3, 1, 5, 1, 3, 1, 5, 1, 4, 5, 2, 5, 4, 5, 2, 5, 3, 1, 5, 1, 3, 1, 5, 1,
+];
+
 /// 8x8 significant_coeff_flag 的上下文偏移映射 (frame).
 const SIG_COEFF_FLAG_OFFSET_8X8: [u8; 63] = [
     0, 1, 2, 3, 4, 5, 5, 4, 4, 3, 3, 4, 4, 4, 5, 5, 4, 4, 4, 4, 3, 3, 6, 7, 7, 7, 8, 9, 10, 9, 8,
@@ -524,5 +617,90 @@ pub fn apply_4x4_ac_residual(
                 plane[idx] = val.clamp(0, 255) as u8;
             }
         }
+    }
+}
+
+/// 将 8x8 残差块应用到平面上 (反扫描 + 反量化 + IDCT + 逐像素加法)
+pub fn apply_8x8_ac_residual(
+    plane: &mut [u8],
+    stride: usize,
+    x0: usize,
+    y0: usize,
+    coeffs_scan: &[i32; 64],
+    qp: i32,
+) {
+    let mut coeffs_raster = [0i32; 64];
+    for (scan_pos, &raster_idx) in ZIGZAG_8X8.iter().enumerate() {
+        coeffs_raster[raster_idx] = coeffs_scan[scan_pos];
+    }
+
+    dequant_8x8_ac(&mut coeffs_raster, qp);
+
+    let mut spatial = [0i32; 64];
+    idct_8x8(&coeffs_raster, &mut spatial);
+
+    for dy in 0..8 {
+        for dx in 0..8 {
+            let idx = (y0 + dy) * stride + x0 + dx;
+            if idx < plane.len() {
+                let val = plane[idx] as i32 + spatial[dy * 8 + dx];
+                plane[idx] = val.clamp(0, 255) as u8;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_idct_8x8_dc_only_produces_uniform_output() {
+        let mut coeffs = [0i32; 64];
+        coeffs[0] = 64;
+        let mut out = [0i32; 64];
+
+        idct_8x8(&coeffs, &mut out);
+
+        let first = out[0];
+        assert!(
+            out.iter().all(|&v| v == first),
+            "仅 DC 系数时 8x8 反变换输出应为常量"
+        );
+    }
+
+    #[test]
+    fn test_apply_8x8_ac_residual_spreads_across_all_4x4_sub_blocks() {
+        let mut plane = vec![128u8; 16 * 16];
+        let mut coeffs_scan = [0i32; 64];
+        coeffs_scan[0] = 64;
+
+        apply_8x8_ac_residual(&mut plane, 16, 4, 4, &coeffs_scan, 26);
+
+        let changed = |x_begin: usize, y_begin: usize| -> usize {
+            let mut count = 0usize;
+            for y in y_begin..(y_begin + 4) {
+                for x in x_begin..(x_begin + 4) {
+                    if plane[y * 16 + x] != 128 {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        };
+
+        assert!(changed(4, 4) > 0, "左上 4x4 子块应有变化, 证明残差已生效");
+        assert!(
+            changed(8, 4) > 0,
+            "右上 4x4 子块应有变化, 证明非 4x4 独立近似"
+        );
+        assert!(
+            changed(4, 8) > 0,
+            "左下 4x4 子块应有变化, 证明非 4x4 独立近似"
+        );
+        assert!(
+            changed(8, 8) > 0,
+            "右下 4x4 子块应有变化, 证明非 4x4 独立近似"
+        );
     }
 }

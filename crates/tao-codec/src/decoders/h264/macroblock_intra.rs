@@ -288,7 +288,7 @@ impl H264Decoder {
 
         // 6. 解码残差并应用
         if use_8x8 {
-            self.decode_i8x8_residual_fallback(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp, true);
+            self.decode_i8x8_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp, true);
         } else {
             self.decode_i4x4_residual(
                 cabac,
@@ -485,9 +485,9 @@ impl H264Decoder {
         }
     }
 
-    /// I_8x8 残差最小可用路径: 按 8x8 块消耗语法并近似应用到 4x4 子块.
+    /// I_8x8 残差规范路径: 按 8x8 块执行 CABAC 残差解码 + 8x8 反量化与反变换.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn decode_i8x8_residual_fallback(
+    pub(super) fn decode_i8x8_residual(
         &mut self,
         cabac: &mut CabacDecoder,
         ctxs: &mut [CabacCtx],
@@ -497,16 +497,6 @@ impl H264Decoder {
         qp: i32,
         intra_defaults: bool,
     ) {
-        let skip_8x8_cbf = std::env::var("TAO_H264_8X8_SKIP_CBF")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            // 对齐 FFmpeg 在 4:2:0 下的默认路径: cat=5 跳过 coded_block_flag.
-            .unwrap_or(true);
-        let block_cat = if skip_8x8_cbf {
-            &CAT_LUMA_8X8_FALLBACK
-        } else {
-            &CAT_LUMA_8X8
-        };
-
         for sub_y in 0..4 {
             for sub_x in 0..4 {
                 self.set_luma_cbf(mb_x * 4 + sub_x, mb_y * 4 + sub_y, false);
@@ -526,7 +516,7 @@ impl H264Decoder {
             let x4 = mb_x * 4 + x8x8 * 2;
             let y4 = mb_y * 4 + y8x8 * 2;
             let cbf_inc = self.luma_8x8_cbf_ctx_inc(x8, y8, intra_defaults);
-            let mut raw_coeffs = decode_residual_block(cabac, ctxs, block_cat, cbf_inc);
+            let raw_coeffs = decode_residual_block(cabac, ctxs, &CAT_LUMA_8X8, cbf_inc);
             let coded = raw_coeffs.iter().any(|&c| c != 0);
             self.set_luma_8x8_cbf(x8, y8, coded);
             // 对齐 FFmpeg: 8x8 变换块会把非零计数写回 2x2 子块缓存.
@@ -536,35 +526,25 @@ impl H264Decoder {
                     self.set_luma_cbf(x4 + sub_x, y4 + sub_y, coded);
                 }
             }
-            while raw_coeffs.len() < 64 {
-                raw_coeffs.push(0);
-            }
-            let mut coeffs_raster_8x8 = [0i32; 64];
-            for (scan_pos, &raster_idx) in residual::ZIGZAG_8X8.iter().enumerate() {
-                coeffs_raster_8x8[raster_idx] = raw_coeffs[scan_pos];
+            if !coded {
+                continue;
             }
 
-            for sub_y in 0..2 {
-                for sub_x in 0..2 {
-                    let mut coeffs_arr = [0i32; 16];
-                    for (scan_pos, &(row, col)) in residual::ZIGZAG_4X4.iter().enumerate() {
-                        let r8 = sub_y * 4 + row;
-                        let c8 = sub_x * 4 + col;
-                        coeffs_arr[scan_pos] = coeffs_raster_8x8[r8 * 8 + c8];
-                    }
-                    residual::dequant_4x4_ac(&mut coeffs_arr, qp);
-
-                    let px = mb_x * 16 + x8x8 * 8 + sub_x * 4;
-                    let py = mb_y * 16 + y8x8 * 8 + sub_y * 4;
-                    residual::apply_4x4_ac_residual(
-                        &mut self.ref_y,
-                        self.stride_y,
-                        px,
-                        py,
-                        &coeffs_arr,
-                    );
-                }
+            let mut coeffs_scan = [0i32; 64];
+            for (idx, coeff) in raw_coeffs.iter().take(64).enumerate() {
+                coeffs_scan[idx] = *coeff;
             }
+
+            let px = mb_x * 16 + x8x8 * 8;
+            let py = mb_y * 16 + y8x8 * 8;
+            residual::apply_8x8_ac_residual(
+                &mut self.ref_y,
+                self.stride_y,
+                px,
+                py,
+                &coeffs_scan,
+                qp,
+            );
         }
     }
 

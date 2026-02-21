@@ -41,9 +41,8 @@ use crate::parsers::h264::{
 
 use cabac::{CabacCtx, CabacDecoder, init_contexts_i_slice, init_contexts_pb_slice};
 use residual::{
-    CAT_CHROMA_AC, CAT_CHROMA_DC, CAT_LUMA_8X8, CAT_LUMA_8X8_FALLBACK, CAT_LUMA_AC, CAT_LUMA_DC,
-    decode_residual_block, dequant_chroma_dc, dequant_luma_dc, inverse_hadamard_2x2,
-    inverse_hadamard_4x4,
+    CAT_CHROMA_AC, CAT_CHROMA_DC, CAT_LUMA_8X8, CAT_LUMA_AC, CAT_LUMA_DC, decode_residual_block,
+    dequant_chroma_dc, dequant_luma_dc, inverse_hadamard_2x2, inverse_hadamard_4x4,
 };
 
 // ============================================================
