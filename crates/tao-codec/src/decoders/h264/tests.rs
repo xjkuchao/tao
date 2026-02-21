@@ -4021,7 +4021,7 @@ fn test_build_b_direct_motion_spatial_returns_zero_when_left_top_neighbors_are_z
 }
 
 #[test]
-fn test_build_b_direct_motion_spatial_keeps_pred_mv_when_l1_neighbors_absent() {
+fn test_build_b_direct_motion_spatial_l1_fallback_keeps_input_when_neighbors_absent() {
     let mut dec = build_test_decoder();
     dec.width = 32;
     dec.height = 32;
@@ -4041,10 +4041,16 @@ fn test_build_b_direct_motion_spatial_keeps_pred_mv_when_l1_neighbors_absent() {
     let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true);
     let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
     let motion_l1 = motion_l1.expect("spatial direct 应提供 L1 运动信息");
-    assert_eq!(motion_l0.mv_x, 12, "零向量条件不满足时应保留预测 MV(x)");
-    assert_eq!(motion_l0.mv_y, -8, "零向量条件不满足时应保留预测 MV(y)");
-    assert_eq!(motion_l1.mv_x, 12, "零向量条件不满足时应保留预测 MV(x)");
-    assert_eq!(motion_l1.mv_y, -8, "零向量条件不满足时应保留预测 MV(y)");
+    assert_eq!(
+        motion_l0.mv_x, 0,
+        "L0 邻居存在时应优先使用 L0 邻居预测 MV(x)"
+    );
+    assert_eq!(
+        motion_l0.mv_y, 0,
+        "L0 邻居存在时应优先使用 L0 邻居预测 MV(y)"
+    );
+    assert_eq!(motion_l1.mv_x, 12, "L1 邻居缺失时应回退输入预测 MV(x)");
+    assert_eq!(motion_l1.mv_y, -8, "L1 邻居缺失时应回退输入预测 MV(y)");
 }
 
 #[test]
@@ -4074,10 +4080,38 @@ fn test_build_b_direct_motion_spatial_uses_independent_l1_neighbor_mv() {
     let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true);
     let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
     let motion_l1 = motion_l1.expect("spatial direct 应提供 L1 运动信息");
-    assert_eq!(motion_l0.mv_x, 12, "L0 应保留输入预测 MV(x)");
-    assert_eq!(motion_l0.mv_y, -8, "L0 应保留输入预测 MV(y)");
+    assert_eq!(motion_l0.mv_x, 0, "L0 应独立使用 list0 邻居预测 MV(x)");
+    assert_eq!(motion_l0.mv_y, 0, "L0 应独立使用 list0 邻居预测 MV(y)");
     assert_eq!(motion_l1.mv_x, 20, "L1 应独立使用邻居预测 MV(x)");
     assert_eq!(motion_l1.mv_y, 0, "L1 应独立使用邻居预测 MV(y)");
+}
+
+#[test]
+fn test_build_b_direct_motion_spatial_uses_independent_l0_neighbor_mv() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+
+    let left_mb = dec.mb_index(0, 1).expect("左邻索引应存在");
+    let top_mb = dec.mb_index(1, 0).expect("上邻索引应存在");
+
+    dec.mv_l0_x[left_mb] = 20;
+    dec.mv_l0_y[left_mb] = 0;
+    dec.ref_idx_l0[left_mb] = 0;
+    dec.mv_l0_x[top_mb] = 20;
+    dec.mv_l0_y[top_mb] = 0;
+    dec.ref_idx_l0[top_mb] = 0;
+    dec.ref_idx_l1[left_mb] = -1;
+    dec.ref_idx_l1[top_mb] = -1;
+
+    let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true);
+    let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
+    let motion_l1 = motion_l1.expect("spatial direct 应提供 L1 运动信息");
+    assert_eq!(motion_l0.mv_x, 20, "L0 应独立使用 list0 邻居预测 MV(x)");
+    assert_eq!(motion_l0.mv_y, 0, "L0 应独立使用 list0 邻居预测 MV(y)");
+    assert_eq!(motion_l1.mv_x, 12, "L1 邻居缺失时应回退输入预测 MV(x)");
+    assert_eq!(motion_l1.mv_y, -8, "L1 邻居缺失时应回退输入预测 MV(y)");
 }
 
 #[test]
@@ -4468,11 +4502,11 @@ fn test_decode_cavlc_slice_data_b_non_skip_direct_spatial_uses_independent_l1_ne
 
     let mb3_base = 16 + 16 * dec.stride_y;
     assert_eq!(
-        dec.ref_y[mb3_base], 18,
-        "Spatial Direct 应使用独立 L1 邻居 MV, 与 L0 融合后像素应为 18"
+        dec.ref_y[mb3_base], 17,
+        "Spatial Direct 应分别使用 list0/list1 邻居 MV, 融合后像素应为 17"
     );
-    assert_eq!(dec.mv_l0_x[3], 4, "L0 仍应保留输入预测 MV(x)=4");
-    assert_eq!(dec.mv_l0_y[3], 0, "L0 仍应保留输入预测 MV(y)=0");
+    assert_eq!(dec.mv_l0_x[3], 0, "L0 应独立使用 list0 邻居 MV(x)=0");
+    assert_eq!(dec.mv_l0_y[3], 0, "L0 应独立使用 list0 邻居 MV(y)=0");
 }
 
 #[test]
