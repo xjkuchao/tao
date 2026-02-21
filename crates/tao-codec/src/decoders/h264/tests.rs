@@ -4501,6 +4501,29 @@ fn test_decode_cavlc_slice_data_b_skip_run_temporal_direct_uses_l0_only() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_b_skip_run_temporal_direct_uses_colocated_mv() {
+    let mut dec = build_test_decoder();
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_horizontal_gradient_reference(&mut dec, 1, 2, None);
+    push_custom_reference_with_l0_motion(&mut dec, 2, 8, 100, None, (4, 0, 0));
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+    header.direct_spatial_mv_pred_flag = false;
+
+    // mb_skip_run = 1, 覆盖单宏块帧
+    let rbsp = build_rbsp_from_ues(&[1]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+    assert_eq!(
+        dec.ref_y[0], 1,
+        "temporal direct 应使用共定位宏块 MV(+1px)驱动 L0 参考采样"
+    );
+    assert_eq!(dec.mv_l0_x[0], 4, "宏块记录的 L0 MV(x) 应来自共定位宏块");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_b_skip_run_uses_predicted_mv_from_left_neighbor() {
     let mut dec = build_test_decoder();
     dec.width = 32;

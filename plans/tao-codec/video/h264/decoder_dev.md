@@ -227,7 +227,7 @@ crates/tao-codec/src/decoders/h264/
     - [x] 共定位 MV 缩放(td/tb): 接入 dist_scale_factor 与分量缩放函数 + 单测.
     - [x] 共定位宏块定位: 接入 list1[0] 优先定位 + list0 回退的宏块级共定位 MV 读取逻辑与单测.
     - [x] L0/L1 分别缩放: 接入 `mv_l0=scale(mv_col)`, `mv_l1=mv_l0-mv_col` 分量函数 + 单测.
-    - [ ] Temporal Direct 单测.
+    - [x] Temporal Direct 单测: 新增 CAVLC B_Skip 集成用例, 验证共定位 MV 驱动采样.
 - [ ] B_Skip/B_Direct_16x16/B_Direct_8x8 接入.
     - [x] CAVLC 路径接入 16x16 邻居 MVP(B_Skip/B_Direct_16x16/B_8x8 direct).
     - [x] CAVLC 单测覆盖 B_Skip/B_Direct_16x16/B_8x8 direct 的左邻 MVP 继承路径.
