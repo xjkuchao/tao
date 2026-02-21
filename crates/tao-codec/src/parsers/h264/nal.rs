@@ -273,6 +273,7 @@ pub fn avcc_to_annex_b(data: &[u8], length_size: usize) -> Vec<u8> {
 }
 
 /// avcC 配置解析结果
+#[derive(Debug)]
 pub struct AvccConfig {
     /// SPS 列表
     pub sps_list: Vec<Vec<u8>>,
@@ -300,35 +301,67 @@ pub fn parse_avcc_config(data: &[u8]) -> TaoResult<AvccConfig> {
     let mut pos = 6;
     let mut sps_list = Vec::new();
 
-    for _ in 0..num_sps {
+    for i in 0..num_sps {
         if pos + 2 > data.len() {
-            break;
+            return Err(tao_core::TaoError::InvalidData(format!(
+                "H.264: avcC SPS 长度字段截断, index={}",
+                i
+            )));
         }
         let sps_len = (u16::from(data[pos]) << 8 | u16::from(data[pos + 1])) as usize;
         pos += 2;
+        if sps_len == 0 {
+            return Err(tao_core::TaoError::InvalidData(format!(
+                "H.264: avcC SPS 长度非法, index={}, len=0",
+                i
+            )));
+        }
         if pos + sps_len > data.len() {
-            break;
+            return Err(tao_core::TaoError::InvalidData(format!(
+                "H.264: avcC SPS 数据截断, index={}, declared_len={}, remain={}",
+                i,
+                sps_len,
+                data.len().saturating_sub(pos)
+            )));
         }
         sps_list.push(data[pos..pos + sps_len].to_vec());
         pos += sps_len;
     }
 
+    if pos >= data.len() {
+        return Err(tao_core::TaoError::InvalidData(
+            "H.264: avcC 缺少 numOfPictureParameterSets 字段".into(),
+        ));
+    }
+
     let mut pps_list = Vec::new();
-    if pos < data.len() {
-        let num_pps = data[pos] as usize;
-        pos += 1;
-        for _ in 0..num_pps {
-            if pos + 2 > data.len() {
-                break;
-            }
-            let pps_len = (u16::from(data[pos]) << 8 | u16::from(data[pos + 1])) as usize;
-            pos += 2;
-            if pos + pps_len > data.len() {
-                break;
-            }
-            pps_list.push(data[pos..pos + pps_len].to_vec());
-            pos += pps_len;
+    let num_pps = data[pos] as usize;
+    pos += 1;
+    for i in 0..num_pps {
+        if pos + 2 > data.len() {
+            return Err(tao_core::TaoError::InvalidData(format!(
+                "H.264: avcC PPS 长度字段截断, index={}",
+                i
+            )));
         }
+        let pps_len = (u16::from(data[pos]) << 8 | u16::from(data[pos + 1])) as usize;
+        pos += 2;
+        if pps_len == 0 {
+            return Err(tao_core::TaoError::InvalidData(format!(
+                "H.264: avcC PPS 长度非法, index={}, len=0",
+                i
+            )));
+        }
+        if pos + pps_len > data.len() {
+            return Err(tao_core::TaoError::InvalidData(format!(
+                "H.264: avcC PPS 数据截断, index={}, declared_len={}, remain={}",
+                i,
+                pps_len,
+                data.len().saturating_sub(pos)
+            )));
+        }
+        pps_list.push(data[pos..pos + pps_len].to_vec());
+        pos += pps_len;
     }
 
     Ok(AvccConfig {
@@ -660,6 +693,58 @@ mod tests {
     #[test]
     fn test_avcc_config_no_sps_error() {
         assert!(build_avcc_config(&[], &[], 4).is_err());
+    }
+
+    #[test]
+    fn test_parse_avcc_config_reject_truncated_sps_length_field() {
+        // num_sps=1, 但 SPS 长度字段只有 1 字节.
+        let data = [0x01, 0x64, 0x00, 0x1E, 0xFF, 0xE1, 0x00];
+        let err = parse_avcc_config(&data).expect_err("SPS 长度字段截断应返回错误");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("SPS 长度字段截断"),
+            "错误信息应包含 SPS 长度字段截断, actual={}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_parse_avcc_config_reject_truncated_sps_payload() {
+        // num_sps=1, declared_len=4, 实际仅 2 字节.
+        let data = [0x01, 0x64, 0x00, 0x1E, 0xFF, 0xE1, 0x00, 0x04, 0x67, 0x64];
+        let err = parse_avcc_config(&data).expect_err("SPS 数据截断应返回错误");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("SPS 数据截断"),
+            "错误信息应包含 SPS 数据截断, actual={}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_parse_avcc_config_reject_missing_num_pps_field() {
+        // num_sps=1, SPS 完整, 但缺少 numOfPictureParameterSets 字段.
+        let data = [0x01, 0x64, 0x00, 0x1E, 0xFF, 0xE1, 0x00, 0x01, 0x67];
+        let err = parse_avcc_config(&data).expect_err("缺少 num_pps 字段应返回错误");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("numOfPictureParameterSets"),
+            "错误信息应包含 numOfPictureParameterSets, actual={}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_parse_avcc_config_reject_truncated_pps_payload() {
+        // num_sps=0, num_pps=1, declared_len=2, 实际仅 1 字节.
+        let data = [0x01, 0x64, 0x00, 0x1E, 0xFF, 0xE0, 0x01, 0x00, 0x02, 0x68];
+        let err = parse_avcc_config(&data).expect_err("PPS 数据截断应返回错误");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("PPS 数据截断"),
+            "错误信息应包含 PPS 数据截断, actual={}",
+            msg
+        );
     }
 
     #[test]
