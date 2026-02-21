@@ -26,7 +26,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::LazyLock;
 use syntax::*;
 
-use log::debug;
+use log::{debug, warn};
 use tao_core::bitreader::BitReader;
 use tao_core::{PixelFormat, Rational, TaoError, TaoResult};
 
@@ -490,6 +490,10 @@ impl H264Decoder {
         let Some(sps) = self.sps_map.get(&sps_id).cloned() else {
             return;
         };
+        if let Err(err) = Self::validate_sps_support(&sps) {
+            warn!("H264: 忽略不支持的 SPS, sps_id={}, err={}", sps_id, err);
+            return;
+        }
         let sps_changed = self.active_sps_id != Some(sps_id);
         let size_changed = self.width != sps.width || self.height != sps.height;
         self.max_reference_frames = sps.max_num_ref_frames.clamp(1, 16) as usize;
@@ -511,6 +515,27 @@ impl H264Decoder {
         while self.reference_frames.len() > self.max_reference_frames {
             let _ = self.reference_frames.pop_front();
         }
+    }
+
+    fn validate_sps_support(sps: &Sps) -> TaoResult<()> {
+        if sps.chroma_format_idc != 1 {
+            return Err(TaoError::NotImplemented(format!(
+                "H264: 暂不支持 chroma_format_idc={}, 仅支持 4:2:0",
+                sps.chroma_format_idc
+            )));
+        }
+        if !sps.frame_mbs_only {
+            return Err(TaoError::NotImplemented(
+                "H264: 暂不支持场编码(frame_mbs_only_flag=0)".into(),
+            ));
+        }
+        if sps.bit_depth_luma != 8 || sps.bit_depth_chroma != 8 {
+            return Err(TaoError::NotImplemented(format!(
+                "H264: 暂不支持高位深, bit_depth_luma={}, bit_depth_chroma={}, 仅支持 8-bit",
+                sps.bit_depth_luma, sps.bit_depth_chroma
+            )));
+        }
+        Ok(())
     }
 
     fn activate_parameter_sets(&mut self, pps_id: u32) -> TaoResult<()> {

@@ -1584,6 +1584,82 @@ fn test_handle_sps_same_id_size_change_resets_reference_state() {
 }
 
 #[test]
+fn test_activate_sps_reject_unsupported_chroma_format() {
+    let mut dec = build_test_decoder();
+    let base = build_test_sps(0);
+    dec.sps_map.insert(0, base.clone());
+    dec.activate_sps(0);
+    assert_eq!(dec.active_sps_id, Some(0), "基线 SPS 应激活成功");
+
+    let mut unsupported = build_test_sps(1);
+    unsupported.chroma_format_idc = 2;
+    unsupported.width = 32;
+    unsupported.height = 32;
+    dec.sps_map.insert(1, unsupported);
+
+    dec.activate_sps(1);
+
+    assert_eq!(
+        dec.active_sps_id,
+        Some(0),
+        "不支持的 chroma_format_idc 不应覆盖当前激活 SPS"
+    );
+    assert_eq!(dec.width, 16, "不支持 SPS 不应修改解码宽度");
+    assert_eq!(dec.height, 16, "不支持 SPS 不应修改解码高度");
+}
+
+#[test]
+fn test_activate_sps_reject_unsupported_interlaced_stream() {
+    let mut dec = build_test_decoder();
+    let base = build_test_sps(0);
+    dec.sps_map.insert(0, base.clone());
+    dec.activate_sps(0);
+    assert_eq!(dec.active_sps_id, Some(0), "基线 SPS 应激活成功");
+
+    let mut unsupported = build_test_sps(1);
+    unsupported.frame_mbs_only = false;
+    unsupported.width = 32;
+    unsupported.height = 32;
+    dec.sps_map.insert(1, unsupported);
+
+    dec.activate_sps(1);
+
+    assert_eq!(
+        dec.active_sps_id,
+        Some(0),
+        "场编码 SPS 当前未支持, 不应覆盖当前激活 SPS"
+    );
+    assert_eq!(dec.width, 16, "不支持 SPS 不应修改解码宽度");
+    assert_eq!(dec.height, 16, "不支持 SPS 不应修改解码高度");
+}
+
+#[test]
+fn test_activate_sps_reject_unsupported_high_bit_depth() {
+    let mut dec = build_test_decoder();
+    let base = build_test_sps(0);
+    dec.sps_map.insert(0, base.clone());
+    dec.activate_sps(0);
+    assert_eq!(dec.active_sps_id, Some(0), "基线 SPS 应激活成功");
+
+    let mut unsupported = build_test_sps(1);
+    unsupported.bit_depth_luma = 10;
+    unsupported.bit_depth_chroma = 10;
+    unsupported.width = 32;
+    unsupported.height = 32;
+    dec.sps_map.insert(1, unsupported);
+
+    dec.activate_sps(1);
+
+    assert_eq!(
+        dec.active_sps_id,
+        Some(0),
+        "高位深 SPS 当前未支持, 不应覆盖当前激活 SPS"
+    );
+    assert_eq!(dec.width, 16, "不支持 SPS 不应修改解码宽度");
+    assert_eq!(dec.height, 16, "不支持 SPS 不应修改解码高度");
+}
+
+#[test]
 fn test_store_reference_with_marking_mmco_forget_short_and_long() {
     let mut dec = build_test_decoder();
     push_dummy_reference(&mut dec, 1);
