@@ -220,6 +220,7 @@ crates/tao-codec/src/decoders/h264/
     - [x] 最小 L1 独立推导: Spatial Direct 下 L1 使用左/上/C|D 邻居中值, 缺失时回退输入预测.
     - [ ] 16x16/8x8 粒度(direct_8x8_inference_flag).
     - [ ] Spatial Direct 单测.
+    - [x] CAVLC B_Direct_16x16 单测: 覆盖零 MV 条件与 L1 独立邻居预测.
 - [ ] Temporal Direct:
     - [ ] 共定位 MV 缩放(td/tb).
     - [ ] 共定位宏块定位.

@@ -4363,6 +4363,105 @@ fn test_decode_cavlc_slice_data_b_non_skip_direct_uses_predicted_mv_from_left_ne
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_b_non_skip_direct_spatial_zero_condition_forces_zero_mv() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    // 目标宏块为 (1,1). 预置 4x4 邻居候选使 L0 预测为 +1 像素.
+    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 4, 0, 0);
+    dec.set_l0_motion_block_4x4(16, 0, 16, 16, 4, 0, 0);
+    dec.set_l0_motion_block_4x4(0, 0, 16, 16, 0, 0, 0);
+
+    // 但将左/上宏块的 MB 级 L0/L1 都标记为零向量, 触发 Spatial Direct 零 MV 条件.
+    let left_mb = dec.mb_index(0, 1).expect("左邻索引应存在");
+    let top_mb = dec.mb_index(1, 0).expect("上邻索引应存在");
+    for idx in [left_mb, top_mb] {
+        dec.mv_l0_x[idx] = 0;
+        dec.mv_l0_y[idx] = 0;
+        dec.ref_idx_l0[idx] = 0;
+        dec.mv_l1_x[idx] = 0;
+        dec.mv_l1_y[idx] = 0;
+        dec.ref_idx_l1[idx] = 0;
+    }
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.first_mb = 3; // 仅解码右下宏块
+    header.data_bit_offset = 0;
+    header.direct_spatial_mv_pred_flag = true;
+
+    // mb3: skip_run=0, mb_type=0(B_Direct_16x16)
+    // 额外追加 ue(0) 作为尾码占位, 避免单比特 mb_type 在 has_more_rbsp_data 判断中被吞掉.
+    let rbsp = build_rbsp_from_ues(&[0, 0, 0]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    let mb3_base = 16 + 16 * dec.stride_y;
+    assert_eq!(
+        dec.ref_y[mb3_base], 16,
+        "Spatial Direct 零 MV 条件命中时应按零位移采样"
+    );
+    assert_eq!(
+        dec.mv_l0_x[3], 0,
+        "Spatial Direct 零 MV 条件命中时 L0 MV(x) 应为 0"
+    );
+    assert_eq!(
+        dec.mv_l0_y[3], 0,
+        "Spatial Direct 零 MV 条件命中时 L0 MV(y) 应为 0"
+    );
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_b_non_skip_direct_spatial_uses_independent_l1_neighbor_mv() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    // 目标宏块为 (1,1). L0 预测来源于 4x4 邻居候选: +1 像素.
+    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 4, 0, 0);
+    dec.set_l0_motion_block_4x4(16, 0, 16, 16, 4, 0, 0);
+    dec.set_l0_motion_block_4x4(0, 0, 16, 16, 0, 0, 0);
+
+    // L1 MB 级邻居单独设置为 +2 像素, 验证 L1 独立预测不复用 L0.
+    let left_mb = dec.mb_index(0, 1).expect("左邻索引应存在");
+    let top_mb = dec.mb_index(1, 0).expect("上邻索引应存在");
+    for idx in [left_mb, top_mb] {
+        dec.mv_l0_x[idx] = 0;
+        dec.mv_l0_y[idx] = 0;
+        dec.ref_idx_l0[idx] = 0;
+        dec.mv_l1_x[idx] = 8;
+        dec.mv_l1_y[idx] = 0;
+        dec.ref_idx_l1[idx] = 0;
+    }
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.first_mb = 3; // 仅解码右下宏块
+    header.data_bit_offset = 0;
+    header.direct_spatial_mv_pred_flag = true;
+
+    // mb3: skip_run=0, mb_type=0(B_Direct_16x16), 加一个占位尾码.
+    let rbsp = build_rbsp_from_ues(&[0, 0, 0]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    let mb3_base = 16 + 16 * dec.stride_y;
+    assert_eq!(
+        dec.ref_y[mb3_base], 18,
+        "Spatial Direct 应使用独立 L1 邻居 MV, 与 L0 融合后像素应为 18"
+    );
+    assert_eq!(dec.mv_l0_x[3], 4, "L0 仍应保留输入预测 MV(x)=4");
+    assert_eq!(dec.mv_l0_y[3], 0, "L0 仍应保留输入预测 MV(y)=0");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_b_non_skip_l0_only() {
     let mut dec = build_test_decoder();
     dec.last_slice_type = 1;
