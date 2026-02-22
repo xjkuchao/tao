@@ -54,7 +54,7 @@
 ### 2.3 JSON 逐帧报告
 
 - [x] 新增逐帧报告输出: 每帧独立的 Y/U/V PSNR, max_err, precision_pct.
-- [x] 通过 `TAO_H264_COMPARE_REPORT=1` 启用, 输出到 `plans/tao-codec/video/h264/coverage/`.
+- [x] 通过 `TAO_H264_COMPARE_REPORT=1` 启用, 输出到 `data/h264_compare_reports/`.
 - [x] 报告格式: JSON 数组, 每个元素包含 `frame_idx`, `y_psnr`, `u_psnr`, `v_psnr`,
       `y_max_err`, `u_max_err`, `v_max_err`, `y_precision`, `u_precision`, `v_precision`.
 
@@ -187,19 +187,6 @@ TAO_H264_COMPARE_INPUT=data/h264_samples/c1_cavlc_baseline_720p.mp4 \
 - **CABAC 状态 trace**: 对比 CABAC 上下文状态与 FFmpeg 的 ctxIdx/state/mps 演进.
 - **环境变量开关**: 临时隔离模块(如强制 4x4/跳过去块)缩小范围.
 
-#### 宏块级 trace 工具
-
-`plans/tao-codec/video/h264/coverage/mb_trace_probe.py` 提供宏块级诊断:
-
-```bash
-# 生成 FFmpeg 宏块 trace 参考数据
-ffmpeg -i input.mp4 -vf "showinfo" -f null /dev/null 2>&1 | \
-  python3 plans/tao-codec/video/h264/coverage/mb_trace_probe.py > trace_ref.json
-
-# 基线数据存放于
-# plans/tao-codec/video/h264/coverage/sample1_trace_baseline.json
-```
-
 #### FFmpeg 调试模式
 
 ```bash
@@ -224,21 +211,43 @@ ffmpeg -y -i input.mp4 -pix_fmt yuv420p -vframes 10 -f rawvideo ref.yuv
 
 ## 5. 精度基线记录
 
-> 以下为功能开发阶段的**临时诊断数据**, 仅供参考, 不作为精度结论.
+### 当前基线(10 帧, 2026-02-22)
 
-### 当前基线(120 帧, 2026-02-21, 功能未完整)
+| 样本 | 分辨率    | Profile              | 熵编码 | 精度       | Y-PSNR   | max_err | 状态      |
+| ---- | --------- | -------------------- | ------ | ---------- | -------- | ------- | --------- |
+| C1   | 1280x720  | Constrained Baseline | CAVLC  | 9.87%      | 18.62dB  | 252     | 待修复    |
+| C2   | 1920x1080 | Main                 | CAVLC  | **99.999%** | **79.82dB** | 20   | **近 bit-exact** |
+| C3   | 704x480   | High                 | CABAC  | 33.61%     | 12.77dB  | 252     | 待修复    |
+| E1   | 352x200   | Baseline             | CAVLC  | 20.65%     | 25.34dB  | 252     | 待修复    |
+| E2   | 1280x720  | Main                 | CAVLC  | 44.77%     | 21.36dB  | 237     | 待修复    |
+| E3   | 640x352   | Main                 | CABAC  | **99.996%** | **73.58dB** | 44   | **近 bit-exact** |
+| E4   | 480x204   | Main                 | CAVLC  | 8.41%      | 15.84dB  | 242     | 待修复    |
+| E5   | 1920x1088 | Main                 | CABAC  | 26.20%     | 20.08dB  | 211     | 待修复    |
+| E6   | 1920x1080 | High                 | CABAC  | 25.79%     | 8.75dB   | 239     | 待修复    |
+| E7   | 1920x1080 | High                 | CAVLC  | 0.47%      | 12.77dB  | 253     | **唯一失败** |
+| E8   | 352x288   | High                 | CABAC  | 22.66%     | 19.15dB  | 233     | 待修复    |
+| E9   | 352x200   | Baseline             | CAVLC  | 16.66%     | 20.26dB  | 181     | 待修复    |
+| X1   | 352x288   | High                 | CABAC  | 81.02%     | 26.62dB  | 131     | 待修复    |
+| X2   | 352x288   | High                 | CABAC  | 43.97%     | 13.09dB  | 247     | 待修复    |
+| X3   | 352x288   | High                 | CABAC  | 42.48%     | 15.16dB  | 247     | 待修复    |
 
-| 样本            | 精度      |
-| --------------- | --------- |
-| data/1_h264.mp4 | 1.343662% |
-| data/2_h264.mp4 | 1.792586% |
-| 平均            | 1.568124% |
+- 通过: 14/15, 失败: 1/15 (阈值 1.00%, E7 唯一失败)
+- C2 首帧达到 100% bit-exact (PSNR=inf)
+- E3 帧 0-8 bit-exact, 仅帧 9 有微小偏差
 
-### 已知主瓶颈
+### 已完成的关键修复
 
-- 首个 IDR slice CABAC 语法失步(decoded_mbs=102/8160).
-- I_8x8 coded_block_flag 上下文建模不完整.
-- B-slice list1/双向仍有近似路径.
+1. **去块滤波器** (per-edge QP, p1/q1 弱滤波修正, p2/q2 强滤波更新, chroma boundary_step 2→4)
+2. **色度 DC 反量化** 舍入偏移
+3. **Slice 边界帧内预测邻居可用性** — 根因修复, C2 从 ~20% 提升到 99.999%
+4. **CAVLC nC 上下文 slice 边界感知**
+
+### 当前主瓶颈
+
+- CABAC I_8x8 预测模式不同步 (X1 首帧, CABAC 上下文演进偏差)
+- CAVLC P/B 帧运动补偿不完整 (C1, E1, E4, E9)
+- CABAC P/B 帧语法路径 (C3, E2, E5, E6, E8)
+- E7: CAVLC + yuvj420p, 需深入诊断
 
 详细诊断记录见 `diagnosis_log.md`.
 
@@ -321,6 +330,14 @@ test_h264_accuracy_all  -- 批量运行全部样本并汇总报告
 - [x] 样本本地化: C1-C3, E1-E9 已下载到 `data/h264_samples/`
 - [x] 自制定向样本覆盖: X1(I-only), X2(B 帧), X3(P-only), X4(多 slice)
 - [x] 精度回归测试: C1-C3, E1-E9, X1-X4 共 16 个独立测试 + 批量汇总
+- [x] 去块滤波器修复: per-edge QP, 弱/强滤波像素修正, 色度 boundary_step
+- [x] 色度 DC 反量化舍入偏移修复
+- [x] Slice 边界帧内预测邻居可用性修复 (C2 100% bit-exact 首帧)
+- [x] CAVLC nC 上下文 slice 边界感知修复
+- [ ] E7 诊断与修复 (CAVLC + yuvj420p, 唯一失败测试)
+- [ ] CABAC I_8x8 预测模式不同步修复 (X1)
+- [ ] CAVLC P/B 帧运动补偿完善 (C1, E1, E4, E9)
+- [ ] CABAC P/B 帧语法路径完善 (C3, E2, E5, E6, E8)
 - [ ] 核心 3 样本阶段 A 达标
 - [ ] 扩展样本阶段 A 达标
 - [ ] 核心+扩展全部样本阶段 B 达标(bit-exact)

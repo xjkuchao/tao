@@ -21,6 +21,22 @@ impl H264Decoder {
                     return;
                 }
 
+                if std::env::var("TAO_H264_CAVLC_BIT_TRACE").is_ok() {
+                    let rbsp = nalu.rbsp();
+                    let rbsp_preview: Vec<u8> = rbsp.iter().take(8).copied().collect();
+                    eprintln!(
+                        "[SLICE] frame_num={} slice_type={} first_mb={} nal_type={:?} ref_idc={} qp={} dpb={} rbsp_len={} rbsp[..8]={:02x?}",
+                        header.frame_num,
+                        header.slice_type,
+                        header.first_mb,
+                        nalu.nal_type,
+                        nalu.ref_idc,
+                        header.slice_qp,
+                        self.reference_frames.len(),
+                        rbsp.len(),
+                        rbsp_preview
+                    );
+                }
                 let prev_frame_num = self.last_frame_num;
                 self.last_slice_type = header.slice_type;
                 self.last_nal_ref_idc = header.nal_ref_idc;
@@ -275,6 +291,7 @@ impl H264Decoder {
         let mut cur_qp = header.slice_qp;
         self.prev_qp_delta_nz = false;
         if is_i {
+            let mut decoded_count = 0usize;
             for mb_idx in first..total_mbs {
                 self.mark_mb_slice_first_mb(mb_idx, header.first_mb);
                 if !has_more_rbsp_data(&mut br) {
@@ -284,6 +301,20 @@ impl H264Decoder {
                 let mb_x = mb_idx % self.mb_width;
                 let mb_y = mb_idx / self.mb_width;
                 self.decode_cavlc_i_mb(&mut br, mb_x, mb_y, mb_type, &mut cur_qp);
+                if mb_idx < self.mb_qp.len() {
+                    self.mb_qp[mb_idx] = cur_qp;
+                }
+                decoded_count += 1;
+            }
+            if std::env::var("TAO_H264_CAVLC_BIT_TRACE").is_ok() {
+                eprintln!(
+                    "[CAVLC I] first_mb={} decoded={} bits_used={}/{} data_bit_offset={}",
+                    first,
+                    decoded_count,
+                    br.bits_read(),
+                    br.bits_read() + br.bits_left(),
+                    header.data_bit_offset
+                );
             }
             return;
         }
@@ -302,8 +333,10 @@ impl H264Decoder {
         } else {
             Vec::new()
         };
+        let trace_cavlc_bits = std::env::var("TAO_H264_CAVLC_BIT_TRACE").is_ok();
         let mut skip_run_left = 0u32;
         for mb_idx in first..total_mbs {
+            let bit_pos_start = br.bits_read();
             if skip_run_left == 0 {
                 if !has_more_rbsp_data(&mut br) {
                     break;
@@ -322,6 +355,23 @@ impl H264Decoder {
                     break;
                 };
                 skip_run_left = skip_run;
+                if trace_cavlc_bits {
+                    let mb_x_dbg = mb_idx % self.mb_width;
+                    let mb_y_dbg = mb_idx / self.mb_width;
+                    if mb_idx < 5
+                        || (mb_y_dbg >= 12 && mb_y_dbg <= 14)
+                        || mb_idx + skip_run as usize >= 1630
+                    {
+                        eprintln!(
+                            "[CAVLC SR] mb_idx={} ({},{}) skip_run={} bits_read={}",
+                            mb_idx,
+                            mb_x_dbg,
+                            mb_y_dbg,
+                            skip_run,
+                            br.bits_read()
+                        );
+                    }
+                }
             }
             self.mark_mb_slice_first_mb(mb_idx, header.first_mb);
             let mb_x = mb_idx % self.mb_width;
@@ -369,11 +419,38 @@ impl H264Decoder {
                     );
                 }
                 skip_run_left -= 1;
+                if mb_idx < self.mb_qp.len() {
+                    self.mb_qp[mb_idx] = cur_qp;
+                }
+                if trace_cavlc_bits && mb_idx < 3 {
+                    let px = mb_x * 16;
+                    let py = mb_y * 16;
+                    let row0: Vec<u8> = (0..16)
+                        .map(|dx| self.ref_y[py * self.stride_y + px + dx])
+                        .collect();
+                    let ref0_y0 = if let Some(r) = ref_l0_list.first() {
+                        (0..16)
+                            .map(|dx| r.y[py * self.stride_y + px + dx])
+                            .collect::<Vec<_>>()
+                    } else {
+                        vec![]
+                    };
+                    eprintln!(
+                        "[CAVLC跳] MB({},{}) idx={} P_Skip ref0_y={:?} out_y={:?} ref_list_len={}",
+                        mb_x,
+                        mb_y,
+                        mb_idx,
+                        ref0_y0,
+                        row0,
+                        ref_l0_list.len()
+                    );
+                }
                 continue;
             }
             if !has_more_rbsp_data(&mut br) {
                 break;
             }
+            let bits_before_type = br.bits_read();
             let Ok(mb_type) = read_ue(&mut br) else {
                 let err = format!(
                     "H264: CAVLC 宏块 mb_type 解码失败, mb_idx={}, first_mb={}",
@@ -382,6 +459,17 @@ impl H264Decoder {
                 self.record_mb_decode_error(mb_idx, header.first_mb, "slice_cavlc_mb_type", &err);
                 break;
             };
+            if trace_cavlc_bits && (mb_idx >= 1625 && mb_idx <= 1640 || mb_idx < 5) {
+                eprintln!(
+                    "[CAVLC MT] mb_idx={} ({},{}) mb_type={} bits_before={} bits_after={}",
+                    mb_idx,
+                    mb_x,
+                    mb_y,
+                    mb_type,
+                    bits_before_type,
+                    br.bits_read()
+                );
+            }
             if is_b {
                 let is_inter = mb_type <= 22;
                 if is_inter {
@@ -459,8 +547,7 @@ impl H264Decoder {
                                     10..=12 => (4, 4),
                                     _ => (8, 8),
                                 };
-                                let (p_off_x, p_off_y) = match (pw, ph, sub_part_count[sub_idx])
-                                {
+                                let (p_off_x, p_off_y) = match (pw, ph, sub_part_count[sub_idx]) {
                                     (8, 4, _) => (0, part_idx * 4),
                                     (4, 8, _) => (part_idx * 4, 0),
                                     (4, 4, _) => ((part_idx & 1) * 4, (part_idx >> 1) * 4),
@@ -470,8 +557,7 @@ impl H264Decoder {
                                 let py4 = sub_y4 + p_off_y / 4;
                                 let pw4 = pw / 4;
                                 if use_l0[sub_idx] {
-                                    let l0_ref_i8 =
-                                        ref_idx_l0[sub_idx].min(i8::MAX as usize) as i8;
+                                    let l0_ref_i8 = ref_idx_l0[sub_idx].min(i8::MAX as usize) as i8;
                                     let (pred_x, pred_y) = self.predict_mv_l0_partition(
                                         px4 / 4,
                                         py4 / 4,
@@ -498,8 +584,7 @@ impl H264Decoder {
                                     );
                                 }
                                 if use_l1[sub_idx] {
-                                    let l1_ref_i8 =
-                                        ref_idx_l1[sub_idx].min(i8::MAX as usize) as i8;
+                                    let l1_ref_i8 = ref_idx_l1[sub_idx].min(i8::MAX as usize) as i8;
                                     let (pred_x, pred_y) = self.predict_mv_l1_partition(
                                         px4 / 4,
                                         py4 / 4,
@@ -686,6 +771,9 @@ impl H264Decoder {
                         }
                         // B_8x8 Inter 残差
                         self.decode_cavlc_mb_residual(&mut br, mb_x, mb_y, &mut cur_qp, false);
+                        if mb_idx < self.mb_qp.len() {
+                            self.mb_qp[mb_idx] = cur_qp;
+                        }
                         continue;
                     }
 
@@ -757,8 +845,7 @@ impl H264Decoder {
                                 (part_idx * 2, 0usize, 2usize)
                             };
                             if part_use_l0[part_idx] {
-                                let l0_ref_i8 =
-                                    ref_idx_l0[part_idx].min(i8::MAX as usize) as i8;
+                                let l0_ref_i8 = ref_idx_l0[part_idx].min(i8::MAX as usize) as i8;
                                 let (pred_x, pred_y) = self.predict_mv_l0_partition(
                                     mb_x, mb_y, part_x4, part_y4, part_w4, l0_ref_i8,
                                 );
@@ -780,8 +867,7 @@ impl H264Decoder {
                                 );
                             }
                             if part_use_l1[part_idx] {
-                                let l1_ref_i8 =
-                                    ref_idx_l1[part_idx].min(i8::MAX as usize) as i8;
+                                let l1_ref_i8 = ref_idx_l1[part_idx].min(i8::MAX as usize) as i8;
                                 let (pred_x, pred_y) = self.predict_mv_l1_partition(
                                     mb_x, mb_y, part_x4, part_y4, part_w4, l1_ref_i8,
                                 );
@@ -869,6 +955,9 @@ impl H264Decoder {
                         }
                         // B_16x8/B_8x16 Inter 残差
                         self.decode_cavlc_mb_residual(&mut br, mb_x, mb_y, &mut cur_qp, false);
+                        if mb_idx < self.mb_qp.len() {
+                            self.mb_qp[mb_idx] = cur_qp;
+                        }
                         continue;
                     }
 
@@ -941,6 +1030,9 @@ impl H264Decoder {
                     // B-slice 中的 Intra MB: mb_type - 23 映射到 I mb_type
                     let i_mb_type = mb_type - 23;
                     self.decode_cavlc_i_mb(&mut br, mb_x, mb_y, i_mb_type, &mut cur_qp);
+                }
+                if mb_idx < self.mb_qp.len() {
+                    self.mb_qp[mb_idx] = cur_qp;
                 }
                 continue;
             }
@@ -1408,6 +1500,28 @@ impl H264Decoder {
                 self.ref_idx_l0[mb_idx] = final_ref_idx.min(i8::MAX as u32) as i8;
                 // Inter MB 残差解码
                 self.decode_cavlc_mb_residual(&mut br, mb_x, mb_y, &mut cur_qp, false);
+            }
+            if mb_idx < self.mb_qp.len() {
+                self.mb_qp[mb_idx] = cur_qp;
+            }
+            if trace_cavlc_bits {
+                let bit_pos_end = br.bits_read();
+                let mb_x = mb_idx % self.mb_width;
+                let mb_y = mb_idx / self.mb_width;
+                if mb_y == 13 && (mb_x >= 70 && mb_x <= 75)
+                    || (mb_y == 12 && mb_x >= 118)
+                    || (mb_idx < 5)
+                {
+                    eprintln!(
+                        "[CAVLC位] MB({},{}) idx={} bits={}..{} consumed={}",
+                        mb_x,
+                        mb_y,
+                        mb_idx,
+                        bit_pos_start,
+                        bit_pos_end,
+                        bit_pos_end - bit_pos_start
+                    );
+                }
             }
         }
     }

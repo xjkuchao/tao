@@ -633,6 +633,9 @@ impl H264Decoder {
                 }
             }
 
+            if mb_idx < self.mb_qp.len() {
+                self.mb_qp[mb_idx] = cur_qp;
+            }
             if mb_idx + 1 < total && cabac.decode_terminate() == 1 {
                 break;
             }

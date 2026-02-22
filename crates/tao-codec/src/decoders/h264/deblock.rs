@@ -39,6 +39,7 @@ pub(super) struct DeblockSliceParams<'a> {
     pub(super) mv_l1_x_4x4: Option<&'a [i16]>,
     pub(super) mv_l1_y_4x4: Option<&'a [i16]>,
     pub(super) ref_idx_l1_4x4: Option<&'a [i8]>,
+    pub(super) mb_qp: Option<&'a [i32]>,
 }
 
 /// 对 YUV420 帧执行带 slice 参数的去块滤波.
@@ -77,6 +78,7 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
         mv_l1_x_4x4,
         mv_l1_y_4x4,
         ref_idx_l1_4x4,
+        mb_qp,
     } = params;
     if width == 0 || height == 0 {
         return;
@@ -122,6 +124,9 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
                     mv_l1_x_4x4,
                     mv_l1_y_4x4,
                     ref_idx_l1_4x4,
+                    mb_qp,
+                    alpha_offset_div2,
+                    beta_offset_div2,
                 })
             }
         })
@@ -137,6 +142,7 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
         luma_alpha_idx,
         luma_alpha,
         luma_beta,
+        None,
         mb_ctx.as_ref(),
     );
     apply_adaptive_deblock_plane(
@@ -144,11 +150,12 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
         stride_c,
         width / 2,
         height / 2,
-        2,
+        4,
         8,
         chroma_alpha_idx_u,
         chroma_alpha_u,
         chroma_beta_u,
+        Some(chroma_qp_index_offset),
         mb_ctx.as_ref(),
     );
     apply_adaptive_deblock_plane(
@@ -156,11 +163,12 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
         stride_c,
         width / 2,
         height / 2,
-        2,
+        4,
         8,
         chroma_alpha_idx_v,
         chroma_alpha_v,
         chroma_beta_v,
+        Some(second_chroma_qp_index_offset),
         mb_ctx.as_ref(),
     );
 }
@@ -186,6 +194,9 @@ struct DeblockMbContext<'a> {
     mv_l1_x_4x4: Option<&'a [i16]>,
     mv_l1_y_4x4: Option<&'a [i16]>,
     ref_idx_l1_4x4: Option<&'a [i8]>,
+    mb_qp: Option<&'a [i32]>,
+    alpha_offset_div2: i32,
+    beta_offset_div2: i32,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -196,15 +207,16 @@ fn apply_adaptive_deblock_plane(
     height: usize,
     boundary_step: usize,
     mb_step: usize,
-    alpha_idx: usize,
-    alpha: u8,
-    beta: u8,
+    default_alpha_idx: usize,
+    default_alpha: u8,
+    default_beta: u8,
+    chroma_qp_remap_offset: Option<i32>,
     mb_ctx: Option<&DeblockMbContext<'_>>,
 ) {
     if width < 3 || height < 3 || stride == 0 || boundary_step == 0 {
         return;
     }
-    let strong_luma = boundary_step == 4;
+    let strong_luma = mb_step == 16 && chroma_qp_remap_offset.is_none();
 
     // 垂直边界
     let mut x = boundary_step;
@@ -225,25 +237,26 @@ fn apply_adaptive_deblock_plane(
                 } else {
                     None
                 };
-                if p1 >= plane.len() || p0 >= plane.len() || q0 >= plane.len() || q1 >= plane.len()
+                if p1 >= plane.len()
+                    || p0 >= plane.len()
+                    || q0 >= plane.len()
+                    || q1 >= plane.len()
                 {
                     continue;
                 }
                 let bs = boundary_strength_vertical(x, y, mb_step, mb_ctx);
-                filter_edge_with_bs(
-                    plane,
-                    p2,
-                    p1,
-                    p0,
-                    q0,
-                    q1,
-                    q2,
-                    alpha_idx,
-                    alpha,
-                    beta,
-                    bs,
-                    strong_luma,
+                let (ai, a, b) = edge_thresholds(
+                    mb_ctx,
+                    x,
+                    y,
+                    mb_step,
+                    chroma_qp_remap_offset,
+                    true,
+                    default_alpha_idx,
+                    default_alpha,
+                    default_beta,
                 );
+                filter_edge_with_bs(plane, p2, p1, p0, q0, q1, q2, ai, a, b, bs, strong_luma);
             }
         }
         x += boundary_step;
@@ -268,29 +281,88 @@ fn apply_adaptive_deblock_plane(
                 } else {
                     None
                 };
-                if p1 >= plane.len() || p0 >= plane.len() || q0 >= plane.len() || q1 >= plane.len()
+                if p1 >= plane.len()
+                    || p0 >= plane.len()
+                    || q0 >= plane.len()
+                    || q1 >= plane.len()
                 {
                     continue;
                 }
                 let bs = boundary_strength_horizontal(x, y, mb_step, mb_ctx);
-                filter_edge_with_bs(
-                    plane,
-                    p2,
-                    p1,
-                    p0,
-                    q0,
-                    q1,
-                    q2,
-                    alpha_idx,
-                    alpha,
-                    beta,
-                    bs,
-                    strong_luma,
+                let (ai, a, b) = edge_thresholds(
+                    mb_ctx,
+                    x,
+                    y,
+                    mb_step,
+                    chroma_qp_remap_offset,
+                    false,
+                    default_alpha_idx,
+                    default_alpha,
+                    default_beta,
                 );
+                filter_edge_with_bs(plane, p2, p1, p0, q0, q1, q2, ai, a, b, bs, strong_luma);
             }
         }
         y += boundary_step;
     }
+}
+
+/// 计算每条边的 alpha/beta 阈值 (基于相邻宏块 QP 均值).
+fn edge_thresholds(
+    mb_ctx: Option<&DeblockMbContext<'_>>,
+    x: usize,
+    y: usize,
+    mb_step: usize,
+    chroma_qp_remap_offset: Option<i32>,
+    vertical: bool,
+    default_alpha_idx: usize,
+    default_alpha: u8,
+    default_beta: u8,
+) -> (usize, u8, u8) {
+    let Some(ctx) = mb_ctx else {
+        return (default_alpha_idx, default_alpha, default_beta);
+    };
+    let Some(qps) = ctx.mb_qp else {
+        return (default_alpha_idx, default_alpha, default_beta);
+    };
+    let (mb_x_p, mb_y_p, mb_x_q, mb_y_q) = if vertical {
+        (
+            x.saturating_sub(1) / mb_step,
+            y / mb_step,
+            x / mb_step,
+            y / mb_step,
+        )
+    } else {
+        (
+            x / mb_step,
+            y.saturating_sub(1) / mb_step,
+            x / mb_step,
+            y / mb_step,
+        )
+    };
+    let Some(idx_p) = mb_index(ctx.mb_width, ctx.mb_height, mb_x_p, mb_y_p) else {
+        return (default_alpha_idx, default_alpha, default_beta);
+    };
+    let Some(idx_q) = mb_index(ctx.mb_width, ctx.mb_height, mb_x_q, mb_y_q) else {
+        return (default_alpha_idx, default_alpha, default_beta);
+    };
+    let Some(&qp_p) = qps.get(idx_p) else {
+        return (default_alpha_idx, default_alpha, default_beta);
+    };
+    let Some(&qp_q) = qps.get(idx_q) else {
+        return (default_alpha_idx, default_alpha, default_beta);
+    };
+    let edge_qp = if let Some(offset) = chroma_qp_remap_offset {
+        let qpc_p = chroma_qp_from_luma_with_offset(qp_p, offset);
+        let qpc_q = chroma_qp_from_luma_with_offset(qp_q, offset);
+        (qpc_p + qpc_q + 1) >> 1
+    } else {
+        (qp_p + qp_q + 1) >> 1
+    };
+    let ai = alpha_index(edge_qp, ctx.alpha_offset_div2);
+    let a = alpha_threshold(edge_qp, ctx.alpha_offset_div2);
+    let b = beta_threshold(edge_qp, ctx.beta_offset_div2);
+    (ai, a, b)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -327,30 +399,55 @@ fn filter_edge_with_bs(
         if strong_luma {
             let alpha_half = (i32::from(alpha) >> 2) + 2;
             if (p0 - q0).abs() < alpha_half {
-                let mut new_p0 = ((2 * p1 + p0 + q1 + 2) >> 2).clamp(0, 255);
-                let mut new_q0 = ((2 * q1 + q0 + p1 + 2) >> 2).clamp(0, 255);
-                if let Some(p2_idx) = p2_idx {
-                    let p2 = i32::from(plane[p2_idx]);
-                    if (p2 - p0).abs() < i32::from(beta) {
-                        new_p0 = ((p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3).clamp(0, 255);
-                        let new_p1 = ((p2 + p1 + p0 + q0 + 2) >> 2).clamp(0, 255);
-                        plane[p1_idx] = new_p1 as u8;
-                    }
+                let ap = p2_idx
+                    .filter(|&i| i < plane.len())
+                    .map(|i| (i32::from(plane[i]) - p0).abs())
+                    .unwrap_or(i32::from(beta));
+                let aq = q2_idx
+                    .filter(|&i| i < plane.len())
+                    .map(|i| (i32::from(plane[i]) - q0).abs())
+                    .unwrap_or(i32::from(beta));
+                let cond_p = ap < i32::from(beta);
+                let cond_q = aq < i32::from(beta);
+                let p_step = p1_idx as isize - p0_idx as isize;
+                let q_step = q1_idx as isize - q0_idx as isize;
+                if cond_p {
+                    let p2i = p2_idx.unwrap();
+                    let p2 = i32::from(plane[p2i]);
+                    plane[p0_idx] =
+                        ((p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3).clamp(0, 255) as u8;
+                    plane[p1_idx] = ((p2 + p1 + p0 + q0 + 2) >> 2).clamp(0, 255) as u8;
+                    let p3_off = p2i as isize + p_step;
+                    let p3_val = if p3_off >= 0 && (p3_off as usize) < plane.len() {
+                        i32::from(plane[p3_off as usize])
+                    } else {
+                        p2
+                    };
+                    plane[p2i] =
+                        ((2 * p3_val + 3 * p2 + p1 + p0 + q0 + 4) >> 3).clamp(0, 255) as u8;
+                } else {
+                    plane[p0_idx] = ((2 * p1 + p0 + q1 + 2) >> 2).clamp(0, 255) as u8;
                 }
-                if let Some(q2_idx) = q2_idx {
-                    let q2 = i32::from(plane[q2_idx]);
-                    if (q2 - q0).abs() < i32::from(beta) {
-                        new_q0 = ((q2 + 2 * q1 + 2 * q0 + 2 * p0 + p1 + 4) >> 3).clamp(0, 255);
-                        let new_q1 = ((q2 + q1 + q0 + p0 + 2) >> 2).clamp(0, 255);
-                        plane[q1_idx] = new_q1 as u8;
-                    }
+                if cond_q {
+                    let q2i = q2_idx.unwrap();
+                    let q2 = i32::from(plane[q2i]);
+                    plane[q0_idx] =
+                        ((q2 + 2 * q1 + 2 * q0 + 2 * p0 + p1 + 4) >> 3).clamp(0, 255) as u8;
+                    plane[q1_idx] = ((q2 + q1 + q0 + p0 + 2) >> 2).clamp(0, 255) as u8;
+                    let q3_off = q2i as isize + q_step;
+                    let q3_val = if q3_off >= 0 && (q3_off as usize) < plane.len() {
+                        i32::from(plane[q3_off as usize])
+                    } else {
+                        q2
+                    };
+                    plane[q2i] =
+                        ((2 * q3_val + 3 * q2 + q1 + q0 + p0 + 4) >> 3).clamp(0, 255) as u8;
+                } else {
+                    plane[q0_idx] = ((2 * q1 + q0 + p1 + 2) >> 2).clamp(0, 255) as u8;
                 }
-                plane[p0_idx] = new_p0 as u8;
-                plane[q0_idx] = new_q0 as u8;
                 return;
             }
         } else {
-            // 色度强滤波仅更新 p0/q0, 保持 2 像素语义.
             let new_p0 = ((2 * p1 + p0 + q1 + 2) >> 2).clamp(0, 255);
             let new_q0 = ((2 * q1 + q0 + p1 + 2) >> 2).clamp(0, 255);
             plane[p0_idx] = new_p0 as u8;
@@ -363,21 +460,42 @@ fn filter_edge_with_bs(
     if tc0 == 0 {
         return;
     }
-    let tc =
-        tc0 + if (p1 - p0).abs() < i32::from(beta) {
-            1
+    let ap_lt_beta = if let Some(p2i) = p2_idx {
+        if p2i < plane.len() {
+            (i32::from(plane[p2i]) - p0).abs() < i32::from(beta)
         } else {
-            0
-        } + if (q1 - q0).abs() < i32::from(beta) {
-            1
+            false
+        }
+    } else {
+        false
+    };
+    let aq_lt_beta = if let Some(q2i) = q2_idx {
+        if q2i < plane.len() {
+            (i32::from(plane[q2i]) - q0).abs() < i32::from(beta)
         } else {
-            0
-        };
+            false
+        }
+    } else {
+        false
+    };
+    let tc = tc0
+        + if ap_lt_beta { 1 } else { 0 }
+        + if aq_lt_beta { 1 } else { 0 };
     let mut delta = ((q0 - p0) * 4 + (p1 - q1) + 4) >> 3;
     delta = delta.clamp(-tc, tc);
-
     plane[p0_idx] = (p0 + delta).clamp(0, 255) as u8;
     plane[q0_idx] = (q0 - delta).clamp(0, 255) as u8;
+
+    if ap_lt_beta {
+        let p2 = i32::from(plane[p2_idx.unwrap()]);
+        let delta_p1 = ((p2 + ((p0 + q0 + 1) >> 1) - 2 * p1) >> 1).clamp(-tc0, tc0);
+        plane[p1_idx] = (p1 + delta_p1).clamp(0, 255) as u8;
+    }
+    if aq_lt_beta {
+        let q2 = i32::from(plane[q2_idx.unwrap()]);
+        let delta_q1 = ((q2 + ((p0 + q0 + 1) >> 1) - 2 * q1) >> 1).clamp(-tc0, tc0);
+        plane[q1_idx] = (q1 + delta_q1).clamp(0, 255) as u8;
+    }
 }
 
 fn alpha_index(slice_qp: i32, alpha_offset_div2: i32) -> usize {
@@ -816,7 +934,9 @@ mod tests {
             plane[y * stride + 5] = 48;
         }
 
-        apply_adaptive_deblock_plane(&mut plane, stride, width, height, 4, 16, 26, 15, 4, None);
+        apply_adaptive_deblock_plane(
+            &mut plane, stride, width, height, 4, 16, 26, 15, 4, None, None,
+        );
 
         for y in 0..height {
             let left = plane[y * stride + 3];
@@ -838,7 +958,9 @@ mod tests {
             plane[y * stride + 5] = 90;
         }
 
-        apply_adaptive_deblock_plane(&mut plane, stride, width, height, 4, 16, 26, 15, 4, None);
+        apply_adaptive_deblock_plane(
+            &mut plane, stride, width, height, 4, 16, 26, 15, 4, None, None,
+        );
 
         for y in 0..height {
             assert_eq!(plane[y * stride + 3], 10, "大边界差异不应被平滑");
@@ -894,6 +1016,7 @@ mod tests {
                 mv_l1_x_4x4: None,
                 mv_l1_y_4x4: None,
                 ref_idx_l1_4x4: None,
+                mb_qp: None,
             },
         );
 
@@ -933,6 +1056,7 @@ mod tests {
                 mv_l1_x_4x4: None,
                 mv_l1_y_4x4: None,
                 ref_idx_l1_4x4: None,
+                mb_qp: None,
             },
         );
 
@@ -1012,6 +1136,7 @@ mod tests {
                 mv_l1_x_4x4: None,
                 mv_l1_y_4x4: None,
                 ref_idx_l1_4x4: None,
+                mb_qp: None,
             },
         );
 
@@ -1082,6 +1207,7 @@ mod tests {
                 mv_l1_x_4x4: None,
                 mv_l1_y_4x4: None,
                 ref_idx_l1_4x4: None,
+                mb_qp: None,
             },
         );
 
@@ -1114,6 +1240,9 @@ mod tests {
             mv_l1_x_4x4: None,
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
+            mb_qp: None,
+            alpha_offset_div2: 0,
+            beta_offset_div2: 0,
         };
         let bs = boundary_strength_vertical(16, 0, 16, Some(&ctx));
         assert_eq!(bs, 4, "宏块边界任一侧为帧内宏块时应走强滤波");
@@ -1146,6 +1275,9 @@ mod tests {
             mv_l1_x_4x4: None,
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
+            mb_qp: None,
+            alpha_offset_div2: 0,
+            beta_offset_div2: 0,
         };
         let bs = boundary_strength_vertical(16, 0, 16, Some(&ctx));
         assert_eq!(bs, 0, "同参考且运动向量接近时应允许跳过滤波");
@@ -1178,6 +1310,9 @@ mod tests {
             mv_l1_x_4x4: None,
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
+            mb_qp: None,
+            alpha_offset_div2: 0,
+            beta_offset_div2: 0,
         };
         let bs = boundary_strength_vertical(16, 0, 16, Some(&ctx));
         assert_eq!(bs, 1, "跨宏块参考索引不一致时应保留弱滤波");
@@ -1211,6 +1346,9 @@ mod tests {
             mv_l1_x_4x4: None,
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
+            mb_qp: None,
+            alpha_offset_div2: 0,
+            beta_offset_div2: 0,
         };
         let ctx_idc2 = DeblockMbContext {
             mb_width: 2,
@@ -1232,6 +1370,9 @@ mod tests {
             mv_l1_x_4x4: None,
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
+            mb_qp: None,
+            alpha_offset_div2: 0,
+            beta_offset_div2: 0,
         };
         let bs_idc0 = boundary_strength_vertical(16, 0, 16, Some(&ctx_idc0));
         let bs_idc2 = boundary_strength_vertical(16, 0, 16, Some(&ctx_idc2));
@@ -1275,6 +1416,9 @@ mod tests {
             mv_l1_x_4x4: None,
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
+            mb_qp: None,
+            alpha_offset_div2: 0,
+            beta_offset_div2: 0,
         };
 
         let bs_top_row = boundary_strength_vertical(16, 2, 16, Some(&ctx));
@@ -1315,6 +1459,9 @@ mod tests {
             mv_l1_x_4x4: None,
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
+            mb_qp: None,
+            alpha_offset_div2: 0,
+            beta_offset_div2: 0,
         };
 
         let bs = boundary_strength_vertical(16, 2, 16, Some(&ctx));
@@ -1357,6 +1504,9 @@ mod tests {
             mv_l1_x_4x4: None,
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
+            mb_qp: None,
+            alpha_offset_div2: 0,
+            beta_offset_div2: 0,
         };
 
         let bs_left_col = boundary_strength_horizontal(2, 16, 16, Some(&ctx));
@@ -1394,6 +1544,9 @@ mod tests {
             mv_l1_x_4x4: None,
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
+            mb_qp: None,
+            alpha_offset_div2: 0,
+            beta_offset_div2: 0,
         };
         let bs = boundary_strength_vertical(4, 2, 16, Some(&ctx));
         assert_eq!(bs, 2, "4x4 内部边界任一侧 cbf!=0 时应返回 bs=2");
@@ -1429,6 +1582,9 @@ mod tests {
             mv_l1_x_4x4: None,
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
+            mb_qp: None,
+            alpha_offset_div2: 0,
+            beta_offset_div2: 0,
         };
         let bs_ref = boundary_strength_vertical(4, 2, 16, Some(&ctx_ref));
         assert_eq!(bs_ref, 1, "4x4 内部边界 ref_idx 不同应返回 bs=1");
@@ -1457,6 +1613,9 @@ mod tests {
             mv_l1_x_4x4: None,
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
+            mb_qp: None,
+            alpha_offset_div2: 0,
+            beta_offset_div2: 0,
         };
         let bs_mv = boundary_strength_vertical(4, 2, 16, Some(&ctx_mv));
         assert_eq!(bs_mv, 1, "4x4 内部边界 MV 差>=4 时应返回 bs=1");
@@ -1492,6 +1651,9 @@ mod tests {
             mv_l1_x_4x4: None,
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
+            mb_qp: None,
+            alpha_offset_div2: 0,
+            beta_offset_div2: 0,
         };
         let bs = boundary_strength_vertical(16, 0, 16, Some(&ctx));
         assert_eq!(bs, 1, "跨宏块 list1 参考索引不一致时应返回 bs=1");
@@ -1529,6 +1691,9 @@ mod tests {
             mv_l1_x_4x4: Some(&mv_l1_x_4x4),
             mv_l1_y_4x4: Some(&mv_l1_y_4x4),
             ref_idx_l1_4x4: Some(&ref_idx_l1_4x4),
+            mb_qp: None,
+            alpha_offset_div2: 0,
+            beta_offset_div2: 0,
         };
         let bs = boundary_strength_vertical(4, 2, 16, Some(&ctx));
         assert_eq!(bs, 1, "4x4 内部边界 list1 MV 差>=4 时应返回 bs=1");
@@ -1562,6 +1727,9 @@ mod tests {
             mv_l1_x_4x4: None,
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
+            mb_qp: None,
+            alpha_offset_div2: 0,
+            beta_offset_div2: 0,
         };
         let bs = boundary_strength_vertical(4, 2, 16, Some(&ctx));
         assert_eq!(bs, 0, "4x4 内部边界同参考且 MV 接近时应返回 bs=0");

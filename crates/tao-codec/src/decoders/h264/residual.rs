@@ -279,17 +279,16 @@ pub fn inverse_hadamard_4x4(block: &mut [i32; 16]) {
         temp[s + 3] = a - d;
     }
 
-    // 列变换: 列 j 的蝶形输出写入 dc_block 的第 j 行,
-    // 对齐 FFmpeg h264_luma_dc_dequant_idct 的 x_offset 映射.
+    // 列变换: 列 j 的蝶形输出写入 dc_block 的第 j 列.
     for j in 0..4 {
         let a = temp[j] + temp[8 + j];
         let b = temp[j] - temp[8 + j];
         let c = temp[4 + j] - temp[12 + j];
         let d = temp[4 + j] + temp[12 + j];
-        block[j * 4] = a + d;
-        block[j * 4 + 1] = b + c;
-        block[j * 4 + 2] = b - c;
-        block[j * 4 + 3] = a - d;
+        block[j] = a + d;
+        block[4 + j] = b + c;
+        block[8 + j] = b - c;
+        block[12 + j] = a - d;
     }
 }
 
@@ -366,7 +365,7 @@ pub fn dequant_chroma_dc_with_scaling(coeffs: &mut [i32; 4], qp: i32, scaling_li
             *c = (*c * scale) << (qp_per - 5);
         } else {
             let shift = 5 - qp_per;
-            *c = (*c * scale) >> shift;
+            *c = (*c * scale + (1 << (shift - 1))) >> shift;
         }
     }
 }

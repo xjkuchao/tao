@@ -251,6 +251,8 @@ pub struct H264Decoder {
     stride_c: usize,
     /// 每个宏块的类型 (0=I_4x4, 1-24=I_16x16, 25=I_PCM, 255=P_Skip)
     mb_types: Vec<u8>,
+    /// 每个宏块的实际 QP (含 mb_qp_delta 累加)
+    mb_qp: Vec<i32>,
     /// 每个宏块的 coded_block_pattern (低 4 位为 luma, 高 2 位为 chroma)
     mb_cbp: Vec<u8>,
     /// CABAC 上下文用的 cbp 状态位 (对齐 FFmpeg cbp_table 关键位):
@@ -388,6 +390,7 @@ impl H264Decoder {
             stride_y: 0,
             stride_c: 0,
             mb_types: Vec::new(),
+            mb_qp: Vec::new(),
             mb_cbp: Vec::new(),
             mb_cbp_ctx: Vec::new(),
             chroma_pred_modes: Vec::new(),
@@ -462,6 +465,7 @@ impl H264Decoder {
         self.ref_u = vec![128u8; self.stride_c * self.mb_height * 8];
         self.ref_v = vec![128u8; self.stride_c * self.mb_height * 8];
         self.mb_types = vec![0u8; total_mb];
+        self.mb_qp = vec![26i32; total_mb];
         self.mb_cbp = vec![0u8; total_mb];
         self.mb_cbp_ctx = vec![0u16; total_mb];
         self.chroma_pred_modes = vec![0u8; total_mb];
@@ -621,6 +625,7 @@ impl H264Decoder {
     /// 重置宏块级语法与运动缓存.
     fn reset_mb_runtime_state(&mut self) {
         self.mb_types.fill(0);
+        self.mb_qp.fill(26);
         self.mb_cbp.fill(0);
         self.mb_cbp_ctx.fill(0);
         self.chroma_pred_modes.fill(0);
@@ -660,6 +665,38 @@ impl H264Decoder {
     fn mark_mb_slice_first_mb(&mut self, mb_idx: usize, first_mb: u32) {
         if let Some(slot) = self.mb_slice_first_mb.get_mut(mb_idx) {
             *slot = first_mb;
+        }
+    }
+
+    /// 左邻 MB 是否可用于帧内预测 (同一 slice 且 mb_x > 0).
+    fn left_avail(&self, mb_x: usize, mb_y: usize) -> bool {
+        if mb_x == 0 {
+            return false;
+        }
+        let mb_idx = mb_y * self.mb_width + mb_x;
+        let left_idx = mb_idx - 1;
+        match (
+            self.mb_slice_first_mb.get(mb_idx),
+            self.mb_slice_first_mb.get(left_idx),
+        ) {
+            (Some(&cur), Some(&left)) => cur == left,
+            _ => true,
+        }
+    }
+
+    /// 上邻 MB 是否可用于帧内预测 (同一 slice 且 mb_y > 0).
+    fn top_avail(&self, mb_x: usize, mb_y: usize) -> bool {
+        if mb_y == 0 {
+            return false;
+        }
+        let mb_idx = mb_y * self.mb_width + mb_x;
+        let top_idx = mb_idx - self.mb_width;
+        match (
+            self.mb_slice_first_mb.get(mb_idx),
+            self.mb_slice_first_mb.get(top_idx),
+        ) {
+            (Some(&cur), Some(&top)) => cur == top,
+            _ => true,
         }
     }
 
@@ -1101,6 +1138,7 @@ impl Decoder for H264Decoder {
         self.pending_recovery_point_frame_cnt = None;
         self.reset_reference_planes();
         self.mb_types.fill(0);
+        self.mb_qp.fill(26);
         self.mb_cbp.fill(0);
         self.mb_cbp_ctx.fill(0);
         self.chroma_pred_modes.fill(0);

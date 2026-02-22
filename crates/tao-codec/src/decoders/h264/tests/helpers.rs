@@ -132,6 +132,7 @@ pub fn build_test_decoder() -> H264Decoder {
         stride_y: 0,
         stride_c: 0,
         mb_types: Vec::new(),
+        mb_qp: Vec::new(),
         mb_cbp: Vec::new(),
         mb_cbp_ctx: Vec::new(),
         chroma_pred_modes: Vec::new(),

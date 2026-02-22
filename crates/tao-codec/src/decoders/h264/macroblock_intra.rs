@@ -126,6 +126,22 @@ impl H264Decoder {
 
             let mb_type = decode_i_mb_type(cabac, ctxs, &self.mb_types, self.mb_width, mb_x, mb_y);
             self.mb_types[mb_idx] = mb_type as u8;
+            if std::env::var("TAO_H264_MB_TRACE").as_deref() == Ok("1") {
+                let kind = if mb_type == 0 {
+                    "I4"
+                } else if mb_type <= 24 {
+                    "I16"
+                } else {
+                    "PCM"
+                };
+                if mb_x == 0 {
+                    eprint!("[MB_TRACE] row {:>3}:", mb_y * 16);
+                }
+                eprint!(" {}", kind);
+                if mb_x + 1 == self.mb_width {
+                    eprintln!();
+                }
+            }
             if mb_type == 0 {
                 self.decode_i_4x4_mb(cabac, ctxs, mb_x, mb_y, &mut cur_qp);
             } else if mb_type <= 24 {
@@ -133,6 +149,9 @@ impl H264Decoder {
             } else if mb_type == 25 {
                 self.decode_i_pcm_mb(cabac, mb_x, mb_y);
                 self.prev_qp_delta_nz = false;
+            }
+            if mb_idx < self.mb_qp.len() {
+                self.mb_qp[mb_idx] = cur_qp;
             }
             if mb_idx + 1 < total {
                 let term = cabac.decode_terminate();
@@ -192,14 +211,16 @@ impl H264Decoder {
             self.prev_qp_delta_nz = false;
         }
         // 5. 色度预测 (不依赖亮度重建, 可先执行)
+        let has_left = self.left_avail(mb_x, mb_y);
+        let has_top = self.top_avail(mb_x, mb_y);
         intra::predict_chroma_8x8(
             &mut self.ref_u,
             self.stride_c,
             mb_x * 8,
             mb_y * 8,
             chroma_mode,
-            mb_x > 0,
-            mb_y > 0,
+            has_left,
+            has_top,
         );
         intra::predict_chroma_8x8(
             &mut self.ref_v,
@@ -207,9 +228,19 @@ impl H264Decoder {
             mb_x * 8,
             mb_y * 8,
             chroma_mode,
-            mb_x > 0,
-            mb_y > 0,
+            has_left,
+            has_top,
         );
+
+        if std::env::var("TAO_H264_MB_TRACE").as_deref() == Ok("1")
+            && mb_x == 0
+            && mb_y == 14
+        {
+            eprintln!(
+                "[MB_TRACE] MB(0,14) use_8x8={} cbp=0x{:02x} qp={} pred_4x4={:?} pred_8x8={:?}",
+                use_8x8, luma_cbp | (chroma_cbp << 4), *cur_qp, pred_modes_4x4, pred_modes_8x8
+            );
+        }
 
         // 6. 亮度预测 + 残差 (I_8x8 必须逐块交织, 后续块需使用前面块的重建值)
         if use_8x8 {
@@ -621,14 +652,16 @@ impl H264Decoder {
         *cur_qp = wrap_qp((*cur_qp + qp_delta) as i64);
 
         // 3. 应用亮度预测
+        let has_left = self.left_avail(mb_x, mb_y);
+        let has_top = self.top_avail(mb_x, mb_y);
         intra::predict_16x16(
             &mut self.ref_y,
             self.stride_y,
             mb_x * 16,
             mb_y * 16,
             pred_mode,
-            mb_x > 0,
-            mb_y > 0,
+            has_left,
+            has_top,
         );
 
         // 4. 应用色度预测 (DC)
@@ -638,8 +671,8 @@ impl H264Decoder {
             mb_x * 8,
             mb_y * 8,
             chroma_mode,
-            mb_x > 0,
-            mb_y > 0,
+            has_left,
+            has_top,
         );
         intra::predict_chroma_8x8(
             &mut self.ref_v,
@@ -647,8 +680,8 @@ impl H264Decoder {
             mb_x * 8,
             mb_y * 8,
             chroma_mode,
-            mb_x > 0,
-            mb_y > 0,
+            has_left,
+            has_top,
         );
 
         // 5. 亮度残差 (DC 始终存在, AC 按 mb_type 的 CBP 决定)

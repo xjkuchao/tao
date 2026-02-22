@@ -743,6 +743,7 @@ impl H264Decoder {
                     mv_l1_x_4x4: Some(&self.mv_l1_x_4x4),
                     mv_l1_y_4x4: Some(&self.mv_l1_y_4x4),
                     ref_idx_l1_4x4: Some(&self.ref_idx_l1_4x4),
+                    mb_qp: Some(&self.mb_qp),
                 },
             );
         }

@@ -549,16 +549,23 @@ fn decode_h264_with_tao(path: &str) -> DecodeResult {
     }
 }
 
+struct ProbeResult {
+    stream_idx: u32,
+    width: u32,
+    height: u32,
+    is_full_range: bool,
+}
+
 fn probe_ffmpeg_video_stream(
     path: &str,
     preferred_stream: Option<u32>,
-) -> Result<(u32, u32, u32), Box<dyn std::error::Error>> {
+) -> Result<ProbeResult, Box<dyn std::error::Error>> {
     let probe = Command::new("ffprobe")
         .args([
             "-v",
             "error",
             "-show_entries",
-            "stream=index,codec_type,width,height",
+            "stream=index,codec_type,width,height,pix_fmt",
             "-of",
             "csv=p=0",
             path,
@@ -569,7 +576,7 @@ fn probe_ffmpeg_video_stream(
     }
 
     let probe_s = String::from_utf8_lossy(&probe.stdout);
-    let mut fallback: Option<(u32, u32, u32)> = None;
+    let mut fallback: Option<ProbeResult> = None;
 
     for line in probe_s.lines() {
         let parts: Vec<&str> = line.split(',').collect();
@@ -588,13 +595,21 @@ fn probe_ffmpeg_video_stream(
             Ok(v) if v > 0 => v,
             _ => continue,
         };
+        let pix_fmt = if parts.len() > 4 { parts[4] } else { "" };
+        let is_full_range = pix_fmt.contains("yuvj");
+        let result = ProbeResult {
+            stream_idx: idx,
+            width,
+            height,
+            is_full_range,
+        };
         if let Some(want_idx) = preferred_stream
             && idx == want_idx
         {
-            return Ok((idx, width, height));
+            return Ok(result);
         }
         if fallback.is_none() {
-            fallback = Some((idx, width, height));
+            fallback = Some(result);
         }
     }
 
@@ -606,7 +621,9 @@ fn decode_h264_with_ffmpeg(
     preferred_stream: Option<u32>,
     target_size: Option<(u32, u32)>,
 ) -> FfmpegDecodeResult {
-    let (stream_idx, mut width, mut height) = probe_ffmpeg_video_stream(path, preferred_stream)?;
+    let probe = probe_ffmpeg_video_stream(path, preferred_stream)?;
+    let mut width = probe.width;
+    let mut height = probe.height;
     if let Some((tw, th)) = target_size
         && tw > 0
         && th > 0
@@ -616,13 +633,18 @@ fn decode_h264_with_ffmpeg(
     }
 
     let frame_limit = compare_frames_limit().to_string();
-    let map_spec = format!("0:{stream_idx}");
+    let map_spec = format!("0:{}", probe.stream_idx);
     let tmp = make_ffmpeg_tmp_path("h264_cmp");
     let skip_deblock = std::env::var("TAO_H264_COMPARE_SKIP_DEBLOCK").is_ok();
     let mut cmd = Command::new("ffmpeg");
     if skip_deblock {
         cmd.args(["-skip_loop_filter", "all"]);
     }
+    let out_fmt = if probe.is_full_range {
+        "yuvj420p"
+    } else {
+        "yuv420p"
+    };
     cmd.args([
         "-y",
         "-i",
@@ -633,7 +655,7 @@ fn decode_h264_with_ffmpeg(
         "-sn",
         "-dn",
         "-pix_fmt",
-        "yuv420p",
+        out_fmt,
         "-vframes",
         &frame_limit,
         "-f",
@@ -976,6 +998,122 @@ fn resolve_input() -> Result<String, Box<dyn std::error::Error>> {
     Err("请通过参数或 TAO_H264_COMPARE_INPUT 指定 MP4/H264 文件或 URL".into())
 }
 
+fn print_mb_error_map(path: &str, w: u32, h: u32, ref_frame: &[u8], tao_frame: &[u8]) {
+    let w = w as usize;
+    let h = h as usize;
+    let y_size = w * h;
+    if ref_frame.len() < y_size || tao_frame.len() < y_size {
+        return;
+    }
+    let mb_w = (w + 15) / 16;
+    let mb_h = (h + 15) / 16;
+    let mut worst_mb = (0usize, 0usize, 0u32, 0i32);
+    println!("[{}] 宏块误差图 (帧0, Y平面, {}x{} MBs):", path, mb_w, mb_h);
+    for mby in 0..mb_h {
+        for mbx in 0..mb_w {
+            let mut max_err: u32 = 0;
+            let mut sum_diff: i64 = 0;
+            let mut cnt = 0u32;
+            for dy in 0..16 {
+                let y = mby * 16 + dy;
+                if y >= h {
+                    break;
+                }
+                for dx in 0..16 {
+                    let x = mbx * 16 + dx;
+                    if x >= w {
+                        break;
+                    }
+                    let idx = y * w + x;
+                    let diff = ref_frame[idx] as i32 - tao_frame[idx] as i32;
+                    max_err = max_err.max(diff.unsigned_abs());
+                    sum_diff += diff as i64;
+                    cnt += 1;
+                }
+            }
+            if max_err > worst_mb.2 {
+                worst_mb = (mbx, mby, max_err, (sum_diff / cnt as i64) as i32);
+            }
+            if max_err > 10 {
+                let avg = sum_diff as f64 / cnt as f64;
+                println!(
+                    "  MB({},{}) max_err={} avg_diff={:.1}",
+                    mbx, mby, max_err, avg
+                );
+            }
+        }
+    }
+    println!(
+        "  最差MB({},{}) max_err={} avg_diff={}",
+        worst_mb.0, worst_mb.1, worst_mb.2, worst_mb.3
+    );
+    let mut detail_mbs: Vec<(usize, usize, u32, i32)> = Vec::new();
+    for mby in 0..mb_h {
+        for mbx in 0..mb_w {
+            let mut max_err: u32 = 0;
+            let mut sum_diff: i64 = 0;
+            let mut cnt = 0u32;
+            for dy in 0..16 {
+                let y = mby * 16 + dy;
+                if y >= h {
+                    break;
+                }
+                for dx in 0..16 {
+                    let x = mbx * 16 + dx;
+                    if x >= w {
+                        break;
+                    }
+                    let idx = y * w + x;
+                    let diff = ref_frame[idx] as i32 - tao_frame[idx] as i32;
+                    max_err = max_err.max(diff.unsigned_abs());
+                    sum_diff += diff as i64;
+                    cnt += 1;
+                }
+            }
+            if max_err >= 30 {
+                detail_mbs.push((mbx, mby, max_err, (sum_diff / cnt as i64) as i32));
+            }
+        }
+    }
+    for &(mbx, mby, me, _) in &detail_mbs {
+        let mut sub_errs = Vec::new();
+        for sby in 0..4 {
+            for sbx in 0..4 {
+                let mut se: i64 = 0;
+                let mut sc = 0u32;
+                for dy in 0..4 {
+                    let y = mby * 16 + sby * 4 + dy;
+                    if y >= h {
+                        break;
+                    }
+                    for dx in 0..4 {
+                        let x = mbx * 16 + sbx * 4 + dx;
+                        if x >= w {
+                            break;
+                        }
+                        let idx = y * w + x;
+                        se += (ref_frame[idx] as i32 - tao_frame[idx] as i32) as i64;
+                        sc += 1;
+                    }
+                }
+                if sc > 0 {
+                    sub_errs.push(se as f64 / sc as f64);
+                }
+            }
+        }
+        println!(
+            "  MB({},{}) max_err={} 4x4子块avg_diff={:?}",
+            mbx,
+            mby,
+            me,
+            sub_errs
+                .iter()
+                .map(|v| format!("{:.0}", v))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
 fn print_compare_stats(path: &str, tao_frames: usize, ff_frames: usize, stats: &CompareStats) {
     println!(
         "[{}] Tao对比帧={}, Tao={}, FFmpeg={}, Tao/FFmpeg: max_err={}, psnr={:.4}dB, 精度={:.6}%, FFmpeg=100%",
@@ -1015,6 +1153,23 @@ fn print_compare_stats(path: &str, tao_frames: usize, ff_frames: usize, stats: &
 
 fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     let (tao_w, tao_h, tao_frames, tao_stream_index) = decode_h264_with_tao(path)?;
+
+    if std::env::var("TAO_H264_COMPARE_DUMP_TAO").unwrap_or_default() == "1"
+        && !tao_frames.is_empty()
+    {
+        let stem = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("frame");
+        let dump_path = format!("data/tao_{}_frame0.yuv", stem);
+        std::fs::write(&dump_path, &tao_frames[0]).ok();
+        eprintln!(
+            "[诊断] Tao 帧0 已写入 {} ({} 字节)",
+            dump_path,
+            tao_frames[0].len()
+        );
+    }
+
     let (ff_w, ff_h, ff_frames) =
         decode_h264_with_ffmpeg(path, tao_stream_index, Some((tao_w, tao_h)))?;
 
@@ -1127,6 +1282,13 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    if std::env::var("TAO_H264_COMPARE_MB_DIAG").unwrap_or_default() == "1"
+        && !ff_frames.is_empty()
+        && !tao_frames.is_empty()
+    {
+        print_mb_error_map(path, tao_w, tao_h, &ff_frames[0], &tao_frames[0]);
+    }
+
     let (stats, per_frame_reports) = compare_video(tao_w, tao_h, &ff_frames, &tao_frames)?;
     print_compare_stats(path, tao_frames.len(), ff_frames.len(), &stats);
 
@@ -1164,9 +1326,9 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn write_per_frame_report(path: &str, reports: &[PerFrameReport]) {
-    let coverage_dir = Path::new("plans/tao-codec/video/h264/coverage");
-    if let Err(e) = std::fs::create_dir_all(coverage_dir) {
-        eprintln!("[报告] 创建 coverage 目录失败: {}", e);
+    let report_dir = Path::new("data/h264_compare_reports");
+    if let Err(e) = std::fs::create_dir_all(report_dir) {
+        eprintln!("[报告] 创建报告目录失败: {}", e);
         return;
     }
 
@@ -1179,7 +1341,7 @@ fn write_per_frame_report(path: &str, reports: &[PerFrameReport]) {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let filename = format!("{}_{}.json", sample_name, ts);
-    let out_path = coverage_dir.join(&filename);
+    let out_path = report_dir.join(&filename);
 
     let json_items: Vec<String> = reports.iter().map(|r| r.to_json()).collect();
     let json = format!("[\n  {}\n]", json_items.join(",\n  "));
