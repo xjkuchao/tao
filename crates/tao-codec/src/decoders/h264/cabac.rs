@@ -73,7 +73,7 @@ impl<'a> CabacDecoder<'a> {
         let range_lps = RANGE_TAB_LPS[s][q_idx] as u32;
         self.cod_i_range -= range_lps;
 
-        if self.cod_i_offset < self.cod_i_range {
+        let result = if self.cod_i_offset < self.cod_i_range {
             ctx.state = TRANS_IDX_MPS[s];
             self.renormalize();
             ctx.mps as u32
@@ -87,29 +87,32 @@ impl<'a> CabacDecoder<'a> {
             ctx.state = TRANS_IDX_LPS[s];
             self.renormalize();
             symbol
-        }
+        };
+        result
     }
 
     /// 旁路模式解码 (等概率)
     pub fn decode_bypass(&mut self) -> u32 {
         self.cod_i_offset = (self.cod_i_offset << 1) | self.read_input_bit();
-        if self.cod_i_offset >= self.cod_i_range {
+        let result = if self.cod_i_offset >= self.cod_i_range {
             self.cod_i_offset -= self.cod_i_range;
             1
         } else {
             0
-        }
+        };
+        result
     }
 
     /// 终止模式解码 (end_of_slice_flag)
     pub fn decode_terminate(&mut self) -> u32 {
         self.cod_i_range = self.cod_i_range.saturating_sub(2);
-        if self.cod_i_offset >= self.cod_i_range {
+        let result = if self.cod_i_offset >= self.cod_i_range {
             1
         } else {
             self.renormalize();
             0
-        }
+        };
+        result
     }
 
     /// 对齐到 I_PCM 原始样本起点
@@ -255,7 +258,7 @@ const RANGE_TAB_LPS: [[u8; 4]; 64] = [
     [ 12, 14, 17, 20],[ 11, 14, 16, 19],[ 11, 13, 15, 18],[ 10, 12, 15, 17],
     [ 10, 12, 14, 16],[  9, 11, 13, 15],[  9, 11, 12, 14],[  8, 10, 12, 14],
     [  8,  9, 11, 13],[  7,  9, 11, 12],[  7,  9, 10, 12],[  7,  8, 10, 11],
-    [  6,  8,  9, 11],[  6,  7,  9, 10],[  6,  7,  8, 10],[  2,  2,  2,  2],
+    [  6,  8,  9, 11],[  6,  7,  9, 10],[  6,  7,  8,  9],[  2,  2,  2,  2],
 ];
 
 /// transIdxLPS[pStateIdx] (Table 9-49): LPS 状态转移

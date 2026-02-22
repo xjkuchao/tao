@@ -5,6 +5,7 @@
 //! 2) TAO_H264_COMPARE_INPUT=data/2_h264.mp4 cargo test --test run_decoder h264:: -- --nocapture --ignored
 //! 3) TAO_H264_COMPARE_INPUT=https://samples.ffmpeg.org/V-codecs/h264/interlaced_crop.mp4 cargo test --test run_decoder h264:: -- --nocapture --ignored
 
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,6 +21,132 @@ use tao::format::{FormatRegistry, IoContext};
 static FF_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const DEFAULT_COMPARE_FRAMES: usize = 120;
 const DEFAULT_REQUIRED_PRECISION: f64 = 100.0;
+
+struct SampleEntry {
+    id: &'static str,
+    path: &'static str,
+    profile: &'static str,
+    resolution: &'static str,
+    description: &'static str,
+}
+
+const H264_SAMPLES: &[SampleEntry] = &[
+    SampleEntry {
+        id: "C1",
+        path: "data/h264_samples/c1_cavlc_baseline_720p.mp4",
+        profile: "Constrained Baseline",
+        resolution: "1280x720",
+        description: "CAVLC, 无 B 帧, Level 3.1, MP4",
+    },
+    SampleEntry {
+        id: "C2",
+        path: "data/h264_samples/c2_main_cabac_1080p.mov",
+        profile: "Main",
+        resolution: "1920x1080",
+        description: "CABAC, B 帧, Level 4.0, MOV",
+    },
+    SampleEntry {
+        id: "C3",
+        path: "data/h264_samples/c3_high_8x8.mkv",
+        profile: "High",
+        resolution: "704x480",
+        description: "CABAC, 8x8 变换, B 帧, MKV",
+    },
+    SampleEntry {
+        id: "E1",
+        path: "data/h264_samples/e1_baseline_cavlc_lowres.mp4",
+        profile: "Baseline",
+        resolution: "352x200",
+        description: "CAVLC, Level 2.1, MP4",
+    },
+    SampleEntry {
+        id: "E2",
+        path: "data/h264_samples/e2_main_cabac_720p.mov",
+        profile: "Main",
+        resolution: "1280x720",
+        description: "CABAC + B 帧, Level 3.2, MOV",
+    },
+    SampleEntry {
+        id: "E3",
+        path: "data/h264_samples/e3_main_cabac_midres.mp4",
+        profile: "Main",
+        resolution: "640x352",
+        description: "CABAC + B 帧, Level 4.0, MP4",
+    },
+    SampleEntry {
+        id: "E4",
+        path: "data/h264_samples/e4_main_cabac_lowres.mov",
+        profile: "Main",
+        resolution: "480x204",
+        description: "CABAC + B 帧, Level 2.0, MOV",
+    },
+    SampleEntry {
+        id: "E5",
+        path: "data/h264_samples/e5_main_1080p.264",
+        profile: "Main",
+        resolution: "1920x1088",
+        description: "CABAC, Level 4.0, 高码率裸流",
+    },
+    SampleEntry {
+        id: "E6",
+        path: "data/h264_samples/e6_high_1080p.h264",
+        profile: "High",
+        resolution: "1920x1080",
+        description: "CABAC + 8x8, Level 4.1, 裸流",
+    },
+    SampleEntry {
+        id: "E7",
+        path: "data/h264_samples/e7_high_1080p.mp4",
+        profile: "High",
+        resolution: "1920x1080",
+        description: "CABAC + 8x8, Level 4.2, yuvj420p, MP4",
+    },
+    SampleEntry {
+        id: "E8",
+        path: "data/h264_samples/e8_ipcm.h264",
+        profile: "High",
+        resolution: "352x288",
+        description: "IPCM 宏块边界, Level 5.1, 裸流",
+    },
+    SampleEntry {
+        id: "E9",
+        path: "data/h264_samples/e9_cavlc_baseline2.mp4",
+        profile: "Baseline",
+        resolution: "352x200",
+        description: "CAVLC, Level 3.1, MP4",
+    },
+];
+
+const H264_CUSTOM_SAMPLES: &[SampleEntry] = &[
+    SampleEntry {
+        id: "X1",
+        path: "data/h264_samples/custom_ionly.264",
+        profile: "High",
+        resolution: "352x288",
+        description: "I-only 纯帧内, 裸流",
+    },
+    SampleEntry {
+        id: "X2",
+        path: "data/h264_samples/custom_poc1.264",
+        profile: "High",
+        resolution: "352x288",
+        description: "B 帧, 裸流",
+    },
+    SampleEntry {
+        id: "X3",
+        path: "data/h264_samples/custom_poc2.264",
+        profile: "High",
+        resolution: "352x288",
+        description: "P-only 无 B 帧, 裸流",
+    },
+    SampleEntry {
+        id: "X4",
+        path: "data/h264_samples/custom_multislice.264",
+        profile: "High",
+        resolution: "352x288",
+        description: "多 slice 同帧, 裸流",
+    },
+];
 
 type DecodeResult = Result<(u32, u32, Vec<Vec<u8>>, Option<u32>), Box<dyn std::error::Error>>;
 type FfmpegDecodeResult = Result<(u32, u32, Vec<Vec<u8>>), Box<dyn std::error::Error>>;
@@ -121,6 +248,53 @@ impl CompareStats {
     fn global_max_err(&self) -> u8 {
         self.y.max_err.max(self.u.max_err).max(self.v.max_err)
     }
+}
+
+#[derive(Clone)]
+struct PerFrameReport {
+    frame_idx: usize,
+    y_psnr: f64,
+    u_psnr: f64,
+    v_psnr: f64,
+    y_max_err: u8,
+    u_max_err: u8,
+    v_max_err: u8,
+    y_precision: f64,
+    u_precision: f64,
+    v_precision: f64,
+}
+
+impl PerFrameReport {
+    fn to_json(&self) -> String {
+        let fmt_psnr = |v: f64| {
+            if v.is_infinite() {
+                "\"Infinity\"".to_string()
+            } else {
+                format!("{:.4}", v)
+            }
+        };
+        format!(
+            "{{\"frame_idx\":{},\"y_psnr\":{},\"u_psnr\":{},\"v_psnr\":{},\
+             \"y_max_err\":{},\"u_max_err\":{},\"v_max_err\":{},\
+             \"y_precision\":{:.6},\"u_precision\":{:.6},\"v_precision\":{:.6}}}",
+            self.frame_idx,
+            fmt_psnr(self.y_psnr),
+            fmt_psnr(self.u_psnr),
+            fmt_psnr(self.v_psnr),
+            self.y_max_err,
+            self.u_max_err,
+            self.v_max_err,
+            self.y_precision,
+            self.u_precision,
+            self.v_precision,
+        )
+    }
+}
+
+fn report_enabled() -> bool {
+    std::env::var("TAO_H264_COMPARE_REPORT")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 fn compare_frames_limit() -> usize {
@@ -444,7 +618,11 @@ fn decode_h264_with_ffmpeg(
     let frame_limit = compare_frames_limit().to_string();
     let map_spec = format!("0:{stream_idx}");
     let tmp = make_ffmpeg_tmp_path("h264_cmp");
+    let skip_deblock = std::env::var("TAO_H264_COMPARE_SKIP_DEBLOCK").is_ok();
     let mut cmd = Command::new("ffmpeg");
+    if skip_deblock {
+        cmd.args(["-skip_loop_filter", "all"]);
+    }
     cmd.args([
         "-y",
         "-i",
@@ -506,7 +684,7 @@ fn compare_frame(
     test: &[u8],
     width: u32,
     height: u32,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<PerFrameReport, Box<dyn std::error::Error>> {
     if reference.len() != test.len() {
         return Err(format!(
             "第 {} 帧大小不匹配: Tao={}, FFmpeg={}",
@@ -538,6 +716,13 @@ fn compare_frame(
     let u_test = &test[y_size..y_size + uv_size];
     let v_test = &test[y_size + uv_size..y_size + uv_size * 2];
 
+    let mut frame_y = PlaneStats::default();
+    let mut frame_u = PlaneStats::default();
+    let mut frame_v = PlaneStats::default();
+    frame_y.update(y_ref, y_test);
+    frame_u.update(u_ref, u_test);
+    frame_v.update(v_ref, v_test);
+
     stats.y.update(y_ref, y_test);
     stats.u.update(u_ref, u_test);
     stats.v.update(v_ref, v_test);
@@ -551,7 +736,18 @@ fn compare_frame(
         stats.first_mismatch_frame = Some(frame_idx);
     }
 
-    Ok(())
+    Ok(PerFrameReport {
+        frame_idx,
+        y_psnr: frame_y.psnr(),
+        u_psnr: frame_u.psnr(),
+        v_psnr: frame_v.psnr(),
+        y_max_err: frame_y.max_err,
+        u_max_err: frame_u.max_err,
+        v_max_err: frame_v.max_err,
+        y_precision: frame_y.precision_pct(),
+        u_precision: frame_u.precision_pct(),
+        v_precision: frame_v.precision_pct(),
+    })
 }
 
 fn compare_video(
@@ -559,13 +755,15 @@ fn compare_video(
     height: u32,
     reference: &[Vec<u8>],
     test: &[Vec<u8>],
-) -> Result<CompareStats, Box<dyn std::error::Error>> {
+) -> Result<(CompareStats, Vec<PerFrameReport>), Box<dyn std::error::Error>> {
     let mut stats = CompareStats::default();
     let frame_count = reference.len().min(test.len());
+    let mut reports = Vec::with_capacity(frame_count);
     for i in 0..frame_count {
-        compare_frame(&mut stats, i, &reference[i], &test[i], width, height)?;
+        let report = compare_frame(&mut stats, i, &reference[i], &test[i], width, height)?;
+        reports.push(report);
     }
-    Ok(stats)
+    Ok((stats, reports))
 }
 
 fn analyze_shift_enabled() -> bool {
@@ -606,6 +804,124 @@ fn print_first_frame_stats(path: &str, width: u32, height: u32, ff: &[u8], tao: 
         tao_128,
         y_tao.len()
     );
+
+    let w = width as usize;
+    let dump_rows = 4.min(height as usize);
+    let dump_cols = 128.min(w);
+    println!("[{}] 首帧Y像素(前{}行x{}列):", path, dump_rows, dump_cols);
+    for row in 0..dump_rows {
+        let off = row * w;
+        let ff_row: Vec<u8> = y_ff[off..off + dump_cols].to_vec();
+        let tao_row: Vec<u8> = y_tao[off..off + dump_cols].to_vec();
+        println!("  行{}: FF={:?}", row, ff_row);
+        println!("  行{}: Tao={:?}", row, tao_row);
+    }
+
+    // 找到第一个不匹配像素
+    let mut first_mismatch = None;
+    let mut max_err_pos = (0usize, 0usize, 0i32);
+    let mut err_hist = [0u64; 8]; // [0, 1, 2-3, 4-7, 8-15, 16-31, 32-63, 64+]
+    for i in 0..y_ff.len().min(y_tao.len()) {
+        let diff = (y_ff[i] as i32 - y_tao[i] as i32).abs();
+        if diff > 0 && first_mismatch.is_none() {
+            first_mismatch = Some((i % w, i / w, y_ff[i], y_tao[i], diff));
+        }
+        if diff > max_err_pos.2 {
+            max_err_pos = (i % w, i / w, diff);
+        }
+        let bucket = if diff == 0 {
+            0
+        } else if diff == 1 {
+            1
+        } else if diff <= 3 {
+            2
+        } else if diff <= 7 {
+            3
+        } else if diff <= 15 {
+            4
+        } else if diff <= 31 {
+            5
+        } else if diff <= 63 {
+            6
+        } else {
+            7
+        };
+        err_hist[bucket] += 1;
+    }
+    if let Some((x, y, ff_v, tao_v, d)) = first_mismatch {
+        println!(
+            "[{}] 首个不匹配: ({},{}) FF={} Tao={} diff={}",
+            path, x, y, ff_v, tao_v, d
+        );
+    }
+    println!(
+        "[{}] 最大误差位置: ({},{}) diff={}",
+        path, max_err_pos.0, max_err_pos.1, max_err_pos.2
+    );
+    println!(
+        "[{}] 误差分布: 0:{} 1:{} 2-3:{} 4-7:{} 8-15:{} 16-31:{} 32-63:{} 64+:{}",
+        path,
+        err_hist[0],
+        err_hist[1],
+        err_hist[2],
+        err_hist[3],
+        err_hist[4],
+        err_hist[5],
+        err_hist[6],
+        err_hist[7]
+    );
+
+    // 找到首个大误差 (>=10) 和极大误差 (>=64) 的位置
+    let mut first_big = None;
+    let mut first_huge = None;
+    for i in 0..y_ff.len().min(y_tao.len()) {
+        let diff = (y_ff[i] as i32 - y_tao[i] as i32).abs();
+        if diff >= 10 && first_big.is_none() {
+            first_big = Some((i % w, i / w, y_ff[i], y_tao[i], diff));
+        }
+        if diff >= 64 && first_huge.is_none() {
+            first_huge = Some((i % w, i / w, y_ff[i], y_tao[i], diff));
+        }
+        if first_big.is_some() && first_huge.is_some() {
+            break;
+        }
+    }
+    if let Some((x, y, fv, tv, d)) = first_big {
+        let mb_x = x / 16;
+        let mb_y = y / 16;
+        println!(
+            "[{}] 首个大误差(>=10): ({},{}) MB({},{}) FF={} Tao={} diff={}",
+            path, x, y, mb_x, mb_y, fv, tv, d
+        );
+    }
+    if let Some((x, y, fv, tv, d)) = first_huge {
+        let mb_x = x / 16;
+        let mb_y = y / 16;
+        println!(
+            "[{}] 首个极大误差(>=64): ({},{}) MB({},{}) FF={} Tao={} diff={}",
+            path, x, y, mb_x, mb_y, fv, tv, d
+        );
+    }
+
+    // 显示第一个不匹配位置附近的宏块
+    if let Some((x, y, _, _, _)) = first_mismatch {
+        let mb_x = x / 16;
+        let mb_y = y / 16;
+        let start_row = mb_y * 16;
+        let start_col = mb_x * 16;
+        println!(
+            "[{}] 首个不匹配宏块({},{}), 像素({},{})附近:",
+            path, mb_x, mb_y, x, y
+        );
+        for r in start_row..(start_row + 4).min(height as usize) {
+            let off = r * w + start_col;
+            let end = (off + 16).min(y_ff.len());
+            let ff_row: Vec<u8> = y_ff[off..end].to_vec();
+            let tao_row: Vec<u8> = y_tao[off..end].to_vec();
+            println!("  行{}: FF={:?}", r, ff_row);
+            println!("  行{}: Tao={:?}", r, tao_row);
+        }
+    }
 }
 
 /// 估计参考序列与测试序列的最佳帧偏移.
@@ -727,6 +1043,79 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     if analyze_frame_stats_enabled() && !ff_frames.is_empty() && !tao_frames.is_empty() {
         print_first_frame_stats(path, tao_w, tao_h, &ff_frames[0], &tao_frames[0]);
+
+        // 检查帧对齐: Tao 帧 0 与 FFmpeg 各帧的精度
+        let y_size = (tao_w as usize) * (tao_h as usize);
+        if ff_frames.len() >= 3 && tao_frames.len() >= 2 {
+            for shift in [-1i32, 0, 1] {
+                let mut total_eq = 0u64;
+                let mut total_cnt = 0u64;
+                let n = ff_frames.len().min(tao_frames.len());
+                for fi in 0..n {
+                    let fj = fi as i32 + shift;
+                    if fj < 0 || fj as usize >= ff_frames.len() {
+                        continue;
+                    }
+                    let sz = ff_frames[fj as usize].len().min(tao_frames[fi].len());
+                    let eq = (0..sz)
+                        .filter(|&i| ff_frames[fj as usize][i] == tao_frames[fi][i])
+                        .count();
+                    total_eq += eq as u64;
+                    total_cnt += sz as u64;
+                }
+                if total_cnt > 0 {
+                    println!(
+                        "[{}] 帧偏移测试 shift={}: 精度={:.2}%",
+                        path,
+                        shift,
+                        total_eq as f64 * 100.0 / total_cnt as f64
+                    );
+                }
+            }
+        }
+
+        let n = ff_frames.len().min(tao_frames.len());
+        for fi in 0..n {
+            let sz = ff_frames[fi].len().min(tao_frames[fi].len());
+            let eq = (0..sz)
+                .filter(|&i| ff_frames[fi][i] == tao_frames[fi][i])
+                .count();
+            let max_e = (0..sz)
+                .map(|i| (ff_frames[fi][i] as i32 - tao_frames[fi][i] as i32).unsigned_abs())
+                .max()
+                .unwrap_or(0);
+            let ff_y_mean = if y_size <= ff_frames[fi].len() {
+                ff_frames[fi][..y_size]
+                    .iter()
+                    .map(|&v| v as f64)
+                    .sum::<f64>()
+                    / y_size as f64
+            } else {
+                0.0
+            };
+            let tao_y_mean = if y_size <= tao_frames[fi].len() {
+                tao_frames[fi][..y_size]
+                    .iter()
+                    .map(|&v| v as f64)
+                    .sum::<f64>()
+                    / y_size as f64
+            } else {
+                0.0
+            };
+            let ff_pix0 = ff_frames[fi].get(0).copied().unwrap_or(0);
+            let tao_pix0 = tao_frames[fi].get(0).copied().unwrap_or(0);
+            println!(
+                "[{}] 帧{}: 精度={:.2}%, max_err={}, FF_Y均值={:.1} Tao_Y均值={:.1}, pix0: FF={} Tao={}",
+                path,
+                fi,
+                eq as f64 * 100.0 / sz as f64,
+                max_e,
+                ff_y_mean,
+                tao_y_mean,
+                ff_pix0,
+                tao_pix0
+            );
+        }
     }
 
     if analyze_shift_enabled() {
@@ -738,8 +1127,12 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let stats = compare_video(tao_w, tao_h, &ff_frames, &tao_frames)?;
+    let (stats, per_frame_reports) = compare_video(tao_w, tao_h, &ff_frames, &tao_frames)?;
     print_compare_stats(path, tao_frames.len(), ff_frames.len(), &stats);
+
+    if report_enabled() && !per_frame_reports.is_empty() {
+        write_per_frame_report(path, &per_frame_reports);
+    }
 
     let required_precision = required_precision_pct();
     if required_precision >= 100.0 {
@@ -770,6 +1163,56 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn write_per_frame_report(path: &str, reports: &[PerFrameReport]) {
+    let coverage_dir = Path::new("plans/tao-codec/video/h264/coverage");
+    if let Err(e) = std::fs::create_dir_all(coverage_dir) {
+        eprintln!("[报告] 创建 coverage 目录失败: {}", e);
+        return;
+    }
+
+    let sample_name = Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let filename = format!("{}_{}.json", sample_name, ts);
+    let out_path = coverage_dir.join(&filename);
+
+    let json_items: Vec<String> = reports.iter().map(|r| r.to_json()).collect();
+    let json = format!("[\n  {}\n]", json_items.join(",\n  "));
+
+    match std::fs::File::create(&out_path) {
+        Ok(mut f) => {
+            if let Err(e) = f.write_all(json.as_bytes()) {
+                eprintln!("[报告] 写入失败: {}", e);
+            } else {
+                println!("[报告] 逐帧报告已写入: {}", out_path.display());
+            }
+        }
+        Err(e) => eprintln!("[报告] 创建文件失败: {}", e),
+    }
+}
+
+/// 以指定参数执行精度对比, 供精度回归测试使用.
+fn run_compare_with_params(
+    url: &str,
+    max_frames: usize,
+    min_precision: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // SAFETY: 集成测试单线程运行, set_var 不会与其他线程竞争.
+    unsafe {
+        std::env::set_var("TAO_H264_COMPARE_FRAMES", max_frames.to_string());
+        std::env::set_var(
+            "TAO_H264_COMPARE_REQUIRED_PRECISION",
+            min_precision.to_string(),
+        );
+    }
+    run_compare(url)
+}
+
 #[test]
 #[ignore]
 fn test_h264_compare() {
@@ -791,4 +1234,220 @@ fn test_h264_compare_sample_2() {
     let path = "data/2_h264.mp4";
     assert!(Path::new(path).exists(), "样本不存在: {}", path);
     run_compare(path).expect("样本2 H264 对比失败");
+}
+
+/// C1 样本精度回归: CAVLC Baseline 720p (MP4)
+#[test]
+#[ignore]
+fn test_h264_accuracy_c1() {
+    let s = &H264_SAMPLES[0];
+    assert!(Path::new(s.path).exists(), "样本不存在: {}", s.path);
+    run_compare_with_params(s.path, 10, 1.0)
+        .unwrap_or_else(|e| panic!("{} ({}) 精度回归失败: {}", s.id, s.description, e));
+}
+
+/// C2 样本精度回归: Main + CABAC + B 帧 1080p (MOV)
+#[test]
+#[ignore]
+fn test_h264_accuracy_c2() {
+    let s = &H264_SAMPLES[1];
+    assert!(Path::new(s.path).exists(), "样本不存在: {}", s.path);
+    run_compare_with_params(s.path, 10, 1.0)
+        .unwrap_or_else(|e| panic!("{} ({}) 精度回归失败: {}", s.id, s.description, e));
+}
+
+/// C3 样本精度回归: High + 8x8 + CABAC (MKV)
+#[test]
+#[ignore]
+fn test_h264_accuracy_c3() {
+    let s = &H264_SAMPLES[2];
+    assert!(Path::new(s.path).exists(), "样本不存在: {}", s.path);
+    run_compare_with_params(s.path, 10, 1.0)
+        .unwrap_or_else(|e| panic!("{} ({}) 精度回归失败: {}", s.id, s.description, e));
+}
+
+/// E1 样本精度回归: Baseline + CAVLC 低分辨率 (MP4)
+#[test]
+#[ignore]
+fn test_h264_accuracy_e1() {
+    let s = &H264_SAMPLES[3];
+    assert!(Path::new(s.path).exists(), "样本不存在: {}", s.path);
+    run_compare_with_params(s.path, 10, 1.0)
+        .unwrap_or_else(|e| panic!("{} ({}) 精度回归失败: {}", s.id, s.description, e));
+}
+
+/// E2 样本精度回归: Main + CABAC 720p (MOV)
+#[test]
+#[ignore]
+fn test_h264_accuracy_e2() {
+    let s = &H264_SAMPLES[4];
+    assert!(Path::new(s.path).exists(), "样本不存在: {}", s.path);
+    run_compare_with_params(s.path, 10, 1.0)
+        .unwrap_or_else(|e| panic!("{} ({}) 精度回归失败: {}", s.id, s.description, e));
+}
+
+/// E3 样本精度回归: Main + CABAC 中分辨率 (MP4)
+#[test]
+#[ignore]
+fn test_h264_accuracy_e3() {
+    let s = &H264_SAMPLES[5];
+    assert!(Path::new(s.path).exists(), "样本不存在: {}", s.path);
+    run_compare_with_params(s.path, 10, 1.0)
+        .unwrap_or_else(|e| panic!("{} ({}) 精度回归失败: {}", s.id, s.description, e));
+}
+
+/// E4 样本精度回归: Main + CABAC 低分辨率 (MOV)
+#[test]
+#[ignore]
+fn test_h264_accuracy_e4() {
+    let s = &H264_SAMPLES[6];
+    assert!(Path::new(s.path).exists(), "样本不存在: {}", s.path);
+    run_compare_with_params(s.path, 10, 1.0)
+        .unwrap_or_else(|e| panic!("{} ({}) 精度回归失败: {}", s.id, s.description, e));
+}
+
+/// E5 样本精度回归: Main + 1080p 裸流
+#[test]
+#[ignore]
+fn test_h264_accuracy_e5() {
+    let s = &H264_SAMPLES[7];
+    assert!(Path::new(s.path).exists(), "样本不存在: {}", s.path);
+    run_compare_with_params(s.path, 10, 1.0)
+        .unwrap_or_else(|e| panic!("{} ({}) 精度回归失败: {}", s.id, s.description, e));
+}
+
+/// E6 样本精度回归: High + 1080p 裸流
+#[test]
+#[ignore]
+fn test_h264_accuracy_e6() {
+    let s = &H264_SAMPLES[8];
+    assert!(Path::new(s.path).exists(), "样本不存在: {}", s.path);
+    run_compare_with_params(s.path, 10, 1.0)
+        .unwrap_or_else(|e| panic!("{} ({}) 精度回归失败: {}", s.id, s.description, e));
+}
+
+/// E7 样本精度回归: High + 1080p (MP4, yuvj420p)
+#[test]
+#[ignore]
+fn test_h264_accuracy_e7() {
+    let s = &H264_SAMPLES[9];
+    assert!(Path::new(s.path).exists(), "样本不存在: {}", s.path);
+    run_compare_with_params(s.path, 10, 1.0)
+        .unwrap_or_else(|e| panic!("{} ({}) 精度回归失败: {}", s.id, s.description, e));
+}
+
+/// E8 样本精度回归: IPCM 边界 (裸流)
+#[test]
+#[ignore]
+fn test_h264_accuracy_e8() {
+    let s = &H264_SAMPLES[10];
+    assert!(Path::new(s.path).exists(), "样本不存在: {}", s.path);
+    run_compare_with_params(s.path, 10, 1.0)
+        .unwrap_or_else(|e| panic!("{} ({}) 精度回归失败: {}", s.id, s.description, e));
+}
+
+/// E9 样本精度回归: CAVLC Baseline 低分辨率 2 (MP4)
+#[test]
+#[ignore]
+fn test_h264_accuracy_e9() {
+    let s = &H264_SAMPLES[11];
+    assert!(Path::new(s.path).exists(), "样本不存在: {}", s.path);
+    run_compare_with_params(s.path, 10, 1.0)
+        .unwrap_or_else(|e| panic!("{} ({}) 精度回归失败: {}", s.id, s.description, e));
+}
+
+/// X1 自制样本: I-only 纯帧内 (裸流)
+#[test]
+#[ignore]
+fn test_h264_accuracy_x1() {
+    let s = &H264_CUSTOM_SAMPLES[0];
+    assert!(Path::new(s.path).exists(), "样本不存在: {}", s.path);
+    run_compare_with_params(s.path, 10, 1.0)
+        .unwrap_or_else(|e| panic!("{} ({}) 精度回归失败: {}", s.id, s.description, e));
+}
+
+/// X2 自制样本: B 帧 (裸流)
+#[test]
+#[ignore]
+fn test_h264_accuracy_x2() {
+    let s = &H264_CUSTOM_SAMPLES[1];
+    assert!(Path::new(s.path).exists(), "样本不存在: {}", s.path);
+    run_compare_with_params(s.path, 10, 1.0)
+        .unwrap_or_else(|e| panic!("{} ({}) 精度回归失败: {}", s.id, s.description, e));
+}
+
+/// X3 自制样本: P-only 无 B 帧 (裸流)
+#[test]
+#[ignore]
+fn test_h264_accuracy_x3() {
+    let s = &H264_CUSTOM_SAMPLES[2];
+    assert!(Path::new(s.path).exists(), "样本不存在: {}", s.path);
+    run_compare_with_params(s.path, 10, 1.0)
+        .unwrap_or_else(|e| panic!("{} ({}) 精度回归失败: {}", s.id, s.description, e));
+}
+
+/// X4 自制样本: 多 slice 同帧 (裸流)
+#[test]
+#[ignore]
+fn test_h264_accuracy_x4() {
+    let s = &H264_CUSTOM_SAMPLES[3];
+    assert!(Path::new(s.path).exists(), "样本不存在: {}", s.path);
+    run_compare_with_params(s.path, 10, 1.0)
+        .unwrap_or_else(|e| panic!("{} ({}) 精度回归失败: {}", s.id, s.description, e));
+}
+
+/// 批量对比全部样本, 输出汇总报告.
+/// 不因单个样本失败而中断, 最终汇总所有结果.
+#[test]
+#[ignore]
+fn test_h264_accuracy_all() {
+    let all_samples: Vec<&SampleEntry> = H264_SAMPLES
+        .iter()
+        .chain(H264_CUSTOM_SAMPLES.iter())
+        .collect();
+    let total = all_samples.len();
+    let mut pass = 0usize;
+    let mut fail = 0usize;
+    let mut skip = 0usize;
+    let mut failures = Vec::<String>::new();
+
+    for s in &all_samples {
+        if !Path::new(s.path).exists() {
+            println!("[{}] 跳过: 样本不存在 {}", s.id, s.path);
+            skip += 1;
+            continue;
+        }
+        print!(
+            "[{}] {} {} ({}) ... ",
+            s.id, s.resolution, s.profile, s.description
+        );
+        match run_compare_with_params(s.path, 10, 1.0) {
+            Ok(()) => {
+                println!("通过");
+                pass += 1;
+            }
+            Err(e) => {
+                println!("失败: {}", e);
+                failures.push(format!("{} ({}): {}", s.id, s.path, e));
+                fail += 1;
+            }
+        }
+    }
+
+    println!("\n=== H264 精度回归汇总 ===");
+    println!(
+        "通过: {}, 失败: {}, 跳过: {}, 总计: {}",
+        pass, fail, skip, total
+    );
+
+    if !failures.is_empty() {
+        println!("\n失败详情:");
+        for f in &failures {
+            println!("  - {}", f);
+        }
+        panic!("H264 精度回归: {}/{} 样本失败", fail, total);
+    }
+    if skip > 0 {
+        println!("警告: {} 个样本被跳过(文件不存在)", skip);
+    }
 }

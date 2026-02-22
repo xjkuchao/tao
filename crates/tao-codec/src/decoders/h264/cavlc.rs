@@ -274,6 +274,9 @@ fn decode_level(
     };
 
     let mut level_code = ((prefix.min(15) as i32) << *suffix_length) + level_suffix;
+    if prefix >= 15 && *suffix_length == 0 {
+        level_code += 15;
+    }
     if prefix >= 16 {
         level_code += (1i32 << (prefix as i32 - 3)) - 4096;
     }

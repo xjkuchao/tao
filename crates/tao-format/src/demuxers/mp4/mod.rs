@@ -239,7 +239,9 @@ impl Mp4Demuxer {
                     Self::parse_mdhd(io, timescale, duration)?;
                 }
                 BoxType::Hdlr => {
-                    Self::parse_hdlr(io, handler)?;
+                    if *handler == [0u8; 4] {
+                        Self::parse_hdlr(io, handler)?;
+                    }
                 }
                 BoxType::Stsd => {
                     st.parse_stsd(io, box_end)?;

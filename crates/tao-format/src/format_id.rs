@@ -69,6 +69,8 @@ pub enum FormatId {
     // ========================
     /// MPEG-4 Part 2 Elementary Stream (M4V)
     Mpeg4Es,
+    /// H.264 AnnexB Elementary Stream
+    H264Es,
 }
 
 impl FormatId {
@@ -95,6 +97,7 @@ impl FormatId {
             Self::RawVideo => "rawvideo",
             Self::RawAudio => "rawaudio",
             Self::Mpeg4Es => "m4v",
+            Self::H264Es => "h264",
         }
     }
 
@@ -121,6 +124,7 @@ impl FormatId {
             Self::RawVideo => &["yuv", "rgb"],
             Self::RawAudio => &["pcm", "raw"],
             Self::Mpeg4Es => &["m4v"],
+            Self::H264Es => &["h264", "264"],
         }
     }
 }
@@ -148,6 +152,7 @@ impl FormatId {
         Self::RawVideo,
         Self::RawAudio,
         Self::Mpeg4Es,
+        Self::H264Es,
     ];
 
     /// 根据文件扩展名猜测格式

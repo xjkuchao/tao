@@ -89,7 +89,7 @@ pub const CAT_LUMA_8X8: BlockCat = BlockCat {
     last_offset: 417,
     abs_offset: 426,
     max_coeff: 64,
-    skip_cbf: false,
+    skip_cbf: true,
     use_sig_map_8x8: true,
 };
 
@@ -279,28 +279,30 @@ pub fn inverse_hadamard_4x4(block: &mut [i32; 16]) {
         temp[s + 3] = a - d;
     }
 
-    // 列变换
+    // 列变换: 列 j 的蝶形输出写入 dc_block 的第 j 行,
+    // 对齐 FFmpeg h264_luma_dc_dequant_idct 的 x_offset 映射.
     for j in 0..4 {
         let a = temp[j] + temp[8 + j];
         let b = temp[j] - temp[8 + j];
         let c = temp[4 + j] - temp[12 + j];
         let d = temp[4 + j] + temp[12 + j];
-        block[j] = a + d;
-        block[4 + j] = b + c;
-        block[8 + j] = b - c;
-        block[12 + j] = a - d;
+        block[j * 4] = a + d;
+        block[j * 4 + 1] = b + c;
+        block[j * 4 + 2] = b - c;
+        block[j * 4 + 3] = a - d;
     }
 }
 
-/// 2x2 Chroma DC 反 Hadamard 变换 (4:2:0)
+/// 2x2 Chroma DC 反 Hadamard 变换 (4:2:0).
+/// 输入 block[i*2+j] 为频域系数, 输出 block[i*2+j] 为空间域 DC 值.
 pub fn inverse_hadamard_2x2(block: &mut [i32; 4]) {
     let a = block[0] + block[1];
     let b = block[0] - block[1];
     let c = block[2] + block[3];
     let d = block[2] - block[3];
     block[0] = a + c;
-    block[1] = a - c;
-    block[2] = b + d;
+    block[1] = b + d;
+    block[2] = a - c;
     block[3] = b - d;
 }
 
@@ -313,7 +315,7 @@ const FLAT_SCALING_LIST_4X4: [u8; 16] = [16; 16];
 const FLAT_SCALING_LIST_8X8: [u8; 64] = [16; 64];
 
 fn apply_scaling_weight(base_scale: i32, weight: u8) -> i32 {
-    (base_scale * i32::from(weight) + 8) >> 4
+    base_scale * i32::from(weight)
 }
 
 /// Luma DC 系数反量化 (I_16x16)
@@ -325,16 +327,20 @@ pub fn dequant_luma_dc(coeffs: &mut [i32; 16], qp: i32) {
 }
 
 /// Luma DC 系数反量化 (I_16x16), 支持自定义 4x4 scaling_list.
+///
+/// 门限使用 qP/6 >= 6 (非标准的 2), 因为反量化后的 DC 值将作为 4x4 IDCT 的输入,
+/// IDCT 会额外执行 >> 6. 此公式与 FFmpeg 的 `luma_dc_dequant_idct` 等价.
 pub fn dequant_luma_dc_with_scaling(coeffs: &mut [i32; 16], qp: i32, scaling_list: &[u8; 16]) {
     let qp_per = qp / 6;
     let qp_rem = qp % 6;
     let scale = apply_scaling_weight(LEVEL_SCALE[qp_rem as usize][0], scaling_list[0]);
 
     for c in coeffs.iter_mut() {
-        if qp_per >= 2 {
-            *c = (*c * scale) << (qp_per - 2);
+        if qp_per >= 6 {
+            *c = (*c * scale) << (qp_per - 6);
         } else {
-            *c = (*c * scale + (1 << (1 - qp_per))) >> (2 - qp_per);
+            let shift = 6 - qp_per;
+            *c = (*c * scale + (1 << (shift - 1))) >> shift;
         }
     }
 }
@@ -346,16 +352,21 @@ pub fn dequant_chroma_dc(coeffs: &mut [i32; 4], qp: i32) {
 }
 
 /// Chroma DC 系数反量化 (4:2:0), 支持自定义 4x4 scaling_list.
+///
+/// H.264 标准 8.5.12.2: 4:2:0 色度 DC 的移位因子为 `qP/6 - 5`,
+/// 不同于亮度 DC 的 `qP/6 - 6`. 与 FFmpeg `chroma_dc_dequant_idct`
+/// 的 `(value * qmul) >> 7` 等价, 其中 qmul = LevelScale*weight << (qp_per+2).
 pub fn dequant_chroma_dc_with_scaling(coeffs: &mut [i32; 4], qp: i32, scaling_list: &[u8; 16]) {
     let qp_per = qp / 6;
     let qp_rem = qp % 6;
     let scale = apply_scaling_weight(LEVEL_SCALE[qp_rem as usize][0], scaling_list[0]);
 
     for c in coeffs.iter_mut() {
-        if qp_per >= 1 {
-            *c = (*c * scale) << (qp_per - 1);
+        if qp_per >= 5 {
+            *c = (*c * scale) << (qp_per - 5);
         } else {
-            *c = (*c * scale) >> 1;
+            let shift = 5 - qp_per;
+            *c = (*c * scale) >> shift;
         }
     }
 }
@@ -406,42 +417,41 @@ fn scale_index(row: usize, col: usize) -> usize {
 }
 
 /// 4x4 反整数 DCT 变换 (AC 残差解码时使用)
+///
+/// 与 FFmpeg 一致采用列优先(column-first)顺序, 避免 `>>1` 截断差异.
 #[allow(dead_code)]
 pub fn idct_4x4(coeffs: &[i32; 16], out: &mut [i32; 16]) {
     let mut temp = [0i32; 16];
 
-    // 行变换
-    for i in 0..4 {
-        let s = i * 4;
-        let s0 = coeffs[s];
-        let s1 = coeffs[s + 1];
-        let s2 = coeffs[s + 2];
-        let s3 = coeffs[s + 3];
+    for j in 0..4 {
+        let s0 = coeffs[j];
+        let s1 = coeffs[4 + j];
+        let s2 = coeffs[8 + j];
+        let s3 = coeffs[12 + j];
         let e0 = s0 + s2;
         let e1 = s0 - s2;
         let e2 = (s1 >> 1) - s3;
         let e3 = s1 + (s3 >> 1);
-        temp[s] = e0 + e3;
-        temp[s + 1] = e1 + e2;
-        temp[s + 2] = e1 - e2;
-        temp[s + 3] = e0 - e3;
+        temp[j] = e0 + e3;
+        temp[4 + j] = e1 + e2;
+        temp[8 + j] = e1 - e2;
+        temp[12 + j] = e0 - e3;
     }
 
-    // 列变换
-    for j in 0..4 {
-        let s0 = temp[j];
-        let s1 = temp[4 + j];
-        let s2 = temp[8 + j];
-        let s3 = temp[12 + j];
+    for i in 0..4 {
+        let s = i * 4;
+        let s0 = temp[s];
+        let s1 = temp[s + 1];
+        let s2 = temp[s + 2];
+        let s3 = temp[s + 3];
         let e0 = s0 + s2;
         let e1 = s0 - s2;
         let e2 = (s1 >> 1) - s3;
         let e3 = s1 + (s3 >> 1);
-        // 结果需要右移 6 位 (DCT 归一化)
-        out[j] = (e0 + e3 + 32) >> 6;
-        out[4 + j] = (e1 + e2 + 32) >> 6;
-        out[8 + j] = (e1 - e2 + 32) >> 6;
-        out[12 + j] = (e0 - e3 + 32) >> 6;
+        out[s] = (e0 + e3 + 32) >> 6;
+        out[s + 1] = (e1 + e2 + 32) >> 6;
+        out[s + 2] = (e1 - e2 + 32) >> 6;
+        out[s + 3] = (e0 - e3 + 32) >> 6;
     }
 }
 
@@ -484,30 +494,35 @@ pub fn dequant_8x8_ac_with_scaling(
 }
 
 /// H.264 8x8 反整数变换.
+/// 与 FFmpeg 一致采用列优先(column-first)顺序, 避免 `>>1`/`>>2` 截断顺序差异导致舍入偏差.
 pub fn idct_8x8(coeffs: &[i32; 64], out: &mut [i32; 64]) {
     let mut tmp = [0i32; 64];
 
-    for row in 0..8 {
-        let mut src = [0i32; 8];
-        src.copy_from_slice(&coeffs[row * 8..row * 8 + 8]);
-        let dst = inverse_transform_1d_8(src);
-        tmp[row * 8..row * 8 + 8].copy_from_slice(&dst);
-    }
-
+    // 列变换 (第一趟, 与 FFmpeg 一致)
     for col in 0..8 {
         let src = [
-            tmp[col],
-            tmp[8 + col],
-            tmp[16 + col],
-            tmp[24 + col],
-            tmp[32 + col],
-            tmp[40 + col],
-            tmp[48 + col],
-            tmp[56 + col],
+            coeffs[col],
+            coeffs[8 + col],
+            coeffs[16 + col],
+            coeffs[24 + col],
+            coeffs[32 + col],
+            coeffs[40 + col],
+            coeffs[48 + col],
+            coeffs[56 + col],
         ];
         let dst = inverse_transform_1d_8(src);
         for row in 0..8 {
-            out[row * 8 + col] = (dst[row] + 32) >> 6;
+            tmp[row * 8 + col] = dst[row];
+        }
+    }
+
+    // 行变换 (第二趟, 含最终舍入)
+    for row in 0..8 {
+        let mut src = [0i32; 8];
+        src.copy_from_slice(&tmp[row * 8..row * 8 + 8]);
+        let dst = inverse_transform_1d_8(src);
+        for col in 0..8 {
+            out[row * 8 + col] = (dst[col] + 32) >> 6;
         }
     }
 }

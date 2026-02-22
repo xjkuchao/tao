@@ -157,7 +157,7 @@ fn apply_plane_prediction(
     }
 }
 
-/// 色度 DC 预测 (8x8 块)
+/// 色度 DC 预测 (8x8 块, 按 H.264 8.3.4.1 节分 4 个 4x4 子块独立计算 DC)
 pub fn predict_chroma_dc(
     plane: &mut [u8],
     stride: usize,
@@ -166,8 +166,54 @@ pub fn predict_chroma_dc(
     has_left: bool,
     has_top: bool,
 ) {
-    let dc = compute_dc_8x8(plane, stride, x0, y0, has_left, has_top);
-    fill_block(plane, stride, x0, y0, 8, 8, dc);
+    let top_available = has_top && y0 > 0;
+    let left_available = has_left && x0 > 0;
+
+    if top_available && left_available {
+        let mut dc0 = 0u32;
+        let mut dc1 = 0u32;
+        let mut dc2 = 0u32;
+        for i in 0..4 {
+            dc0 +=
+                plane[(y0 + i) * stride + x0 - 1] as u32 + plane[(y0 - 1) * stride + x0 + i] as u32;
+            dc1 += plane[(y0 - 1) * stride + x0 + 4 + i] as u32;
+            dc2 += plane[(y0 + 4 + i) * stride + x0 - 1] as u32;
+        }
+        let v0 = ((dc0 + 4) >> 3) as u8;
+        let v1 = ((dc1 + 2) >> 2) as u8;
+        let v2 = ((dc2 + 2) >> 2) as u8;
+        let v3 = ((dc1 + dc2 + 4) >> 3) as u8;
+        fill_block(plane, stride, x0, y0, 4, 4, v0);
+        fill_block(plane, stride, x0 + 4, y0, 4, 4, v1);
+        fill_block(plane, stride, x0, y0 + 4, 4, 4, v2);
+        fill_block(plane, stride, x0 + 4, y0 + 4, 4, 4, v3);
+    } else if top_available {
+        let mut dc0 = 0u32;
+        let mut dc1 = 0u32;
+        for i in 0..4 {
+            dc0 += plane[(y0 - 1) * stride + x0 + i] as u32;
+            dc1 += plane[(y0 - 1) * stride + x0 + 4 + i] as u32;
+        }
+        let v0 = ((dc0 + 2) >> 2) as u8;
+        let v1 = ((dc1 + 2) >> 2) as u8;
+        for dy in 0..8 {
+            fill_block(plane, stride, x0, y0 + dy, 4, 1, v0);
+            fill_block(plane, stride, x0 + 4, y0 + dy, 4, 1, v1);
+        }
+    } else if left_available {
+        let mut dc0 = 0u32;
+        let mut dc2 = 0u32;
+        for i in 0..4 {
+            dc0 += plane[(y0 + i) * stride + x0 - 1] as u32;
+            dc2 += plane[(y0 + 4 + i) * stride + x0 - 1] as u32;
+        }
+        let v0 = ((dc0 + 2) >> 2) as u8;
+        let v2 = ((dc2 + 2) >> 2) as u8;
+        fill_block(plane, stride, x0, y0, 8, 4, v0);
+        fill_block(plane, stride, x0, y0 + 4, 8, 4, v2);
+    } else {
+        fill_block(plane, stride, x0, y0, 8, 8, 128);
+    }
 }
 
 /// 色度 8x8 预测分发.
@@ -193,33 +239,6 @@ pub fn predict_chroma_8x8(
         3 => predict_chroma_plane(plane, stride, x0, y0, has_left, has_top),
         _ => predict_chroma_dc(plane, stride, x0, y0, has_left, has_top),
     }
-}
-
-/// 计算 8x8 块的 DC 值
-fn compute_dc_8x8(
-    plane: &[u8],
-    stride: usize,
-    x0: usize,
-    y0: usize,
-    has_left: bool,
-    has_top: bool,
-) -> u8 {
-    let mut sum = 0u32;
-    let mut count = 0u32;
-
-    if has_top && y0 > 0 {
-        for dx in 0..8 {
-            sum += plane[(y0 - 1) * stride + x0 + dx] as u32;
-            count += 1;
-        }
-    }
-    if has_left && x0 > 0 {
-        for dy in 0..8 {
-            sum += plane[(y0 + dy) * stride + x0 - 1] as u32;
-            count += 1;
-        }
-    }
-    if count > 0 { (sum / count) as u8 } else { 128 }
 }
 
 /// 色度模式 1: Horizontal.
@@ -490,44 +509,58 @@ fn predict_4x4_vertical_right(plane: &mut [u8], stride: usize, x0: usize, y0: us
         return;
     }
 
-    let x = plane[top_left_idx];
-    let mut top = [x; 5];
-    let mut left = [x; 5];
-
+    // p[-1] = M (top-left), p[0..3] = A..D (top), L[0..2] = I..K (left)
+    let m = plane[top_left_idx];
+    let mut t = [m; 4]; // A, B, C, D
     for i in 0..4 {
         let col = x0 + i;
-        let top_idx = (y0 - 1) * stride + col;
-        if col < stride && top_idx < plane.len() {
-            top[i + 1] = plane[top_idx];
-        } else {
-            top[i + 1] = top[i];
+        let idx = (y0 - 1) * stride + col;
+        if col < stride && idx < plane.len() {
+            t[i] = plane[idx];
         }
     }
-    for i in 0..4 {
-        let left_idx = (y0 + i) * stride + x0 - 1;
-        if left_idx < plane.len() {
-            left[i + 1] = plane[left_idx];
-        } else {
-            left[i + 1] = left[i];
+    let mut l = [m; 3]; // I, J, K
+    for i in 0..3 {
+        let idx = (y0 + i) * stride + x0 - 1;
+        if idx < plane.len() {
+            l[i] = plane[idx];
         }
     }
 
-    let avg2 = |a: u8, b: u8| -> u8 { (a as u32 + b as u32).div_ceil(2) as u8 };
-    let avg3 = |a: u8, b: u8, c: u8| -> u8 { ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8 };
+    let avg2 = |a: u8, b: u8| -> u8 { ((a as u32 + b as u32 + 1) >> 1) as u8 };
+    let filt =
+        |a: u8, b: u8, c: u8| -> u8 { ((a as u32 + 2 * b as u32 + c as u32 + 2) >> 2) as u8 };
 
-    let p00 = avg3(x, top[1], top[2]);
-    let p01 = avg2(top[1], top[2]);
-    let p02 = avg2(top[2], top[3]);
-    let p03 = avg2(top[3], top[4]);
-    let p10 = avg3(left[1], x, top[1]);
-    let p20 = avg3(x, left[1], left[2]);
-    let p30 = avg2(left[1], left[2]);
-
-    let preds = [
-        [p00, p01, p02, p03],
-        [p10, p00, p01, p02],
-        [p20, p10, p00, p01],
-        [p30, p20, p10, p00],
+    // H.264 8.3.1.2.6, zVR = 2x - y
+    // Row 0 (zVR=0,2,4,6): avg
+    // Row 1 (zVR=-1,1,3,5): filt/special
+    // Row 2 (zVR=-2,0,2,4): filt/avg
+    // Row 3 (zVR=-3,-1,1,3): filt
+    let preds: [[u8; 4]; 4] = [
+        [
+            avg2(m, t[0]),
+            avg2(t[0], t[1]),
+            avg2(t[1], t[2]),
+            avg2(t[2], t[3]),
+        ],
+        [
+            filt(l[0], m, t[0]),
+            filt(m, t[0], t[1]),
+            filt(t[0], t[1], t[2]),
+            filt(t[1], t[2], t[3]),
+        ],
+        [
+            filt(l[1], l[0], m),
+            avg2(m, t[0]),
+            avg2(t[0], t[1]),
+            avg2(t[1], t[2]),
+        ],
+        [
+            filt(l[2], l[1], l[0]),
+            filt(l[0], m, t[0]),
+            filt(m, t[0], t[1]),
+            filt(t[0], t[1], t[2]),
+        ],
     ];
 
     for (dy, row) in preds.iter().enumerate() {
@@ -553,44 +586,57 @@ fn predict_4x4_horizontal_down(plane: &mut [u8], stride: usize, x0: usize, y0: u
         return;
     }
 
-    let x = plane[top_left_idx];
-    let mut top = [x; 5];
-    let mut left = [x; 5];
-
-    for i in 0..4 {
+    // M = top-left, t[0..2] = A..C (top), l[0..3] = I..L (left)
+    let m = plane[top_left_idx];
+    let mut t = [m; 3]; // A, B, C
+    for i in 0..3 {
         let col = x0 + i;
-        let top_idx = (y0 - 1) * stride + col;
-        if col < stride && top_idx < plane.len() {
-            top[i + 1] = plane[top_idx];
-        } else {
-            top[i + 1] = top[i];
+        let idx = (y0 - 1) * stride + col;
+        if col < stride && idx < plane.len() {
+            t[i] = plane[idx];
         }
     }
+    let mut l = [m; 4]; // I, J, K, L
     for i in 0..4 {
-        let left_idx = (y0 + i) * stride + x0 - 1;
-        if left_idx < plane.len() {
-            left[i + 1] = plane[left_idx];
-        } else {
-            left[i + 1] = left[i];
+        let idx = (y0 + i) * stride + x0 - 1;
+        if idx < plane.len() {
+            l[i] = plane[idx];
         }
     }
 
-    let avg2 = |a: u8, b: u8| -> u8 { (a as u32 + b as u32).div_ceil(2) as u8 };
-    let avg3 = |a: u8, b: u8, c: u8| -> u8 { ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8 };
+    let avg2 = |a: u8, b: u8| -> u8 { ((a as u32 + b as u32 + 1) >> 1) as u8 };
+    let filt =
+        |a: u8, b: u8, c: u8| -> u8 { ((a as u32 + 2 * b as u32 + c as u32 + 2) >> 2) as u8 };
 
-    let q00 = avg3(x, left[1], left[2]);
-    let q10 = avg2(left[1], left[2]);
-    let q20 = avg2(left[2], left[3]);
-    let q30 = avg2(left[3], left[4]);
-    let q01 = avg3(top[1], x, left[1]);
-    let q02 = avg3(x, top[1], top[2]);
-    let q03 = avg2(top[1], top[2]);
-
-    let preds = [
-        [q00, q10, q20, q30],
-        [q01, q00, q10, q20],
-        [q02, q01, q00, q10],
-        [q03, q02, q01, q00],
+    // H.264 8.3.1.2.7, zHD = 2y - x
+    // Col 0 (zHD=0,2,4,6): avg of left samples
+    // Col 1 (zHD=-1,1,3,5): filt of left/top samples
+    // Others use reuse patterns from standard
+    let preds: [[u8; 4]; 4] = [
+        [
+            avg2(m, l[0]),
+            filt(t[0], m, l[0]),
+            filt(t[1], t[0], m),
+            filt(t[2], t[1], t[0]),
+        ],
+        [
+            avg2(l[0], l[1]),
+            filt(m, l[0], l[1]),
+            avg2(m, l[0]),
+            filt(t[0], m, l[0]),
+        ],
+        [
+            avg2(l[1], l[2]),
+            filt(l[0], l[1], l[2]),
+            avg2(l[0], l[1]),
+            filt(m, l[0], l[1]),
+        ],
+        [
+            avg2(l[2], l[3]),
+            filt(l[1], l[2], l[3]),
+            avg2(l[1], l[2]),
+            filt(l[0], l[1], l[2]),
+        ],
     ];
 
     for (dy, row) in preds.iter().enumerate() {
@@ -652,9 +698,9 @@ fn predict_4x4_horizontal_up(plane: &mut [u8], stride: usize, x0: usize, y0: usi
         return;
     }
 
-    let mut left = [128u8; 5];
+    let mut l = [128u8; 4]; // I, J, K, L
     let mut last = 128u8;
-    for (i, item) in left.iter_mut().enumerate().take(4) {
+    for (i, item) in l.iter_mut().enumerate() {
         let idx = (y0 + i) * stride + x0 - 1;
         if idx < plane.len() {
             last = plane[idx];
@@ -663,30 +709,26 @@ fn predict_4x4_horizontal_up(plane: &mut [u8], stride: usize, x0: usize, y0: usi
             *item = last;
         }
     }
-    let ext_idx = (y0 + 4) * stride + x0 - 1;
-    left[4] = if ext_idx < plane.len() {
-        plane[ext_idx]
-    } else {
-        left[3]
-    };
 
-    let avg2 = |a: u8, b: u8| -> u8 { (a as u32 + b as u32).div_ceil(2) as u8 };
-    let avg3 = |a: u8, b: u8, c: u8| -> u8 { ((a as u32 + 2 * b as u32 + c as u32 + 2) / 4) as u8 };
+    let avg2 = |a: u8, b: u8| -> u8 { ((a as u32 + b as u32 + 1) >> 1) as u8 };
+    let filt =
+        |a: u8, b: u8, c: u8| -> u8 { ((a as u32 + 2 * b as u32 + c as u32 + 2) >> 2) as u8 };
 
+    // H.264 8.3.1.2.9, zHU = x + 2y
     for dy in 0..4 {
         for dx in 0..4 {
             let z = dx + 2 * dy;
             let val = match z {
-                0 | 2 | 4 | 6 => {
+                0 | 2 | 4 => {
                     let i = z / 2;
-                    avg2(left[i], left[i + 1])
+                    avg2(l[i], l[i + 1])
                 }
-                1 | 3 | 5 => {
+                1 | 3 => {
                     let i = (z - 1) / 2;
-                    avg3(left[i], left[i + 1], left[i + 2])
+                    filt(l[i], l[i + 1], l[i + 2])
                 }
-                7 => ((left[3] as u32 + 3 * left[4] as u32 + 2) >> 2) as u8,
-                _ => left[4],
+                5 => ((l[2] as u32 + 3 * l[3] as u32 + 2) >> 2) as u8,
+                _ => l[3],
             };
             let idx = (y0 + dy) * stride + x0 + dx;
             if idx < plane.len() {
@@ -1702,11 +1744,16 @@ mod tests {
 
         predict_4x4(&mut plane, stride, x0, y0, 5);
         let got = read_block_4x4(&plane, stride, x0, y0);
+        // H.264 8.3.1.2.6: zVR = 2x - y
+        // Row 0: avg(M,A)=15, avg(A,B)=25, avg(B,C)=35, avg(C,D)=45
+        // Row 1: filt(I,M,A)=25, filt(M,A,B)=20, filt(A,B,C)=30, filt(B,C,D)=40
+        // Row 2: filt(J,I,M)=50, avg(M,A)=15, avg(A,B)=25, avg(B,C)=35
+        // Row 3: filt(K,J,I)=70, filt(I,M,A)=25, filt(M,A,B)=20, filt(A,B,C)=30
         let expect = [
-            [20, 25, 35, 45],
-            [25, 20, 25, 35],
-            [50, 25, 20, 25],
-            [65, 50, 25, 20],
+            [15, 25, 35, 45],
+            [25, 20, 30, 40],
+            [50, 15, 25, 35],
+            [70, 25, 20, 30],
         ];
 
         assert_eq!(got, expect, "模式5应按规范进行竖直-右预测映射");
@@ -1745,11 +1792,16 @@ mod tests {
 
         predict_4x4(&mut plane, stride, x0, y0, 6);
         let got = read_block_4x4(&plane, stride, x0, y0);
+        // H.264 8.3.1.2.7: zHD = 2y - x
+        // Row 0: avg(M,I)=35, filt(A,M,I)=25, filt(B,A,M)=20, filt(C,B,A)=30
+        // Row 1: avg(I,J)=65, filt(M,I,J)=50, avg(M,I)=35, filt(A,M,I)=25
+        // Row 2: avg(J,K)=75, filt(I,J,K)=70, avg(I,J)=65, filt(M,I,J)=50
+        // Row 3: avg(K,L)=85, filt(J,K,L)=80, avg(J,K)=75, filt(I,J,K)=70
         let expect = [
-            [50, 65, 75, 85],
-            [25, 50, 65, 75],
-            [20, 25, 50, 65],
-            [25, 20, 25, 50],
+            [35, 25, 20, 30],
+            [65, 50, 35, 25],
+            [75, 70, 65, 50],
+            [85, 80, 75, 70],
         ];
 
         assert_eq!(got, expect, "模式6应按规范进行水平-下预测映射");
@@ -1831,11 +1883,13 @@ mod tests {
 
         predict_4x4(&mut plane, stride, x0, y0, 8);
         let got = read_block_4x4(&plane, stride, x0, y0);
+        // H.264 8.3.1.2.9: zHU = x + 2y
+        // z=0..4: avg/filt of l[0..3], z=5: special, z>=6: l[3]
         let expect = [
             [25, 30, 35, 40],
-            [35, 40, 45, 50],
-            [45, 50, 55, 58],
-            [55, 58, 60, 60],
+            [35, 40, 45, 48],
+            [45, 48, 50, 50],
+            [50, 50, 50, 50],
         ];
 
         assert_eq!(got, expect, "模式8应按规范使用左样本进行水平-上预测");
@@ -2041,7 +2095,7 @@ mod tests {
         let b2 = read_block_8x8(&mode2, stride, x0, y0);
         let b3 = read_block_8x8(&mode3, stride, x0, y0);
 
-        assert_eq!(b0[0][0], 33, "mode0 首像素应为 DC 预测结果");
+        assert_eq!(b0[0][0], 32, "mode0 首像素应为 DC 预测结果 (4x4 子块 DC)");
         assert_eq!(b1[0][0], 40, "mode1 首像素应来自左样本");
         assert_eq!(b2[0][0], 20, "mode2 首像素应来自上样本");
         assert_eq!(b3[0][0], 23, "mode3 首像素应来自 plane 预测结果");

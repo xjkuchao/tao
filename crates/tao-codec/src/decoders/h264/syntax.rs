@@ -56,7 +56,8 @@ pub(super) fn decode_intra_mb_type(
     let mut state_base = ctx_base;
     if intra_slice {
         let ctx_inc = compute_mb_type_ctx_inc(mb_types, mb_width, mb_x, mb_y);
-        let bin0 = cabac.decode_decision(&mut ctxs[state_base + ctx_inc]);
+        let ctx_idx = state_base + ctx_inc;
+        let bin0 = cabac.decode_decision(&mut ctxs[ctx_idx]);
         if bin0 == 0 {
             return 0;
         }

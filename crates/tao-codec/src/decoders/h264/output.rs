@@ -530,6 +530,7 @@ impl H264Decoder {
             mv_l0_x: vec![0i16; total_mb],
             mv_l0_y: vec![0i16; total_mb],
             ref_idx_l0: vec![-1i8; total_mb],
+            mb_types: vec![0u8; total_mb],
             frame_num,
             poc,
             long_term_frame_idx: None,
@@ -551,6 +552,7 @@ impl H264Decoder {
             mv_l0_x: self.mv_l0_x.clone(),
             mv_l0_y: self.mv_l0_y.clone(),
             ref_idx_l0: self.ref_idx_l0.clone(),
+            mb_types: self.mb_types.clone(),
             frame_num: self.last_frame_num,
             poc: self.last_poc,
             long_term_frame_idx,
@@ -701,7 +703,8 @@ impl H264Decoder {
         let h = self.height as usize;
         self.conceal_frame_level_errors();
 
-        if self.last_disable_deblocking_filter_idc != 1 {
+        let skip_deblock = std::env::var("TAO_SKIP_DEBLOCK").is_ok();
+        if !skip_deblock && self.last_disable_deblocking_filter_idc != 1 {
             let (chroma_qp_index_offset, second_chroma_qp_index_offset) = self
                 .pps
                 .as_ref()

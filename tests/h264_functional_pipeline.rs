@@ -14,7 +14,8 @@ use tao::core::{MediaType, TaoError};
 use tao::format::stream::StreamParams;
 use tao::format::{FormatRegistry, IoContext};
 
-const H264_SAMPLE_MOV: &str = "https://samples.ffmpeg.org/mov/mov_h264_aac.mov";
+const H264_SAMPLE_MOV: &str =
+    "https://samples.ffmpeg.org/HDTV/Xacti-elst/MP4-AVC-SanyoXactiHD700-elst.mp4";
 const H264_SAMPLE_MKV: &str = "https://samples.ffmpeg.org/Matroska/haruhi.mkv";
 
 fn open_remote_io(url: &str) -> Result<IoContext, String> {

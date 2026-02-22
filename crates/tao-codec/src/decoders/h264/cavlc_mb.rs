@@ -275,6 +275,30 @@ impl H264Decoder {
                 let y4 = mb_y * 4 + abs_sub_y;
 
                 let mode = pred_modes[abs_sub_y * 4 + abs_sub_x];
+
+                // H.264 8.3.1.2.1: 当右上 4x4 块不可用时,
+                // p[4..7, -1] 应替换为 p[3, -1].
+                if abs_sub_y > 0 {
+                    let tr_not_avail = matches!(
+                        (abs_sub_x, abs_sub_y),
+                        (1, 1) | (3, 1) | (1, 3) | (3, 2) | (3, 3)
+                    );
+                    if tr_not_avail && py > 0 {
+                        let row_above = (py - 1) * self.stride_y;
+                        let last_top_idx = row_above + px + 3;
+                        if last_top_idx < self.ref_y.len() {
+                            let last_val = self.ref_y[last_top_idx];
+                            for dx in 4..8 {
+                                let fill_col = px + dx;
+                                let fill_idx = row_above + fill_col;
+                                if fill_col < self.stride_y && fill_idx < self.ref_y.len() {
+                                    self.ref_y[fill_idx] = last_val;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 intra::predict_4x4(&mut self.ref_y, self.stride_y, px, py, mode);
 
                 if !has_residual_8x8 {
@@ -337,9 +361,19 @@ impl H264Decoder {
                 dc_block[row * 4 + col] = dc_scan[scan_pos];
             }
         }
+        if mb_x == 0 && mb_y == 0 {
+            eprintln!("[DC诊断] MB(0,0) qp={} nc={} dc_scan={:?}", qp, nc, dc_scan);
+            eprintln!("[DC诊断] MB(0,0) dc_raster={:?}", dc_block);
+        }
         if !transform_bypass {
             residual::inverse_hadamard_4x4(&mut dc_block);
+            if mb_x == 0 && mb_y == 0 {
+                eprintln!("[DC诊断] MB(0,0) hadamard={:?}", dc_block);
+            }
             residual::dequant_luma_dc_with_scaling(&mut dc_block, qp, &luma_scaling_4x4);
+        }
+        if mb_x == 0 && mb_y == 0 {
+            eprintln!("[DC诊断] MB(0,0) dequant={:?}", dc_block);
         }
         dc_block
     }
@@ -384,16 +418,21 @@ impl H264Decoder {
                     let idx8 = (sub_y / 2) * 2 + (sub_x / 2);
                     coded_8x8[idx8] = true;
                 }
+                if mb_x == 0 && mb_y == 0 && sub_x < 2 && sub_y == 0 {
+                    eprintln!(
+                        "[AC诊断] MB(0,0) blk({},{}) nc={} tc={} ac_scan={:?}",
+                        sub_x, sub_y, nc, tc, &ac_coeffs[..15]
+                    );
+                }
                 coeffs_scan[1..16].copy_from_slice(&ac_coeffs[..15]);
             } else {
                 self.set_luma_cbf(x4, y4, false);
                 self.set_nz_count_luma(x4, y4, 0);
             }
-            coeffs_scan[0] = dc_coeffs[block_idx];
-
             let px = mb_x * 16 + sub_x * 4;
             let py = mb_y * 16 + sub_y * 4;
             if transform_bypass {
+                coeffs_scan[0] = dc_coeffs[block_idx];
                 residual::apply_4x4_bypass_residual(
                     &mut self.ref_y,
                     self.stride_y,
@@ -402,7 +441,15 @@ impl H264Decoder {
                     &coeffs_scan,
                 );
             } else {
+                // DC 已在 decode_cavlc_luma_dc 中反量化, 仅对 AC 反量化
                 residual::dequant_4x4_ac_with_scaling(&mut coeffs_scan, qp, &luma_scaling_4x4);
+                coeffs_scan[0] = dc_coeffs[block_idx];
+                if mb_x == 0 && mb_y == 0 && sub_x < 2 && sub_y == 0 {
+                    eprintln!(
+                        "[残差诊断] MB(0,0) blk({},{}) dc={} coeffs_final={:?}",
+                        sub_x, sub_y, dc_coeffs[block_idx], coeffs_scan
+                    );
+                }
                 residual::apply_4x4_ac_residual(
                     &mut self.ref_y,
                     self.stride_y,
@@ -701,8 +748,8 @@ impl H264Decoder {
             let py = mb_y * 8 + sub_y * 4;
 
             let mut u_scan = u_scans[block_idx];
-            u_scan[0] = u_dc[block_idx];
             if transform_bypass {
+                u_scan[0] = u_dc[block_idx];
                 residual::apply_4x4_bypass_residual(
                     &mut self.ref_u,
                     self.stride_c,
@@ -711,13 +758,15 @@ impl H264Decoder {
                     &u_scan,
                 );
             } else {
+                // DC 已反量化, 仅对 AC 反量化
                 residual::dequant_4x4_ac_with_scaling(&mut u_scan, chroma_qp_u, &u_scaling_4x4);
+                u_scan[0] = u_dc[block_idx];
                 residual::apply_4x4_ac_residual(&mut self.ref_u, self.stride_c, px, py, &u_scan);
             }
 
             let mut v_scan = v_scans[block_idx];
-            v_scan[0] = v_dc[block_idx];
             if transform_bypass {
+                v_scan[0] = v_dc[block_idx];
                 residual::apply_4x4_bypass_residual(
                     &mut self.ref_v,
                     self.stride_c,
@@ -726,7 +775,9 @@ impl H264Decoder {
                     &v_scan,
                 );
             } else {
+                // DC 已反量化, 仅对 AC 反量化
                 residual::dequant_4x4_ac_with_scaling(&mut v_scan, chroma_qp_v, &v_scaling_4x4);
+                v_scan[0] = v_dc[block_idx];
                 residual::apply_4x4_ac_residual(&mut self.ref_v, self.stride_c, px, py, &v_scan);
             }
         }
@@ -882,6 +933,16 @@ impl H264Decoder {
 
             self.decode_cavlc_i4x4_luma_residual(br, luma_cbp, mb_x, mb_y, *cur_qp, &pred_modes);
 
+            if mb_x == 0 && mb_y == 0 {
+                let row0: Vec<u8> = (0..16)
+                    .map(|dx| self.ref_y[dx])
+                    .collect();
+                eprintln!(
+                    "[CAVLC I_4x4] MB(0,0) modes={:?} cbp=0x{:02x} qp={} row0={:?}",
+                    &pred_modes[..4], luma_cbp, *cur_qp, row0
+                );
+            }
+
             if chroma_cbp >= 1 {
                 self.decode_cavlc_chroma_residual(br, mb_x, mb_y, *cur_qp, chroma_cbp >= 2, true);
             } else {
@@ -940,6 +1001,16 @@ impl H264Decoder {
                 &dc_coeffs,
                 cbp_luma_nz,
             );
+
+            if mb_x == 0 && mb_y == 0 {
+                let row0: Vec<u8> = (0..16)
+                    .map(|dx| self.ref_y[dx])
+                    .collect();
+                eprintln!(
+                    "[CAVLC I16x16] MB(0,0) pred={} cbp_l={} cbp_c={} qp={} row0={:?}",
+                    pred_mode, cbp_luma_nz, cbp_chroma, *cur_qp, row0
+                );
+            }
 
             if cbp_chroma >= 1 {
                 self.decode_cavlc_chroma_residual(br, mb_x, mb_y, *cur_qp, cbp_chroma >= 2, true);

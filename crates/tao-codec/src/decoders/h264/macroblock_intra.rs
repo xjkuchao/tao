@@ -126,7 +126,6 @@ impl H264Decoder {
 
             let mb_type = decode_i_mb_type(cabac, ctxs, &self.mb_types, self.mb_width, mb_x, mb_y);
             self.mb_types[mb_idx] = mb_type as u8;
-
             if mb_type == 0 {
                 self.decode_i_4x4_mb(cabac, ctxs, mb_x, mb_y, &mut cur_qp);
             } else if mb_type <= 24 {
@@ -135,13 +134,16 @@ impl H264Decoder {
                 self.decode_i_pcm_mb(cabac, mb_x, mb_y);
                 self.prev_qp_delta_nz = false;
             }
-            if mb_idx + 1 < total && cabac.decode_terminate() == 1 {
-                break;
+            if mb_idx + 1 < total {
+                let term = cabac.decode_terminate();
+                if term == 1 {
+                    break;
+                }
             }
         }
     }
 
-    /// 解码 P-slice 宏块.
+    /// 解码 I_4x4 宏块.
     pub(super) fn decode_i_4x4_mb(
         &mut self,
         cabac: &mut CabacDecoder,
@@ -189,38 +191,7 @@ impl H264Decoder {
         } else {
             self.prev_qp_delta_nz = false;
         }
-
-        // 5. 应用真正的预测 (根据预测模式)
-        if use_8x8 {
-            for block_y in 0..2usize {
-                for block_x in 0..2usize {
-                    let mode = pred_modes_8x8[block_y * 2 + block_x];
-                    let px = mb_x * 16 + block_x * 8;
-                    let py = mb_y * 16 + block_y * 8;
-                    let avail = intra::I8x8Avail {
-                        has_left: mb_x > 0 || block_x > 0,
-                        has_top: mb_y > 0 || block_y > 0,
-                        // 左上角: 同宏块内有上方块时可用, 或来自上方宏块
-                        has_topleft: if block_x == 0 && block_y == 0 {
-                            mb_x > 0 && mb_y > 0
-                        } else if block_x > 0 && block_y == 0 {
-                            mb_y > 0
-                        } else if block_x == 0 && block_y > 0 {
-                            mb_x > 0
-                        } else {
-                            true // 右下块: 左上角是本宏块内部
-                        },
-                        // 右上角: 同行内右侧 8x8 块存在, 或来自上方宏块右上
-                        has_topright: if block_y == 0 {
-                            mb_y > 0 && block_x == 0
-                        } else {
-                            block_x == 0
-                        },
-                    };
-                    intra::predict_8x8(&mut self.ref_y, self.stride_y, px, py, mode, &avail);
-                }
-            }
-        }
+        // 5. 色度预测 (不依赖亮度重建, 可先执行)
         intra::predict_chroma_8x8(
             &mut self.ref_u,
             self.stride_c,
@@ -240,9 +211,17 @@ impl H264Decoder {
             mb_y > 0,
         );
 
-        // 6. 解码残差并应用
+        // 6. 亮度预测 + 残差 (I_8x8 必须逐块交织, 后续块需使用前面块的重建值)
         if use_8x8 {
-            self.decode_i8x8_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp, true);
+            self.decode_i8x8_pred_and_residual(
+                cabac,
+                ctxs,
+                luma_cbp,
+                mb_x,
+                mb_y,
+                *cur_qp,
+                &pred_modes_8x8,
+            );
         } else {
             self.decode_i4x4_residual(
                 cabac,
@@ -253,7 +232,6 @@ impl H264Decoder {
                 &pred_modes_4x4,
             );
         }
-
         if chroma_cbp >= 1 {
             self.decode_chroma_residual(cabac, ctxs, (mb_x, mb_y), *cur_qp, chroma_cbp >= 2, true);
         }
@@ -359,6 +337,30 @@ impl H264Decoder {
                 let y4 = mb_y * 4 + abs_sub_y;
 
                 let mode = pred_modes[abs_sub_y * 4 + abs_sub_x];
+
+                // H.264 8.3.1.2.1: 当右上 4x4 块不可用时,
+                // p[4..7, -1] 应替换为 p[3, -1].
+                if abs_sub_y > 0 {
+                    let tr_not_avail = matches!(
+                        (abs_sub_x, abs_sub_y),
+                        (1, 1) | (3, 1) | (1, 3) | (3, 2) | (3, 3)
+                    );
+                    if tr_not_avail && py > 0 {
+                        let row_above = (py - 1) * self.stride_y;
+                        let last_top_idx = row_above + px + 3;
+                        if last_top_idx < self.ref_y.len() {
+                            let last_val = self.ref_y[last_top_idx];
+                            for dx in 4..8 {
+                                let fill_col = px + dx;
+                                let fill_idx = row_above + fill_col;
+                                if fill_col < self.stride_y && fill_idx < self.ref_y.len() {
+                                    self.ref_y[fill_idx] = last_val;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 intra::predict_4x4(&mut self.ref_y, self.stride_y, px, py, mode);
 
                 if !has_residual_8x8 {
@@ -374,7 +376,6 @@ impl H264Decoder {
                 if coded {
                     coded_8x8 = true;
                 }
-
                 while raw_coeffs.len() < 16 {
                     raw_coeffs.push(0);
                 }
@@ -404,7 +405,115 @@ impl H264Decoder {
         }
     }
 
+    /// I_8x8 预测 + 残差交织解码 (intra 专用).
+    ///
+    /// 每个 8x8 块: 先预测 → 再解码残差并应用, 保证后续块使用前面块的重建值.
+    #[allow(clippy::too_many_arguments)]
+    fn decode_i8x8_pred_and_residual(
+        &mut self,
+        cabac: &mut CabacDecoder,
+        ctxs: &mut [CabacCtx],
+        luma_cbp: u8,
+        mb_x: usize,
+        mb_y: usize,
+        qp: i32,
+        pred_modes_8x8: &[u8; 4],
+    ) {
+        let luma_scaling_8x8 = self.active_luma_scaling_list_8x8(true);
+        let transform_bypass = self.is_transform_bypass_active(qp);
+        for sub_y in 0..4 {
+            for sub_x in 0..4 {
+                self.set_luma_cbf(mb_x * 4 + sub_x, mb_y * 4 + sub_y, false);
+            }
+        }
+        self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
+
+        for i8x8 in 0..4u8 {
+            let block_x = (i8x8 & 1) as usize;
+            let block_y = (i8x8 >> 1) as usize;
+            let x8 = mb_x * 2 + block_x;
+            let y8 = mb_y * 2 + block_y;
+            let px = mb_x * 16 + block_x * 8;
+            let py = mb_y * 16 + block_y * 8;
+
+            let mode = pred_modes_8x8[i8x8 as usize];
+            let avail = intra::I8x8Avail {
+                has_left: mb_x > 0 || block_x > 0,
+                has_top: mb_y > 0 || block_y > 0,
+                has_topleft: if block_x == 0 && block_y == 0 {
+                    mb_x > 0 && mb_y > 0
+                } else if block_x > 0 && block_y == 0 {
+                    mb_y > 0
+                } else if block_x == 0 && block_y > 0 {
+                    mb_x > 0
+                } else {
+                    true
+                },
+                has_topright: match (block_x, block_y) {
+                    (0, 0) => mb_y > 0,
+                    (1, 0) => mb_y > 0 && mb_x + 1 < self.mb_width,
+                    (0, 1) => true,
+                    _ => false,
+                },
+            };
+            intra::predict_8x8(
+                &mut self.ref_y,
+                self.stride_y,
+                px,
+                py,
+                mode,
+                &avail,
+            );
+
+            if luma_cbp & (1 << i8x8) == 0 {
+                self.set_luma_8x8_cbf(x8, y8, false);
+                continue;
+            }
+            let x4 = mb_x * 4 + block_x * 2;
+            let y4 = mb_y * 4 + block_y * 2;
+            let cbf_inc = self.luma_8x8_cbf_ctx_inc(x8, y8, true);
+            let raw_coeffs =
+                decode_residual_block(cabac, ctxs, &CAT_LUMA_8X8, cbf_inc);
+            let coded = raw_coeffs.iter().any(|&c| c != 0);
+            self.set_luma_8x8_cbf(x8, y8, coded);
+            for sub_y in 0..2 {
+                for sub_x in 0..2 {
+                    self.set_luma_cbf(x4 + sub_x, y4 + sub_y, coded);
+                }
+            }
+            if !coded {
+                continue;
+            }
+
+            let mut coeffs_scan = [0i32; 64];
+            for (idx, coeff) in raw_coeffs.iter().take(64).enumerate() {
+                coeffs_scan[idx] = *coeff;
+            }
+
+            if transform_bypass {
+                residual::apply_8x8_bypass_residual(
+                    &mut self.ref_y,
+                    self.stride_y,
+                    px,
+                    py,
+                    &coeffs_scan,
+                );
+            } else {
+                residual::apply_8x8_ac_residual_with_scaling(
+                    &mut self.ref_y,
+                    self.stride_y,
+                    px,
+                    py,
+                    &coeffs_scan,
+                    qp,
+                    &luma_scaling_8x8,
+                );
+            }
+        }
+    }
+
     /// I_8x8 残差规范路径: 按 8x8 块执行 CABAC 残差解码 + 8x8 反量化与反变换.
+    /// inter 宏块使用, 预测已在外部完成.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_i8x8_residual(
         &mut self,
@@ -652,11 +761,10 @@ impl H264Decoder {
             } else {
                 self.set_luma_cbf(x4, y4, false);
             }
-            coeffs_scan[0] = dc_coeffs[block_idx];
-
             let px = mb_x * 16 + sub_x * 4;
             let py = mb_y * 16 + sub_y * 4;
             if transform_bypass {
+                coeffs_scan[0] = dc_coeffs[block_idx];
                 residual::apply_4x4_bypass_residual(
                     &mut self.ref_y,
                     self.stride_y,
@@ -665,7 +773,9 @@ impl H264Decoder {
                     &coeffs_scan,
                 );
             } else {
+                // DC 已在 decode_luma_dc_coeffs 中反量化, 仅对 AC 反量化
                 residual::dequant_4x4_ac_with_scaling(&mut coeffs_scan, qp, &luma_scaling_4x4);
+                coeffs_scan[0] = dc_coeffs[block_idx];
                 residual::apply_4x4_ac_residual(
                     &mut self.ref_y,
                     self.stride_y,
@@ -784,8 +894,8 @@ impl H264Decoder {
             let py = mb_y * 8 + sub_y * 4;
 
             let mut u_scan = u_scans[block_idx];
-            u_scan[0] = u_dc[block_idx];
             if transform_bypass {
+                u_scan[0] = u_dc[block_idx];
                 residual::apply_4x4_bypass_residual(
                     &mut self.ref_u,
                     self.stride_c,
@@ -794,13 +904,15 @@ impl H264Decoder {
                     &u_scan,
                 );
             } else {
+                // DC 已反量化, 仅对 AC 反量化
                 residual::dequant_4x4_ac_with_scaling(&mut u_scan, chroma_qp_u, &u_scaling_4x4);
+                u_scan[0] = u_dc[block_idx];
                 residual::apply_4x4_ac_residual(&mut self.ref_u, self.stride_c, px, py, &u_scan);
             }
 
             let mut v_scan = v_scans[block_idx];
-            v_scan[0] = v_dc[block_idx];
             if transform_bypass {
+                v_scan[0] = v_dc[block_idx];
                 residual::apply_4x4_bypass_residual(
                     &mut self.ref_v,
                     self.stride_c,
@@ -809,7 +921,9 @@ impl H264Decoder {
                     &v_scan,
                 );
             } else {
+                // DC 已反量化, 仅对 AC 反量化
                 residual::dequant_4x4_ac_with_scaling(&mut v_scan, chroma_qp_v, &v_scaling_4x4);
+                v_scan[0] = v_dc[block_idx];
                 residual::apply_4x4_ac_residual(&mut self.ref_v, self.stride_c, px, py, &v_scan);
             }
         }

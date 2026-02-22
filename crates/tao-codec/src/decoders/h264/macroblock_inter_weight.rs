@@ -208,8 +208,10 @@ impl H264Decoder {
                 let ref_idx_i8 = final_ref_idx.min(i8::MAX as u32) as i8;
                 let (pred_mv_x, pred_mv_y) =
                     self.predict_mv_l0_partition(mb_x, mb_y, 0, 0, 4, ref_idx_i8);
-                let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, 0);
-                let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, 0);
+                let (amvd_x, amvd_y) = self.compute_cabac_amvd(mb_x * 4, mb_y * 4, 0);
+                let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
+                let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
+                self.set_mvd_block_4x4(mb_x * 16, mb_y * 16, 16, 16, mvd_x, mvd_y, 0);
                 final_mv_x = pred_mv_x + mvd_x;
                 final_mv_y = pred_mv_y + mvd_y;
                 self.apply_inter_block_l0(
@@ -227,24 +229,19 @@ impl H264Decoder {
                 );
             }
             1 => {
-                let mut top_ref_idx = 0u32;
-                let mut top_mv_x = 0i32;
-                let mut top_mv_y = 0i32;
                 for part in 0..2usize {
                     let ref_idx = self.decode_ref_idx_l0(cabac, ctxs, num_ref_idx_l0);
                     let ref_idx_i8 = ref_idx.min(i8::MAX as u32) as i8;
-                    let (part_pred_mv_x, part_pred_mv_y) = if part == 0 {
-                        self.predict_mv_l0_partition(mb_x, mb_y, 0, 0, 4, ref_idx_i8)
-                    } else if ref_idx == top_ref_idx {
-                        (top_mv_x, top_mv_y)
-                    } else {
-                        self.predict_mv_l0_partition(mb_x, mb_y, 0, 2, 4, ref_idx_i8)
-                    };
-                    let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, 0);
-                    let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, 0);
+                    let (part_pred_mv_x, part_pred_mv_y) =
+                        self.predict_mv_l0_16x8(mb_x, mb_y, part, ref_idx_i8);
+                    let y_off = part * 8;
+                    let (amvd_x, amvd_y) =
+                        self.compute_cabac_amvd(mb_x * 4, mb_y * 4 + part * 2, 0);
+                    let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
+                    let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
+                    self.set_mvd_block_4x4(mb_x * 16, mb_y * 16 + y_off, 16, 8, mvd_x, mvd_y, 0);
                     let mv_x = part_pred_mv_x + mvd_x;
                     let mv_y = part_pred_mv_y + mvd_y;
-                    let y_off = part * 8;
                     self.apply_inter_block_l0(
                         ref_l0_list,
                         ref_idx,
@@ -261,32 +258,22 @@ impl H264Decoder {
                     final_mv_x = mv_x;
                     final_mv_y = mv_y;
                     final_ref_idx = ref_idx;
-                    if part == 0 {
-                        top_ref_idx = ref_idx;
-                        top_mv_x = mv_x;
-                        top_mv_y = mv_y;
-                    }
                 }
             }
             2 => {
-                let mut left_ref_idx = 0u32;
-                let mut left_mv_x = 0i32;
-                let mut left_mv_y = 0i32;
                 for part in 0..2usize {
                     let ref_idx = self.decode_ref_idx_l0(cabac, ctxs, num_ref_idx_l0);
                     let ref_idx_i8 = ref_idx.min(i8::MAX as u32) as i8;
-                    let (part_pred_mv_x, part_pred_mv_y) = if part == 0 {
-                        self.predict_mv_l0_partition(mb_x, mb_y, 0, 0, 2, ref_idx_i8)
-                    } else if ref_idx == left_ref_idx {
-                        (left_mv_x, left_mv_y)
-                    } else {
-                        self.predict_mv_l0_partition(mb_x, mb_y, 2, 0, 2, ref_idx_i8)
-                    };
-                    let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, 0);
-                    let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, 0);
+                    let (part_pred_mv_x, part_pred_mv_y) =
+                        self.predict_mv_l0_8x16(mb_x, mb_y, part, ref_idx_i8);
+                    let x_off = part * 8;
+                    let (amvd_x, amvd_y) =
+                        self.compute_cabac_amvd(mb_x * 4 + part * 2, mb_y * 4, 0);
+                    let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
+                    let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
+                    self.set_mvd_block_4x4(mb_x * 16 + x_off, mb_y * 16, 8, 16, mvd_x, mvd_y, 0);
                     let mv_x = part_pred_mv_x + mvd_x;
                     let mv_y = part_pred_mv_y + mvd_y;
-                    let x_off = part * 8;
                     self.apply_inter_block_l0(
                         ref_l0_list,
                         ref_idx,
@@ -303,11 +290,6 @@ impl H264Decoder {
                     final_mv_x = mv_x;
                     final_mv_y = mv_y;
                     final_ref_idx = ref_idx;
-                    if part == 0 {
-                        left_ref_idx = ref_idx;
-                        left_mv_x = mv_x;
-                        left_mv_y = mv_y;
-                    }
                 }
             }
             _ => {
@@ -327,15 +309,19 @@ impl H264Decoder {
                                 2,
                                 ref_idx_i8,
                             );
-                            let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, 0);
-                            let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, 0);
+                            let px_x = mb_x * 16 + sx;
+                            let px_y = mb_y * 16 + sy;
+                            let (amvd_x, amvd_y) = self.compute_cabac_amvd(px_x / 4, px_y / 4, 0);
+                            let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
+                            let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
+                            self.set_mvd_block_4x4(px_x, px_y, 8, 8, mvd_x, mvd_y, 0);
                             let mv_x = pred_mv_x + mvd_x;
                             let mv_y = pred_mv_y + mvd_y;
                             self.apply_inter_block_l0(
                                 ref_l0_list,
                                 ref_idx,
-                                mb_x * 16 + sx,
-                                mb_y * 16 + sy,
+                                px_x,
+                                px_y,
                                 8,
                                 8,
                                 mv_x,
@@ -360,15 +346,20 @@ impl H264Decoder {
                                     2,
                                     ref_idx_i8,
                                 );
-                                let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, 0);
-                                let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, 0);
+                                let px_x = mb_x * 16 + sx;
+                                let px_y = mb_y * 16 + sy + part * 4;
+                                let (amvd_x, amvd_y) =
+                                    self.compute_cabac_amvd(px_x / 4, px_y / 4, 0);
+                                let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
+                                let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
+                                self.set_mvd_block_4x4(px_x, px_y, 8, 4, mvd_x, mvd_y, 0);
                                 let mv_x = pred_mv_x + mvd_x;
                                 let mv_y = pred_mv_y + mvd_y;
                                 self.apply_inter_block_l0(
                                     ref_l0_list,
                                     ref_idx,
-                                    mb_x * 16 + sx,
-                                    mb_y * 16 + sy + part * 4,
+                                    px_x,
+                                    px_y,
                                     8,
                                     4,
                                     mv_x,
@@ -394,15 +385,20 @@ impl H264Decoder {
                                     1,
                                     ref_idx_i8,
                                 );
-                                let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, 0);
-                                let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, 0);
+                                let px_x = mb_x * 16 + sx + part * 4;
+                                let px_y = mb_y * 16 + sy;
+                                let (amvd_x, amvd_y) =
+                                    self.compute_cabac_amvd(px_x / 4, px_y / 4, 0);
+                                let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
+                                let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
+                                self.set_mvd_block_4x4(px_x, px_y, 4, 8, mvd_x, mvd_y, 0);
                                 let mv_x = pred_mv_x + mvd_x;
                                 let mv_y = pred_mv_y + mvd_y;
                                 self.apply_inter_block_l0(
                                     ref_l0_list,
                                     ref_idx,
-                                    mb_x * 16 + sx + part * 4,
-                                    mb_y * 16 + sy,
+                                    px_x,
+                                    px_y,
                                     4,
                                     8,
                                     mv_x,
@@ -430,15 +426,22 @@ impl H264Decoder {
                                         1,
                                         ref_idx_i8,
                                     );
-                                    let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, 0);
-                                    let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, 0);
+                                    let px_x = mb_x * 16 + sx + part_x * 4;
+                                    let px_y = mb_y * 16 + sy + part_y * 4;
+                                    let (amvd_x, amvd_y) =
+                                        self.compute_cabac_amvd(px_x / 4, px_y / 4, 0);
+                                    let mvd_x =
+                                        self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
+                                    let mvd_y =
+                                        self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
+                                    self.set_mvd_block_4x4(px_x, px_y, 4, 4, mvd_x, mvd_y, 0);
                                     let mv_x = pred_mv_x + mvd_x;
                                     let mv_y = pred_mv_y + mvd_y;
                                     self.apply_inter_block_l0(
                                         ref_l0_list,
                                         ref_idx,
-                                        mb_x * 16 + sx + part_x * 4,
-                                        mb_y * 16 + sy + part_y * 4,
+                                        px_x,
+                                        px_y,
                                         4,
                                         4,
                                         mv_x,

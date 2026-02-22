@@ -191,6 +191,8 @@ struct ReferencePicture {
     mv_l0_y: Vec<i16>,
     /// 参考帧宏块级 list0 ref_idx.
     ref_idx_l0: Vec<i8>,
+    /// 参考帧宏块级 mb_types (用于 col_zero_flag 判断 intra 状态).
+    mb_types: Vec<u8>,
     frame_num: u32,
     poc: i32,
     long_term_frame_idx: Option<u32>,
@@ -306,6 +308,14 @@ pub struct H264Decoder {
     mv_l1_y_4x4: Vec<i16>,
     /// 每个 luma 4x4 块 list1 参考索引 (-1 表示不可用)
     ref_idx_l1_4x4: Vec<i8>,
+    /// CABAC MVD 缓存: 每个 4x4 块的 list0 MVD X 分量 (用于 amvd 上下文推导).
+    mvd_l0_x_4x4: Vec<i16>,
+    /// CABAC MVD 缓存: 每个 4x4 块的 list0 MVD Y 分量.
+    mvd_l0_y_4x4: Vec<i16>,
+    /// CABAC MVD 缓存: 每个 4x4 块的 list1 MVD X 分量.
+    mvd_l1_x_4x4: Vec<i16>,
+    /// CABAC MVD 缓存: 每个 4x4 块的 list1 MVD Y 分量.
+    mvd_l1_y_4x4: Vec<i16>,
     /// 每个宏块所属 slice 的 first_mb 标识, 用于 idc=2 去块边界判断.
     mb_slice_first_mb: Vec<u32>,
     /// 最近一次成功解析的 slice_type
@@ -406,6 +416,10 @@ impl H264Decoder {
             mv_l1_x_4x4: Vec::new(),
             mv_l1_y_4x4: Vec::new(),
             ref_idx_l1_4x4: Vec::new(),
+            mvd_l0_x_4x4: Vec::new(),
+            mvd_l0_y_4x4: Vec::new(),
+            mvd_l1_x_4x4: Vec::new(),
+            mvd_l1_y_4x4: Vec::new(),
             mb_slice_first_mb: Vec::new(),
             last_slice_type: 0,
             last_frame_num: 0,
@@ -475,6 +489,10 @@ impl H264Decoder {
         self.mv_l1_x_4x4 = vec![0i16; self.mb_width * 4 * self.mb_height * 4];
         self.mv_l1_y_4x4 = vec![0i16; self.mb_width * 4 * self.mb_height * 4];
         self.ref_idx_l1_4x4 = vec![-1i8; self.mb_width * 4 * self.mb_height * 4];
+        self.mvd_l0_x_4x4 = vec![0i16; self.mb_width * 4 * self.mb_height * 4];
+        self.mvd_l0_y_4x4 = vec![0i16; self.mb_width * 4 * self.mb_height * 4];
+        self.mvd_l1_x_4x4 = vec![0i16; self.mb_width * 4 * self.mb_height * 4];
+        self.mvd_l1_y_4x4 = vec![0i16; self.mb_width * 4 * self.mb_height * 4];
         self.mb_slice_first_mb = vec![u32::MAX; total_mb];
     }
 
@@ -630,6 +648,10 @@ impl H264Decoder {
         self.mv_l1_x_4x4.fill(0);
         self.mv_l1_y_4x4.fill(0);
         self.ref_idx_l1_4x4.fill(-1);
+        self.mvd_l0_x_4x4.fill(0);
+        self.mvd_l0_y_4x4.fill(0);
+        self.mvd_l1_x_4x4.fill(0);
+        self.mvd_l1_y_4x4.fill(0);
         self.mb_slice_first_mb.fill(u32::MAX);
         self.prev_qp_delta_nz = false;
     }
@@ -675,11 +697,12 @@ impl H264Decoder {
 
     fn derive_reorder_depth_from_sps(sps: Option<&Sps>) -> usize {
         sps.map(|cur| {
-            let by_ref = cur.max_num_ref_frames.saturating_sub(1).min(16) as usize;
             if let Some(max_num_reorder_frames) = cur.max_num_reorder_frames {
-                by_ref.min(max_num_reorder_frames.min(16) as usize)
+                (max_num_reorder_frames.min(16) as usize)
+                    .min(cur.max_num_ref_frames.min(16) as usize)
             } else {
-                by_ref
+                let level_max = Self::derive_level_max_dpb_frames(cur);
+                level_max.saturating_sub(1).min(16)
             }
         })
         .unwrap_or(2)
@@ -734,8 +757,11 @@ impl H264Decoder {
         let sps_changed = self.active_sps_id != Some(sps_id);
         let size_changed = self.width != sps.width || self.height != sps.height;
         let level_max_dpb_frames = Self::derive_level_max_dpb_frames(&sps);
-        self.max_reference_frames =
-            (sps.max_num_ref_frames.clamp(1, 16) as usize).min(level_max_dpb_frames);
+        let max_dpb = sps
+            .max_dec_frame_buffering
+            .map(|v| (v.clamp(1, 16) as usize).min(level_max_dpb_frames))
+            .unwrap_or(level_max_dpb_frames);
+        self.max_reference_frames = (sps.max_num_ref_frames.clamp(1, 16) as usize).min(max_dpb);
         self.width = sps.width;
         self.height = sps.height;
         self.active_sps_id = Some(sps_id);
@@ -952,6 +978,8 @@ impl Decoder for H264Decoder {
             let config = parse_avcc_config(&params.extra_data)?;
             self.length_size = config.length_size;
             self.parse_sps_pps_from_config(&config)?;
+        } else {
+            self.length_size = 0;
         }
         if self.width == 0 || self.height == 0 {
             if let CodecParamsType::Video(ref v) = params.params {
@@ -959,17 +987,20 @@ impl Decoder for H264Decoder {
                 self.height = v.height;
             }
         }
-        if self.width == 0 || self.height == 0 {
-            return Err(TaoError::InvalidData("H264: 无法确定帧尺寸".into()));
+        if self.width > 0 && self.height > 0 {
+            self.refresh_reorder_depth();
+            self.init_buffers();
         }
-        self.refresh_reorder_depth();
-        self.init_buffers();
         self.output_queue.clear();
         self.reorder_buffer.clear();
         self.decode_order_counter = 0;
         self.pending_frame = None;
         self.opened = true;
-        debug!("H264 解码器已打开: {}x{}", self.width, self.height);
+        if self.width > 0 && self.height > 0 {
+            debug!("H264 解码器已打开: {}x{}", self.width, self.height);
+        } else {
+            debug!("H264 解码器已打开 (等待 SPS 确定帧尺寸)");
+        }
         Ok(())
     }
 
@@ -1097,6 +1128,10 @@ impl Decoder for H264Decoder {
         self.mv_l1_x_4x4.fill(0);
         self.mv_l1_y_4x4.fill(0);
         self.ref_idx_l1_4x4.fill(-1);
+        self.mvd_l0_x_4x4.fill(0);
+        self.mvd_l0_y_4x4.fill(0);
+        self.mvd_l1_x_4x4.fill(0);
+        self.mvd_l1_y_4x4.fill(0);
         self.mb_slice_first_mb.fill(u32::MAX);
     }
 }

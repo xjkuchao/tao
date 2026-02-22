@@ -5,6 +5,7 @@ pub mod aiff;
 pub mod avi;
 pub mod flac;
 pub mod flv;
+pub mod h264es;
 pub mod m4v;
 pub mod mkv;
 pub mod mp3;
@@ -53,4 +54,7 @@ pub fn register_all_demuxers(registry: &mut FormatRegistry) {
 
     registry.register_demuxer(FormatId::Mpeg4Es, "m4v", m4v::M4vDemuxer::create);
     registry.register_probe(Box::new(m4v::M4vProbe));
+
+    registry.register_demuxer(FormatId::H264Es, "h264", h264es::H264EsDemuxer::create);
+    registry.register_probe(Box::new(h264es::H264EsProbe));
 }

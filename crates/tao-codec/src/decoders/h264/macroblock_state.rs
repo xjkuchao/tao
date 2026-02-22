@@ -440,6 +440,93 @@ impl H264Decoder {
         }
     }
 
+    /// 计算 CABAC MVD 上下文: 左/上 4x4 邻居 MVD 绝对值之和.
+    pub(super) fn compute_cabac_amvd(&self, x4: usize, y4: usize, list: usize) -> (i32, i32) {
+        let stride = self.mb_width * 4;
+        let (mvd_x_arr, mvd_y_arr) = if list == 0 {
+            (&self.mvd_l0_x_4x4, &self.mvd_l0_y_4x4)
+        } else {
+            (&self.mvd_l1_x_4x4, &self.mvd_l1_y_4x4)
+        };
+        let left_abs_x = if x4 > 0 {
+            mvd_x_arr
+                .get(y4 * stride + x4 - 1)
+                .copied()
+                .unwrap_or(0)
+                .unsigned_abs() as i32
+        } else {
+            0
+        };
+        let left_abs_y = if x4 > 0 {
+            mvd_y_arr
+                .get(y4 * stride + x4 - 1)
+                .copied()
+                .unwrap_or(0)
+                .unsigned_abs() as i32
+        } else {
+            0
+        };
+        let top_abs_x = if y4 > 0 {
+            mvd_x_arr
+                .get((y4 - 1) * stride + x4)
+                .copied()
+                .unwrap_or(0)
+                .unsigned_abs() as i32
+        } else {
+            0
+        };
+        let top_abs_y = if y4 > 0 {
+            mvd_y_arr
+                .get((y4 - 1) * stride + x4)
+                .copied()
+                .unwrap_or(0)
+                .unsigned_abs() as i32
+        } else {
+            0
+        };
+        (left_abs_x + top_abs_x, left_abs_y + top_abs_y)
+    }
+
+    /// 将解码后的 MVD 写入 4x4 块级缓存.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn set_mvd_block_4x4(
+        &mut self,
+        px_x: usize,
+        px_y: usize,
+        w: usize,
+        h: usize,
+        mvd_x: i32,
+        mvd_y: i32,
+        list: usize,
+    ) {
+        if w == 0 || h == 0 {
+            return;
+        }
+        let x4_start = px_x / 4;
+        let y4_start = px_y / 4;
+        let x4_end = (px_x + w).div_ceil(4);
+        let y4_end = (px_y + h).div_ceil(4);
+        let stride = self.mb_width * 4;
+        let mvd_x_i16 = mvd_x.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let mvd_y_i16 = mvd_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let (mvd_x_arr, mvd_y_arr) = if list == 0 {
+            (&mut self.mvd_l0_x_4x4, &mut self.mvd_l0_y_4x4)
+        } else {
+            (&mut self.mvd_l1_x_4x4, &mut self.mvd_l1_y_4x4)
+        };
+        for y4 in y4_start..y4_end {
+            for x4 in x4_start..x4_end {
+                let idx = y4 * stride + x4;
+                if let Some(slot) = mvd_x_arr.get_mut(idx) {
+                    *slot = mvd_x_i16;
+                }
+                if let Some(slot) = mvd_y_arr.get_mut(idx) {
+                    *slot = mvd_y_i16;
+                }
+            }
+        }
+    }
+
     pub(super) fn i4x4_mode_stride(&self) -> usize {
         self.mb_width * 4
     }

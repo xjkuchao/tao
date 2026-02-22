@@ -118,6 +118,7 @@ tempfile.workspace = true
 symphonia.workspace = true
 tao-format = { workspace = true, features = ["http"] }
 env_logger.workspace = true
+serde_json.workspace = true
 
 [features]
 default = ["http"]

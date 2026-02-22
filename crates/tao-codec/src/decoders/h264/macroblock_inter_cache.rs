@@ -355,6 +355,8 @@ impl H264Decoder {
                             (4, 8, _) => (part * 4, 0),
                             _ => ((part & 1) * 4, (part >> 1) * 4),
                         };
+                        let bpx_x = mb_x * 16 + sx + part_off_x;
+                        let bpx_y = mb_y * 16 + sy + part_off_y;
                         let (motion_l0, motion_l1) = self.decode_b_partition_motion(
                             cabac,
                             ctxs,
@@ -363,6 +365,10 @@ impl H264Decoder {
                             num_ref_idx_l1,
                             pred_mv_x,
                             pred_mv_y,
+                            bpx_x,
+                            bpx_y,
+                            part_w,
+                            part_h,
                         );
                         let (mv_x, mv_y, ref_idx) = self.apply_b_prediction_block(
                             motion_l0,
@@ -395,6 +401,8 @@ impl H264Decoder {
                             1 => (16usize, 8usize, 0usize, part * 8),
                             _ => (8usize, 16usize, part * 8, 0usize),
                         };
+                        let bpx_x = mb_x * 16 + part_off_x;
+                        let bpx_y = mb_y * 16 + part_off_y;
                         let (motion_l0, motion_l1) = self.decode_b_partition_motion(
                             cabac,
                             ctxs,
@@ -403,6 +411,10 @@ impl H264Decoder {
                             num_ref_idx_l1,
                             pred_mv_x,
                             pred_mv_y,
+                            bpx_x,
+                            bpx_y,
+                            part_w,
+                            part_h,
                         );
                         let (mv_x, mv_y, ref_idx) = self.apply_b_prediction_block(
                             motion_l0,
@@ -413,8 +425,8 @@ impl H264Decoder {
                             chroma_log2_weight_denom,
                             ref_l0_list,
                             ref_l1_list,
-                            mb_x * 16 + part_off_x,
-                            mb_y * 16 + part_off_y,
+                            bpx_x,
+                            bpx_y,
                             part_w,
                             part_h,
                         );
@@ -465,7 +477,7 @@ impl H264Decoder {
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_b_partition_motion(
-        &self,
+        &mut self,
         cabac: &mut CabacDecoder,
         ctxs: &mut [CabacCtx],
         dir: BPredDir,
@@ -473,36 +485,54 @@ impl H264Decoder {
         num_ref_idx_l1: u32,
         pred_mv_x: i32,
         pred_mv_y: i32,
+        px_x: usize,
+        px_y: usize,
+        part_w: usize,
+        part_h: usize,
     ) -> (Option<BMotion>, Option<BMotion>) {
-        let mut mv_l0_x = pred_mv_x;
-        let mut mv_l0_y = pred_mv_y;
-        let mut mv_l1_x = pred_mv_x;
-        let mut mv_l1_y = pred_mv_y;
         let mut motion_l0 = None;
         let mut motion_l1 = None;
+        let x4 = px_x / 4;
+        let y4 = px_y / 4;
+        let mb_x = px_x / 16;
+        let mb_y = px_y / 16;
+        let part_x4 = x4 % 4;
+        let part_y4 = y4 % 4;
+        let part_w4 = (part_w / 4).max(1);
 
         if matches!(dir, BPredDir::L0 | BPredDir::Bi) {
             let ref_idx = self.decode_ref_idx_l0(cabac, ctxs, num_ref_idx_l0);
-            let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, 0);
-            let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, 0);
-            mv_l0_x += mvd_x;
-            mv_l0_y += mvd_y;
+            let ref_idx_i8 = ref_idx.min(i8::MAX as u32) as i8;
+            let (pred_l0_x, pred_l0_y) =
+                self.predict_mv_l0_partition(mb_x, mb_y, part_x4, part_y4, part_w4, ref_idx_i8);
+            let (amvd_x, amvd_y) = self.compute_cabac_amvd(x4, y4, 0);
+            let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
+            let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
+            self.set_mvd_block_4x4(px_x, px_y, part_w, part_h, mvd_x, mvd_y, 0);
+            let mv_l0_x = pred_l0_x + mvd_x;
+            let mv_l0_y = pred_l0_y + mvd_y;
             motion_l0 = Some(BMotion {
                 mv_x: mv_l0_x,
                 mv_y: mv_l0_y,
-                ref_idx: ref_idx.min(i8::MAX as u32) as i8,
+                ref_idx: ref_idx_i8,
             });
         }
         if matches!(dir, BPredDir::L1 | BPredDir::Bi) {
             let ref_idx_l1 = self.decode_ref_idx_l0(cabac, ctxs, num_ref_idx_l1);
-            let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, 0);
-            let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, 0);
-            mv_l1_x += mvd_x;
-            mv_l1_y += mvd_y;
+            let ref_idx_l1_i8 = ref_idx_l1.min(i8::MAX as u32) as i8;
+            let (pred_l1_x, pred_l1_y) = self.predict_mv_l1_partition(
+                mb_x, mb_y, part_x4, part_y4, part_w4, ref_idx_l1_i8,
+            );
+            let (amvd_x, amvd_y) = self.compute_cabac_amvd(x4, y4, 1);
+            let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
+            let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
+            self.set_mvd_block_4x4(px_x, px_y, part_w, part_h, mvd_x, mvd_y, 1);
+            let mv_l1_x = pred_l1_x + mvd_x;
+            let mv_l1_y = pred_l1_y + mvd_y;
             motion_l1 = Some(BMotion {
                 mv_x: mv_l1_x,
                 mv_y: mv_l1_y,
-                ref_idx: ref_idx_l1.min(i8::MAX as u32) as i8,
+                ref_idx: ref_idx_l1_i8,
             });
         }
 

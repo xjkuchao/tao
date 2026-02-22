@@ -105,6 +105,40 @@ impl H264Decoder {
         })
     }
 
+    /// 判断共定位宏块是否满足 col_zero_flag 条件 (规范 8.4.1.2.3).
+    ///
+    /// 条件: 共位非 intra、list1[0] 非 long_ref、共位 ref_idx_l0==0 且 |mv_col|<=1.
+    fn col_zero_flag(&self, mb_x: usize, mb_y: usize, ref_l1_list: &[RefPlanes]) -> bool {
+        let col_planes = ref_l1_list.first();
+        let col_planes = match col_planes {
+            Some(p) => p,
+            None => return false,
+        };
+        if col_planes.is_long_term {
+            return false;
+        }
+        let col_pic = match self.find_reference_picture_for_planes(col_planes) {
+            Some(p) => p,
+            None => return false,
+        };
+        let mb_idx = match self.mb_index(mb_x, mb_y) {
+            Some(idx) => idx,
+            None => return false,
+        };
+        let col_mb_type = col_pic.mb_types.get(mb_idx).copied().unwrap_or(0);
+        let col_is_intra = col_mb_type <= 25;
+        if col_is_intra {
+            return false;
+        }
+        let col_ref = col_pic.ref_idx_l0.get(mb_idx).copied().unwrap_or(-1);
+        if col_ref != 0 {
+            return false;
+        }
+        let col_mv_x = col_pic.mv_l0_x.get(mb_idx).copied().unwrap_or(0);
+        let col_mv_y = col_pic.mv_l0_y.get(mb_idx).copied().unwrap_or(0);
+        col_mv_x.abs() <= 1 && col_mv_y.abs() <= 1
+    }
+
     fn temporal_direct_colocated_l0_motion(
         &self,
         mb_x: usize,
@@ -190,15 +224,16 @@ impl H264Decoder {
                     self.scale_temporal_direct_mv_pair_component(col_mv_y, dist_scale_factor);
                 (l0_mv_x, l0_mv_y, l1_mv_x, l1_mv_y)
             };
+        let col_zero = self.col_zero_flag(mb_x, mb_y, ref_l1_list);
         let motion_l0 = Some(BMotion {
-            mv_x: direct_l0_mv_x,
-            mv_y: direct_l0_mv_y,
+            mv_x: if col_zero { 0 } else { direct_l0_mv_x },
+            mv_y: if col_zero { 0 } else { direct_l0_mv_y },
             ref_idx: 0,
         });
         let motion_l1 = if direct_spatial_mv_pred_flag {
             Some(BMotion {
-                mv_x: direct_l1_mv_x,
-                mv_y: direct_l1_mv_y,
+                mv_x: if col_zero { 0 } else { direct_l1_mv_x },
+                mv_y: if col_zero { 0 } else { direct_l1_mv_y },
                 ref_idx: 0,
             })
         } else {

@@ -424,23 +424,23 @@ impl H264Decoder {
                             }
                         }
 
-                        let mut l0_mv_x = [[0i32; 4]; 4];
-                        let mut l0_mv_y = [[0i32; 4]; 4];
-                        let mut l1_mv_x = [[0i32; 4]; 4];
-                        let mut l1_mv_y = [[0i32; 4]; 4];
+                        let mut l0_mvd_x = [[0i32; 4]; 4];
+                        let mut l0_mvd_y = [[0i32; 4]; 4];
+                        let mut l1_mvd_x = [[0i32; 4]; 4];
+                        let mut l1_mvd_y = [[0i32; 4]; 4];
                         for sub_idx in 0..4usize {
                             if use_l0[sub_idx] {
                                 for part_idx in 0..sub_part_count[sub_idx] {
-                                    l0_mv_x[sub_idx][part_idx] = read_se(&mut br).unwrap_or(0);
-                                    l0_mv_y[sub_idx][part_idx] = read_se(&mut br).unwrap_or(0);
+                                    l0_mvd_x[sub_idx][part_idx] = read_se(&mut br).unwrap_or(0);
+                                    l0_mvd_y[sub_idx][part_idx] = read_se(&mut br).unwrap_or(0);
                                 }
                             }
                         }
                         for sub_idx in 0..4usize {
                             if use_l1[sub_idx] {
                                 for part_idx in 0..sub_part_count[sub_idx] {
-                                    l1_mv_x[sub_idx][part_idx] = read_se(&mut br).unwrap_or(0);
-                                    l1_mv_y[sub_idx][part_idx] = read_se(&mut br).unwrap_or(0);
+                                    l1_mvd_x[sub_idx][part_idx] = read_se(&mut br).unwrap_or(0);
+                                    l1_mvd_y[sub_idx][part_idx] = read_se(&mut br).unwrap_or(0);
                                 }
                             }
                         }
@@ -448,22 +448,82 @@ impl H264Decoder {
                         for (sub_idx, sub_mb_type) in sub_mb_types.iter().copied().enumerate() {
                             let sub_x = mb_x * 16 + (sub_idx % 2) * 8;
                             let sub_y = mb_y * 16 + (sub_idx / 2) * 8;
+                            let sub_x4 = sub_x / 4;
+                            let sub_y4 = sub_y / 4;
                             let mut l0_motions = [None; 4];
                             let mut l1_motions = [None; 4];
                             for part_idx in 0..sub_part_count[sub_idx] {
+                                let (pw, ph) = match sub_mb_type {
+                                    4 | 6 | 8 => (8usize, 4usize),
+                                    5 | 7 | 9 => (4, 8),
+                                    10..=12 => (4, 4),
+                                    _ => (8, 8),
+                                };
+                                let (p_off_x, p_off_y) = match (pw, ph, sub_part_count[sub_idx])
+                                {
+                                    (8, 4, _) => (0, part_idx * 4),
+                                    (4, 8, _) => (part_idx * 4, 0),
+                                    (4, 4, _) => ((part_idx & 1) * 4, (part_idx >> 1) * 4),
+                                    _ => (0, 0),
+                                };
+                                let px4 = sub_x4 + p_off_x / 4;
+                                let py4 = sub_y4 + p_off_y / 4;
+                                let pw4 = pw / 4;
                                 if use_l0[sub_idx] {
+                                    let l0_ref_i8 =
+                                        ref_idx_l0[sub_idx].min(i8::MAX as usize) as i8;
+                                    let (pred_x, pred_y) = self.predict_mv_l0_partition(
+                                        px4 / 4,
+                                        py4 / 4,
+                                        px4 % 4,
+                                        py4 % 4,
+                                        pw4.max(1),
+                                        l0_ref_i8,
+                                    );
+                                    let mv_x = pred_x + l0_mvd_x[sub_idx][part_idx];
+                                    let mv_y = pred_y + l0_mvd_y[sub_idx][part_idx];
                                     l0_motions[part_idx] = Some(BMotion {
-                                        mv_x: l0_mv_x[sub_idx][part_idx],
-                                        mv_y: l0_mv_y[sub_idx][part_idx],
-                                        ref_idx: ref_idx_l0[sub_idx].min(i8::MAX as usize) as i8,
+                                        mv_x,
+                                        mv_y,
+                                        ref_idx: l0_ref_i8,
                                     });
+                                    self.set_l0_motion_block_4x4(
+                                        sub_x + p_off_x,
+                                        sub_y + p_off_y,
+                                        pw,
+                                        ph,
+                                        mv_x,
+                                        mv_y,
+                                        l0_ref_i8,
+                                    );
                                 }
                                 if use_l1[sub_idx] {
+                                    let l1_ref_i8 =
+                                        ref_idx_l1[sub_idx].min(i8::MAX as usize) as i8;
+                                    let (pred_x, pred_y) = self.predict_mv_l1_partition(
+                                        px4 / 4,
+                                        py4 / 4,
+                                        px4 % 4,
+                                        py4 % 4,
+                                        pw4.max(1),
+                                        l1_ref_i8,
+                                    );
+                                    let mv_x = pred_x + l1_mvd_x[sub_idx][part_idx];
+                                    let mv_y = pred_y + l1_mvd_y[sub_idx][part_idx];
                                     l1_motions[part_idx] = Some(BMotion {
-                                        mv_x: l1_mv_x[sub_idx][part_idx],
-                                        mv_y: l1_mv_y[sub_idx][part_idx],
-                                        ref_idx: ref_idx_l1[sub_idx].min(i8::MAX as usize) as i8,
+                                        mv_x,
+                                        mv_y,
+                                        ref_idx: l1_ref_i8,
                                     });
+                                    self.set_l1_motion_block_4x4(
+                                        sub_x + p_off_x,
+                                        sub_y + p_off_y,
+                                        pw,
+                                        ph,
+                                        mv_x,
+                                        mv_y,
+                                        l1_ref_i8,
+                                    );
                                 }
                             }
                             if !use_l0[sub_idx] && !use_l1[sub_idx] {
@@ -673,28 +733,74 @@ impl H264Decoder {
                             }
                         }
 
-                        let mut l0_motion: [Option<BMotion>; 2] = [None; 2];
-                        let mut l1_motion: [Option<BMotion>; 2] = [None; 2];
+                        let mut l0_mvd: [(i32, i32); 2] = [(0, 0); 2];
+                        let mut l1_mvd: [(i32, i32); 2] = [(0, 0); 2];
                         for part_idx in 0..2usize {
                             if part_use_l0[part_idx] {
-                                let mv_x = read_se(&mut br).unwrap_or(0);
-                                let mv_y = read_se(&mut br).unwrap_or(0);
-                                l0_motion[part_idx] = Some(BMotion {
-                                    mv_x,
-                                    mv_y,
-                                    ref_idx: ref_idx_l0[part_idx].min(i8::MAX as usize) as i8,
-                                });
+                                l0_mvd[part_idx].0 = read_se(&mut br).unwrap_or(0);
+                                l0_mvd[part_idx].1 = read_se(&mut br).unwrap_or(0);
                             }
                         }
                         for part_idx in 0..2usize {
                             if part_use_l1[part_idx] {
-                                let mv_x = read_se(&mut br).unwrap_or(0);
-                                let mv_y = read_se(&mut br).unwrap_or(0);
+                                l1_mvd[part_idx].0 = read_se(&mut br).unwrap_or(0);
+                                l1_mvd[part_idx].1 = read_se(&mut br).unwrap_or(0);
+                            }
+                        }
+
+                        let mut l0_motion: [Option<BMotion>; 2] = [None; 2];
+                        let mut l1_motion: [Option<BMotion>; 2] = [None; 2];
+                        for part_idx in 0..2usize {
+                            let (part_x4, part_y4, part_w4) = if split_16x8 {
+                                (0usize, part_idx * 2, 4usize)
+                            } else {
+                                (part_idx * 2, 0usize, 2usize)
+                            };
+                            if part_use_l0[part_idx] {
+                                let l0_ref_i8 =
+                                    ref_idx_l0[part_idx].min(i8::MAX as usize) as i8;
+                                let (pred_x, pred_y) = self.predict_mv_l0_partition(
+                                    mb_x, mb_y, part_x4, part_y4, part_w4, l0_ref_i8,
+                                );
+                                let mv_x = pred_x + l0_mvd[part_idx].0;
+                                let mv_y = pred_y + l0_mvd[part_idx].1;
+                                l0_motion[part_idx] = Some(BMotion {
+                                    mv_x,
+                                    mv_y,
+                                    ref_idx: l0_ref_i8,
+                                });
+                                self.set_l0_motion_block_4x4(
+                                    mb_x * 16 + part_x4 * 4,
+                                    mb_y * 16 + part_y4 * 4,
+                                    part_w4 * 4,
+                                    if split_16x8 { 8 } else { 16 },
+                                    mv_x,
+                                    mv_y,
+                                    l0_ref_i8,
+                                );
+                            }
+                            if part_use_l1[part_idx] {
+                                let l1_ref_i8 =
+                                    ref_idx_l1[part_idx].min(i8::MAX as usize) as i8;
+                                let (pred_x, pred_y) = self.predict_mv_l1_partition(
+                                    mb_x, mb_y, part_x4, part_y4, part_w4, l1_ref_i8,
+                                );
+                                let mv_x = pred_x + l1_mvd[part_idx].0;
+                                let mv_y = pred_y + l1_mvd[part_idx].1;
                                 l1_motion[part_idx] = Some(BMotion {
                                     mv_x,
                                     mv_y,
-                                    ref_idx: ref_idx_l1[part_idx].min(i8::MAX as usize) as i8,
+                                    ref_idx: l1_ref_i8,
                                 });
+                                self.set_l1_motion_block_4x4(
+                                    mb_x * 16 + part_x4 * 4,
+                                    mb_y * 16 + part_y4 * 4,
+                                    part_w4 * 4,
+                                    if split_16x8 { 8 } else { 16 },
+                                    mv_x,
+                                    mv_y,
+                                    l1_ref_i8,
+                                );
                             }
                         }
 
@@ -790,22 +896,28 @@ impl H264Decoder {
                             l1_ref_idx = read_ue(&mut br).unwrap_or(0) as usize;
                         }
 
-                        if mb_type == 1 || mb_type == 3 {
-                            let mv_x = read_se(&mut br).unwrap_or(0);
-                            let mv_y = read_se(&mut br).unwrap_or(0);
+                        if use_l0 {
+                            let l0_ref_i8 = l0_ref_idx.min(i8::MAX as usize) as i8;
+                            let (pred_x, pred_y) =
+                                self.predict_mv_l0_partition(mb_x, mb_y, 0, 0, 4, l0_ref_i8);
+                            let mvd_x = read_se(&mut br).unwrap_or(0);
+                            let mvd_y = read_se(&mut br).unwrap_or(0);
                             l0_motion = Some(BMotion {
-                                mv_x,
-                                mv_y,
-                                ref_idx: l0_ref_idx.min(i8::MAX as usize) as i8,
+                                mv_x: pred_x + mvd_x,
+                                mv_y: pred_y + mvd_y,
+                                ref_idx: l0_ref_i8,
                             });
                         }
-                        if mb_type == 2 || mb_type == 3 {
-                            let mv_x = read_se(&mut br).unwrap_or(0);
-                            let mv_y = read_se(&mut br).unwrap_or(0);
+                        if use_l1 {
+                            let l1_ref_i8 = l1_ref_idx.min(i8::MAX as usize) as i8;
+                            let (pred_x, pred_y) =
+                                self.predict_mv_l1_partition(mb_x, mb_y, 0, 0, 4, l1_ref_i8);
+                            let mvd_x = read_se(&mut br).unwrap_or(0);
+                            let mvd_y = read_se(&mut br).unwrap_or(0);
                             l1_motion = Some(BMotion {
-                                mv_x,
-                                mv_y,
-                                ref_idx: l1_ref_idx.min(i8::MAX as usize) as i8,
+                                mv_x: pred_x + mvd_x,
+                                mv_y: pred_y + mvd_y,
+                                ref_idx: l1_ref_i8,
                             });
                         }
                     }

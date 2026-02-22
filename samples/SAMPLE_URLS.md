@@ -19,18 +19,23 @@
 
 ### H.264
 
-| 用途                  | URL                                                                                      | 描述                                         |
-| --------------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------- |
-| 基础解码              | https://samples.ffmpeg.org/HDTV/Channel9_HD.ts                                           | 720p, H.264 + AC3, MPEG-TS 容器              |
-| 高清解码              | https://samples.ffmpeg.org/Matroska/haruhi.mkv                                           | 1080p, H.264 + AAC, MKV 容器                 |
-| MP4 容器              | https://samples.ffmpeg.org/mov/mov_h264_aac.mov                                          | 标准 MP4, H.264 + AAC                        |
-| CAVLC Baseline        | https://samples.ffmpeg.org/V-codecs/H264/H264_CAVLC.264                                  | Baseline Profile, CAVLC 熵编码               |
-| CABAC High Profile    | https://samples.ffmpeg.org/V-codecs/H264/H264_CABAC.264                                  | High Profile, CABAC 熵编码                   |
-| B 帧密集              | https://samples.ffmpeg.org/V-codecs/H264/bframe_count.264                                | 连续 B 帧, Direct/Spatial/Temporal 模式覆盖  |
-| 1080p 高码率          | https://samples.ffmpeg.org/HDTV/1080p/1080p_H.264_AAC.ts                                 | 1080p H.264, 高码率 MPEG-TS                  |
-| Intra 4x4 (CAVLC)     | https://samples.ffmpeg.org/V-codecs/H264/H264_I_4x4.264                                  | I_4x4 宏块, 4x4 Intra 预测                   |
-| 8x8 变换 High         | https://samples.ffmpeg.org/V-codecs/H264/H264_8x8dct.264                                 | High Profile, 8x8 DCT transform              |
-| SPS/PPS 参数集更新    | https://samples.ffmpeg.org/V-codecs/H264/H264_SPS_PPS.264                                | 多 SPS/PPS 切换场景                          |
+> 以下 URL 均已通过 `curl -sI` 验证可达(HTTP 200), 并用 `ffprobe` 标注 Profile/Level.
+> 最后验证日期: 2026-02-22.
+
+| 用途                     | URL                                                                                      | Profile              | 分辨率    | 容器 | 描述                                   |
+| ------------------------ | ---------------------------------------------------------------------------------------- | -------------------- | --------- | ---- | -------------------------------------- |
+| CAVLC Baseline 720p      | https://samples.ffmpeg.org/HDTV/Xacti-elst/MP4-AVC-SanyoXactiHD700-elst.mp4              | Constrained Baseline | 1280x720  | MP4  | CAVLC, Level 3.1, 无 B 帧              |
+| CAVLC Baseline 低分辨率  | https://samples.ffmpeg.org/A-codecs/Nelly_Moser/h264_NellyMoser.mp4                      | Baseline             | 352x200   | MP4  | CAVLC, Level 2.1, + NellyMoser 音频    |
+| CABAC Main 1080p         | https://samples.ffmpeg.org/archive/container/mov/mov+h264+aac++bbc_1080p.mov             | Main                 | 1920x1080 | MOV  | CABAC, Level 4.0, B 帧, + AAC 音频     |
+| CABAC Main 720p          | https://samples.ffmpeg.org/V-codecs/h264/bbc-africa_m720p.mov                            | Main                 | 1280x720  | MOV  | CABAC, Level 3.2, B 帧, + AAC 音频     |
+| CABAC Main 中分辨率      | https://samples.ffmpeg.org/V-codecs/h264/cathedral-beta2-400extra-crop-avc.mp4           | Main                 | 640x352   | MP4  | CABAC, Level 4.0, B 帧, + HE-AAC       |
+| CABAC Main 低分辨率      | https://samples.ffmpeg.org/archive/container/mov/mov+h264+aac++Demo_FlagOfOurFathers.mov | Main                 | 480x204   | MOV  | CABAC, Level 2.0, B 帧, + AAC 音频     |
+| CABAC Main 1080p 裸流    | https://samples.ffmpeg.org/archive/all/h264+h264+++Fish_1080P_16M.264                    | Main                 | 1920x1088 | 裸流 | CABAC, Level 4.0, B 帧, 高码率, 需裁剪 |
+| CABAC High MKV           | https://samples.ffmpeg.org/Matroska/haruhi.mkv                                           | High                 | 704x480   | MKV  | CABAC + 8x8 变换, B 帧, + Vorbis 音频  |
+| CABAC High 1080p         | https://samples.ffmpeg.org/archive/all/h264+h264+++ffh264_issue4.h264                    | High                 | 1920x1080 | 裸流 | CABAC + 8x8 变换, Level 4.1            |
+| CABAC High 1080p MP4     | https://samples.ffmpeg.org/HDTV/xacti_hd2000_dogsample20090207_2a.mp4                    | High                 | 1920x1080 | MP4  | CABAC + 8x8, Level 4.2, yuvj420p       |
+| IPCM 边界测试            | https://samples.ffmpeg.org/archive/all/h264+h264+++IPCM_decode_error.h264                | High                 | 352x288   | 裸流 | CABAC, Level 5.1, IPCM 宏块边界        |
+| CAVLC Baseline 低分辨率2 | https://samples.ffmpeg.org/A-codecs/speex/h264_speex.mp4                                 | Baseline             | 352x200   | MP4  | CAVLC, Level 3.1, + Speex 音频         |
 
 ### MPEG-4 Part 2
 
@@ -172,7 +177,7 @@
 ```rust
 #[test]
 fn test_h264_decode_from_url() {
-    let sample_url = "https://samples.ffmpeg.org/HDTV/Channel9_HD.ts";
+    let sample_url = "https://samples.ffmpeg.org/Matroska/haruhi.mkv";
 
     let mut demuxer = DemuxerRegistry::open(sample_url).unwrap();
     let video_stream = demuxer.streams()

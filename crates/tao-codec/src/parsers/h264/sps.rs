@@ -51,6 +51,8 @@ pub struct Sps {
     pub fps: Option<Rational>,
     /// VUI `bitstream_restriction_flag` 中的 `max_num_reorder_frames`.
     pub max_num_reorder_frames: Option<u32>,
+    /// VUI `bitstream_restriction_flag` 中的 `max_dec_frame_buffering`.
+    pub max_dec_frame_buffering: Option<u32>,
     /// SAR (Sample Aspect Ratio, 像素宽高比)
     pub sar: Rational,
     /// pic_width_in_mbs_minus1
@@ -332,15 +334,17 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
     let mut vui_present = false;
     let mut fps = None;
     let mut max_num_reorder_frames = None;
+    let mut max_dec_frame_buffering = None;
     let mut sar = Rational::new(1, 1);
 
     let vui_flag = br.read_bit()?;
     if vui_flag == 1 {
         vui_present = true;
-        let (parsed_sar, parsed_fps, parsed_max_num_reorder_frames) = parse_vui(&mut br)?;
+        let (parsed_sar, parsed_fps, parsed_reorder, parsed_dec_buf) = parse_vui(&mut br)?;
         sar = parsed_sar;
         fps = parsed_fps;
-        max_num_reorder_frames = parsed_max_num_reorder_frames;
+        max_num_reorder_frames = parsed_reorder;
+        max_dec_frame_buffering = parsed_dec_buf;
     }
 
     Ok(Sps {
@@ -360,6 +364,7 @@ pub fn parse_sps(rbsp: &[u8]) -> TaoResult<Sps> {
         vui_present,
         fps,
         max_num_reorder_frames,
+        max_dec_frame_buffering,
         sar,
         pic_width_in_mbs,
         pic_height_in_map_units,
@@ -442,23 +447,12 @@ fn cropping_unit(chroma_format_idc: u32, frame_mbs_only: bool) -> (u32, u32) {
 }
 
 fn default_scaling_lists_4x4() -> [[u8; 16]; 6] {
-    [
-        DEFAULT_SCALING_4X4_INTRA,
-        DEFAULT_SCALING_4X4_INTRA,
-        DEFAULT_SCALING_4X4_INTRA,
-        DEFAULT_SCALING_4X4_INTER,
-        DEFAULT_SCALING_4X4_INTER,
-        DEFAULT_SCALING_4X4_INTER,
-    ]
+    [[16u8; 16]; 6]
 }
 
 fn default_scaling_lists_8x8(chroma_format_idc: u32) -> Vec<[u8; 64]> {
     let list_count = if chroma_format_idc == 3 { 6 } else { 2 };
-    let mut lists = Vec::with_capacity(list_count);
-    for idx in 0..list_count {
-        lists.push(default_scaling_list_8x8_by_idx(idx));
-    }
-    lists
+    vec![[16u8; 64]; list_count]
 }
 
 fn default_scaling_list_4x4_by_idx(idx: usize) -> [u8; 16] {
@@ -592,10 +586,13 @@ fn parse_scaling_list_8x8(br: &mut BitReader) -> TaoResult<([u8; 64], bool)> {
 
 /// 解析 VUI 参数 (部分)
 ///
-/// 返回 (SAR, fps, max_num_reorder_frames)
-fn parse_vui(br: &mut BitReader) -> TaoResult<(Rational, Option<Rational>, Option<u32>)> {
+/// 返回 (SAR, fps, max_num_reorder_frames, max_dec_frame_buffering)
+fn parse_vui(
+    br: &mut BitReader,
+) -> TaoResult<(Rational, Option<Rational>, Option<u32>, Option<u32>)> {
     let mut sar = Rational::new(1, 1);
     let mut max_num_reorder_frames = None;
+    let mut max_dec_frame_buffering = None;
 
     // aspect_ratio_info_present_flag
     let ar_present = br.read_bit()?;
@@ -672,7 +669,7 @@ fn parse_vui(br: &mut BitReader) -> TaoResult<(Rational, Option<Rational>, Optio
     }
 
     if br.bits_left() == 0 {
-        return Ok((sar, fps, max_num_reorder_frames));
+        return Ok((sar, fps, max_num_reorder_frames, max_dec_frame_buffering));
     }
 
     // nal_hrd_parameters_present_flag
@@ -682,7 +679,7 @@ fn parse_vui(br: &mut BitReader) -> TaoResult<(Rational, Option<Rational>, Optio
     }
 
     if br.bits_left() == 0 {
-        return Ok((sar, fps, max_num_reorder_frames));
+        return Ok((sar, fps, max_num_reorder_frames, max_dec_frame_buffering));
     }
     // vcl_hrd_parameters_present_flag
     let vcl_hrd_present = br.read_bit()?;
@@ -696,13 +693,13 @@ fn parse_vui(br: &mut BitReader) -> TaoResult<(Rational, Option<Rational>, Optio
     }
 
     if br.bits_left() == 0 {
-        return Ok((sar, fps, max_num_reorder_frames));
+        return Ok((sar, fps, max_num_reorder_frames, max_dec_frame_buffering));
     }
     // pic_struct_present_flag
     br.skip_bits(1)?;
 
     if br.bits_left() == 0 {
-        return Ok((sar, fps, max_num_reorder_frames));
+        return Ok((sar, fps, max_num_reorder_frames, max_dec_frame_buffering));
     }
     // bitstream_restriction_flag
     let bitstream_restriction_flag = br.read_bit()?;
@@ -713,10 +710,10 @@ fn parse_vui(br: &mut BitReader) -> TaoResult<(Rational, Option<Rational>, Optio
         let _log2_max_mv_length_horizontal = read_ue(br)?;
         let _log2_max_mv_length_vertical = read_ue(br)?;
         max_num_reorder_frames = Some(read_ue(br)?);
-        let _max_dec_frame_buffering = read_ue(br)?;
+        max_dec_frame_buffering = Some(read_ue(br)?);
     }
 
-    Ok((sar, fps, max_num_reorder_frames))
+    Ok((sar, fps, max_num_reorder_frames, max_dec_frame_buffering))
 }
 
 fn skip_hrd_parameters(br: &mut BitReader) -> TaoResult<()> {

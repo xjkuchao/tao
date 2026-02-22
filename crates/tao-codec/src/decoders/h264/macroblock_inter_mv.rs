@@ -17,6 +17,22 @@ impl H264Decoder {
         Some((mv_x, mv_y, ref_idx))
     }
 
+    fn l1_motion_candidate_4x4(&self, x4: isize, y4: isize) -> Option<(i32, i32, i8)> {
+        if x4 < 0 || y4 < 0 {
+            return None;
+        }
+        let x4 = x4 as usize;
+        let y4 = y4 as usize;
+        let idx = self.motion_l1_4x4_index(x4, y4)?;
+        let ref_idx = *self.ref_idx_l1_4x4.get(idx)?;
+        if ref_idx < 0 {
+            return None;
+        }
+        let mv_x = *self.mv_l1_x_4x4.get(idx)? as i32;
+        let mv_y = *self.mv_l1_y_4x4.get(idx)? as i32;
+        Some((mv_x, mv_y, ref_idx))
+    }
+
     pub(super) fn predict_mv_l0_partition(
         &self,
         mb_x: usize,
@@ -66,6 +82,127 @@ impl H264Decoder {
 
     pub(super) fn predict_mv_l0_16x16(&self, mb_x: usize, mb_y: usize) -> (i32, i32) {
         self.predict_mv_l0_partition(mb_x, mb_y, 0, 0, 4, 0)
+    }
+
+    /// L1 版本的 MV 中值预测, 使用 L1 邻居运动信息.
+    pub(super) fn predict_mv_l1_partition(
+        &self,
+        mb_x: usize,
+        mb_y: usize,
+        part_x4: usize,
+        part_y4: usize,
+        part_w4: usize,
+        ref_idx: i8,
+    ) -> (i32, i32) {
+        let x4 = mb_x * 4 + part_x4;
+        let y4 = mb_y * 4 + part_y4;
+
+        let cand_a = self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize);
+        let cand_b = self.l1_motion_candidate_4x4(x4 as isize, y4 as isize - 1);
+        let cand_c = self
+            .l1_motion_candidate_4x4((x4 + part_w4) as isize, y4 as isize - 1)
+            .or_else(|| self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize - 1));
+
+        let mut matched = [(0i32, 0i32); 3];
+        let mut matched_count = 0usize;
+        for cand in [cand_a, cand_b, cand_c].into_iter().flatten() {
+            if cand.2 == ref_idx {
+                matched[matched_count] = (cand.0, cand.1);
+                matched_count += 1;
+            }
+        }
+
+        if matched_count == 1 {
+            return matched[0];
+        }
+        if matched_count >= 2 {
+            let a = matched[0];
+            let b = matched[1];
+            let c = if matched_count == 3 {
+                matched[2]
+            } else {
+                matched[1]
+            };
+            return (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1));
+        }
+
+        let a = cand_a.map(|(x, y, _)| (x, y)).unwrap_or((0, 0));
+        let b = cand_b.map(|(x, y, _)| (x, y)).unwrap_or(a);
+        let c = cand_c.map(|(x, y, _)| (x, y)).unwrap_or(b);
+        (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1))
+    }
+
+    pub(super) fn predict_mv_l1_16x16(&self, mb_x: usize, mb_y: usize) -> (i32, i32) {
+        self.predict_mv_l1_partition(mb_x, mb_y, 0, 0, 4, 0)
+    }
+
+    /// 16x8 分区的方向性 MV 预测 (对标 FFmpeg pred_16x8_motion).
+    ///
+    /// - part=0 (上半): 优先使用上邻居 MV (若 ref 匹配)
+    /// - part=1 (下半): 优先使用左邻居 MV (若 ref 匹配)
+    /// - 不匹配时回退到通用 median 预测
+    pub(super) fn predict_mv_l0_16x8(
+        &self,
+        mb_x: usize,
+        mb_y: usize,
+        part: usize,
+        ref_idx: i8,
+    ) -> (i32, i32) {
+        let x4 = mb_x * 4;
+        let y4 = mb_y * 4 + part * 2;
+        if part == 0 {
+            if let Some((mv_x, mv_y, top_ref)) =
+                self.l0_motion_candidate_4x4(x4 as isize, y4 as isize - 1)
+            {
+                if top_ref == ref_idx {
+                    return (mv_x, mv_y);
+                }
+            }
+        } else {
+            if let Some((mv_x, mv_y, left_ref)) =
+                self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
+            {
+                if left_ref == ref_idx {
+                    return (mv_x, mv_y);
+                }
+            }
+        }
+        self.predict_mv_l0_partition(mb_x, mb_y, 0, part * 2, 4, ref_idx)
+    }
+
+    /// 8x16 分区的方向性 MV 预测 (对标 FFmpeg pred_8x16_motion).
+    ///
+    /// - part=0 (左半): 优先使用左邻居 MV (若 ref 匹配)
+    /// - part=1 (右半): 优先使用对角邻居 MV (若 ref 匹配)
+    /// - 不匹配时回退到通用 median 预测
+    pub(super) fn predict_mv_l0_8x16(
+        &self,
+        mb_x: usize,
+        mb_y: usize,
+        part: usize,
+        ref_idx: i8,
+    ) -> (i32, i32) {
+        let x4 = mb_x * 4 + part * 2;
+        let y4 = mb_y * 4;
+        if part == 0 {
+            if let Some((mv_x, mv_y, left_ref)) =
+                self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
+            {
+                if left_ref == ref_idx {
+                    return (mv_x, mv_y);
+                }
+            }
+        } else {
+            let diag = self
+                .l0_motion_candidate_4x4((x4 + 2) as isize, y4 as isize - 1)
+                .or_else(|| self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize - 1));
+            if let Some((mv_x, mv_y, diag_ref)) = diag {
+                if diag_ref == ref_idx {
+                    return (mv_x, mv_y);
+                }
+            }
+        }
+        self.predict_mv_l0_partition(mb_x, mb_y, part * 2, 0, 2, ref_idx)
     }
 
     #[allow(clippy::too_many_arguments)]
