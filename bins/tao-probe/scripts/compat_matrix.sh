@@ -6,6 +6,7 @@ cd "$ROOT_DIR"
 
 MATRIX_FILE="${1:-bins/tao-probe/tests/compat_command_matrix.txt}"
 TP_BIN="${TP_BIN:-target/debug/tao-probe}"
+DIFF_LINES="${DIFF_LINES:-60}"
 
 if [[ ! -f "$MATRIX_FILE" ]]; then
     echo "[matrix] 命令矩阵文件不存在: $MATRIX_FILE" >&2
@@ -33,6 +34,7 @@ ffmpeg -f lavfi -i anullsrc=r=8000:cl=mono -t 0.01 -acodec pcm_s16le -y -logleve
 
 PASS=0
 FAIL=0
+INDEX=0
 
 normalize_output() {
     local input_file="$1"
@@ -49,6 +51,7 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
     fi
 
     cmd="${line//\{SAMPLE\}/$SAMPLE_FILE}"
+    INDEX=$((INDEX + 1))
     tao_out="$TMP_DIR/tao.out"
     tao_err="$TMP_DIR/tao.err"
     ff_out="$TMP_DIR/ff.out"
@@ -74,11 +77,19 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
         && cmp -s "$tao_out_norm" "$ff_out_norm" \
         && cmp -s "$tao_err_norm" "$ff_err_norm"; then
         PASS=$((PASS + 1))
-        printf "[PASS] %s\n" "$cmd"
+        printf "[PASS][%03d] %s\n" "$INDEX" "$cmd"
     else
         FAIL=$((FAIL + 1))
-        printf "[FAIL] %s\n" "$cmd"
+        printf "[FAIL][%03d] %s\n" "$INDEX" "$cmd"
         printf "  code tao/ffprobe: %s/%s\n" "$tao_code" "$ff_code"
+        if ! cmp -s "$tao_out_norm" "$ff_out_norm"; then
+            echo "  stdout diff:"
+            diff -u "$ff_out_norm" "$tao_out_norm" | sed -n "1,${DIFF_LINES}p" || true
+        fi
+        if ! cmp -s "$tao_err_norm" "$ff_err_norm"; then
+            echo "  stderr diff:"
+            diff -u "$ff_err_norm" "$tao_err_norm" | sed -n "1,${DIFF_LINES}p" || true
+        fi
     fi
 done <"$MATRIX_FILE"
 

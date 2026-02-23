@@ -27,8 +27,37 @@ pub struct ParsedOption {
     pub canonical: String,
     /// 参数值（如存在）.
     pub value: Option<String>,
+    /// 原始参数名（不含前导短横线）.
+    #[allow(dead_code)]
+    pub raw_name: String,
+    /// 原始参数 token（保留用户写法）.
+    #[allow(dead_code)]
+    pub raw_token: String,
+    /// 原始值 token（仅当值来自独立 token 或 inline 时存在）.
+    #[allow(dead_code)]
+    pub raw_value: Option<String>,
+    /// 值来源形态.
+    pub value_source: OptionValueSource,
+    /// 是否来自隐藏别名映射.
+    #[allow(dead_code)]
+    pub is_legacy_alias: bool,
     /// 是否 AVOption 名称接口.
     pub is_avoption: bool,
+}
+
+/// 参数值来源形态.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptionValueSource {
+    /// 无值参数.
+    None,
+    /// `-opt value`.
+    Separate,
+    /// `-opt=value`.
+    Inline,
+    /// 可选值参数未显式提供时的隐式默认值.
+    ImplicitDefault,
+    /// 隐藏别名映射生成的值.
+    LegacyAlias,
 }
 
 /// 已解析命令行.
@@ -36,6 +65,11 @@ pub struct ParsedOption {
 pub struct ParsedArgs {
     /// 调用名.
     pub invocation_name: String,
+    /// 原始参数序列（不含 argv[0]）.
+    #[allow(dead_code)]
+    pub raw_tokens: Vec<String>,
+    /// passthrough 参数序列（保序, 且已展开隐藏别名）.
+    pub passthrough_tokens: Vec<String>,
     /// 选项（按出现顺序）.
     pub options: Vec<ParsedOption>,
     /// 位置参数（通常是输入文件）.
@@ -57,6 +91,14 @@ impl ParsedArgs {
             .and_then(|opt| opt.value.as_deref())
     }
 
+    /// 读取最后一次出现的完整参数.
+    pub fn last_option(&self, canonical: &str) -> Option<&ParsedOption> {
+        self.options
+            .iter()
+            .rev()
+            .find(|opt| opt.canonical == canonical)
+    }
+
     /// 读取所有值.
     pub fn values(&self, canonical: &str) -> Vec<&str> {
         self.options
@@ -71,6 +113,7 @@ impl ParsedArgs {
 pub fn parse_argv(argv: &[String], invocation_name: &str) -> Result<ParsedArgs, CliError> {
     let mut options = Vec::new();
     let mut positionals = Vec::new();
+    let mut passthrough_tokens = Vec::new();
     let mut i = 1usize;
     let mut stop_option_scan = false;
     let mut hide_banner = false;
@@ -80,12 +123,14 @@ pub fn parse_argv(argv: &[String], invocation_name: &str) -> Result<ParsedArgs, 
 
         if stop_option_scan {
             positionals.push(token.clone());
+            passthrough_tokens.push(token.clone());
             i += 1;
             continue;
         }
 
         if token == "--" {
             stop_option_scan = true;
+            passthrough_tokens.push(token.clone());
             i += 1;
             continue;
         }
@@ -100,6 +145,7 @@ pub fn parse_argv(argv: &[String], invocation_name: &str) -> Result<ParsedArgs, 
 
         let Some((raw, was_double_dash)) = stripped else {
             positionals.push(token.clone());
+            passthrough_tokens.push(token.clone());
             i += 1;
             continue;
         };
@@ -108,9 +154,18 @@ pub fn parse_argv(argv: &[String], invocation_name: &str) -> Result<ParsedArgs, 
 
         if let Some((mapped_canonical, mapped_value)) = find_legacy_alias(name) {
             let value = mapped_value.map(ToString::to_string);
+            passthrough_tokens.push(canonical_flag(mapped_canonical));
+            if let Some(mapped_value) = mapped_value {
+                passthrough_tokens.push(mapped_value.to_string());
+            }
             options.push(ParsedOption {
                 canonical: mapped_canonical.to_string(),
                 value,
+                raw_name: name.to_string(),
+                raw_token: token.clone(),
+                raw_value: mapped_value.map(ToString::to_string),
+                value_source: OptionValueSource::LegacyAlias,
+                is_legacy_alias: true,
                 is_avoption: false,
             });
             if mapped_canonical == "hide_banner" {
@@ -122,6 +177,12 @@ pub fn parse_argv(argv: &[String], invocation_name: &str) -> Result<ParsedArgs, 
 
         if let Some(spec) = find_main_option(name) {
             let mut value = inline_value.map(ToString::to_string);
+            let mut raw_value = inline_value.map(ToString::to_string);
+            let mut value_source = if inline_value.is_some() {
+                OptionValueSource::Inline
+            } else {
+                OptionValueSource::None
+            };
             match spec.value_kind {
                 OptionValueKind::None => {
                     if value.is_some() {
@@ -139,6 +200,8 @@ pub fn parse_argv(argv: &[String], invocation_name: &str) -> Result<ParsedArgs, 
                     if value.is_none() {
                         if let Some(next) = argv.get(i + 1) {
                             value = Some(next.clone());
+                            raw_value = Some(next.clone());
+                            value_source = OptionValueSource::Separate;
                             i += 1;
                         } else {
                             return Err(CliError {
@@ -153,12 +216,18 @@ pub fn parse_argv(argv: &[String], invocation_name: &str) -> Result<ParsedArgs, 
                         if let Some(next) = argv.get(i + 1) {
                             if !looks_like_option(next) {
                                 value = Some(next.clone());
+                                raw_value = Some(next.clone());
+                                value_source = OptionValueSource::Separate;
                                 i += 1;
                             } else {
                                 value = Some("1".to_string());
+                                raw_value = None;
+                                value_source = OptionValueSource::ImplicitDefault;
                             }
                         } else {
                             value = Some("1".to_string());
+                            raw_value = None;
+                            value_source = OptionValueSource::ImplicitDefault;
                         }
                     }
                 }
@@ -171,17 +240,36 @@ pub fn parse_argv(argv: &[String], invocation_name: &str) -> Result<ParsedArgs, 
             options.push(ParsedOption {
                 canonical: spec.canonical.to_string(),
                 value,
+                raw_name: name.to_string(),
+                raw_token: token.clone(),
+                raw_value: raw_value.clone(),
+                value_source,
+                is_legacy_alias: false,
                 is_avoption: false,
             });
+            passthrough_tokens.push(token.clone());
+            if value_source == OptionValueSource::Separate
+                && let Some(raw_value) = raw_value
+            {
+                passthrough_tokens.push(raw_value);
+            }
             i += 1;
             continue;
         }
 
         if is_avoption_name(name) {
             let mut value = inline_value.map(ToString::to_string);
+            let mut raw_value = inline_value.map(ToString::to_string);
+            let mut value_source = if inline_value.is_some() {
+                OptionValueSource::Inline
+            } else {
+                OptionValueSource::None
+            };
             if value.is_none() {
                 if let Some(next) = argv.get(i + 1) {
                     value = Some(next.clone());
+                    raw_value = Some(next.clone());
+                    value_source = OptionValueSource::Separate;
                     i += 1;
                 } else {
                     return Err(CliError {
@@ -194,8 +282,19 @@ pub fn parse_argv(argv: &[String], invocation_name: &str) -> Result<ParsedArgs, 
             options.push(ParsedOption {
                 canonical: name.to_string(),
                 value,
+                raw_name: name.to_string(),
+                raw_token: token.clone(),
+                raw_value: raw_value.clone(),
+                value_source,
+                is_legacy_alias: false,
                 is_avoption: true,
             });
+            passthrough_tokens.push(token.clone());
+            if value_source == OptionValueSource::Separate
+                && let Some(raw_value) = raw_value
+            {
+                passthrough_tokens.push(raw_value);
+            }
             i += 1;
             continue;
         }
@@ -233,6 +332,8 @@ pub fn parse_argv(argv: &[String], invocation_name: &str) -> Result<ParsedArgs, 
 
     Ok(ParsedArgs {
         invocation_name: invocation_name.to_string(),
+        raw_tokens: argv[1..].to_vec(),
+        passthrough_tokens,
         options,
         positionals,
     })
@@ -255,6 +356,10 @@ fn find_legacy_alias(alias: &str) -> Option<(&'static str, Option<&'static str>)
         .iter()
         .find(|(legacy, _, _)| *legacy == alias)
         .map(|(_, canonical, value)| (*canonical, *value))
+}
+
+fn canonical_flag(canonical: &str) -> String {
+    format!("-{}", canonical)
 }
 
 #[cfg(test)]
@@ -283,6 +388,13 @@ mod tests {
             "应识别 -of=json"
         );
         assert_eq!(
+            parsed
+                .last_option("output_format")
+                .map(|opt| opt.value_source),
+            Some(OptionValueSource::Inline),
+            "应记录 inline 值来源"
+        );
+        assert_eq!(
             parsed.last_value("select_streams"),
             Some("v:0"),
             "应识别 -select_streams v:0"
@@ -300,6 +412,11 @@ mod tests {
             "--json 应映射到 -of json"
         );
         assert!(parsed.has("show_format"), "--show-format 应映射成功");
+        assert_eq!(
+            parsed.passthrough_tokens,
+            vec!["-output_format", "json", "-show_format", "a.mp4"],
+            "passthrough 应保序展开隐藏别名"
+        );
     }
 
     #[test]
@@ -343,6 +460,18 @@ mod tests {
             parsed.last_value("hide_banner"),
             Some("1"),
             "可选参数未给值时应默认 1"
+        );
+        assert_eq!(
+            parsed
+                .last_option("hide_banner")
+                .map(|opt| opt.value_source),
+            Some(OptionValueSource::ImplicitDefault),
+            "应区分隐式默认值来源"
+        );
+        assert_eq!(
+            parsed.passthrough_tokens,
+            vec!["-hide_banner"],
+            "隐式默认值不应追加伪造值 token"
         );
     }
 

@@ -223,7 +223,7 @@ pub const MAIN_OPTIONS: &[OptionSpec] = &[
     OptionSpec {
         canonical: "show_data_hash",
         aliases: &["show_data_hash"],
-        value_kind: OptionValueKind::Optional,
+        value_kind: OptionValueKind::Required,
     },
     OptionSpec {
         canonical: "show_error",
@@ -248,7 +248,7 @@ pub const MAIN_OPTIONS: &[OptionSpec] = &[
     OptionSpec {
         canonical: "show_log",
         aliases: &["show_log"],
-        value_kind: OptionValueKind::Optional,
+        value_kind: OptionValueKind::Required,
     },
     OptionSpec {
         canonical: "show_packets",
@@ -308,7 +308,7 @@ pub const MAIN_OPTIONS: &[OptionSpec] = &[
     OptionSpec {
         canonical: "show_optional_fields",
         aliases: &["show_optional_fields"],
-        value_kind: OptionValueKind::Optional,
+        value_kind: OptionValueKind::Required,
     },
     OptionSpec {
         canonical: "show_private_data",

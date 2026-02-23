@@ -1236,213 +1236,26 @@ fn should_show_banner_on_error(argv: &[String], hide_banner: bool) -> bool {
 
 fn try_execute_ffprobe_global_passthrough(
     plan: &CommandPlan,
-    global: &GlobalCommand,
+    _global: &GlobalCommand,
 ) -> Option<Result<(), RunError>> {
-    let mut args = Vec::<String>::new();
-    if let Some(level) = plan.loglevel.as_deref() {
-        args.push("-v".to_string());
-        args.push(level.to_string());
-    }
-
-    match global {
-        GlobalCommand::Help(topic) => {
-            args.push("-h".to_string());
-            if let Some(topic) = topic.as_deref() {
-                args.push(topic.to_string());
-            }
-        }
-        GlobalCommand::Version => args.push("-version".to_string()),
-        GlobalCommand::BuildConf => args.push("-buildconf".to_string()),
-        GlobalCommand::License => args.push("-L".to_string()),
-        GlobalCommand::Formats => args.push("-formats".to_string()),
-        GlobalCommand::Muxers => args.push("-muxers".to_string()),
-        GlobalCommand::Demuxers => args.push("-demuxers".to_string()),
-        GlobalCommand::Devices => args.push("-devices".to_string()),
-        GlobalCommand::Codecs => args.push("-codecs".to_string()),
-        GlobalCommand::Decoders => args.push("-decoders".to_string()),
-        GlobalCommand::Encoders => args.push("-encoders".to_string()),
-        GlobalCommand::Bsfs => args.push("-bsfs".to_string()),
-        GlobalCommand::Protocols => args.push("-protocols".to_string()),
-        GlobalCommand::Filters => args.push("-filters".to_string()),
-        GlobalCommand::PixFmts => args.push("-pix_fmts".to_string()),
-        GlobalCommand::Layouts => args.push("-layouts".to_string()),
-        GlobalCommand::SampleFmts => args.push("-sample_fmts".to_string()),
-        GlobalCommand::Dispositions => args.push("-dispositions".to_string()),
-        GlobalCommand::Colors => args.push("-colors".to_string()),
-        GlobalCommand::Sections => args.push("-sections".to_string()),
-    }
-
+    let args = plan
+        .ordered_execution
+        .iter()
+        .map(|item| item.token.clone())
+        .collect::<Vec<_>>();
     Some(execute_ffprobe_passthrough(&args))
 }
 
 fn try_execute_ffprobe_probe_passthrough(plan: &CommandPlan) -> Option<Result<(), RunError>> {
-    let has_version_sections = plan.show.show_versions
-        || plan.show.show_program_version
-        || plan.show.show_library_versions;
-    let has_probe_request = plan.show.show_format
-        || plan.show.show_streams
-        || plan.show.show_packets
-        || plan.show.show_frames
-        || plan.show.show_programs
-        || plan.show.show_stream_groups
-        || plan.show.show_chapters
-        || plan.show.show_error
-        || plan.show.show_log
-        || plan.show.show_data
-        || plan.show.show_data_hash.is_some()
-        || plan.show.count_frames
-        || plan.show.count_packets
-        || plan.show.show_pixel_formats
-        || plan.select_streams.is_some()
-        || plan.show_entries.is_some()
-        || plan.output_format.is_some()
-        || plan.force_format.is_some()
-        || plan.read_intervals.is_some()
-        || plan.find_stream_info
-        || plan.display.unit
-        || plan.display.prefix
-        || plan.display.byte_binary_prefix
-        || plan.display.sexagesimal
-        || plan.display.pretty
-        || plan.display.show_optional_fields.is_some()
-        || plan.display.show_private_data;
-
-    if !has_version_sections && !has_probe_request {
+    if plan.ordered_execution.is_empty() {
         return None;
     }
 
-    if has_probe_request
-        && plan.input.is_none()
-        && !plan.show.show_pixel_formats
-        && !plan.show.show_program_version
-        && !plan.show.show_library_versions
-        && !plan.show.show_versions
-    {
-        return None;
-    }
-
-    let mut args = Vec::<String>::new();
-    if let Some(level) = plan.loglevel.as_deref() {
-        args.push("-v".to_string());
-        args.push(level.to_string());
-    }
-
-    if has_version_sections {
-        if plan.show.show_versions {
-            args.push("-show_versions".to_string());
-        } else {
-            if plan.show.show_program_version {
-                args.push("-show_program_version".to_string());
-            }
-            if plan.show.show_library_versions {
-                args.push("-show_library_versions".to_string());
-            }
-        }
-    }
-
-    if has_probe_request {
-        if plan.show.show_format {
-            args.push("-show_format".to_string());
-        }
-        if plan.show.show_streams {
-            args.push("-show_streams".to_string());
-        }
-        if plan.show.show_packets {
-            args.push("-show_packets".to_string());
-        }
-        if plan.show.show_frames {
-            args.push("-show_frames".to_string());
-        }
-        if plan.show.show_programs {
-            args.push("-show_programs".to_string());
-        }
-        if plan.show.show_stream_groups {
-            args.push("-show_stream_groups".to_string());
-        }
-        if plan.show.show_chapters {
-            args.push("-show_chapters".to_string());
-        }
-        if plan.show.show_error {
-            args.push("-show_error".to_string());
-        }
-        if plan.show.show_log {
-            args.push("-show_log".to_string());
-        }
-        if plan.show.show_data {
-            args.push("-show_data".to_string());
-        }
-        if let Some(show_data_hash) = plan.show.show_data_hash.as_deref() {
-            args.push("-show_data_hash".to_string());
-            args.push(show_data_hash.to_string());
-        }
-        if plan.show.count_frames {
-            args.push("-count_frames".to_string());
-        }
-        if plan.show.count_packets {
-            args.push("-count_packets".to_string());
-        }
-        if plan.show.show_pixel_formats {
-            args.push("-show_pixel_formats".to_string());
-        }
-        if plan.find_stream_info {
-            args.push("-find_stream_info".to_string());
-        }
-        if plan.display.unit {
-            args.push("-unit".to_string());
-        }
-        if plan.display.prefix {
-            args.push("-prefix".to_string());
-        }
-        if plan.display.byte_binary_prefix {
-            args.push("-byte_binary_prefix".to_string());
-        }
-        if plan.display.sexagesimal {
-            args.push("-sexagesimal".to_string());
-        }
-        if plan.display.pretty {
-            args.push("-pretty".to_string());
-        }
-        if let Some(show_optional_fields) = plan.display.show_optional_fields.as_deref() {
-            args.push("-show_optional_fields".to_string());
-            args.push(show_optional_fields.to_string());
-        }
-        if plan.display.show_private_data {
-            args.push("-show_private_data".to_string());
-        }
-
-        if let Some(show_entries) = plan.show_entries.as_deref() {
-            args.push("-show_entries".to_string());
-            args.push(show_entries.to_string());
-        }
-        if let Some(select_streams) = plan.select_streams.as_deref() {
-            args.push("-select_streams".to_string());
-            args.push(select_streams.to_string());
-        }
-        if let Some(read_intervals) = plan.read_intervals.as_deref() {
-            args.push("-read_intervals".to_string());
-            args.push(read_intervals.to_string());
-        }
-        if let Some(output_format) = plan.output_format.as_deref() {
-            args.push("-of".to_string());
-            args.push(output_format.to_string());
-        }
-        if let Some(force_format) = plan.force_format.as_deref() {
-            args.push("-f".to_string());
-            args.push(force_format.to_string());
-        }
-        if let Some(print_filename) = plan.print_filename.as_deref() {
-            args.push("-print_filename".to_string());
-            args.push(print_filename.to_string());
-        }
-        if let Some(output_path) = plan.output_path.as_deref() {
-            args.push("-o".to_string());
-            args.push(output_path.to_string());
-        }
-        if let Some(input) = plan.input.as_deref() {
-            args.push(input.to_string());
-        }
-    }
-
+    let args = plan
+        .ordered_execution
+        .iter()
+        .map(|item| item.token.clone())
+        .collect::<Vec<_>>();
     Some(execute_ffprobe_passthrough(&args))
 }
 

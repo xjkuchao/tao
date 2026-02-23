@@ -1,0 +1,49 @@
+# 全局命令
+-v error -h
+-v error -version
+-v error -show_program_version
+-v error -show_library_versions
+-v error -show_versions
+-v error -sections
+-v error -formats
+-v error -demuxers
+-v error -muxers
+-v error -codecs
+-v error -decoders
+-v error -encoders
+-v error -pix_fmts
+
+# 参数错误与边界
+-v error -foo bar
+-v error -show_entries
+-v error -f not-a-format {SAMPLE}
+-v error -show_streams -select_streams not-valid {SAMPLE}
+-v error -show_optional_fields
+-v error -show_optional_fields=1
+-v error -show_private_data=0 -show_streams -of json {SAMPLE}
+-v error -show_private_data 0 -show_streams -of json {SAMPLE}
+-v error -show_data_hash -show_packets {SAMPLE}
+-v error -show_data_hash=md5 -show_packets {SAMPLE}
+-v=error -h
+-loglevel=error -h
+-v error -show_streams -of=json {SAMPLE}
+
+# 探测输出与顺序敏感场景
+-v error -show_packets {SAMPLE}
+-v error -show_streams -of json {SAMPLE}
+-v error -show_format -show_streams -of json {SAMPLE}
+-v error -show_streams -show_entries stream=index,codec_type -of json {SAMPLE}
+-v error -show_entries stream=index,codec_type -show_streams -of json {SAMPLE}
+-v error -show_streams -select_streams a:0 -of json {SAMPLE}
+-v error -show_streams -count_packets -of json {SAMPLE}
+-v error -show_pixel_formats
+-v error -show_entries format=filename,duration -show_format -of json {SAMPLE}
+-v error -show_format -show_entries format=filename,duration -of json {SAMPLE}
+-v error -show_entries stream=index,codec_name,channels -show_streams -of json {SAMPLE}
+-v error -show_streams -show_entries stream=index,codec_name,channels -of json {SAMPLE}
+-v error -show_entries stream=index -show_streams -of compact {SAMPLE}
+-v error -show_streams -show_entries stream=index -of compact {SAMPLE}
+-v error -show_entries stream=index -show_streams -of csv {SAMPLE}
+-v error -show_streams -show_entries stream=index -of csv {SAMPLE}
+-v error -show_entries format=duration -show_format {SAMPLE}
+-v error -show_format -show_entries format=duration {SAMPLE}

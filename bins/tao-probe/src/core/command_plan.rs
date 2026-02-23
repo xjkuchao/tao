@@ -2,7 +2,7 @@
 //!
 //! 将原始参数解析结果统一成可执行的 `CommandPlan`.
 
-use crate::cli::parser::{CliError, ParsedArgs};
+use crate::cli::parser::{CliError, OptionValueSource, ParsedArgs, ParsedOption};
 use crate::compat::unimplemented;
 
 /// 全局命令.
@@ -39,7 +39,9 @@ pub struct DisplayModifiers {
     pub sexagesimal: bool,
     pub pretty: bool,
     pub show_optional_fields: Option<String>,
+    pub show_optional_fields_state: OptionalValueState,
     pub show_private_data: bool,
+    pub show_private_data_state: OptionalValueState,
 }
 
 /// 探测输出开关.
@@ -56,12 +58,31 @@ pub struct ShowSwitches {
     pub show_log: bool,
     pub show_data: bool,
     pub show_data_hash: Option<String>,
+    pub show_data_hash_state: OptionalValueState,
     pub count_frames: bool,
     pub count_packets: bool,
     pub show_program_version: bool,
     pub show_library_versions: bool,
     pub show_versions: bool,
     pub show_pixel_formats: bool,
+}
+
+/// 可选参数值状态（三态）.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum OptionalValueState {
+    /// 参数未出现.
+    #[default]
+    Absent,
+    /// 参数出现但未显式给值.
+    PresentImplicit,
+    /// 参数出现且显式给值.
+    PresentExplicit(String),
+}
+
+/// 有序执行项（用于 passthrough 保序执行）.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderedExecutionItem {
+    pub token: String,
 }
 
 /// 统一执行计划.
@@ -86,6 +107,7 @@ pub struct CommandPlan {
     pub display: DisplayModifiers,
 
     pub avoptions: Vec<(String, String)>,
+    pub ordered_execution: Vec<OrderedExecutionItem>,
     pub unimplemented_hits: Vec<&'static unimplemented::UnimplementedEntry>,
 }
 
@@ -112,11 +134,20 @@ pub fn build_command_plan(parsed: &ParsedArgs) -> Result<CommandPlan, CliError> 
     plan.display.byte_binary_prefix = parsed.has("byte_binary_prefix");
     plan.display.sexagesimal = parsed.has("sexagesimal");
     plan.display.pretty = parsed.has("pretty");
+    plan.display.show_optional_fields_state =
+        optional_value_state(parsed.last_option("show_optional_fields"));
     plan.display.show_optional_fields = parsed
         .last_value("show_optional_fields")
         .map(ToString::to_string);
-    plan.display.show_private_data = parse_optional_bool(parsed.last_value("show_private_data"))
-        .unwrap_or(parsed.has("show_private_data"));
+    plan.display.show_private_data_state =
+        optional_value_state(parsed.last_option("show_private_data"));
+    plan.display.show_private_data = match &plan.display.show_private_data_state {
+        OptionalValueState::Absent => false,
+        OptionalValueState::PresentImplicit => true,
+        OptionalValueState::PresentExplicit(value) => {
+            parse_optional_bool(Some(value.as_str())).unwrap_or(true)
+        }
+    };
 
     if plan.display.pretty {
         plan.display.unit = true;
@@ -135,10 +166,17 @@ pub fn build_command_plan(parsed: &ParsedArgs) -> Result<CommandPlan, CliError> 
     plan.show.show_error = parsed.has("show_error");
     plan.show.show_log = parsed.has("show_log");
     plan.show.show_data = parsed.has("show_data");
+    plan.show.show_data_hash_state = optional_value_state(parsed.last_option("show_data_hash"));
     plan.show.show_data_hash = parsed
         .last_value("show_data_hash")
         .map(ToString::to_string)
-        .or_else(|| parsed.has("show_data_hash").then(|| "md5".to_string()));
+        .or_else(|| {
+            matches!(
+                plan.show.show_data_hash_state,
+                OptionalValueState::PresentImplicit
+            )
+            .then(|| "md5".to_string())
+        });
     plan.show.count_frames = parsed.has("count_frames");
     plan.show.count_packets = parsed.has("count_packets");
     plan.show.show_program_version = parsed.has("show_program_version");
@@ -163,6 +201,13 @@ pub fn build_command_plan(parsed: &ParsedArgs) -> Result<CommandPlan, CliError> 
         }
     }
 
+    plan.ordered_execution = parsed
+        .passthrough_tokens
+        .iter()
+        .cloned()
+        .map(|token| OrderedExecutionItem { token })
+        .collect();
+
     let mut input_candidates: Vec<String> =
         parsed.values("i").iter().map(|s| s.to_string()).collect();
     input_candidates.extend(parsed.positionals.iter().cloned());
@@ -180,7 +225,11 @@ pub fn build_command_plan(parsed: &ParsedArgs) -> Result<CommandPlan, CliError> 
     plan.input = input_candidates.into_iter().next();
 
     // 无全局命令时, 仅部分 show 命令可无输入执行.
-    if plan.global_command.is_none() && plan.input.is_none() && !can_run_without_input(&plan) {
+    if plan.global_command.is_none()
+        && plan.input.is_none()
+        && !can_run_without_input(&plan)
+        && parsed.options.is_empty()
+    {
         return Err(CliError {
             message: "You have to specify one input file.\nUse -h to get full help or, even better, run 'man ffprobe'."
                 .to_string(),
@@ -227,8 +276,29 @@ fn parse_optional_bool(value: Option<&str>) -> Option<bool> {
     }
 }
 
+fn optional_value_state(option: Option<&ParsedOption>) -> OptionalValueState {
+    let Some(option) = option else {
+        return OptionalValueState::Absent;
+    };
+
+    match option.value_source {
+        OptionValueSource::None => OptionalValueState::PresentImplicit,
+        OptionValueSource::ImplicitDefault => OptionalValueState::PresentImplicit,
+        OptionValueSource::Inline
+        | OptionValueSource::Separate
+        | OptionValueSource::LegacyAlias => option
+            .value
+            .clone()
+            .map(OptionalValueState::PresentExplicit)
+            .unwrap_or(OptionalValueState::PresentImplicit),
+    }
+}
+
 fn can_run_without_input(plan: &CommandPlan) -> bool {
-    plan.show.show_program_version || plan.show.show_library_versions || plan.show.show_versions
+    plan.show.show_program_version
+        || plan.show.show_library_versions
+        || plan.show.show_versions
+        || plan.show.show_pixel_formats
 }
 
 #[cfg(test)]
