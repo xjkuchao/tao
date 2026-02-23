@@ -528,9 +528,9 @@ fn test_predict_p_skip_mv_returns_zero_when_left_top_mb_motion_are_zero() {
     dec.mv_l0_y[top_mb] = 0;
     dec.ref_idx_l0[top_mb] = 0;
 
-    // 即便 4x4 状态存在非零候选, P_Skip 也应优先走零向量分支.
-    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 8, 0, 0);
-    dec.set_l0_motion_block_4x4(16, 0, 16, 16, 12, 0, 0);
+    // 4x4 级别邻居也设为零向量 (规范使用 4x4 级别候选).
+    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 0, 0, 0);
+    dec.set_l0_motion_block_4x4(16, 0, 16, 16, 0, 0, 0);
 
     let mv = dec.predict_p_skip_mv(1, 1);
     assert_eq!(mv, (0, 0), "左/上邻居均为零向量时 P_Skip 应输出零 MV");

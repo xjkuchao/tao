@@ -645,7 +645,10 @@ impl H264Decoder {
                     (0, 0) => mb_top_avail,
                     (1, 0) => mb_top_right_avail,
                     (0, 1) => true,
-                    (1, 1) => mb_right_avail,
+                    // 8x8 block 3 (bottom-right): topright samples are in
+                    // the right MB which hasn't been decoded yet.
+                    // ffmpeg: topright_samples_available bit 2 of 0xEEEA = 0.
+                    (1, 1) => false,
                     _ => unreachable!(),
                 },
             };

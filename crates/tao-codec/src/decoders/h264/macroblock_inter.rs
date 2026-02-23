@@ -408,14 +408,28 @@ impl H264Decoder {
         if col_ref_idx < 0 || ref_l0_list.is_empty() {
             return -1;
         }
-        let col_l0_list = self.collect_default_reference_list_l0_for_colocated_picture(col_pic);
-        if let Some(col_ref_pic) = col_l0_list.get(col_ref_idx as usize).copied()
-            && let Some((idx, _)) = ref_l0_list
+        // BUG-4 修复: 使用共定位图片解码时存储的 L0 POC 进行 POC 匹配,
+        // 而非从当前 DPB 重建 (DPB 可能已在 MMCO/新帧进入后发生变化).
+        if let Some(&col_ref_poc) = col_pic.ref_l0_poc.get(col_ref_idx as usize) {
+            if let Some((idx, _)) = ref_l0_list
                 .iter()
                 .enumerate()
-                .find(|(_, planes)| Self::ref_planes_matches_picture(planes, col_ref_pic))
-        {
-            return idx as i8;
+                .find(|(_, planes)| planes.poc == col_ref_poc)
+            {
+                return idx as i8;
+            }
+        } else {
+            // 回退: 如果存储的 POC 列表不可用, 使用旧的 DPB 重建方法
+            let col_l0_list =
+                self.collect_default_reference_list_l0_for_colocated_picture(col_pic);
+            if let Some(col_ref_pic) = col_l0_list.get(col_ref_idx as usize).copied()
+                && let Some((idx, _)) = ref_l0_list
+                    .iter()
+                    .enumerate()
+                    .find(|(_, planes)| Self::ref_planes_matches_picture(planes, col_ref_pic))
+            {
+                return idx as i8;
+            }
         }
         0
     }
@@ -462,22 +476,16 @@ impl H264Decoder {
 
             let mut ref_idx_l0 = Self::spatial_direct_ref_idx_from_neighbors(&l0_cands);
             let mut ref_idx_l1 = Self::spatial_direct_ref_idx_from_neighbors(&l1_cands);
-            // 对齐规范空间 Direct 路径:
-            // 当 L0/L1 都无法由 A/B/C 邻居推导时, 退回 temporal direct 推导,
-            // 避免把双列表都硬钉到 ref_idx=0 导致系统性漂移.
+            // H.264 spec 8.4.1.2.2: 当所有空间邻居都不可用时,
+            // 设 refIdxL0=0, refIdxL1=0, MV 将由后续 spatial_direct_mv_from_neighbors
+            // 返回 fallback (0,0). 不应回退到 temporal direct.
             if ref_idx_l0.is_none() && ref_idx_l1.is_none() {
-                return self.build_b_direct_motion_for_part(
-                    mb_x,
-                    mb_y,
-                    part_x4,
-                    part_y4,
-                    part_w4,
-                    mv_x,
-                    mv_y,
-                    false,
-                    ref_l0_list,
-                    ref_l1_list,
-                );
+                if !ref_l0_list.is_empty() {
+                    ref_idx_l0 = Some(0);
+                }
+                if !ref_l1_list.is_empty() {
+                    ref_idx_l1 = Some(0);
+                }
             }
             if ref_idx_l0.is_none() && !ref_l0_list.is_empty() {
                 ref_idx_l0 = Some(0);
@@ -732,30 +740,40 @@ impl H264Decoder {
         last_mv
     }
 
-    /// 推导 P_Skip 的 L0 运动向量.
+    /// 推导 P_Skip 的 L0 运动向量 (H.264 spec 8.4.1.1).
     ///
-    /// 规则:
-    /// - 当左/上邻居都存在且二者均为 `ref_idx=0 且 mv=(0,0)` 时, 返回零向量.
-    /// - 其它情况退化为 `ref_idx=0` 的 16x16 MVP.
+    /// 规则 (对齐 ffmpeg `pred_pskip_motion`):
+    /// - 若 mbAddrA 不存在 (画面左边界): 返回 (0,0).
+    /// - 若 mbAddrB 不存在 (画面上边界): 返回 (0,0).
+    /// - 若 mbAddrA 使用 L0 且 ref==0 且 mv==(0,0): 返回 (0,0).
+    /// - 若 mbAddrB 使用 L0 且 ref==0 且 mv==(0,0): 返回 (0,0).
+    /// - 否则: 走 `ref_idx=0` 的 16x16 median 预测.
+    ///
+    /// 注意: intra 邻居视为 "存在但不使用 L0", 不触发零向量快捷返回.
     pub(super) fn predict_p_skip_mv(&self, mb_x: usize, mb_y: usize) -> (i32, i32) {
-        let left = if mb_x > 0 {
-            self.mb_index(mb_x - 1, mb_y)
-        } else {
-            None
-        };
-        let top = if mb_y > 0 {
-            self.mb_index(mb_x, mb_y - 1)
-        } else {
-            None
-        };
-        if let (Some(left_idx), Some(top_idx)) = (left, top) {
-            let left_zero = self.ref_idx_l0.get(left_idx).copied().unwrap_or(-1) == 0
-                && self.mv_l0_x.get(left_idx).copied().unwrap_or(0) == 0
-                && self.mv_l0_y.get(left_idx).copied().unwrap_or(0) == 0;
-            let top_zero = self.ref_idx_l0.get(top_idx).copied().unwrap_or(-1) == 0
-                && self.mv_l0_x.get(top_idx).copied().unwrap_or(0) == 0
-                && self.mv_l0_y.get(top_idx).copied().unwrap_or(0) == 0;
-            if left_zero && top_zero {
+        // spec 8.4.1.1: mbAddrA 不可用 (画面边界) -> (0,0)
+        if mb_x == 0 {
+            return (0, 0);
+        }
+        // spec 8.4.1.1: mbAddrB 不可用 (画面边界) -> (0,0)
+        if mb_y == 0 {
+            return (0, 0);
+        }
+        let x4 = mb_x * 4;
+        let y4 = mb_y * 4;
+        // 使用 4x4 级别查询, 确保分区化邻居读取正确的边界块.
+        // l0_motion_candidate_4x4 对 intra 邻居 (ref_idx<0) 返回 None -> 不触发 zeromv.
+        if let Some((mvx, mvy, ref_idx)) =
+            self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
+        {
+            if ref_idx == 0 && mvx == 0 && mvy == 0 {
+                return (0, 0);
+            }
+        }
+        if let Some((mvx, mvy, ref_idx)) =
+            self.l0_motion_candidate_4x4(x4 as isize, y4 as isize - 1)
+        {
+            if ref_idx == 0 && mvx == 0 && mvy == 0 {
                 return (0, 0);
             }
         }

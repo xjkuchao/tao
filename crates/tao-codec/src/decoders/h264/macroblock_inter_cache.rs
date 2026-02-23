@@ -707,14 +707,18 @@ impl H264Decoder {
                         if part_use_l0[part] {
                             let x4 = mb_x * 4 + part_x4[part];
                             let y4 = mb_y * 4 + part_y4[part];
-                            let (pred_x, pred_y) = self.predict_mv_l0_partition(
-                                mb_x,
-                                mb_y,
-                                part_x4[part],
-                                part_y4[part],
-                                part_w4[part],
-                                ref_idx_l0[part],
-                            );
+                            let (pred_x, pred_y) = match shape {
+                                1 => self.predict_mv_l0_16x8(mb_x, mb_y, part, ref_idx_l0[part]),
+                                2 => self.predict_mv_l0_8x16(mb_x, mb_y, part, ref_idx_l0[part]),
+                                _ => self.predict_mv_l0_partition(
+                                    mb_x,
+                                    mb_y,
+                                    part_x4[part],
+                                    part_y4[part],
+                                    part_w4[part],
+                                    ref_idx_l0[part],
+                                ),
+                            };
                             let (amvd_x, amvd_y) = self.compute_cabac_amvd(x4, y4, 0);
                             let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
                             let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
@@ -738,14 +742,18 @@ impl H264Decoder {
                         if part_use_l1[part] {
                             let x4 = mb_x * 4 + part_x4[part];
                             let y4 = mb_y * 4 + part_y4[part];
-                            let (pred_x, pred_y) = self.predict_mv_l1_partition(
-                                mb_x,
-                                mb_y,
-                                part_x4[part],
-                                part_y4[part],
-                                part_w4[part],
-                                ref_idx_l1[part],
-                            );
+                            let (pred_x, pred_y) = match shape {
+                                1 => self.predict_mv_l1_16x8(mb_x, mb_y, part, ref_idx_l1[part]),
+                                2 => self.predict_mv_l1_8x16(mb_x, mb_y, part, ref_idx_l1[part]),
+                                _ => self.predict_mv_l1_partition(
+                                    mb_x,
+                                    mb_y,
+                                    part_x4[part],
+                                    part_y4[part],
+                                    part_w4[part],
+                                    ref_idx_l1[part],
+                                ),
+                            };
                             let (amvd_x, amvd_y) = self.compute_cabac_amvd(x4, y4, 1);
                             let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
                             let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);

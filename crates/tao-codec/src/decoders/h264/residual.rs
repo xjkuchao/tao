@@ -421,35 +421,37 @@ fn scale_index(row: usize, col: usize) -> usize {
 
 /// 4x4 反整数 DCT 变换 (AC 残差解码时使用)
 ///
-/// 与 FFmpeg 一致采用列优先(column-first)顺序, 避免 `>>1` 截断差异.
+/// 按 H.264 spec 8.5.12.1 顺序: 先行变换, 后列变换.
+/// tao 的系数是标准 raster 顺序 (row-major), 因此需要行优先处理.
+/// (ffmpeg 因 TRANSPOSE 宏将系数转置存储, 其 "列优先" IDCT 等效于行优先.)
 #[allow(dead_code)]
 pub fn idct_4x4(coeffs: &[i32; 16], out: &mut [i32; 16]) {
-    // 对齐 FFmpeg `ff_h264_idct_add`:
-    // 先给 DC 系数加 32, 再做两趟蝶形变换, 最终统一 `>> 6`.
     let mut block = *coeffs;
     block[0] += 32;
 
-    for i in 0..4 {
-        let z0 = block[i] + block[i + 8];
-        let z1 = block[i] - block[i + 8];
-        let z2 = (block[i + 4] >> 1) - block[i + 12];
-        let z3 = block[i + 4] + (block[i + 12] >> 1);
-        block[i] = z0 + z3;
-        block[i + 4] = z1 + z2;
-        block[i + 8] = z1 - z2;
-        block[i + 12] = z0 - z3;
-    }
-
+    // Pass 1: 行变换 (spec step 1: 对每行 i, 蝶形变换 c_{i,0..3})
     for i in 0..4 {
         let s = i * 4;
         let z0 = block[s] + block[s + 2];
         let z1 = block[s] - block[s + 2];
         let z2 = (block[s + 1] >> 1) - block[s + 3];
         let z3 = block[s + 1] + (block[s + 3] >> 1);
-        out[s] = (z0 + z3) >> 6;
-        out[s + 1] = (z1 + z2) >> 6;
-        out[s + 2] = (z1 - z2) >> 6;
-        out[s + 3] = (z0 - z3) >> 6;
+        block[s] = z0 + z3;
+        block[s + 1] = z1 + z2;
+        block[s + 2] = z1 - z2;
+        block[s + 3] = z0 - z3;
+    }
+
+    // Pass 2: 列变换 + >>6 (spec step 2: 对每列 j, 蝶形变换 f_{0..3,j})
+    for i in 0..4 {
+        let z0 = block[i] + block[i + 8];
+        let z1 = block[i] - block[i + 8];
+        let z2 = (block[i + 4] >> 1) - block[i + 12];
+        let z3 = block[i + 4] + (block[i + 12] >> 1);
+        out[i] = (z0 + z3) >> 6;
+        out[i + 4] = (z1 + z2) >> 6;
+        out[i + 8] = (z1 - z2) >> 6;
+        out[i + 12] = (z0 - z3) >> 6;
     }
 }
 
@@ -492,12 +494,45 @@ pub fn dequant_8x8_ac_with_scaling(
 }
 
 /// H.264 8x8 反整数变换.
-/// 对齐 FFmpeg `ff_h264_idct8_add`: 先对 `coeff[0]` 加 32, 再执行两趟变换并最终 `>> 6`.
+/// 按 H.264 spec 8.5.12.2 顺序: 先行变换, 后列变换.
 pub fn idct_8x8(coeffs: &[i32; 64], out: &mut [i32; 64]) {
     let mut block = *coeffs;
     block[0] += 32;
 
-    // 第一趟: 按列变换.
+    // Pass 1: 行变换 (spec step 1)
+    for i in 0..8 {
+        let row = i * 8;
+        let a0 = block[row] + block[row + 4];
+        let a2 = block[row] - block[row + 4];
+        let a4 = (block[row + 2] >> 1) - block[row + 6];
+        let a6 = (block[row + 6] >> 1) + block[row + 2];
+
+        let b0 = a0 + a6;
+        let b2 = a2 + a4;
+        let b4 = a2 - a4;
+        let b6 = a0 - a6;
+
+        let a1 = -block[row + 3] + block[row + 5] - block[row + 7] - (block[row + 7] >> 1);
+        let a3 = block[row + 1] + block[row + 7] - block[row + 3] - (block[row + 3] >> 1);
+        let a5 = -block[row + 1] + block[row + 7] + block[row + 5] + (block[row + 5] >> 1);
+        let a7 = block[row + 3] + block[row + 5] + block[row + 1] + (block[row + 1] >> 1);
+
+        let b1 = (a7 >> 2) + a1;
+        let b3 = a3 + (a5 >> 2);
+        let b5 = (a3 >> 2) - a5;
+        let b7 = a7 - (a1 >> 2);
+
+        block[row] = b0 + b7;
+        block[row + 7] = b0 - b7;
+        block[row + 1] = b2 + b5;
+        block[row + 6] = b2 - b5;
+        block[row + 2] = b4 + b3;
+        block[row + 5] = b4 - b3;
+        block[row + 3] = b6 + b1;
+        block[row + 4] = b6 - b1;
+    }
+
+    // Pass 2: 列变换 + >>6 (spec step 2)
     for i in 0..8 {
         let a0 = block[i] + block[i + 4 * 8];
         let a2 = block[i] - block[i + 4 * 8];
@@ -522,47 +557,14 @@ pub fn idct_8x8(coeffs: &[i32; 64], out: &mut [i32; 64]) {
         let b5 = (a3 >> 2) - a5;
         let b7 = a7 - (a1 >> 2);
 
-        block[i] = b0 + b7;
-        block[i + 7 * 8] = b0 - b7;
-        block[i + 8] = b2 + b5;
-        block[i + 6 * 8] = b2 - b5;
-        block[i + 2 * 8] = b4 + b3;
-        block[i + 5 * 8] = b4 - b3;
-        block[i + 3 * 8] = b6 + b1;
-        block[i + 4 * 8] = b6 - b1;
-    }
-
-    // 第二趟: 按行变换 + 最终右移.
-    for i in 0..8 {
-        let row = i * 8;
-        let a0 = block[row] + block[row + 4];
-        let a2 = block[row] - block[row + 4];
-        let a4 = (block[row + 2] >> 1) - block[row + 6];
-        let a6 = (block[row + 6] >> 1) + block[row + 2];
-
-        let b0 = a0 + a6;
-        let b2 = a2 + a4;
-        let b4 = a2 - a4;
-        let b6 = a0 - a6;
-
-        let a1 = -block[row + 3] + block[row + 5] - block[row + 7] - (block[row + 7] >> 1);
-        let a3 = block[row + 1] + block[row + 7] - block[row + 3] - (block[row + 3] >> 1);
-        let a5 = -block[row + 1] + block[row + 7] + block[row + 5] + (block[row + 5] >> 1);
-        let a7 = block[row + 3] + block[row + 5] + block[row + 1] + (block[row + 1] >> 1);
-
-        let b1 = (a7 >> 2) + a1;
-        let b3 = a3 + (a5 >> 2);
-        let b5 = (a3 >> 2) - a5;
-        let b7 = a7 - (a1 >> 2);
-
-        out[row] = (b0 + b7) >> 6;
-        out[row + 1] = (b2 + b5) >> 6;
-        out[row + 2] = (b4 + b3) >> 6;
-        out[row + 3] = (b6 + b1) >> 6;
-        out[row + 4] = (b6 - b1) >> 6;
-        out[row + 5] = (b4 - b3) >> 6;
-        out[row + 6] = (b2 - b5) >> 6;
-        out[row + 7] = (b0 - b7) >> 6;
+        out[i] = (b0 + b7) >> 6;
+        out[i + 7 * 8] = (b0 - b7) >> 6;
+        out[i + 8] = (b2 + b5) >> 6;
+        out[i + 6 * 8] = (b2 - b5) >> 6;
+        out[i + 2 * 8] = (b4 + b3) >> 6;
+        out[i + 5 * 8] = (b4 - b3) >> 6;
+        out[i + 3 * 8] = (b6 + b1) >> 6;
+        out[i + 4 * 8] = (b6 - b1) >> 6;
     }
 }
 

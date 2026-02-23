@@ -274,15 +274,19 @@ impl H264Decoder {
 
         let mut data_bit_offset = br.bits_read();
         if pps.entropy_coding_mode == 1 {
-            let cabac_alignment_one_bit = br.read_bit()?;
-            if cabac_alignment_one_bit != 1 {
-                return Err(TaoError::InvalidData(format!(
-                    "H264: cabac_alignment_one_bit 非法, value={}",
-                    cabac_alignment_one_bit
-                )));
-            }
+            // H.264 spec 7.3.2.8: while( !byte_aligned() ) cabac_alignment_one_bit
+            // 注意: 仅当当前位置未对齐时才读取对齐位, 已对齐则直接开始 CABAC 数据.
+            let mut first_alignment = true;
             while br.bits_read() & 7 != 0 {
-                let _cabac_alignment_zero_bit = br.read_bit()?;
+                let alignment_bit = br.read_bit()?;
+                if first_alignment {
+                    if alignment_bit != 1 {
+                        return Err(TaoError::InvalidData(
+                            "H264: cabac_alignment_one_bit 必须为 1".into(),
+                        ));
+                    }
+                    first_alignment = false;
+                }
             }
             data_bit_offset = br.bits_read();
         }

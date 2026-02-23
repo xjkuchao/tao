@@ -44,12 +44,12 @@ fn test_parse_slice_header_cabac_alignment_on_byte_boundary() {
         .expect("CABAC 对齐应可解析");
 
     assert_eq!(
-        header.data_bit_offset, 32,
-        "header 结束在字节边界时, 仍需消费 cabac_alignment_one_bit 与补零"
+        header.data_bit_offset, 24,
+        "header 结束在字节边界时, 无需消费对齐位, CABAC 直接开始"
     );
     assert_eq!(
-        header.cabac_start_byte, 4,
-        "CABAC 数据起始字节应位于对齐位之后"
+        header.cabac_start_byte, 3,
+        "CABAC 数据起始字节应紧跟 header 之后 (无需对齐)"
     );
 }
 
@@ -63,8 +63,11 @@ fn test_parse_slice_header_reject_invalid_cabac_alignment_one_bit() {
     pps7.pps_id = 7;
     dec.pps_map.insert(7, pps7);
 
-    let mut rbsp = build_p_slice_header_rbsp(7, 0, 0, 0, 0, 1);
-    rbsp[3] &= 0x7f;
+    // 使用 cabac_init_idc=1 使 header 结束在非字节边界 (26 bits),
+    // 这样才有对齐位需要验证.
+    let mut rbsp = build_p_slice_header_rbsp(7, 0, 0, 1, 0, 1);
+    // 清除第一个对齐位 (bit 26 = byte 3 的 bit 5) 使其为 0 而非 1.
+    rbsp[3] &= 0xDF;
 
     let nalu = NalUnit::parse(&[0x01]).expect("测试构造 slice NAL 失败");
     let err = match dec.parse_slice_header(&rbsp, &nalu) {

@@ -74,9 +74,14 @@ impl H264Decoder {
             return (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1));
         }
 
+        // 对齐 ffmpeg pred_motion: 不可用邻居使用 (0,0), 非级联默认值.
         let a = cand_a.map(|(x, y, _)| (x, y)).unwrap_or((0, 0));
-        let b = cand_b.map(|(x, y, _)| (x, y)).unwrap_or(a);
-        let c = cand_c.map(|(x, y, _)| (x, y)).unwrap_or(b);
+        let b = cand_b.map(|(x, y, _)| (x, y)).unwrap_or((0, 0));
+        let c = cand_c.map(|(x, y, _)| (x, y)).unwrap_or((0, 0));
+        // spec: 仅 A 可用 (B/C 都不可用) 时直接返回 A.
+        if cand_b.is_none() && cand_c.is_none() && cand_a.is_some() {
+            return a;
+        }
         (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1))
     }
 
@@ -126,9 +131,14 @@ impl H264Decoder {
             return (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1));
         }
 
+        // 对齐 ffmpeg pred_motion: 不可用邻居使用 (0,0), 非级联默认值.
         let a = cand_a.map(|(x, y, _)| (x, y)).unwrap_or((0, 0));
-        let b = cand_b.map(|(x, y, _)| (x, y)).unwrap_or(a);
-        let c = cand_c.map(|(x, y, _)| (x, y)).unwrap_or(b);
+        let b = cand_b.map(|(x, y, _)| (x, y)).unwrap_or((0, 0));
+        let c = cand_c.map(|(x, y, _)| (x, y)).unwrap_or((0, 0));
+        // spec: 仅 A 可用 (B/C 都不可用) 时直接返回 A.
+        if cand_b.is_none() && cand_c.is_none() && cand_a.is_some() {
+            return a;
+        }
         (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1))
     }
 
@@ -204,6 +214,67 @@ impl H264Decoder {
             }
         }
         self.predict_mv_l0_partition(mb_x, mb_y, part * 2, 0, 2, ref_idx)
+    }
+
+    /// L1 版本的 16x8 方向性 MV 预测 (对标 FFmpeg pred_16x8_motion with list=1).
+    pub(super) fn predict_mv_l1_16x8(
+        &self,
+        mb_x: usize,
+        mb_y: usize,
+        part: usize,
+        ref_idx: i8,
+    ) -> (i32, i32) {
+        let x4 = mb_x * 4;
+        let y4 = mb_y * 4 + part * 2;
+        if part == 0 {
+            if let Some((mv_x, mv_y, top_ref)) =
+                self.l1_motion_candidate_4x4(x4 as isize, y4 as isize - 1)
+            {
+                if top_ref == ref_idx {
+                    return (mv_x, mv_y);
+                }
+            }
+        } else {
+            if let Some((mv_x, mv_y, left_ref)) =
+                self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
+            {
+                if left_ref == ref_idx {
+                    return (mv_x, mv_y);
+                }
+            }
+        }
+        self.predict_mv_l1_partition(mb_x, mb_y, 0, part * 2, 4, ref_idx)
+    }
+
+    /// L1 版本的 8x16 方向性 MV 预测 (对标 FFmpeg pred_8x16_motion with list=1).
+    pub(super) fn predict_mv_l1_8x16(
+        &self,
+        mb_x: usize,
+        mb_y: usize,
+        part: usize,
+        ref_idx: i8,
+    ) -> (i32, i32) {
+        let x4 = mb_x * 4 + part * 2;
+        let y4 = mb_y * 4;
+        if part == 0 {
+            if let Some((mv_x, mv_y, left_ref)) =
+                self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
+            {
+                if left_ref == ref_idx {
+                    return (mv_x, mv_y);
+                }
+            }
+        } else {
+            let diag = self
+                .l1_motion_candidate_4x4((x4 + 2) as isize, y4 as isize - 1)
+                .or_else(|| self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize - 1));
+            if let Some((mv_x, mv_y, diag_ref)) = diag {
+                if diag_ref == ref_idx {
+                    return (mv_x, mv_y);
+                }
+            }
+        }
+        self.predict_mv_l1_partition(mb_x, mb_y, part * 2, 0, 2, ref_idx)
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -26,34 +26,47 @@ fn test_decode_cavlc_slice_data_p_skip_run_reconstructs_from_l0_prediction() {
 fn test_decode_cavlc_slice_data_p_skip_run_uses_predicted_mv_from_left_neighbor() {
     let mut dec = build_test_decoder();
     dec.width = 32;
-    dec.height = 16;
+    dec.height = 32;
     dec.init_buffers();
     push_horizontal_gradient_reference(&mut dec, 3, 3, None);
 
-    // 仅解码第 2 个宏块, 并预置左邻宏块运动向量为 +1 像素(qpel=4),
-    // 使 P_Skip 的 MVP 可以观测到非零位移.
-    dec.mv_l0_x[0] = 4;
-    dec.mv_l0_y[0] = 0;
-    dec.ref_idx_l0[0] = 0;
-    dec.set_l0_motion_block_4x4(0, 0, 16, 16, 4, 0, 0);
-    dec.mb_types[0] = 200;
+    // P_Skip 放到 (1,1): 左邻 (0,1) 有非零 MV, 上邻 (1,0) 有非零 MV.
+    // 规范 8.4.1.1: 两邻居都可用且非零向量时, 走 median 预测.
+    let left_mb = dec.mb_index(0, 1).expect("左邻索引");
+    let top_mb = dec.mb_index(1, 0).expect("上邻索引");
+    // 左邻: mv=(4,0), ref=0 → 不触发零向量快捷
+    dec.mv_l0_x[left_mb] = 4;
+    dec.mv_l0_y[left_mb] = 0;
+    dec.ref_idx_l0[left_mb] = 0;
+    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 4, 0, 0);
+    dec.mb_types[left_mb] = 200;
+    // 上邻: mv=(4,0), ref=0 → 不触发零向量快捷
+    dec.mv_l0_x[top_mb] = 4;
+    dec.mv_l0_y[top_mb] = 0;
+    dec.ref_idx_l0[top_mb] = 0;
+    dec.set_l0_motion_block_4x4(16, 0, 16, 16, 4, 0, 0);
+    dec.mb_types[top_mb] = 200;
 
+    // 目标宏块 (1,1) = mb_idx=3 (mb_width=2)
+    let target_mb = dec.mb_index(1, 1).expect("目标索引");
     let mut header = build_test_slice_header(0, 1, false, None);
     header.slice_type = 0; // P slice
-    header.first_mb = 1;
+    header.first_mb = target_mb as u32;
     header.data_bit_offset = 0;
 
     let rbsp = build_rbsp_from_ues(&[1]); // mb_skip_run=1
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
-    let mb1_y0_idx = 16usize;
+    // median(4, 4, ?) = 4, 所以 MV=(4,0) → 偏移 +1 像素
+    let stride = dec.stride_y;
+    let mb1_1_y0_idx = 16 + 16 * stride;
     assert_eq!(
-        dec.ref_y[mb1_y0_idx], 17,
-        "P_Skip 应使用左邻 MVP=+1 像素, 而非直接复制同坐标参考像素"
+        dec.ref_y[mb1_1_y0_idx], 17,
+        "P_Skip 应使用 MVP=+1 像素, 而非直接复制同坐标参考像素"
     );
-    assert_eq!(dec.mv_l0_x[1], 4, "P_Skip 应写入预测后的宏块 MV(x)");
-    assert_eq!(dec.mv_l0_y[1], 0, "P_Skip 应写入预测后的宏块 MV(y)");
-    assert_eq!(dec.ref_idx_l0[1], 0, "P_Skip 应固定使用 L0 的 ref_idx=0");
+    assert_eq!(dec.mv_l0_x[target_mb], 4, "P_Skip 应写入预测后的宏块 MV(x)");
+    assert_eq!(dec.mv_l0_y[target_mb], 0, "P_Skip 应写入预测后的宏块 MV(y)");
+    assert_eq!(dec.ref_idx_l0[target_mb], 0, "P_Skip 应固定使用 L0 的 ref_idx=0");
 }
 
 #[test]

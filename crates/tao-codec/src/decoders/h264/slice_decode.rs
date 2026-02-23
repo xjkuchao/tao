@@ -229,6 +229,7 @@ impl H264Decoder {
                 &header.ref_pic_list_mod_l0,
                 header.frame_num,
             );
+            self.last_ref_l0_poc = ref_l0_list.iter().map(|rp| rp.poc).collect();
             self.decode_p_slice_mbs(
                 &mut cabac,
                 &mut ctxs,
@@ -250,6 +251,7 @@ impl H264Decoder {
             &header.ref_pic_list_mod_l0,
             header.frame_num,
         );
+        self.last_ref_l0_poc = ref_l0_list.iter().map(|rp| rp.poc).collect();
         let ref_l1_list = self.build_reference_list_l1_with_mod(
             header.num_ref_idx_l1,
             &header.ref_pic_list_mod_l1,
@@ -370,6 +372,7 @@ impl H264Decoder {
             &header.ref_pic_list_mod_l0,
             header.frame_num,
         );
+        self.last_ref_l0_poc = ref_l0_list.iter().map(|rp| rp.poc).collect();
         let ref_l1_list = if is_b {
             self.build_reference_list_l1_with_mod(
                 header.num_ref_idx_l1,
@@ -901,9 +904,11 @@ impl H264Decoder {
                             };
                             if part_use_l0[part_idx] {
                                 let l0_ref_i8 = ref_idx_l0[part_idx].min(i8::MAX as usize) as i8;
-                                let (pred_x, pred_y) = self.predict_mv_l0_partition(
-                                    mb_x, mb_y, part_x4, part_y4, part_w4, l0_ref_i8,
-                                );
+                                let (pred_x, pred_y) = if split_16x8 {
+                                    self.predict_mv_l0_16x8(mb_x, mb_y, part_idx, l0_ref_i8)
+                                } else {
+                                    self.predict_mv_l0_8x16(mb_x, mb_y, part_idx, l0_ref_i8)
+                                };
                                 let mv_x = pred_x + l0_mvd[part_idx].0;
                                 let mv_y = pred_y + l0_mvd[part_idx].1;
                                 l0_motion[part_idx] = Some(BMotion {
@@ -923,9 +928,11 @@ impl H264Decoder {
                             }
                             if part_use_l1[part_idx] {
                                 let l1_ref_i8 = ref_idx_l1[part_idx].min(i8::MAX as usize) as i8;
-                                let (pred_x, pred_y) = self.predict_mv_l1_partition(
-                                    mb_x, mb_y, part_x4, part_y4, part_w4, l1_ref_i8,
-                                );
+                                let (pred_x, pred_y) = if split_16x8 {
+                                    self.predict_mv_l1_16x8(mb_x, mb_y, part_idx, l1_ref_i8)
+                                } else {
+                                    self.predict_mv_l1_8x16(mb_x, mb_y, part_idx, l1_ref_i8)
+                                };
                                 let mv_x = pred_x + l1_mvd[part_idx].0;
                                 let mv_y = pred_y + l1_mvd[part_idx].1;
                                 l1_motion[part_idx] = Some(BMotion {

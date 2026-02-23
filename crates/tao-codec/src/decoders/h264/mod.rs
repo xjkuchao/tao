@@ -234,6 +234,8 @@ struct ReferencePicture {
     ref_idx_l1_4x4: Vec<i8>,
     /// 参考帧宏块级 mb_types (用于 col_zero_flag 判断 intra 状态).
     mb_types: Vec<u8>,
+    /// 该参考帧解码时其 L0 参考列表中各参考帧的 POC (用于 temporal direct MapColToList0).
+    ref_l0_poc: Vec<i32>,
     frame_num: u32,
     poc: i32,
     long_term_frame_idx: Option<u32>,
@@ -375,6 +377,8 @@ pub struct H264Decoder {
     last_nal_ref_idc: u8,
     /// 最近一次 slice 的 POC.
     last_poc: i32,
+    /// 最近一次 slice 解码时 L0 参考列表的 POC 值 (用于 temporal direct MapColToList0).
+    last_ref_l0_poc: Vec<i32>,
     /// 最近一次 slice 的量化参数.
     last_slice_qp: i32,
     /// 最近一次 slice 的去块滤波控制.
@@ -481,6 +485,7 @@ impl H264Decoder {
             last_frame_num: 0,
             last_nal_ref_idc: 0,
             last_poc: 0,
+            last_ref_l0_poc: Vec::new(),
             last_slice_qp: 26,
             last_disable_deblocking_filter_idc: 0,
             last_slice_alpha_c0_offset_div2: 0,
