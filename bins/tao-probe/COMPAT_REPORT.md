@@ -29,3 +29,4 @@ bins/tao-probe/scripts/compat_matrix.sh bins/tao-probe/tests/compat_command_matr
 
 - 当前执行路径统一为 ffprobe passthrough, 并保留 `tao-probe` 单入口。
 - 隐藏别名(`--json/--show-format/--show-streams/--show-packets/--quiet/-q`)在 passthrough 前完成映射。
+- `COMPAT_CHECKLIST.md` 当前项已全部打钩，剩余风险主要为“本机 ffprobe 可用性”而非语义差异。

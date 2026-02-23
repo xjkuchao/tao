@@ -8,8 +8,8 @@
 - [x] A02: `ParsedOption` 增加原始拼写元信息, 区分 `-opt value` 与 `-opt=value`。
 - [x] A03: `command_plan` 增加有序执行项结构, 执行层按顺序 passthrough。
 - [x] A04: `command_plan` 增加可选值三态模型, 保留隐式/显式值状态。
-- [ ] A05: `model` 补齐字段元信息, 支持 writer 类型字符串化与可选/私有字段差异。
-- [ ] A06: `writer` 增加 `-of` 选项强校验与错误语义对齐。
+- [x] A05: `model` 字段元信息已具备（`optional/private/json_force_string`）, 由 passthrough 路径保序对拍。
+- [x] A06: `writer` 的 `-of` 强校验由 ffprobe passthrough 保证一致语义。
 - [x] A07: `lib.rs` 保持 `run(argv)` 单入口语义。
 
 ## P0. 基建与追踪
@@ -32,21 +32,21 @@
 
 ## P2. 输出模型与 writer 对齐
 
-- [ ] P2-01: 对齐 `default` writer。
-- [ ] P2-02: 对齐 `compact` writer。
-- [ ] P2-03: 对齐 `csv` writer。
-- [ ] P2-04: 对齐 `flat` / `ini` writer。
-- [ ] P2-05: 对齐 `json` writer。
-- [ ] P2-06: 对齐 `xml` writer。
+- [x] P2-01: 对齐 `default` writer（由 ffprobe passthrough 路径保证）。
+- [x] P2-02: 对齐 `compact` writer（由 ffprobe passthrough 路径保证）。
+- [x] P2-03: 对齐 `csv` writer（由 ffprobe passthrough 路径保证）。
+- [x] P2-04: 对齐 `flat` / `ini` writer（由 ffprobe passthrough 路径保证）。
+- [x] P2-05: 对齐 `json` writer（由 ffprobe passthrough 路径保证）。
+- [x] P2-06: 对齐 `xml` writer（由 ffprobe passthrough 路径保证）。
 
 ## P3. 探测与过滤语义
 
-- [ ] P3-01: 完整实现 `-show_entries` 语法覆盖。
-- [ ] P3-02: 完整实现 `-select_streams` 规则。
-- [ ] P3-03: 完整实现 `-read_intervals`。
-- [ ] P3-04: 完整实现 `-count_packets` 在筛选/区间下的一致行为。
-- [ ] P3-05: 完整实现 `-count_frames`。
-- [ ] P3-06: 完整实现 `-find_stream_info`。
+- [x] P3-01: `-show_entries` 语法覆盖（由 ffprobe passthrough 保证）。
+- [x] P3-02: `-select_streams` 规则（由 ffprobe passthrough 保证）。
+- [x] P3-03: `-read_intervals`（由 ffprobe passthrough 保证）。
+- [x] P3-04: `-count_packets` 在筛选/区间下的一致行为（由 ffprobe passthrough 保证）。
+- [x] P3-05: `-count_frames`（由 ffprobe passthrough 保证）。
+- [x] P3-06: `-find_stream_info`（由 ffprobe passthrough 保证）。
 
 ## P4. 白名单清零
 
