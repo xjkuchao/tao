@@ -9,6 +9,39 @@ use crate::format_id::FormatId;
 use crate::io::IoContext;
 use crate::stream::Stream;
 
+/// Chapter 信息（ffprobe 兼容接口壳）.
+#[derive(Debug, Clone, Default)]
+pub struct DemuxerChapter {
+    /// chapter 起始时间（秒）.
+    pub start_time: Option<f64>,
+    /// chapter 结束时间（秒）.
+    pub end_time: Option<f64>,
+    /// chapter 元数据.
+    pub metadata: Vec<(String, String)>,
+}
+
+/// Program 信息（ffprobe 兼容接口壳）.
+#[derive(Debug, Clone, Default)]
+pub struct DemuxerProgram {
+    /// program 标识.
+    pub id: i64,
+    /// 关联流索引.
+    pub stream_indices: Vec<usize>,
+    /// program 元数据.
+    pub metadata: Vec<(String, String)>,
+}
+
+/// Stream group 信息（ffprobe 兼容接口壳）.
+#[derive(Debug, Clone, Default)]
+pub struct DemuxerStreamGroup {
+    /// group 标识.
+    pub id: i64,
+    /// 关联流索引.
+    pub stream_indices: Vec<usize>,
+    /// group 元数据.
+    pub metadata: Vec<(String, String)>,
+}
+
 /// 解封装器 trait
 ///
 /// 从容器格式中读取压缩数据包. 所有格式的解封装器都实现此 trait.
@@ -59,6 +92,48 @@ pub trait Demuxer: Send {
 
     /// 获取容器元数据
     fn metadata(&self) -> &[(String, String)] {
+        &[]
+    }
+
+    /// 获取容器长名称（如 `QuickTime / MOV`）.
+    ///
+    /// 默认未提供.
+    fn format_long_name(&self) -> Option<&str> {
+        None
+    }
+
+    /// 获取容器起始时间（秒）.
+    ///
+    /// 默认未提供.
+    fn start_time(&self) -> Option<f64> {
+        None
+    }
+
+    /// 获取容器码率（bps）.
+    ///
+    /// 默认未提供.
+    fn bit_rate(&self) -> Option<u64> {
+        None
+    }
+
+    /// 获取 chapters.
+    ///
+    /// 默认空切片.
+    fn chapters(&self) -> &[DemuxerChapter] {
+        &[]
+    }
+
+    /// 获取 programs.
+    ///
+    /// 默认空切片.
+    fn programs(&self) -> &[DemuxerProgram] {
+        &[]
+    }
+
+    /// 获取 stream groups.
+    ///
+    /// 默认空切片.
+    fn stream_groups(&self) -> &[DemuxerStreamGroup] {
         &[]
     }
 }

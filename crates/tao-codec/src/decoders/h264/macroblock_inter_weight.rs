@@ -198,8 +198,7 @@ impl H264Decoder {
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(400);
         let trace_this_mb = self.should_trace_mb_idx(mb_idx, trace_mb_limit);
-        let trace_mb_detail =
-            self.trace_mb_detail_enabled() && trace_this_mb;
+        let trace_mb_detail = self.trace_mb_detail_enabled() && trace_this_mb;
         let trace_stage_bits =
             std::env::var("TAO_H264_TRACE_P_STAGE_BITS").as_deref() == Ok("1") && trace_this_mb;
         let stage_start_bits = trace_stage_bits.then(|| cabac.bits_read());
@@ -245,7 +244,11 @@ impl H264Decoder {
                 let (pred_mv_x, pred_mv_y) =
                     self.predict_mv_l0_partition(mb_x, mb_y, 0, 0, 4, ref_idx_i8);
                 let (amvd_x, amvd_y) = self.compute_cabac_amvd(mb_x * 4, mb_y * 4, 0);
-                let bits_before_mvd = if trace_mb_detail { cabac.bits_read() } else { 0 };
+                let bits_before_mvd = if trace_mb_detail {
+                    cabac.bits_read()
+                } else {
+                    0
+                };
                 let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
                 let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
                 self.set_mvd_block_4x4(mb_x * 16, mb_y * 16, 16, 16, mvd_x, mvd_y, 0);
@@ -322,7 +325,11 @@ impl H264Decoder {
                     let y_off = part * 8;
                     let (amvd_x, amvd_y) =
                         self.compute_cabac_amvd(mb_x * 4, mb_y * 4 + part * 2, 0);
-                    let bits_before_mvd = if trace_mb_detail { cabac.bits_read() } else { 0 };
+                    let bits_before_mvd = if trace_mb_detail {
+                        cabac.bits_read()
+                    } else {
+                        0
+                    };
                     let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
                     let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
                     self.set_mvd_block_4x4(mb_x * 16, mb_y * 16 + y_off, 16, 8, mvd_x, mvd_y, 0);
@@ -404,7 +411,11 @@ impl H264Decoder {
                     let x_off = part * 8;
                     let (amvd_x, amvd_y) =
                         self.compute_cabac_amvd(mb_x * 4 + part * 2, mb_y * 4, 0);
-                    let bits_before_mvd = if trace_mb_detail { cabac.bits_read() } else { 0 };
+                    let bits_before_mvd = if trace_mb_detail {
+                        cabac.bits_read()
+                    } else {
+                        0
+                    };
                     let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
                     let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
                     self.set_mvd_block_4x4(mb_x * 16 + x_off, mb_y * 16, 8, 16, mvd_x, mvd_y, 0);
@@ -458,13 +469,7 @@ impl H264Decoder {
                 if trace_mb_detail {
                     eprintln!(
                         "[H264_P_SUB] idx={} mb=({}, {}) sub_types=[{},{},{},{}]",
-                        mb_idx,
-                        mb_x,
-                        mb_y,
-                        sub_types[0],
-                        sub_types[1],
-                        sub_types[2],
-                        sub_types[3]
+                        mb_idx, mb_x, mb_y, sub_types[0], sub_types[1], sub_types[2], sub_types[3]
                     );
                 }
                 no_sub_mb_part_size_less_than_8x8_flag =
@@ -524,7 +529,11 @@ impl H264Decoder {
                             let px_x = mb_x * 16 + sx;
                             let px_y = mb_y * 16 + sy;
                             let (amvd_x, amvd_y) = self.compute_cabac_amvd(px_x / 4, px_y / 4, 0);
-                            let bits_before_mvd = if trace_mb_detail { cabac.bits_read() } else { 0 };
+                            let bits_before_mvd = if trace_mb_detail {
+                                cabac.bits_read()
+                            } else {
+                                0
+                            };
                             let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
                             let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
                             self.set_mvd_block_4x4(px_x, px_y, 8, 8, mvd_x, mvd_y, 0);
@@ -583,8 +592,11 @@ impl H264Decoder {
                                 let px_y = mb_y * 16 + sy + part * 4;
                                 let (amvd_x, amvd_y) =
                                     self.compute_cabac_amvd(px_x / 4, px_y / 4, 0);
-                                let bits_before_mvd =
-                                    if trace_mb_detail { cabac.bits_read() } else { 0 };
+                                let bits_before_mvd = if trace_mb_detail {
+                                    cabac.bits_read()
+                                } else {
+                                    0
+                                };
                                 let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
                                 let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
                                 self.set_mvd_block_4x4(px_x, px_y, 8, 4, mvd_x, mvd_y, 0);
@@ -645,8 +657,11 @@ impl H264Decoder {
                                 let px_y = mb_y * 16 + sy;
                                 let (amvd_x, amvd_y) =
                                     self.compute_cabac_amvd(px_x / 4, px_y / 4, 0);
-                                let bits_before_mvd =
-                                    if trace_mb_detail { cabac.bits_read() } else { 0 };
+                                let bits_before_mvd = if trace_mb_detail {
+                                    cabac.bits_read()
+                                } else {
+                                    0
+                                };
                                 let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
                                 let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
                                 self.set_mvd_block_4x4(px_x, px_y, 4, 8, mvd_x, mvd_y, 0);
@@ -708,8 +723,11 @@ impl H264Decoder {
                                     let px_y = mb_y * 16 + sy + part_y * 4;
                                     let (amvd_x, amvd_y) =
                                         self.compute_cabac_amvd(px_x / 4, px_y / 4, 0);
-                                    let bits_before_mvd =
-                                        if trace_mb_detail { cabac.bits_read() } else { 0 };
+                                    let bits_before_mvd = if trace_mb_detail {
+                                        cabac.bits_read()
+                                    } else {
+                                        0
+                                    };
                                     let mvd_x =
                                         self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
                                     let mvd_y =
@@ -959,7 +977,10 @@ impl H264Decoder {
                 match self.decode_b_mb_type(cabac, ctxs, mb_x, mb_y) {
                     BMbType::Intra => {
                         if trace_slice_mb {
-                            eprintln!("[H264_B_MB] idx={} mb=({}, {}) skip=0 mb_type=intra", mb_idx, mb_x, mb_y);
+                            eprintln!(
+                                "[H264_B_MB] idx={} mb=({}, {}) skip=0 mb_type=intra",
+                                mb_idx, mb_x, mb_y
+                            );
                         }
                         let intra_mb_type = decode_intra_mb_type(
                             cabac,
@@ -986,11 +1007,15 @@ impl H264Decoder {
                         } else if intra_mb_type == 25 {
                             self.decode_i_pcm_mb(cabac, mb_x, mb_y);
                             self.prev_qp_delta_nz = false;
+                            cur_qp = 0;
                         }
                     }
                     BMbType::Direct => {
                         if trace_slice_mb {
-                            eprintln!("[H264_B_MB] idx={} mb=({}, {}) skip=0 mb_type=direct", mb_idx, mb_x, mb_y);
+                            eprintln!(
+                                "[H264_B_MB] idx={} mb=({}, {}) skip=0 mb_type=direct",
+                                mb_idx, mb_x, mb_y
+                            );
                         }
                         self.decode_b_inter_mb(
                             cabac,

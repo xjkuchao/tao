@@ -40,6 +40,7 @@ pub(super) struct DeblockSliceParams<'a> {
     pub(super) mv_l1_y_4x4: Option<&'a [i16]>,
     pub(super) ref_idx_l1_4x4: Option<&'a [i8]>,
     pub(super) mb_qp: Option<&'a [i32]>,
+    pub(super) transform_8x8_flags: Option<&'a [u8]>,
 }
 
 /// 对 YUV420 帧执行带 slice 参数的去块滤波.
@@ -79,6 +80,7 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
         mv_l1_y_4x4,
         ref_idx_l1_4x4,
         mb_qp,
+        transform_8x8_flags,
     } = params;
     if width == 0 || height == 0 {
         return;
@@ -125,6 +127,7 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
                     mv_l1_y_4x4,
                     ref_idx_l1_4x4,
                     mb_qp,
+                    transform_8x8_flags,
                     alpha_offset_div2,
                     beta_offset_div2,
                 })
@@ -195,6 +198,7 @@ struct DeblockMbContext<'a> {
     mv_l1_y_4x4: Option<&'a [i16]>,
     ref_idx_l1_4x4: Option<&'a [i8]>,
     mb_qp: Option<&'a [i32]>,
+    transform_8x8_flags: Option<&'a [u8]>,
     alpha_offset_div2: i32,
     beta_offset_div2: i32,
 }
@@ -213,91 +217,116 @@ fn apply_adaptive_deblock_plane(
     chroma_qp_remap_offset: Option<i32>,
     mb_ctx: Option<&DeblockMbContext<'_>>,
 ) {
-    if width < 3 || height < 3 || stride == 0 || boundary_step == 0 {
+    if width < 3 || height < 3 || stride == 0 || boundary_step == 0 || mb_step == 0 {
         return;
     }
     let strong_luma = mb_step == 16 && chroma_qp_remap_offset.is_none();
+    let mb_cols = width.div_ceil(mb_step);
+    let mb_rows = height.div_ceil(mb_step);
 
-    // 垂直边界
-    let mut x = boundary_step;
-    while x < width.saturating_sub(1) {
-        if x >= 2 {
-            for y in 0..height {
-                let p1 = y * stride + (x - 2);
-                let p0 = y * stride + (x - 1);
-                let q0 = y * stride + x;
-                let q1 = y * stride + (x + 1);
-                let p2 = if x >= 3 {
-                    Some(y * stride + (x - 3))
-                } else {
-                    None
-                };
-                let q2 = if x + 2 < width {
-                    Some(y * stride + (x + 2))
-                } else {
-                    None
-                };
-                if p1 >= plane.len() || p0 >= plane.len() || q0 >= plane.len() || q1 >= plane.len()
-                {
+    for mb_row in 0..mb_rows {
+        for mb_col in 0..mb_cols {
+            let mb_x0 = mb_col * mb_step;
+            let mb_y0 = mb_row * mb_step;
+            let mb_x_end = (mb_x0 + mb_step).min(width);
+            let mb_y_end = (mb_y0 + mb_step).min(height);
+
+            // 垂直边界: 先处理 MB 左边界(如果不是画面左边缘), 再处理内部边界
+            let first_edge = if mb_col == 0 { boundary_step } else { 0 };
+            let mut local_x = first_edge;
+            while local_x < mb_step {
+                let x = mb_x0 + local_x;
+                if x >= width.saturating_sub(1) || x < 2 {
+                    local_x += boundary_step;
                     continue;
                 }
-                let bs = boundary_strength_vertical(x, y, mb_step, mb_ctx);
-                let (ai, a, b) = edge_thresholds(
-                    mb_ctx,
-                    x,
-                    y,
-                    mb_step,
-                    chroma_qp_remap_offset,
-                    true,
-                    default_alpha_idx,
-                    default_alpha,
-                    default_beta,
-                );
-                filter_edge_with_bs(plane, p2, p1, p0, q0, q1, q2, ai, a, b, bs, strong_luma);
+                for y in mb_y0..mb_y_end {
+                    let p1 = y * stride + (x - 2);
+                    let p0 = y * stride + (x - 1);
+                    let q0 = y * stride + x;
+                    let q1 = y * stride + (x + 1);
+                    let p2 = if x >= 3 {
+                        Some(y * stride + (x - 3))
+                    } else {
+                        None
+                    };
+                    let q2 = if x + 2 < width {
+                        Some(y * stride + (x + 2))
+                    } else {
+                        None
+                    };
+                    if p1 >= plane.len()
+                        || p0 >= plane.len()
+                        || q0 >= plane.len()
+                        || q1 >= plane.len()
+                    {
+                        continue;
+                    }
+                    let bs = boundary_strength_vertical(x, y, mb_step, mb_ctx);
+                    let (ai, a, b) = edge_thresholds(
+                        mb_ctx,
+                        x,
+                        y,
+                        mb_step,
+                        chroma_qp_remap_offset,
+                        true,
+                        default_alpha_idx,
+                        default_alpha,
+                        default_beta,
+                    );
+                    filter_edge_with_bs(plane, p2, p1, p0, q0, q1, q2, ai, a, b, bs, strong_luma);
+                }
+                local_x += boundary_step;
             }
-        }
-        x += boundary_step;
-    }
 
-    // 水平边界
-    let mut y = boundary_step;
-    while y < height.saturating_sub(1) {
-        if y >= 2 {
-            for x in 0..width {
-                let p1 = (y - 2) * stride + x;
-                let p0 = (y - 1) * stride + x;
-                let q0 = y * stride + x;
-                let q1 = (y + 1) * stride + x;
-                let p2 = if y >= 3 {
-                    Some((y - 3) * stride + x)
-                } else {
-                    None
-                };
-                let q2 = if y + 2 < height {
-                    Some((y + 2) * stride + x)
-                } else {
-                    None
-                };
-                if p1 >= plane.len() || p0 >= plane.len() || q0 >= plane.len() || q1 >= plane.len()
-                {
+            // 水平边界: 先处理 MB 上边界(如果不是画面上边缘), 再处理内部边界
+            let first_edge = if mb_row == 0 { boundary_step } else { 0 };
+            let mut local_y = first_edge;
+            while local_y < mb_step {
+                let y = mb_y0 + local_y;
+                if y >= height.saturating_sub(1) || y < 2 {
+                    local_y += boundary_step;
                     continue;
                 }
-                let bs = boundary_strength_horizontal(x, y, mb_step, mb_ctx);
-                let (ai, a, b) = edge_thresholds(
-                    mb_ctx,
-                    x,
-                    y,
-                    mb_step,
-                    chroma_qp_remap_offset,
-                    false,
-                    default_alpha_idx,
-                    default_alpha,
-                    default_beta,
-                );
-                filter_edge_with_bs(plane, p2, p1, p0, q0, q1, q2, ai, a, b, bs, strong_luma);
+                for x in mb_x0..mb_x_end {
+                    let p1 = (y - 2) * stride + x;
+                    let p0 = (y - 1) * stride + x;
+                    let q0 = y * stride + x;
+                    let q1 = (y + 1) * stride + x;
+                    let p2 = if y >= 3 {
+                        Some((y - 3) * stride + x)
+                    } else {
+                        None
+                    };
+                    let q2 = if y + 2 < height {
+                        Some((y + 2) * stride + x)
+                    } else {
+                        None
+                    };
+                    if p1 >= plane.len()
+                        || p0 >= plane.len()
+                        || q0 >= plane.len()
+                        || q1 >= plane.len()
+                    {
+                        continue;
+                    }
+                    let bs = boundary_strength_horizontal(x, y, mb_step, mb_ctx);
+                    let (ai, a, b) = edge_thresholds(
+                        mb_ctx,
+                        x,
+                        y,
+                        mb_step,
+                        chroma_qp_remap_offset,
+                        false,
+                        default_alpha_idx,
+                        default_alpha,
+                        default_beta,
+                    );
+                    filter_edge_with_bs(plane, p2, p1, p0, q0, q1, q2, ai, a, b, bs, strong_luma);
+                }
+                local_y += boundary_step;
             }
         }
-        y += boundary_step;
     }
 }
 
@@ -439,21 +468,20 @@ fn filter_edge_with_bs(
                 } else {
                     plane[q0_idx] = ((2 * q1 + q0 + p1 + 2) >> 2).clamp(0, 255) as u8;
                 }
-                return;
+            } else {
+                plane[p0_idx] = ((2 * p1 + p0 + q1 + 2) >> 2).clamp(0, 255) as u8;
+                plane[q0_idx] = ((2 * q1 + q0 + p1 + 2) >> 2).clamp(0, 255) as u8;
             }
-        } else {
-            let new_p0 = ((2 * p1 + p0 + q1 + 2) >> 2).clamp(0, 255);
-            let new_q0 = ((2 * q1 + q0 + p1 + 2) >> 2).clamp(0, 255);
-            plane[p0_idx] = new_p0 as u8;
-            plane[q0_idx] = new_q0 as u8;
             return;
         }
+        let new_p0 = ((2 * p1 + p0 + q1 + 2) >> 2).clamp(0, 255);
+        let new_q0 = ((2 * q1 + q0 + p1 + 2) >> 2).clamp(0, 255);
+        plane[p0_idx] = new_p0 as u8;
+        plane[q0_idx] = new_q0 as u8;
+        return;
     }
 
     let tc0 = i32::from(tc0_threshold(alpha_idx, bs.min(3)));
-    if tc0 == 0 {
-        return;
-    }
     if !strong_luma {
         // 色度弱滤波: tc = tc0 + 1 (无条件), 只修改 p0/q0
         let tc = tc0 + 1;
@@ -632,6 +660,16 @@ fn boundary_strength_within_mb_common(
     let Some(idx) = mb_index(ctx.mb_width, ctx.mb_height, mb_x, mb_y) else {
         return 2;
     };
+    if mb_step == 16 {
+        if let Some(t8x8) = ctx.transform_8x8_flags {
+            if t8x8.get(idx).copied().unwrap_or(0) != 0 {
+                let local = if vertical { x % mb_step } else { y % mb_step };
+                if local % 8 != 0 {
+                    return 0;
+                }
+            }
+        }
+    }
     let ty = *ctx.mb_types.get(idx).unwrap_or(&255);
     if is_intra_mb(ty) {
         return 3;
@@ -906,13 +944,14 @@ const BETA_TABLE: [u8; 52] = [
 
 #[rustfmt::skip]
 const TC0_TABLE: [[u8; 3]; 52] = [
+    // H.264 spec Table 8-17: tC0 值, 列分别为 bS=1, bS=2, bS=3
     [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0],
-    [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 1], [0, 0, 1], [0, 0, 1], [0, 0, 1], [0, 0, 1],
-    [0, 1, 1], [0, 1, 1], [0, 1, 1], [0, 1, 1], [0, 1, 1], [0, 1, 1], [0, 1, 1], [0, 1, 1],
-    [0, 1, 1], [0, 1, 1], [0, 1, 1], [0, 1, 2], [0, 1, 2], [0, 1, 2], [0, 1, 2], [0, 1, 3],
-    [0, 1, 3], [0, 2, 3], [0, 2, 4], [0, 2, 4], [0, 2, 4], [0, 3, 5], [0, 3, 6], [0, 3, 6],
-    [0, 4, 7], [0, 4, 8], [0, 4, 9], [0, 5, 10], [0, 6, 11], [0, 6, 13], [0, 7, 14], [0, 8, 16],
-    [0, 9, 18], [0, 10, 20], [0, 11, 23], [0, 13, 25],
+    [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0],
+    [0, 0, 0], [0, 0, 1], [0, 0, 1], [0, 0, 1], [0, 0, 1], [0, 1, 1], [0, 1, 1], [1, 1, 1],
+    [1, 1, 1], [1, 1, 1], [1, 1, 1], [1, 1, 2], [1, 1, 2], [1, 1, 2], [1, 1, 2], [1, 2, 3],
+    [1, 2, 3], [2, 2, 3], [2, 2, 4], [2, 3, 4], [2, 3, 4], [3, 3, 5], [3, 4, 6], [3, 4, 6],
+    [4, 5, 7], [4, 5, 8], [4, 6, 9], [5, 7,10], [6, 8,11], [6, 8,13], [7,10,14], [8,11,16],
+    [9,12,18], [10,13,20], [11,15,23], [13,17,25],
 ];
 
 #[cfg(test)]
@@ -1018,6 +1057,7 @@ mod tests {
                 mv_l1_y_4x4: None,
                 ref_idx_l1_4x4: None,
                 mb_qp: None,
+                transform_8x8_flags: None,
             },
         );
 
@@ -1058,6 +1098,7 @@ mod tests {
                 mv_l1_y_4x4: None,
                 ref_idx_l1_4x4: None,
                 mb_qp: None,
+                transform_8x8_flags: None,
             },
         );
 
@@ -1138,6 +1179,7 @@ mod tests {
                 mv_l1_y_4x4: None,
                 ref_idx_l1_4x4: None,
                 mb_qp: None,
+                transform_8x8_flags: None,
             },
         );
 
@@ -1209,6 +1251,7 @@ mod tests {
                 mv_l1_y_4x4: None,
                 ref_idx_l1_4x4: None,
                 mb_qp: None,
+                transform_8x8_flags: None,
             },
         );
 
@@ -1242,6 +1285,7 @@ mod tests {
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
             mb_qp: None,
+            transform_8x8_flags: None,
             alpha_offset_div2: 0,
             beta_offset_div2: 0,
         };
@@ -1277,6 +1321,7 @@ mod tests {
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
             mb_qp: None,
+            transform_8x8_flags: None,
             alpha_offset_div2: 0,
             beta_offset_div2: 0,
         };
@@ -1312,6 +1357,7 @@ mod tests {
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
             mb_qp: None,
+            transform_8x8_flags: None,
             alpha_offset_div2: 0,
             beta_offset_div2: 0,
         };
@@ -1348,6 +1394,7 @@ mod tests {
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
             mb_qp: None,
+            transform_8x8_flags: None,
             alpha_offset_div2: 0,
             beta_offset_div2: 0,
         };
@@ -1372,6 +1419,7 @@ mod tests {
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
             mb_qp: None,
+            transform_8x8_flags: None,
             alpha_offset_div2: 0,
             beta_offset_div2: 0,
         };
@@ -1418,6 +1466,7 @@ mod tests {
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
             mb_qp: None,
+            transform_8x8_flags: None,
             alpha_offset_div2: 0,
             beta_offset_div2: 0,
         };
@@ -1461,6 +1510,7 @@ mod tests {
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
             mb_qp: None,
+            transform_8x8_flags: None,
             alpha_offset_div2: 0,
             beta_offset_div2: 0,
         };
@@ -1506,6 +1556,7 @@ mod tests {
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
             mb_qp: None,
+            transform_8x8_flags: None,
             alpha_offset_div2: 0,
             beta_offset_div2: 0,
         };
@@ -1546,6 +1597,7 @@ mod tests {
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
             mb_qp: None,
+            transform_8x8_flags: None,
             alpha_offset_div2: 0,
             beta_offset_div2: 0,
         };
@@ -1584,6 +1636,7 @@ mod tests {
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
             mb_qp: None,
+            transform_8x8_flags: None,
             alpha_offset_div2: 0,
             beta_offset_div2: 0,
         };
@@ -1615,6 +1668,7 @@ mod tests {
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
             mb_qp: None,
+            transform_8x8_flags: None,
             alpha_offset_div2: 0,
             beta_offset_div2: 0,
         };
@@ -1653,6 +1707,7 @@ mod tests {
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
             mb_qp: None,
+            transform_8x8_flags: None,
             alpha_offset_div2: 0,
             beta_offset_div2: 0,
         };
@@ -1693,6 +1748,7 @@ mod tests {
             mv_l1_y_4x4: Some(&mv_l1_y_4x4),
             ref_idx_l1_4x4: Some(&ref_idx_l1_4x4),
             mb_qp: None,
+            transform_8x8_flags: None,
             alpha_offset_div2: 0,
             beta_offset_div2: 0,
         };
@@ -1729,6 +1785,7 @@ mod tests {
             mv_l1_y_4x4: None,
             ref_idx_l1_4x4: None,
             mb_qp: None,
+            transform_8x8_flags: None,
             alpha_offset_div2: 0,
             beta_offset_div2: 0,
         };
@@ -1738,14 +1795,15 @@ mod tests {
 
     #[test]
     fn test_filter_edge_with_bs_uses_tc0_strength() {
+        // alpha_idx=22: tc0(bS=1)=0, tc0(bS=3)=1; alpha=9, beta=3
         let mut weak = vec![40u8, 40, 48, 48];
         let mut strong = weak.clone();
 
-        filter_edge_with_bs(&mut weak, None, 0, 1, 2, 3, None, 26, 15, 4, 1, true);
-        filter_edge_with_bs(&mut strong, None, 0, 1, 2, 3, None, 26, 15, 4, 3, true);
+        filter_edge_with_bs(&mut weak, None, 0, 1, 2, 3, None, 22, 9, 3, 1, true);
+        filter_edge_with_bs(&mut strong, None, 0, 1, 2, 3, None, 22, 9, 3, 3, true);
 
-        assert_eq!(weak[1], 40, "弱滤波在 tc0=0 时应保持原样");
-        assert_eq!(weak[2], 48, "弱滤波在 tc0=0 时应保持原样");
+        assert_eq!(weak[1], 40, "bS=1 tc0=0 时 p0 保持原样");
+        assert_eq!(weak[2], 48, "bS=1 tc0=0 时 q0 保持原样");
         assert!(strong[1] > weak[1], "更高 bs 应带来更强的左侧平滑");
         assert!(strong[2] < weak[2], "更高 bs 应带来更强的右侧平滑");
     }

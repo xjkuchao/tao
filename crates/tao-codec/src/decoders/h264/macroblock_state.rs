@@ -807,7 +807,8 @@ impl H264Decoder {
             self.trace_mb_detail_enabled() && self.should_trace_mb_idx(mb_idx, usize::MAX);
         let left_ctx = if self.left_avail(mb_x, mb_y) {
             if let Some(left_mb_idx) = self.mb_index(mb_x - 1, mb_y) {
-                let left_is_direct = self.mb_types.get(left_mb_idx).copied().unwrap_or_default() == 254;
+                let left_is_direct =
+                    self.mb_types.get(left_mb_idx).copied().unwrap_or_default() == 254;
                 let left_is_8x8dct = self
                     .transform_8x8_flags
                     .get(left_mb_idx)
@@ -823,7 +824,8 @@ impl H264Decoder {
         };
         let top_ctx = if self.top_avail(mb_x, mb_y) {
             if let Some(top_mb_idx) = self.mb_index(mb_x, mb_y - 1) {
-                let top_is_direct = self.mb_types.get(top_mb_idx).copied().unwrap_or_default() == 254;
+                let top_is_direct =
+                    self.mb_types.get(top_mb_idx).copied().unwrap_or_default() == 254;
                 let top_is_8x8dct = self
                     .transform_8x8_flags
                     .get(top_mb_idx)
@@ -838,7 +840,11 @@ impl H264Decoder {
             0
         };
         let idx = 399usize + left_ctx + top_ctx;
-        let bits_before = if trace_mb_detail { cabac.bits_read() } else { 0 };
+        let bits_before = if trace_mb_detail {
+            cabac.bits_read()
+        } else {
+            0
+        };
         if idx < ctxs.len() {
             let bin = cabac.decode_decision(&mut ctxs[idx]) == 1;
             if trace_mb_detail {

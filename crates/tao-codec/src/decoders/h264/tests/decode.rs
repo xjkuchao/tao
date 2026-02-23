@@ -66,7 +66,10 @@ fn test_decode_cavlc_slice_data_p_skip_run_uses_predicted_mv_from_left_neighbor(
     );
     assert_eq!(dec.mv_l0_x[target_mb], 4, "P_Skip 应写入预测后的宏块 MV(x)");
     assert_eq!(dec.mv_l0_y[target_mb], 0, "P_Skip 应写入预测后的宏块 MV(y)");
-    assert_eq!(dec.ref_idx_l0[target_mb], 0, "P_Skip 应固定使用 L0 的 ref_idx=0");
+    assert_eq!(
+        dec.ref_idx_l0[target_mb], 0,
+        "P_Skip 应固定使用 L0 的 ref_idx=0"
+    );
 }
 
 #[test]

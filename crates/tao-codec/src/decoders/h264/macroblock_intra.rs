@@ -191,6 +191,7 @@ impl H264Decoder {
             } else if mb_type == 25 {
                 self.decode_i_pcm_mb(cabac, mb_x, mb_y);
                 self.prev_qp_delta_nz = false;
+                cur_qp = 0;
             }
             if mb_idx < self.mb_qp.len() {
                 self.mb_qp[mb_idx] = cur_qp;
@@ -551,6 +552,8 @@ impl H264Decoder {
 
     /// 对齐 FFmpeg `ff_h264_check_intra4x4_pred_mode` 的边界模式重映射.
     ///
+    /// FFmpeg 的语义: mapped < 0 表示错误(返回 DC_128), mapped == 0 表示
+    /// 该模式不需要缺失方向的样本(保持不变), mapped > 0 表示替换为新模式.
     /// 仅用于预测阶段, 不回写语法解码得到的原始 mode.
     pub(super) fn remap_i4x4_mode_for_unavailable(
         mode: u8,
@@ -570,7 +573,9 @@ impl H264Decoder {
             if mapped < 0 {
                 return DC_128_PRED as u8;
             }
-            m = i16::from(mapped);
+            if mapped > 0 {
+                m = i16::from(mapped);
+            }
         }
         if !left_available {
             let idx = m.clamp(0, 11) as usize;
@@ -578,14 +583,17 @@ impl H264Decoder {
             if mapped < 0 {
                 return DC_128_PRED as u8;
             }
-            m = i16::from(mapped);
+            if mapped > 0 {
+                m = i16::from(mapped);
+            }
         }
         m.clamp(0, 11) as u8
     }
 
-    /// 对齐 FFmpeg `ff_h264_check_intra_pred_mode` 的 Intra8x8 边界模式重映射.
+    /// Intra8x8 边界模式重映射.
     ///
-    /// 8x8 与 4x4 使用同一套边界重映射规则, 仅引用样本集合不同.
+    /// predict_8x8 内部已正确处理 has_top/has_left=false 场景(填充 128 等),
+    /// 此处仅做范围裁剪, 避免启用 remap 后因空间级联而整帧崩坏.
     pub(super) fn remap_i8x8_mode_for_unavailable(
         mode: u8,
         _top_available: bool,
@@ -657,14 +665,7 @@ impl H264Decoder {
                 avail.has_top,
                 avail.has_left,
             );
-            intra::predict_8x8(
-                &mut self.ref_y,
-                self.stride_y,
-                px,
-                py,
-                mode,
-                &avail,
-            );
+            intra::predict_8x8(&mut self.ref_y, self.stride_y, px, py, mode, &avail);
 
             if luma_cbp & (1 << i8x8) == 0 {
                 self.set_luma_8x8_cbf(x8, y8, false);
@@ -755,7 +756,11 @@ impl H264Decoder {
             let x4 = mb_x * 4 + x8x8 * 2;
             let y4 = mb_y * 4 + y8x8 * 2;
             let cbf_inc = self.luma_8x8_cbf_ctx_inc(x8, y8, intra_defaults);
-            let bits_before = if trace_mb_detail { cabac.bits_read() } else { 0 };
+            let bits_before = if trace_mb_detail {
+                cabac.bits_read()
+            } else {
+                0
+            };
             let raw_coeffs = decode_residual_block(cabac, ctxs, &CAT_LUMA_8X8, cbf_inc);
             let coded = raw_coeffs.iter().any(|&c| c != 0);
             if trace_mb_detail {
@@ -1051,7 +1056,11 @@ impl H264Decoder {
 
         // U 通道
         let chroma_dc_cbf_inc_u = self.chroma_dc_cbf_ctx_inc(mb_x, mb_y, intra_defaults);
-        let bits_before_u_dc = if trace_mb_detail { cabac.bits_read() } else { 0 };
+        let bits_before_u_dc = if trace_mb_detail {
+            cabac.bits_read()
+        } else {
+            0
+        };
         let u_coeffs = decode_residual_block(cabac, ctxs, &CAT_CHROMA_DC, chroma_dc_cbf_inc_u);
         self.set_chroma_dc_u_cbf(mb_x, mb_y, u_coeffs.iter().any(|&c| c != 0));
         if trace_mb_detail {
@@ -1080,7 +1089,11 @@ impl H264Decoder {
 
         // V 通道
         let chroma_dc_cbf_inc_v = self.chroma_dc_v_cbf_ctx_inc(mb_x, mb_y, intra_defaults);
-        let bits_before_v_dc = if trace_mb_detail { cabac.bits_read() } else { 0 };
+        let bits_before_v_dc = if trace_mb_detail {
+            cabac.bits_read()
+        } else {
+            0
+        };
         let v_coeffs = decode_residual_block(cabac, ctxs, &CAT_CHROMA_DC, chroma_dc_cbf_inc_v);
         self.set_chroma_dc_v_cbf(mb_x, mb_y, v_coeffs.iter().any(|&c| c != 0));
         if trace_mb_detail {
@@ -1119,7 +1132,11 @@ impl H264Decoder {
                 let y2 = mb_y * 2 + sub_y;
 
                 let cbf_inc_u = self.chroma_u_cbf_ctx_inc(x2, y2, intra_defaults);
-                let bits_before_u_ac = if trace_mb_detail { cabac.bits_read() } else { 0 };
+                let bits_before_u_ac = if trace_mb_detail {
+                    cabac.bits_read()
+                } else {
+                    0
+                };
                 let raw_u_ac = decode_residual_block(cabac, ctxs, &CAT_CHROMA_AC, cbf_inc_u);
                 let coded_u = raw_u_ac.iter().any(|&c| c != 0);
                 self.set_chroma_u_cbf(x2, y2, coded_u);
@@ -1151,7 +1168,11 @@ impl H264Decoder {
                 let y2 = mb_y * 2 + sub_y;
 
                 let cbf_inc_v = self.chroma_v_cbf_ctx_inc(x2, y2, intra_defaults);
-                let bits_before_v_ac = if trace_mb_detail { cabac.bits_read() } else { 0 };
+                let bits_before_v_ac = if trace_mb_detail {
+                    cabac.bits_read()
+                } else {
+                    0
+                };
                 let raw_v_ac = decode_residual_block(cabac, ctxs, &CAT_CHROMA_AC, cbf_inc_v);
                 let coded_v = raw_v_ac.iter().any(|&c| c != 0);
                 self.set_chroma_v_cbf(x2, y2, coded_v);

@@ -251,7 +251,11 @@ fn decode_abs_suffix_bypass(cabac: &mut CabacDecoder) -> u32 {
         j += 1;
     }
     if j >= 20 && std::env::var("TAO_H264_TRACE_BYPASS_CAP").as_deref() == Ok("1") {
-        eprintln!("[H264_COEFF_BYPASS_PREFIX] j={} bits={}", j, cabac.bits_read());
+        eprintln!(
+            "[H264_COEFF_BYPASS_PREFIX] j={} bits={}",
+            j,
+            cabac.bits_read()
+        );
     }
 
     let mut coeff_abs = 1u32;
@@ -355,9 +359,9 @@ pub fn dequant_chroma_dc(coeffs: &mut [i32; 4], qp: i32) {
 
 /// Chroma DC 系数反量化 (4:2:0), 支持自定义 4x4 scaling_list.
 ///
-/// H.264 标准 8.5.12.2: 4:2:0 色度 DC 的移位因子为 `qP/6 - 5`,
-/// 不同于亮度 DC 的 `qP/6 - 6`. 与 FFmpeg `chroma_dc_dequant_idct`
-/// 的 `(value * qmul) >> 7` 等价, 其中 qmul = LevelScale*weight << (qp_per+2).
+/// 对齐 FFmpeg `chroma_dc_dequant_idct`: `(hadamard * qmul) >> 7`,
+/// 其中 qmul = LevelScale*weight << (qp_per+2).
+/// 等效公式: `(had * scale) >> (5 - qp_per)`, **无舍入偏移, 纯截断**.
 pub fn dequant_chroma_dc_with_scaling(coeffs: &mut [i32; 4], qp: i32, scaling_list: &[u8; 16]) {
     let qp_per = qp / 6;
     let qp_rem = qp % 6;
@@ -368,7 +372,7 @@ pub fn dequant_chroma_dc_with_scaling(coeffs: &mut [i32; 4], qp: i32, scaling_li
             *c = (*c * scale) << (qp_per - 5);
         } else {
             let shift = 5 - qp_per;
-            *c = (*c * scale + (1 << (shift - 1))) >> shift;
+            *c = (*c * scale) >> shift;
         }
     }
 }
@@ -429,7 +433,7 @@ pub fn idct_4x4(coeffs: &[i32; 16], out: &mut [i32; 16]) {
     let mut block = *coeffs;
     block[0] += 32;
 
-    // Pass 1: 行变换 (spec step 1: 对每行 i, 蝶形变换 c_{i,0..3})
+    // Pass 1: 行变换
     for i in 0..4 {
         let s = i * 4;
         let z0 = block[s] + block[s + 2];
@@ -442,7 +446,7 @@ pub fn idct_4x4(coeffs: &[i32; 16], out: &mut [i32; 16]) {
         block[s + 3] = z0 - z3;
     }
 
-    // Pass 2: 列变换 + >>6 (spec step 2: 对每列 j, 蝶形变换 f_{0..3,j})
+    // Pass 2: 列变换 + >>6
     for i in 0..4 {
         let z0 = block[i] + block[i + 8];
         let z1 = block[i] - block[i + 8];
@@ -494,12 +498,12 @@ pub fn dequant_8x8_ac_with_scaling(
 }
 
 /// H.264 8x8 反整数变换.
-/// 按 H.264 spec 8.5.12.2 顺序: 先行变换, 后列变换.
+/// 先行变换, 后列变换. 使用 i32 全精度避免中间截断.
 pub fn idct_8x8(coeffs: &[i32; 64], out: &mut [i32; 64]) {
     let mut block = *coeffs;
     block[0] += 32;
 
-    // Pass 1: 行变换 (spec step 1)
+    // Pass 1: 行变换
     for i in 0..8 {
         let row = i * 8;
         let a0 = block[row] + block[row + 4];
@@ -532,7 +536,7 @@ pub fn idct_8x8(coeffs: &[i32; 64], out: &mut [i32; 64]) {
         block[row + 4] = b6 - b1;
     }
 
-    // Pass 2: 列变换 + >>6 (spec step 2)
+    // Pass 2: 列变换 + >>6
     for i in 0..8 {
         let a0 = block[i] + block[i + 4 * 8];
         let a2 = block[i] - block[i + 4 * 8];
@@ -544,12 +548,9 @@ pub fn idct_8x8(coeffs: &[i32; 64], out: &mut [i32; 64]) {
         let b4 = a2 - a4;
         let b6 = a0 - a6;
 
-        let a1 = -block[i + 3 * 8] + block[i + 5 * 8] - block[i + 7 * 8]
-            - (block[i + 7 * 8] >> 1);
-        let a3 = block[i + 8] + block[i + 7 * 8] - block[i + 3 * 8]
-            - (block[i + 3 * 8] >> 1);
-        let a5 = -block[i + 8] + block[i + 7 * 8] + block[i + 5 * 8]
-            + (block[i + 5 * 8] >> 1);
+        let a1 = -block[i + 3 * 8] + block[i + 5 * 8] - block[i + 7 * 8] - (block[i + 7 * 8] >> 1);
+        let a3 = block[i + 8] + block[i + 7 * 8] - block[i + 3 * 8] - (block[i + 3 * 8] >> 1);
+        let a5 = -block[i + 8] + block[i + 7 * 8] + block[i + 5 * 8] + (block[i + 5 * 8] >> 1);
         let a7 = block[i + 3 * 8] + block[i + 5 * 8] + block[i + 8] + (block[i + 8] >> 1);
 
         let b1 = (a7 >> 2) + a1;
@@ -740,15 +741,57 @@ pub fn apply_8x8_ac_residual_with_scaling(
     qp: i32,
     scaling_list_raster: &[u8; 64],
 ) {
+    let trace_target = std::env::var("TAO_H264_TRACE_COEFF").ok();
+    let trace = trace_target.as_ref().map_or(false, |v| {
+        if v == "1" {
+            x0 == 0 && y0 == 0
+        } else if let Some((tx, ty)) = v.split_once(',') {
+            tx.parse::<usize>().ok() == Some(x0) && ty.parse::<usize>().ok() == Some(y0)
+        } else {
+            false
+        }
+    });
+
     let mut coeffs_raster = [0i32; 64];
     for (scan_pos, &raster_idx) in ZIGZAG_8X8.iter().enumerate() {
         coeffs_raster[raster_idx] = coeffs_scan[scan_pos];
     }
 
+    if trace {
+        let nz: Vec<(usize, i32)> = coeffs_raster
+            .iter()
+            .enumerate()
+            .filter(|&(_, v)| *v != 0)
+            .map(|(i, v)| (i, *v))
+            .collect();
+        eprintln!(
+            "[TRACE_COEFF] 位置=({},{}) qp={} 反扫描后非零系数: {:?}",
+            x0, y0, qp, nz
+        );
+    }
+
     dequant_8x8_ac_with_scaling(&mut coeffs_raster, qp, scaling_list_raster);
+
+    if trace {
+        let nz: Vec<(usize, i32)> = coeffs_raster
+            .iter()
+            .enumerate()
+            .filter(|&(_, v)| *v != 0)
+            .map(|(i, v)| (i, *v))
+            .collect();
+        eprintln!("[TRACE_COEFF] 反量化后非零系数: {:?}", nz);
+    }
 
     let mut spatial = [0i32; 64];
     idct_8x8(&coeffs_raster, &mut spatial);
+
+    if trace {
+        eprintln!("[TRACE_COEFF] IDCT输出(行0): {:?}", &spatial[0..8]);
+        eprintln!("[TRACE_COEFF] IDCT输出(行1): {:?}", &spatial[8..16]);
+
+        let pred: Vec<u8> = (0..8).map(|dx| plane[y0 * stride + x0 + dx]).collect();
+        eprintln!("[TRACE_COEFF] 预测值(行0): {:?}", pred);
+    }
 
     for dy in 0..8 {
         for dx in 0..8 {
@@ -758,6 +801,11 @@ pub fn apply_8x8_ac_residual_with_scaling(
                 plane[idx] = val.clamp(0, 255) as u8;
             }
         }
+    }
+
+    if trace {
+        let final_row: Vec<u8> = (0..8).map(|dx| plane[y0 * stride + x0 + dx]).collect();
+        eprintln!("[TRACE_COEFF] 最终像素(行0): {:?}", final_row);
     }
 }
 

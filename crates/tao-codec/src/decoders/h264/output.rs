@@ -890,6 +890,8 @@ impl H264Decoder {
                 .as_ref()
                 .map(|p| (p.chroma_qp_index_offset, p.second_chroma_qp_index_offset))
                 .unwrap_or((0, 0));
+            let deblock_w = self.mb_width * 16;
+            let deblock_h = self.mb_height * 16;
             deblock::apply_deblock_yuv420_with_slice_params(
                 &mut self.ref_y,
                 &mut self.ref_u,
@@ -897,8 +899,8 @@ impl H264Decoder {
                 deblock::DeblockSliceParams {
                     stride_y: self.stride_y,
                     stride_c: self.stride_c,
-                    width: w,
-                    height: h,
+                    width: deblock_w,
+                    height: deblock_h,
                     slice_qp: self.last_slice_qp,
                     disable_deblocking_filter_idc: self.last_disable_deblocking_filter_idc,
                     chroma_qp_index_offset,
@@ -924,6 +926,7 @@ impl H264Decoder {
                     mv_l1_y_4x4: Some(&self.mv_l1_y_4x4),
                     ref_idx_l1_4x4: Some(&self.ref_idx_l1_4x4),
                     mb_qp: Some(&self.mb_qp),
+                    transform_8x8_flags: Some(&self.transform_8x8_flags),
                 },
             );
         }

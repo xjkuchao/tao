@@ -92,7 +92,8 @@ impl H264Decoder {
             .reference_frames
             .iter()
             .filter(|pic| {
-                pic.long_term_frame_idx.is_none() && !Self::same_reference_picture_identity(pic, col_pic)
+                pic.long_term_frame_idx.is_none()
+                    && !Self::same_reference_picture_identity(pic, col_pic)
             })
             .collect();
         short_refs.sort_by_key(|pic| {
@@ -420,8 +421,7 @@ impl H264Decoder {
             }
         } else {
             // 回退: 如果存储的 POC 列表不可用, 使用旧的 DPB 重建方法
-            let col_l0_list =
-                self.collect_default_reference_list_l0_for_colocated_picture(col_pic);
+            let col_l0_list = self.collect_default_reference_list_l0_for_colocated_picture(col_pic);
             if let Some(col_ref_pic) = col_l0_list.get(col_ref_idx as usize).copied()
                 && let Some((idx, _)) = ref_l0_list
                     .iter()
@@ -916,6 +916,7 @@ impl H264Decoder {
                 } else if intra_mb_type == 25 {
                     self.decode_i_pcm_mb(cabac, mb_x, mb_y);
                     self.prev_qp_delta_nz = false;
+                    cur_qp = 0;
                 }
             }
 
@@ -1284,30 +1285,13 @@ impl H264Decoder {
         if trace_ref_idx_all {
             eprintln!(
                 "[H264_REF_IDX_TRACE] list={} x4={} y4={} decoded_ref_idx={} active_ref_count={} ctx0={} bins={} bits_before={} bits_after={} oob={}",
-                list,
-                x4,
-                y4,
-                ref_idx,
-                num_ref_idx,
-                ctx0,
-                bins,
-                bits_before,
-                bits_after,
-                is_oob
+                list, x4, y4, ref_idx, num_ref_idx, ctx0, bins, bits_before, bits_after, is_oob
             );
         }
         if trace_ref_idx_oob && is_oob {
             eprintln!(
                 "[H264_REF_IDX_OOB] list={} x4={} y4={} decoded_ref_idx={} active_ref_count={} ctx0={} bins={} bits_before={} bits_after={}",
-                list,
-                x4,
-                y4,
-                ref_idx,
-                num_ref_idx,
-                ctx0,
-                bins,
-                bits_before,
-                bits_after
+                list, x4, y4, ref_idx, num_ref_idx, ctx0, bins, bits_before, bits_after
             );
         }
         ref_idx
@@ -1354,7 +1338,11 @@ impl H264Decoder {
                 }
             }
             if k >= 20 && std::env::var("TAO_H264_TRACE_BYPASS_CAP").as_deref() == Ok("1") {
-                eprintln!("[H264_MVD_BYPASS_PREFIX] k={} bits={}", k, cabac.bits_read());
+                eprintln!(
+                    "[H264_MVD_BYPASS_PREFIX] k={} bits={}",
+                    k,
+                    cabac.bits_read()
+                );
             }
             while k > 0 {
                 k -= 1;

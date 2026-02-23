@@ -294,8 +294,7 @@ impl H264Decoder {
         if trace_header {
             eprintln!(
                 "[H264_SLICE_PARSE] step=cabac_start data_bit_offset={} cabac_start_byte={}",
-                data_bit_offset,
-                cabac_start
+                data_bit_offset, cabac_start
             );
         }
 

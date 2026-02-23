@@ -959,6 +959,58 @@ fn print_first_frame_stats(path: &str, width: u32, height: u32, ff: &[u8], tao: 
             println!("  行{}: Tao={:?}", r, tao_row);
         }
     }
+
+    if std::env::var("TAO_H264_COMPARE_LOCATE_ERROR_MB").as_deref() == Ok("1") {
+        let mb_rows = (height as usize + 15) / 16;
+        let mb_cols = (width as usize + 15) / 16;
+        let mut found = false;
+        'outer: for mb_row in 0..mb_rows {
+            for mb_col in 0..mb_cols {
+                let mut max_d = 0i32;
+                for dy in 0..16 {
+                    let py = mb_row * 16 + dy;
+                    if py >= height as usize {
+                        break;
+                    }
+                    for dx in 0..16 {
+                        let px = mb_col * 16 + dx;
+                        if px >= w {
+                            break;
+                        }
+                        let i = py * w + px;
+                        if i < y_ff.len() && i < y_tao.len() {
+                            let d = (y_ff[i] as i32 - y_tao[i] as i32).abs();
+                            if d > max_d {
+                                max_d = d;
+                            }
+                        }
+                    }
+                }
+                if max_d >= 1 && !found {
+                    println!(
+                        "[{}] 首个大误差MB: ({},{}) max_d={}",
+                        path, mb_col, mb_row, max_d
+                    );
+                    for dy in 0..8 {
+                        let py = mb_row * 16 + dy;
+                        if py >= height as usize {
+                            break;
+                        }
+                        let off = py * w + mb_col * 16;
+                        let end = (off + 16).min(y_ff.len());
+                        let diff: Vec<i32> = y_ff[off..end]
+                            .iter()
+                            .zip(y_tao[off..end].iter())
+                            .map(|(&a, &b)| a as i32 - b as i32)
+                            .collect();
+                        println!("  dy{}: diff={:?}", dy, diff);
+                    }
+                    found = true;
+                    break 'outer;
+                }
+            }
+        }
+    }
 }
 
 /// 估计参考序列与测试序列的最佳帧偏移.

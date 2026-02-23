@@ -121,5 +121,4 @@ mod tests {
         // 应该安全处理，不崩溃
         let _ = result;
     }
-
 }

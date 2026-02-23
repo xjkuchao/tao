@@ -1294,6 +1294,7 @@ impl H264Decoder {
             self.mb_types[mb_idx] = 25;
             self.set_mb_cbp(mb_x, mb_y, 0x2f);
             self.prev_qp_delta_nz = false;
+            *cur_qp = 0;
             br.align_to_byte();
             let x0 = mb_x * 16;
             let y0 = mb_y * 16;

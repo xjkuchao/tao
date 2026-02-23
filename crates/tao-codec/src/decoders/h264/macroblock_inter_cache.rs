@@ -432,14 +432,15 @@ impl H264Decoder {
                 let mut mvd_l1_x = [[0i32; 4]; 4];
                 let mut mvd_l1_y = [[0i32; 4]; 4];
 
-                let part_offset = |part_w: usize, part_h: usize, part_count: usize, part: usize| {
-                    match (part_w, part_h, part_count) {
+                let part_offset =
+                    |part_w: usize, part_h: usize, part_count: usize, part: usize| match (
+                        part_w, part_h, part_count,
+                    ) {
                         (8, 8, _) => (0usize, 0usize),
                         (8, 4, _) => (0usize, part * 4),
                         (4, 8, _) => (part * 4, 0usize),
                         _ => ((part & 1) * 4, (part >> 1) * 4),
-                    }
-                };
+                    };
 
                 for sub in 0..4usize {
                     if !sub_use_l0[sub] {
@@ -448,8 +449,12 @@ impl H264Decoder {
                     let sx = (sub & 1) * 8;
                     let sy = (sub >> 1) * 8;
                     for part in 0..sub_part_count[sub] {
-                        let (off_x, off_y) =
-                            part_offset(sub_part_w[sub], sub_part_h[sub], sub_part_count[sub], part);
+                        let (off_x, off_y) = part_offset(
+                            sub_part_w[sub],
+                            sub_part_h[sub],
+                            sub_part_count[sub],
+                            part,
+                        );
                         let x4 = mb_x * 4 + (sx + off_x) / 4;
                         let y4 = mb_y * 4 + (sy + off_y) / 4;
                         let (amvd_x, amvd_y) = self.compute_cabac_amvd(x4, y4, 0);
@@ -475,8 +480,12 @@ impl H264Decoder {
                     let sx = (sub & 1) * 8;
                     let sy = (sub >> 1) * 8;
                     for part in 0..sub_part_count[sub] {
-                        let (off_x, off_y) =
-                            part_offset(sub_part_w[sub], sub_part_h[sub], sub_part_count[sub], part);
+                        let (off_x, off_y) = part_offset(
+                            sub_part_w[sub],
+                            sub_part_h[sub],
+                            sub_part_count[sub],
+                            part,
+                        );
                         let x4 = mb_x * 4 + (sx + off_x) / 4;
                         let y4 = mb_y * 4 + (sy + off_y) / 4;
                         let (amvd_x, amvd_y) = self.compute_cabac_amvd(x4, y4, 1);
@@ -523,8 +532,12 @@ impl H264Decoder {
                     }
 
                     for part in 0..sub_part_count[sub] {
-                        let (off_x, off_y) =
-                            part_offset(sub_part_w[sub], sub_part_h[sub], sub_part_count[sub], part);
+                        let (off_x, off_y) = part_offset(
+                            sub_part_w[sub],
+                            sub_part_h[sub],
+                            sub_part_count[sub],
+                            part,
+                        );
                         let bpx_x = mb_x * 16 + sx + off_x;
                         let bpx_y = mb_y * 16 + sy + off_y;
                         let part_x4 = (sx + off_x) / 4;
@@ -915,9 +928,8 @@ impl H264Decoder {
         if matches!(dir, BPredDir::L1 | BPredDir::Bi) {
             let ref_idx_l1 = self.decode_ref_idx(cabac, ctxs, num_ref_idx_l1, 1, x4, y4, true);
             let ref_idx_l1_i8 = ref_idx_l1.min(i8::MAX as u32) as i8;
-            let (pred_l1_x, pred_l1_y) = self.predict_mv_l1_partition(
-                mb_x, mb_y, part_x4, part_y4, part_w4, ref_idx_l1_i8,
-            );
+            let (pred_l1_x, pred_l1_y) =
+                self.predict_mv_l1_partition(mb_x, mb_y, part_x4, part_y4, part_w4, ref_idx_l1_i8);
             let (amvd_x, amvd_y) = self.compute_cabac_amvd(x4, y4, 1);
             let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
             let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);

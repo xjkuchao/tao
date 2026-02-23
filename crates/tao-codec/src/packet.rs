@@ -5,6 +5,23 @@
 use bytes::Bytes;
 use tao_core::Rational;
 
+/// Packet side-data 类型（兼容接口壳）.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PacketSideDataType {
+    /// 未知类型.
+    Unknown,
+}
+
+/// Packet side-data（兼容接口壳）.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PacketSideData {
+    /// 数据类型.
+    pub kind: PacketSideDataType,
+    /// 二进制数据.
+    pub data: Bytes,
+}
+
 /// 压缩数据包
 ///
 /// 从容器格式中读取的一帧压缩数据, 需要送入解码器进行解码.
@@ -60,5 +77,12 @@ impl Packet {
     /// 是否为空包 (flush packet)
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
+    }
+
+    /// 获取 side-data 列表.
+    ///
+    /// 当前默认空实现, 用于 ffprobe `-show_data/-show_data_hash` 接口预留.
+    pub fn side_data(&self) -> &[PacketSideData] {
+        &[]
     }
 }
