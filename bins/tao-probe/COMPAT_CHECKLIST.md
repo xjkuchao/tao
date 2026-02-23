@@ -28,7 +28,7 @@
 - [x] P1-05: 按选项粒度收紧 `-opt=value` 兼容偏差。
 - [x] P1-06: passthrough 使用原始顺序参数, 禁止 plan 重排。
 - [x] P1-07: 修复 `show_entries` 前置/后置顺序差异。
-- [ ] P1-08: 统一 parser/build/runtime 错误路径与 banner 行为。
+- [x] P1-08: 统一 parser/build/runtime 错误路径与 banner 行为。
 
 ## P2. 输出模型与 writer 对齐
 

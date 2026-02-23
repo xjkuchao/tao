@@ -183,10 +183,6 @@ fn execute_plan(plan: &CommandPlan) -> Result<(), RunError> {
             ));
         }
 
-        if show_banner {
-            print_banner(&plan.invocation_name);
-        }
-
         execute_probe_command(plan)
     }
 }
@@ -1247,10 +1243,6 @@ fn try_execute_ffprobe_global_passthrough(
 }
 
 fn try_execute_ffprobe_probe_passthrough(plan: &CommandPlan) -> Option<Result<(), RunError>> {
-    if plan.ordered_execution.is_empty() {
-        return None;
-    }
-
     let args = plan
         .ordered_execution
         .iter()

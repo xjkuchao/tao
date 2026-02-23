@@ -224,19 +224,6 @@ pub fn build_command_plan(parsed: &ParsedArgs) -> Result<CommandPlan, CliError> 
 
     plan.input = input_candidates.into_iter().next();
 
-    // 无全局命令时, 仅部分 show 命令可无输入执行.
-    if plan.global_command.is_none()
-        && plan.input.is_none()
-        && !can_run_without_input(&plan)
-        && parsed.options.is_empty()
-    {
-        return Err(CliError {
-            message: "You have to specify one input file.\nUse -h to get full help or, even better, run 'man ffprobe'."
-                .to_string(),
-            hide_banner: plan.hide_banner,
-        });
-    }
-
     Ok(plan)
 }
 
@@ -292,13 +279,6 @@ fn optional_value_state(option: Option<&ParsedOption>) -> OptionalValueState {
             .map(OptionalValueState::PresentExplicit)
             .unwrap_or(OptionalValueState::PresentImplicit),
     }
-}
-
-fn can_run_without_input(plan: &CommandPlan) -> bool {
-    plan.show.show_program_version
-        || plan.show.show_library_versions
-        || plan.show.show_versions
-        || plan.show.show_pixel_formats
 }
 
 #[cfg(test)]
