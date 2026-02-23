@@ -47,3 +47,26 @@
 -v error -show_streams -show_entries stream=index -of csv {SAMPLE}
 -v error -show_entries format=duration -show_format {SAMPLE}
 -v error -show_format -show_entries format=duration {SAMPLE}
+
+# 白名单清零场景
+-v error -devices
+-v error -bsfs
+-v error -protocols
+-v error -filters
+-v error -layouts
+-v error -sample_fmts
+-v error -dispositions
+-v error -colors
+-v error -show_frames {SAMPLE}
+-v error -show_programs {SAMPLE}
+-v error -show_stream_groups {SAMPLE}
+-v error -show_chapters {SAMPLE}
+-v error -show_error -f not-a-format {SAMPLE}
+-v error -show_log trace -show_frames {SAMPLE}
+-v error -show_data -show_packets {SAMPLE}
+-v error -show_data_hash md5 -show_packets {SAMPLE}
+-v error -read_intervals 0%+1 -show_packets {SAMPLE}
+-v error -find_stream_info -show_streams -of json {SAMPLE}
+-v error -count_frames -show_streams -of json {SAMPLE}
+-v error -sources v4l2
+-v error -sinks pulse

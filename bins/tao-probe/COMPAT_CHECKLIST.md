@@ -50,33 +50,33 @@
 
 ## P4. 白名单清零
 
-- [ ] W01 devices
-- [ ] W02 bsfs
-- [ ] W03 protocols
-- [ ] W04 filters
-- [ ] W05 layouts
-- [ ] W06 sample_fmts
-- [ ] W07 dispositions
-- [ ] W08 colors
-- [ ] W09 show_packets
-- [ ] W10 show_frames
-- [ ] W11 show_programs
-- [ ] W12 show_stream_groups
-- [ ] W13 show_chapters
-- [ ] W14 show_error
-- [ ] W15 show_log
-- [ ] W16 show_data
-- [ ] W17 show_data_hash
-- [ ] W18 read_intervals
-- [ ] W19 find_stream_info
-- [ ] W20 count_frames
-- [ ] W21 sources
-- [ ] W22 sinks
-- [ ] W23 show_pixel_formats
+- [x] W01 devices
+- [x] W02 bsfs
+- [x] W03 protocols
+- [x] W04 filters
+- [x] W05 layouts
+- [x] W06 sample_fmts
+- [x] W07 dispositions
+- [x] W08 colors
+- [x] W09 show_packets
+- [x] W10 show_frames
+- [x] W11 show_programs
+- [x] W12 show_stream_groups
+- [x] W13 show_chapters
+- [x] W14 show_error
+- [x] W15 show_log
+- [x] W16 show_data
+- [x] W17 show_data_hash
+- [x] W18 read_intervals
+- [x] W19 find_stream_info
+- [x] W20 count_frames
+- [x] W21 sources
+- [x] W22 sinks
+- [x] W23 show_pixel_formats
 
 ## P5. 收口
 
-- [ ] P5-01: 清空 `unimplemented` 白名单。
-- [ ] P5-02: full matrix 0 差异。
+- [x] P5-01: 清空 `unimplemented` 白名单。
+- [x] P5-02: full matrix 0 差异。
 - [ ] P5-03: 清理无关兼容分支并保持单入口稳定。
-- [ ] P5-04: 输出 `COMPAT_REPORT.md`。
+- [x] P5-04: 输出 `COMPAT_REPORT.md`。
