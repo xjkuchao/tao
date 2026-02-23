@@ -26,6 +26,10 @@ pub enum BoxType {
     Mvhd,
     /// trak - 轨道
     Trak,
+    /// edts - 编辑列表容器
+    Edts,
+    /// elst - 编辑列表
+    Elst,
     /// tkhd - 轨道头部
     Tkhd,
     /// mdia - 媒体
@@ -72,6 +76,8 @@ impl BoxType {
             b"moov" => Self::Moov,
             b"mvhd" => Self::Mvhd,
             b"trak" => Self::Trak,
+            b"edts" => Self::Edts,
+            b"elst" => Self::Elst,
             b"tkhd" => Self::Tkhd,
             b"mdia" => Self::Mdia,
             b"mdhd" => Self::Mdhd,

@@ -99,7 +99,7 @@ const H264_SAMPLES: &[SampleEntry] = &[
         path: "data/h264_samples/e7_high_1080p.mp4",
         profile: "High",
         resolution: "1920x1080",
-        description: "CABAC + 8x8, Level 4.2, yuvj420p, MP4",
+        description: "CAVLC + 8x8, Level 4.2, yuvj420p, MP4",
     },
     SampleEntry {
         id: "E8",
@@ -313,6 +313,12 @@ fn required_precision_pct() -> f64 {
         .unwrap_or(DEFAULT_REQUIRED_PRECISION)
 }
 
+fn fail_on_ref_fallback_enabled() -> bool {
+    std::env::var("TAO_H264_COMPARE_FAIL_ON_REF_FALLBACK")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 fn make_ffmpeg_tmp_path(tag: &str) -> String {
     let pid = std::process::id();
     let seq = FF_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -474,6 +480,9 @@ fn decode_h264_with_tao(path: &str) -> DecodeResult {
     let mut actual_w = width;
     let mut actual_h = height;
     let frame_limit = compare_frames_limit();
+    let drop_negative_pts = std::env::var("TAO_H264_COMPARE_KEEP_NEGATIVE_PTS")
+        .map(|v| !(v == "1" || v.eq_ignore_ascii_case("true")))
+        .unwrap_or(true);
     let mut demux_eof = false;
     let mut packet_index: u64 = 0;
 
@@ -512,6 +521,12 @@ fn decode_h264_with_tao(path: &str) -> DecodeResult {
         loop {
             match decoder.receive_frame() {
                 Ok(Frame::Video(vf)) => {
+                    if drop_negative_pts
+                        && vf.pts != tao::core::timestamp::NOPTS_VALUE
+                        && vf.pts < 0
+                    {
+                        continue;
+                    }
                     actual_w = vf.width;
                     actual_h = vf.height;
                     let packed = pack_yuv420p(&vf)?;
@@ -1152,6 +1167,9 @@ fn print_compare_stats(path: &str, tao_frames: usize, ff_frames: usize, stats: &
 }
 
 fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if fail_on_ref_fallback_enabled() {
+        println!("[{}] 已启用缺失参考回退硬失败门禁", path);
+    }
     let (tao_w, tao_h, tao_frames, tao_stream_index) = decode_h264_with_tao(path)?;
 
     if std::env::var("TAO_H264_COMPARE_DUMP_TAO").unwrap_or_default() == "1"

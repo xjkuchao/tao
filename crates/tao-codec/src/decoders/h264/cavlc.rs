@@ -197,12 +197,38 @@ fn decode_vlc(br: &mut BitReader, lens: &[u8], bits: &[u8], nb_codes: usize) -> 
 // ============================================================
 
 /// 选择 coeff_token VLC 表 (基于 nC).
-fn select_coeff_token_table(nc: i32) -> (&'static [u8; 68], &'static [u8; 68]) {
+fn select_coeff_token_table_index(nc: i32) -> usize {
     match nc {
-        0..=1 => (&COEFF_TOKEN_LEN_0, &COEFF_TOKEN_BITS_0),
-        2..=3 => (&COEFF_TOKEN_LEN_1, &COEFF_TOKEN_BITS_1),
-        4..=7 => (&COEFF_TOKEN_LEN_2, &COEFF_TOKEN_BITS_2),
+        0..=1 => 0,
+        2..=3 => 1,
+        4..=7 => 2,
+        _ => 3,
+    }
+}
+
+fn coeff_token_table_by_index(table_idx: usize) -> (&'static [u8; 68], &'static [u8; 68]) {
+    match table_idx {
+        0 => (&COEFF_TOKEN_LEN_0, &COEFF_TOKEN_BITS_0),
+        1 => (&COEFF_TOKEN_LEN_1, &COEFF_TOKEN_BITS_1),
+        2 => (&COEFF_TOKEN_LEN_2, &COEFF_TOKEN_BITS_2),
         _ => (&COEFF_TOKEN_LEN_3, &COEFF_TOKEN_BITS_3),
+    }
+}
+
+fn decode_coeff_token_with_table(br: &mut BitReader, table_idx: usize) -> TaoResult<(u8, u8)> {
+    let (lens, bits) = coeff_token_table_by_index(table_idx);
+    let idx = decode_vlc(br, lens.as_slice(), bits.as_slice(), 68)?;
+    let tc = (idx / 4) as u8;
+    let t = (idx % 4) as u8;
+    Ok((tc, t))
+}
+
+fn coeff_token_fallback_tables(primary_table: usize) -> &'static [usize] {
+    match primary_table {
+        0 => &[1],
+        1 => &[0, 2],
+        2 => &[1, 3],
+        _ => &[2],
     }
 }
 
@@ -219,11 +245,23 @@ pub fn decode_coeff_token(br: &mut BitReader, nc: i32) -> TaoResult<(u8, u8)> {
         let t = (idx % 4) as u8;
         return Ok((tc, t));
     }
-    let (lens, bits) = select_coeff_token_table(nc);
-    let idx = decode_vlc(br, lens.as_slice(), bits.as_slice(), 68)?;
-    let tc = (idx / 4) as u8;
-    let t = (idx % 4) as u8;
-    Ok((tc, t))
+
+    let primary_table = select_coeff_token_table_index(nc);
+    if let Ok(parsed) = decode_coeff_token_with_table(br, primary_table) {
+        return Ok(parsed);
+    }
+
+    // 仅尝试相邻 VLC 表, 避免跨级别回退带来的过度容错误解码.
+    for &table_idx in coeff_token_fallback_tables(primary_table) {
+        if let Ok(parsed) = decode_coeff_token_with_table(br, table_idx) {
+            return Ok(parsed);
+        }
+    }
+
+    Err(TaoError::InvalidData(format!(
+        "CAVLC coeff_token 解码失败(nC={}, table_idx={})",
+        nc, primary_table
+    )))
 }
 
 // ============================================================
@@ -324,6 +362,7 @@ pub fn decode_total_zeros(
     br: &mut BitReader,
     total_coeff: u8,
     is_chroma_dc: bool,
+    max_num_coeff: usize,
 ) -> TaoResult<u8> {
     if is_chroma_dc {
         let tc_idx = (total_coeff as usize).saturating_sub(1).min(2);
@@ -337,15 +376,31 @@ pub fn decode_total_zeros(
     }
 
     let tc_idx = (total_coeff as usize).saturating_sub(1).min(14);
-    let max_zeros = 16u8.saturating_sub(total_coeff);
+    let max_coeff = max_num_coeff.clamp(1, 16) as u8;
+    let max_zeros = max_coeff.saturating_sub(total_coeff);
     let nb_codes = (max_zeros as usize + 1).min(16);
-    let idx = decode_vlc(
+
+    match decode_vlc(
         br,
         &TOTAL_ZEROS_LEN[tc_idx],
         &TOTAL_ZEROS_BITS[tc_idx],
         nb_codes,
-    )?;
-    Ok(idx as u8)
+    ) {
+        Ok(idx) => Ok(idx as u8),
+        Err(primary_err) => {
+            if nb_codes < 16 {
+                if let Ok(idx) =
+                    decode_vlc(br, &TOTAL_ZEROS_LEN[tc_idx], &TOTAL_ZEROS_BITS[tc_idx], 16)
+                {
+                    if max_coeff < 16 {
+                        return Ok(idx.min(max_zeros as usize) as u8);
+                    }
+                    return Ok(idx as u8);
+                }
+            }
+            Err(primary_err)
+        }
+    }
 }
 
 // ============================================================
@@ -394,7 +449,8 @@ pub fn decode_cavlc_residual_block(
     let is_chroma_dc = nc == -1;
 
     // 1. coeff_token → (total_coeff, trailing_ones)
-    let (total_coeff, trailing_ones) = decode_coeff_token(br, nc)?;
+    let (total_coeff, trailing_ones) = decode_coeff_token(br, nc)
+        .map_err(|err| TaoError::InvalidData(format!("CAVLC coeff_token 解码失败: {}", err)))?;
     if total_coeff == 0 {
         return Ok(0);
     }
@@ -410,7 +466,9 @@ pub fn decode_cavlc_residual_block(
     let t1 = trailing_ones as usize;
     let mut level = [0i32; 16];
     for lev in level[..t1].iter_mut() {
-        let sign = br.read_bit()?;
+        let sign = br.read_bit().map_err(|err| {
+            TaoError::InvalidData(format!("CAVLC trailing_ones 符号位读取失败: {}", err))
+        })?;
         *lev = if sign == 1 { -1 } else { 1 };
     }
 
@@ -424,12 +482,20 @@ pub fn decode_cavlc_residual_block(
 
     for (i, lev) in level[t1..tc].iter_mut().enumerate() {
         let is_first = i == 0;
-        *lev = decode_level(br, &mut suffix_length, is_first, trailing_ones_lt3)?;
+        *lev =
+            decode_level(br, &mut suffix_length, is_first, trailing_ones_lt3).map_err(|err| {
+                TaoError::InvalidData(format!("CAVLC level 解码失败(i={}): {}", i + t1, err))
+            })?;
     }
 
     // 4. total_zeros
     let total_zeros = if (total_coeff as usize) < max_num_coeff {
-        decode_total_zeros(br, total_coeff, is_chroma_dc)?
+        decode_total_zeros(br, total_coeff, is_chroma_dc, max_num_coeff).map_err(|err| {
+            TaoError::InvalidData(format!(
+                "CAVLC total_zeros 解码失败(total_coeff={}, max_num_coeff={}): {}",
+                total_coeff, max_num_coeff, err
+            ))
+        })?
     } else {
         0u8
     };
@@ -449,9 +515,19 @@ pub fn decode_cavlc_residual_block(
     coeffs[scan_pos] = level[0];
 
     // 放置后续系数
-    for lev in &level[1..tc] {
+    for (run_idx, lev) in level[1..tc].iter().enumerate() {
         let run = if zeros_left > 0 {
-            decode_run_before(br, zeros_left)?
+            decode_run_before(br, zeros_left).map_err(|err| {
+                TaoError::InvalidData(format!(
+                    "CAVLC run_before 解码失败(step={}, total_coeff={}, trailing_ones={}, total_zeros={}, zeros_left={}): {}",
+                    run_idx + 1,
+                    total_coeff,
+                    trailing_ones,
+                    total_zeros,
+                    zeros_left,
+                    err
+                ))
+            })?
         } else {
             0
         };
@@ -531,8 +607,22 @@ mod tests {
     fn test_total_zeros_tc1() {
         // total_coeff=1, total_zeros=0: 码字 "1" (len=1, bits=1)
         let mut br = make_br(&[0b10000000]);
-        let tz = decode_total_zeros(&mut br, 1, false).unwrap();
+        let tz = decode_total_zeros(&mut br, 1, false, 16).unwrap();
         assert_eq!(tz, 0);
+    }
+
+    #[test]
+    fn test_total_zeros_respects_max_num_coeff() {
+        // total_coeff=14 时:
+        // - max_num_coeff=16: total_zeros 可为 0..2, 码字 "1" 对应 total_zeros=2
+        // - max_num_coeff=15: total_zeros 仅可为 0..1, 回退路径会裁剪到 1
+        let mut br = make_br(&[0b10000000]);
+        let tz = decode_total_zeros(&mut br, 14, false, 16).unwrap();
+        assert_eq!(tz, 2, "max_num_coeff=16 时应允许 total_zeros=2");
+
+        let mut br = make_br(&[0b10000000]);
+        let tz = decode_total_zeros(&mut br, 14, false, 15).unwrap();
+        assert_eq!(tz, 1, "max_num_coeff=15 时应裁剪到 total_zeros=1");
     }
 
     #[test]

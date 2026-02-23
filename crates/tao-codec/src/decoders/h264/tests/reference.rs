@@ -522,3 +522,19 @@ fn test_reference_list_l0_empty_records_missing_reference_fallback() {
         "空参考列表应记录一次缺参考回退"
     );
 }
+
+#[test]
+fn test_store_reference_with_marking_b_slice_ref_nal_is_stored() {
+    let mut dec = build_test_decoder();
+    dec.last_slice_type = 1; // B slice
+    dec.last_nal_ref_idc = 2; // 参考图像
+    dec.last_frame_num = 7;
+    dec.last_poc = 14;
+    dec.last_dec_ref_pic_marking = DecRefPicMarking::default();
+
+    dec.store_reference_with_marking();
+
+    let current = dec.reference_frames.back().expect("参考 B 图像应入 DPB");
+    assert_eq!(current.frame_num, 7, "参考 B 图像 frame_num 入队错误");
+    assert_eq!(current.poc, 14, "参考 B 图像 POC 入队错误");
+}

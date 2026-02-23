@@ -22,6 +22,11 @@
             "type": "stdio",
             "command": "npx",
             "args": ["-y", "mcp-ripgrep@latest"]
+        },
+        "codegraph": {
+            "type": "stdio",
+            "command": "codegraph",
+            "args": ["serve", "--mcp"]
         }
     }
 }

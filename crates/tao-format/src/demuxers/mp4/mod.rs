@@ -51,6 +51,8 @@ pub struct Mp4Demuxer {
     sample_tables: Vec<SampleTable>,
     /// 当前读取的全局采样索引 (所有流中的下一个采样)
     current_sample: Vec<u32>,
+    /// 每个流的 PTS 偏移 (由 elst media_time 导出, 单位为该流 time_base)
+    stream_pts_offset: Vec<i64>,
     /// mdat 区域起始偏移
     mdat_offset: u64,
     /// mdat 区域大小
@@ -66,6 +68,7 @@ impl Mp4Demuxer {
             streams: Vec::new(),
             sample_tables: Vec::new(),
             current_sample: Vec::new(),
+            stream_pts_offset: Vec::new(),
             mdat_offset: 0,
             mdat_size: 0,
             file_duration: None,
@@ -141,6 +144,7 @@ impl Mp4Demuxer {
         let mut media_duration = 0u64;
         let mut handler_type = [0u8; 4];
         let mut sample_table = SampleTable::new();
+        let mut edit_media_time = -1i64;
         let mut width = 0u32;
         let mut height = 0u32;
 
@@ -153,9 +157,15 @@ impl Mp4Demuxer {
             &mut media_duration,
             &mut handler_type,
             &mut sample_table,
+            &mut edit_media_time,
             &mut width,
             &mut height,
         )?;
+
+        let mut pts_offset = 0i64;
+        if edit_media_time >= 0 {
+            pts_offset = edit_media_time;
+        }
 
         // 根据 handler_type 创建流
         let stream_index = self.streams.len();
@@ -188,18 +198,20 @@ impl Mp4Demuxer {
         };
 
         debug!(
-            "MP4: 轨道 #{} (id={}): {} {}, timescale={}, samples={}",
+            "MP4: 轨道 #{} (id={}): {} {}, timescale={}, samples={}, elst_media_time={}",
             stream_index,
             track_id,
             media_type,
             codec_id,
             media_timescale,
             sample_table.sample_count(),
+            edit_media_time,
         );
 
         self.streams.push(stream);
         self.sample_tables.push(sample_table);
         self.current_sample.push(0);
+        self.stream_pts_offset.push(pts_offset);
 
         Ok(())
     }
@@ -215,6 +227,7 @@ impl Mp4Demuxer {
         duration: &mut u64,
         handler: &mut [u8; 4],
         st: &mut SampleTable,
+        edit_media_time: &mut i64,
         width: &mut u32,
         height: &mut u32,
     ) -> TaoResult<()> {
@@ -232,7 +245,30 @@ impl Mp4Demuxer {
                 BoxType::Mdia | BoxType::Minf | BoxType::Stbl => {
                     // 容器 box, 递归解析
                     self.parse_trak_boxes(
-                        io, box_end, track_id, timescale, duration, handler, st, width, height,
+                        io,
+                        box_end,
+                        track_id,
+                        timescale,
+                        duration,
+                        handler,
+                        st,
+                        edit_media_time,
+                        width,
+                        height,
+                    )?;
+                }
+                BoxType::Edts => {
+                    self.parse_trak_boxes(
+                        io,
+                        box_end,
+                        track_id,
+                        timescale,
+                        duration,
+                        handler,
+                        st,
+                        edit_media_time,
+                        width,
+                        height,
                     )?;
                 }
                 BoxType::Mdhd => {
@@ -267,11 +303,54 @@ impl Mp4Demuxer {
                 BoxType::Ctts => {
                     st.parse_ctts(io)?;
                 }
+                BoxType::Elst => {
+                    Self::parse_elst(io, edit_media_time)?;
+                }
                 _ => {}
             }
 
             io.seek(std::io::SeekFrom::Start(box_end))?;
         }
+        Ok(())
+    }
+
+    /// 解析 elst (Edit List Box).
+    ///
+    /// 当前仅提取首个 `media_time >= 0` 的编辑项, 用于跳过轨道起始的隐藏采样.
+    fn parse_elst(io: &mut IoContext, edit_media_time: &mut i64) -> TaoResult<()> {
+        let version = io.read_u8()?;
+        let _flags = io.read_bytes(3)?;
+        let entry_count = io.read_u32_be()?;
+
+        let mut first_media_time = None;
+        for _ in 0..entry_count {
+            let (segment_duration, media_time) = if version == 1 {
+                let dur_hi = io.read_u32_be()? as u64;
+                let dur_lo = io.read_u32_be()? as u64;
+                let duration = (dur_hi << 32) | dur_lo;
+
+                let time_hi = io.read_i32_be()? as i64;
+                let time_lo = io.read_u32_be()? as i64;
+                let media_time = (time_hi << 32) | (time_lo & 0xFFFF_FFFF);
+                (duration, media_time)
+            } else {
+                let duration = io.read_u32_be()? as u64;
+                let media_time = io.read_i32_be()? as i64;
+                (duration, media_time)
+            };
+
+            let _media_rate_integer = io.read_i16_be()?;
+            let _media_rate_fraction = io.read_i16_be()?;
+
+            if first_media_time.is_none() && segment_duration > 0 && media_time >= 0 {
+                first_media_time = Some(media_time);
+            }
+        }
+
+        if let Some(media_time) = first_media_time {
+            *edit_media_time = media_time;
+        }
+
         Ok(())
     }
 
@@ -489,7 +568,8 @@ impl Demuxer for Mp4Demuxer {
         let st = &self.sample_tables[stream_idx];
         let offset = st.sample_offset(sample_idx);
         let size = st.sample_size(sample_idx);
-        let pts = st.sample_pts(sample_idx);
+        let pts_offset = self.stream_pts_offset.get(stream_idx).copied().unwrap_or(0);
+        let pts = st.sample_pts(sample_idx) - pts_offset;
         let is_keyframe = st.is_sync_sample(sample_idx);
 
         // 读取数据
@@ -528,7 +608,13 @@ impl Demuxer for Mp4Demuxer {
         let st = &self.sample_tables[stream_index];
 
         // 1. 根据时间戳找到对应的采样
-        let mut target_sample = st.timestamp_to_sample(timestamp);
+        let src_ts = timestamp
+            + self
+                .stream_pts_offset
+                .get(stream_index)
+                .copied()
+                .unwrap_or(0);
+        let mut target_sample = st.timestamp_to_sample(src_ts);
 
         // 2. 根据 flags 决定是否需要关键帧
         if !flags.any {
@@ -547,13 +633,20 @@ impl Demuxer for Mp4Demuxer {
             self.current_sample[stream_index] = target_sample;
 
             // 4. 其他流也跳转到相同或相近的时间位置（保持音视频同步）
-            let target_pts = st.sample_pts(target_sample);
+            let target_pts = st.sample_pts(target_sample)
+                - self
+                    .stream_pts_offset
+                    .get(stream_index)
+                    .copied()
+                    .unwrap_or(0);
             for (other_idx, other_st) in self.sample_tables.iter().enumerate() {
                 if other_idx == stream_index {
                     continue;
                 }
                 // 找到其他流中最接近该时间的采样
-                let other_sample = other_st.timestamp_to_sample(target_pts);
+                let other_src_ts =
+                    target_pts + self.stream_pts_offset.get(other_idx).copied().unwrap_or(0);
+                let other_sample = other_st.timestamp_to_sample(other_src_ts);
                 let keyframe_sample = if !flags.any {
                     other_st.find_keyframe_at_or_before(other_sample)
                 } else {
@@ -656,6 +749,48 @@ mod tests {
         // 最小 MP4 可能没有有效轨道
         // 只要不 panic 就行
         assert!(result.is_ok() || result.is_err(), "解析不应 panic",);
+    }
+
+    #[test]
+    fn test_parse_elst_extract_media_time_v0() {
+        let mut data = Vec::new();
+        data.push(0); // version
+        data.extend_from_slice(&[0, 0, 0]); // flags
+        data.extend_from_slice(&1u32.to_be_bytes()); // entry_count
+        data.extend_from_slice(&3003u32.to_be_bytes()); // segment_duration
+        data.extend_from_slice(&1001i32.to_be_bytes()); // media_time
+        data.extend_from_slice(&1i16.to_be_bytes()); // media_rate_integer
+        data.extend_from_slice(&0i16.to_be_bytes()); // media_rate_fraction
+
+        let backend = MemoryBackend::from_data(data);
+        let mut io = IoContext::new(Box::new(backend));
+        let mut media_time = -1i64;
+        Mp4Demuxer::parse_elst(&mut io, &mut media_time).unwrap();
+        assert_eq!(media_time, 1001, "elst media_time 解析错误");
+    }
+
+    #[test]
+    fn test_parse_elst_skips_negative_media_time() {
+        let mut data = Vec::new();
+        data.push(0); // version
+        data.extend_from_slice(&[0, 0, 0]); // flags
+        data.extend_from_slice(&2u32.to_be_bytes()); // entry_count
+        // entry 0: 空编辑, media_time=-1
+        data.extend_from_slice(&1000u32.to_be_bytes()); // segment_duration
+        data.extend_from_slice(&(-1i32).to_be_bytes()); // media_time
+        data.extend_from_slice(&1i16.to_be_bytes()); // media_rate_integer
+        data.extend_from_slice(&0i16.to_be_bytes()); // media_rate_fraction
+        // entry 1: 正常编辑
+        data.extend_from_slice(&2000u32.to_be_bytes()); // segment_duration
+        data.extend_from_slice(&500i32.to_be_bytes()); // media_time
+        data.extend_from_slice(&1i16.to_be_bytes()); // media_rate_integer
+        data.extend_from_slice(&0i16.to_be_bytes()); // media_rate_fraction
+
+        let backend = MemoryBackend::from_data(data);
+        let mut io = IoContext::new(Box::new(backend));
+        let mut media_time = -1i64;
+        Mp4Demuxer::parse_elst(&mut io, &mut media_time).unwrap();
+        assert_eq!(media_time, 500, "应跳过负 media_time, 选择首个有效编辑项");
     }
 
     /// 构造最小 MP4 文件

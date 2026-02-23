@@ -51,6 +51,29 @@ use residual::{
     inverse_hadamard_2x2, inverse_hadamard_4x4,
 };
 
+fn parse_trace_mb_range(raw: &str) -> Option<(usize, usize)> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parse_pair = |a: &str, b: &str| -> Option<(usize, usize)> {
+        let start = a.trim().parse::<usize>().ok()?;
+        let end = b.trim().parse::<usize>().ok()?;
+        Some((start.min(end), start.max(end)))
+    };
+    if let Some((a, b)) = trimmed.split_once('-')
+        && let Some(pair) = parse_pair(a, b)
+    {
+        return Some(pair);
+    }
+    if let Some((a, b)) = trimmed.split_once(':')
+        && let Some(pair) = parse_pair(a, b)
+    {
+        return Some(pair);
+    }
+    trimmed.parse::<usize>().ok().map(|v| (v, v))
+}
+
 // ============================================================
 // PPS 参数
 // ============================================================
@@ -191,6 +214,24 @@ struct ReferencePicture {
     mv_l0_y: Vec<i16>,
     /// 参考帧宏块级 list0 ref_idx.
     ref_idx_l0: Vec<i8>,
+    /// 参考帧宏块级 list1 MV X (1/4 像素).
+    mv_l1_x: Vec<i16>,
+    /// 参考帧宏块级 list1 MV Y (1/4 像素).
+    mv_l1_y: Vec<i16>,
+    /// 参考帧宏块级 list1 ref_idx.
+    ref_idx_l1: Vec<i8>,
+    /// 参考帧 4x4 级 list0 MV X (1/4 像素).
+    mv_l0_x_4x4: Vec<i16>,
+    /// 参考帧 4x4 级 list0 MV Y (1/4 像素).
+    mv_l0_y_4x4: Vec<i16>,
+    /// 参考帧 4x4 级 list0 ref_idx.
+    ref_idx_l0_4x4: Vec<i8>,
+    /// 参考帧 4x4 级 list1 MV X (1/4 像素).
+    mv_l1_x_4x4: Vec<i16>,
+    /// 参考帧 4x4 级 list1 MV Y (1/4 像素).
+    mv_l1_y_4x4: Vec<i16>,
+    /// 参考帧 4x4 级 list1 ref_idx.
+    ref_idx_l1_4x4: Vec<i8>,
     /// 参考帧宏块级 mb_types (用于 col_zero_flag 判断 intra 状态).
     mb_types: Vec<u8>,
     frame_num: u32,
@@ -210,8 +251,10 @@ struct RefPlanes {
     y: Vec<u8>,
     u: Vec<u8>,
     v: Vec<u8>,
+    frame_num: u32,
     poc: i32,
     is_long_term: bool,
+    long_term_frame_idx: Option<u32>,
 }
 
 struct ReorderFrameEntry {
@@ -251,6 +294,8 @@ pub struct H264Decoder {
     stride_c: usize,
     /// 每个宏块的类型 (0=I_4x4, 1-24=I_16x16, 25=I_PCM, 255=P_Skip)
     mb_types: Vec<u8>,
+    /// 每个宏块的 skip 标记 (0=非 skip, 1=skip), 用于 CABAC skip 上下文推导.
+    mb_skip_flags: Vec<u8>,
     /// 每个宏块的实际 QP (含 mb_qp_delta 累加)
     mb_qp: Vec<i32>,
     /// 每个宏块的 coded_block_pattern (低 4 位为 luma, 高 2 位为 chroma)
@@ -310,6 +355,8 @@ pub struct H264Decoder {
     mv_l1_y_4x4: Vec<i16>,
     /// 每个 luma 4x4 块 list1 参考索引 (-1 表示不可用)
     ref_idx_l1_4x4: Vec<i8>,
+    /// 每个 luma 4x4 块的 Direct 标记 (1=Direct, 0=非 Direct), 用于 B-slice ref_idx CABAC 上下文.
+    direct_4x4_flags: Vec<u8>,
     /// CABAC MVD 缓存: 每个 4x4 块的 list0 MVD X 分量 (用于 amvd 上下文推导).
     mvd_l0_x_4x4: Vec<i16>,
     /// CABAC MVD 缓存: 每个 4x4 块的 list0 MVD Y 分量.
@@ -354,6 +401,10 @@ pub struct H264Decoder {
     max_reference_frames: usize,
     /// 参考帧缺失回退次数(用于容错统计与单测验证).
     missing_reference_fallbacks: u64,
+    /// 启用后: 一旦出现缺失参考回退, 当前解码流程立即报错.
+    fail_on_missing_reference_fallback: bool,
+    /// 缺失参考回退触发的首个错误信息.
+    missing_reference_fallback_error: Option<String>,
     /// 坏 NAL 丢弃次数(用于容错统计与单测验证).
     malformed_nal_drops: u64,
     /// 最近一次成功解析的 SEI payload 列表.
@@ -390,6 +441,7 @@ impl H264Decoder {
             stride_y: 0,
             stride_c: 0,
             mb_types: Vec::new(),
+            mb_skip_flags: Vec::new(),
             mb_qp: Vec::new(),
             mb_cbp: Vec::new(),
             mb_cbp_ctx: Vec::new(),
@@ -419,6 +471,7 @@ impl H264Decoder {
             mv_l1_x_4x4: Vec::new(),
             mv_l1_y_4x4: Vec::new(),
             ref_idx_l1_4x4: Vec::new(),
+            direct_4x4_flags: Vec::new(),
             mvd_l0_x_4x4: Vec::new(),
             mvd_l0_y_4x4: Vec::new(),
             mvd_l1_x_4x4: Vec::new(),
@@ -441,6 +494,8 @@ impl H264Decoder {
             max_long_term_frame_idx: None,
             max_reference_frames: 1,
             missing_reference_fallbacks: 0,
+            fail_on_missing_reference_fallback: false,
+            missing_reference_fallback_error: None,
             malformed_nal_drops: 0,
             last_sei_payloads: Vec::new(),
             pending_recovery_point_frame_cnt: None,
@@ -465,6 +520,7 @@ impl H264Decoder {
         self.ref_u = vec![128u8; self.stride_c * self.mb_height * 8];
         self.ref_v = vec![128u8; self.stride_c * self.mb_height * 8];
         self.mb_types = vec![0u8; total_mb];
+        self.mb_skip_flags = vec![0u8; total_mb];
         self.mb_qp = vec![26i32; total_mb];
         self.mb_cbp = vec![0u8; total_mb];
         self.mb_cbp_ctx = vec![0u16; total_mb];
@@ -493,6 +549,7 @@ impl H264Decoder {
         self.mv_l1_x_4x4 = vec![0i16; self.mb_width * 4 * self.mb_height * 4];
         self.mv_l1_y_4x4 = vec![0i16; self.mb_width * 4 * self.mb_height * 4];
         self.ref_idx_l1_4x4 = vec![-1i8; self.mb_width * 4 * self.mb_height * 4];
+        self.direct_4x4_flags = vec![0u8; self.mb_width * 4 * self.mb_height * 4];
         self.mvd_l0_x_4x4 = vec![0i16; self.mb_width * 4 * self.mb_height * 4];
         self.mvd_l0_y_4x4 = vec![0i16; self.mb_width * 4 * self.mb_height * 4];
         self.mvd_l1_x_4x4 = vec![0i16; self.mb_width * 4 * self.mb_height * 4];
@@ -625,6 +682,7 @@ impl H264Decoder {
     /// 重置宏块级语法与运动缓存.
     fn reset_mb_runtime_state(&mut self) {
         self.mb_types.fill(0);
+        self.mb_skip_flags.fill(0);
         self.mb_qp.fill(26);
         self.mb_cbp.fill(0);
         self.mb_cbp_ctx.fill(0);
@@ -653,6 +711,7 @@ impl H264Decoder {
         self.mv_l1_x_4x4.fill(0);
         self.mv_l1_y_4x4.fill(0);
         self.ref_idx_l1_4x4.fill(-1);
+        self.direct_4x4_flags.fill(0);
         self.mvd_l0_x_4x4.fill(0);
         self.mvd_l0_y_4x4.fill(0);
         self.mvd_l1_x_4x4.fill(0);
@@ -665,6 +724,13 @@ impl H264Decoder {
     fn mark_mb_slice_first_mb(&mut self, mb_idx: usize, first_mb: u32) {
         if let Some(slot) = self.mb_slice_first_mb.get_mut(mb_idx) {
             *slot = first_mb;
+        }
+    }
+
+    /// 标记宏块是否为 skip, 用于 CABAC mb_skip_flag 上下文推导.
+    fn set_mb_skip_flag(&mut self, mb_idx: usize, is_skip: bool) {
+        if let Some(slot) = self.mb_skip_flags.get_mut(mb_idx) {
+            *slot = u8::from(is_skip);
         }
     }
 
@@ -696,6 +762,38 @@ impl H264Decoder {
             self.mb_slice_first_mb.get(top_idx),
         ) {
             (Some(&cur), Some(&top)) => cur == top,
+            _ => true,
+        }
+    }
+
+    /// 右邻 MB 是否可用 (同一 slice 且 mb_x + 1 在图像范围内).
+    fn right_avail(&self, mb_x: usize, mb_y: usize) -> bool {
+        if mb_x + 1 >= self.mb_width {
+            return false;
+        }
+        let mb_idx = mb_y * self.mb_width + mb_x;
+        let right_idx = mb_idx + 1;
+        match (
+            self.mb_slice_first_mb.get(mb_idx),
+            self.mb_slice_first_mb.get(right_idx),
+        ) {
+            (Some(&cur), Some(&right)) => cur == right,
+            _ => true,
+        }
+    }
+
+    /// 右上邻 MB 是否可用 (同一 slice 且存在上方、右侧宏块).
+    fn top_right_avail(&self, mb_x: usize, mb_y: usize) -> bool {
+        if mb_y == 0 || mb_x + 1 >= self.mb_width {
+            return false;
+        }
+        let mb_idx = mb_y * self.mb_width + mb_x;
+        let top_right_idx = mb_idx + 1 - self.mb_width;
+        match (
+            self.mb_slice_first_mb.get(mb_idx),
+            self.mb_slice_first_mb.get(top_right_idx),
+        ) {
+            (Some(&cur), Some(&top_right)) => cur == top_right,
             _ => true,
         }
     }
@@ -971,6 +1069,31 @@ impl H264Decoder {
             ParameterSetRebuildAction::None
         }
     }
+
+    fn update_missing_reference_fail_mode_from_env(&mut self) {
+        self.fail_on_missing_reference_fallback =
+            std::env::var("TAO_H264_COMPARE_FAIL_ON_REF_FALLBACK")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+        self.missing_reference_fallback_error = None;
+    }
+
+    pub(super) fn should_trace_mb_idx(&self, mb_idx: usize, default_limit: usize) -> bool {
+        if let Ok(raw) = std::env::var("TAO_H264_TRACE_MB_RANGE")
+            && let Some((start, end)) = parse_trace_mb_range(&raw)
+        {
+            return (start..=end).contains(&mb_idx);
+        }
+        mb_idx < default_limit
+    }
+
+    pub(super) fn trace_mb_detail_enabled(&self) -> bool {
+        std::env::var("TAO_H264_TRACE_MB_DETAIL").as_deref() == Ok("1")
+    }
+
+    fn take_missing_reference_fallback_error(&mut self) -> Option<String> {
+        self.missing_reference_fallback_error.take()
+    }
 }
 
 // ============================================================
@@ -1007,6 +1130,8 @@ impl Decoder for H264Decoder {
         self.prev_frame_num_offset_type1 = 0;
         self.prev_frame_num_offset_type2 = 0;
         self.last_dec_ref_pic_marking = DecRefPicMarking::default();
+        self.missing_reference_fallbacks = 0;
+        self.update_missing_reference_fail_mode_from_env();
         self.malformed_nal_drops = 0;
         self.last_sei_payloads.clear();
         self.pending_recovery_point_frame_cnt = None;
@@ -1060,6 +1185,7 @@ impl Decoder for H264Decoder {
             self.record_malformed_nal_drop("send_packet_split", &err);
         }
         let mut idr_reset_done = false;
+        let trace_slice = std::env::var("TAO_H264_SLICE_TRACE").as_deref() == Ok("1");
 
         for nalu in &nalus {
             match nalu.nal_type {
@@ -1070,6 +1196,17 @@ impl Decoder for H264Decoder {
                     let is_idr = nalu.nal_type == NalUnitType::SliceIdr;
                     let first_mb = self.parse_slice_first_mb(nalu);
                     let start_new_picture = first_mb == Some(0);
+                    if trace_slice {
+                        eprintln!(
+                            "[H264_SLICE_PKT] nal={:?} first_mb={:?} start_new_picture={} pending_frame={} is_idr={} packet_pts={}",
+                            nalu.nal_type,
+                            first_mb,
+                            start_new_picture,
+                            self.pending_frame.is_some(),
+                            is_idr,
+                            packet.pts
+                        );
+                    }
 
                     if start_new_picture && self.pending_frame.is_some() {
                         self.finalize_pending_frame();
@@ -1101,11 +1238,20 @@ impl Decoder for H264Decoder {
                 }
                 _ => {}
             }
+            if let Some(err) = self.take_missing_reference_fallback_error() {
+                return Err(TaoError::InvalidData(err));
+            }
+        }
+        if let Some(err) = self.take_missing_reference_fallback_error() {
+            return Err(TaoError::InvalidData(err));
         }
         Ok(())
     }
 
     fn receive_frame(&mut self) -> TaoResult<Frame> {
+        if let Some(err) = self.take_missing_reference_fallback_error() {
+            return Err(TaoError::InvalidData(err));
+        }
         if let Some(frame) = self.output_queue.pop_front() {
             Ok(frame)
         } else if self.flushing {
@@ -1134,10 +1280,13 @@ impl Decoder for H264Decoder {
         self.prev_frame_num_offset_type1 = 0;
         self.prev_frame_num_offset_type2 = 0;
         self.last_dec_ref_pic_marking = DecRefPicMarking::default();
+        self.missing_reference_fallbacks = 0;
+        self.missing_reference_fallback_error = None;
         self.last_sei_payloads.clear();
         self.pending_recovery_point_frame_cnt = None;
         self.reset_reference_planes();
         self.mb_types.fill(0);
+        self.mb_skip_flags.fill(0);
         self.mb_qp.fill(26);
         self.mb_cbp.fill(0);
         self.mb_cbp_ctx.fill(0);
@@ -1166,6 +1315,7 @@ impl Decoder for H264Decoder {
         self.mv_l1_x_4x4.fill(0);
         self.mv_l1_y_4x4.fill(0);
         self.ref_idx_l1_4x4.fill(-1);
+        self.direct_4x4_flags.fill(0);
         self.mvd_l0_x_4x4.fill(0);
         self.mvd_l0_y_4x4.fill(0);
         self.mvd_l1_x_4x4.fill(0);

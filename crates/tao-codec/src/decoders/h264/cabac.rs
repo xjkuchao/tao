@@ -138,6 +138,16 @@ impl<'a> CabacDecoder<'a> {
     pub fn restart_engine(&mut self) {
         self.init_decoder_from(self.raw_pos);
     }
+
+    /// 返回 CABAC 输入流已消费的 bit 数.
+    pub fn bits_read(&self) -> usize {
+        self.bit_pos
+    }
+
+    /// 返回 CABAC 输入流总 bit 数.
+    pub fn bits_total(&self) -> usize {
+        self.data.len().saturating_mul(8)
+    }
 }
 
 /// 初始化 CABAC 上下文模型数组 (I-slice)

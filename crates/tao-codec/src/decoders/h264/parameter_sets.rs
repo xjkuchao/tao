@@ -60,6 +60,12 @@ pub(super) fn parse_pps(rbsp: &[u8]) -> TaoResult<super::Pps> {
             num_slice_groups_minus1
         )));
     }
+    if std::env::var("TAO_H264_TRACE_PPS").as_deref() == Ok("1") {
+        eprintln!(
+            "[H264_PPS] pps_id={} sps_id={} num_slice_groups_minus1={}",
+            pps_id, sps_id, num_slice_groups_minus1
+        );
+    }
     if num_slice_groups_minus1 > 0 {
         skip_pps_slice_groups(&mut br, num_slice_groups_minus1)?;
     }
@@ -327,12 +333,12 @@ fn parse_scaling_list<const N: usize>(
             N, size
         )));
     }
-    let mut list = [0u8; N];
+    let mut scan_list = [0u8; N];
     let mut last_scale = 8i32;
     let mut next_scale = 8i32;
     let mut use_default = false;
 
-    for (idx, slot) in list.iter_mut().enumerate().take(size) {
+    for (idx, slot) in scan_list.iter_mut().enumerate().take(size) {
         if next_scale != 0 {
             let delta_scale = super::read_se(br)?;
             let sum = i64::from(last_scale) + i64::from(delta_scale) + 256;
@@ -349,7 +355,26 @@ fn parse_scaling_list<const N: usize>(
         *slot = cur_scale as u8;
         last_scale = cur_scale;
     }
-    Ok((list, use_default))
+    let mut raster_list = [0u8; N];
+    if N == 16 {
+        const ZIGZAG_4X4_TO_RASTER: [usize; 16] =
+            [0, 1, 4, 8, 5, 2, 3, 6, 9, 12, 13, 10, 7, 11, 14, 15];
+        for (scan_pos, &raster_idx) in ZIGZAG_4X4_TO_RASTER.iter().enumerate() {
+            raster_list[raster_idx] = scan_list[scan_pos];
+        }
+    } else if N == 64 {
+        const ZIGZAG_8X8_TO_RASTER: [usize; 64] = [
+            0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41,
+            34, 27, 20, 13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23,
+            30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
+        ];
+        for (scan_pos, &raster_idx) in ZIGZAG_8X8_TO_RASTER.iter().enumerate() {
+            raster_list[raster_idx] = scan_list[scan_pos];
+        }
+    } else {
+        raster_list.copy_from_slice(&scan_list);
+    }
+    Ok((raster_list, use_default))
 }
 
 #[cfg(test)]

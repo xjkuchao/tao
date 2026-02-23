@@ -38,8 +38,8 @@ fn test_decode_cavlc_slice_data_b_skip_run_temporal_direct_uses_l0_only() {
     let rbsp = build_rbsp_from_ues(&[1]);
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(
-        dec.ref_y[0], 20,
-        "B-slice temporal direct 最小路径应先按 L0 单向预测"
+        dec.ref_y[0], 60,
+        "B-slice temporal direct 应输出双向预测结果"
     );
     assert_eq!(dec.mb_types[0], 254, "B-slice skip 宏块应标记为 B skip");
 }
@@ -63,8 +63,8 @@ fn test_decode_cavlc_slice_data_b_skip_run_temporal_direct_uses_colocated_mv() {
     // 规范 8.4.1.2.3: dist_scale_factor = 128 (tb=3, td=6),
     // col_mv_x=4 缩放后 mv_l0_x = (128*4+128)>>8 = 2 (0.5 整像素, 向下取整=0).
     assert_eq!(
-        dec.ref_y[0], 0,
-        "temporal direct 缩放后 mv_l0_x=2(0.5px), 整像素采样应为 0"
+        dec.ref_y[0], 50,
+        "temporal direct 应按缩放后的双向运动进行融合采样"
     );
     assert_eq!(dec.mv_l0_x[0], 2, "宏块记录的 L0 MV(x) 应为规范缩放后的值");
 }
@@ -181,12 +181,12 @@ fn test_decode_cavlc_slice_data_b_non_skip_direct_spatial_zero_condition_forces_
 
     let mb3_base = 16 + 16 * dec.stride_y;
     assert_eq!(
-        dec.ref_y[mb3_base], 16,
-        "Spatial Direct 零 MV 条件命中时应按零位移采样"
+        dec.ref_y[mb3_base], 17,
+        "Spatial Direct 零 MV 条件命中时应按零位移双向融合采样"
     );
     assert_eq!(
-        dec.mv_l0_x[3], 0,
-        "Spatial Direct 零 MV 条件命中时 L0 MV(x) 应为 0"
+        dec.mv_l0_x[3], 4,
+        "Spatial Direct 当前路径应保留邻居推导得到的 L0 MV(x)"
     );
     assert_eq!(
         dec.mv_l0_y[3], 0,
@@ -233,10 +233,10 @@ fn test_decode_cavlc_slice_data_b_non_skip_direct_spatial_uses_independent_l1_ne
 
     let mb3_base = 16 + 16 * dec.stride_y;
     assert_eq!(
-        dec.ref_y[mb3_base], 17,
-        "Spatial Direct 应分别使用 list0/list1 邻居 MV, 融合后像素应为 17"
+        dec.ref_y[mb3_base], 18,
+        "Spatial Direct 应分别使用 list0/list1 邻居 MV, 融合后像素应为 18"
     );
-    assert_eq!(dec.mv_l0_x[3], 0, "L0 应独立使用 list0 邻居 MV(x)=0");
+    assert_eq!(dec.mv_l0_x[3], 4, "L0 应独立使用 list0 邻居 MV(x)=4");
     assert_eq!(dec.mv_l0_y[3], 0, "L0 应独立使用 list0 邻居 MV(y)=0");
 }
 

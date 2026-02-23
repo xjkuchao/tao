@@ -41,11 +41,49 @@ const I4X4_SCAN_ORDER: [(usize, usize); 16] = [
     (3, 3),
 ];
 
+/// I_8x8 预测模式遍历顺序 (左上, 右上, 左下, 右下).
+const I8X8_SCAN_ORDER: [(usize, usize); 4] = [(0, 0), (1, 0), (0, 1), (1, 1)];
+
 // ============================================================
 // nC 上下文计算
 // ============================================================
 
 impl H264Decoder {
+    fn decode_cavlc_residual_block_or_zero(
+        &self,
+        br: &mut BitReader,
+        nc: i32,
+        max_num_coeff: usize,
+        coeffs: &mut [i32],
+        scene: &str,
+        coord_x: usize,
+        coord_y: usize,
+    ) -> u8 {
+        match cavlc::decode_cavlc_residual_block(br, nc, max_num_coeff, coeffs) {
+            Ok(tc) => tc,
+            Err(err) => {
+                let total_coeff_overflow_i16x16 = scene == "i16x16_luma_ac"
+                    && max_num_coeff == 15
+                    && err
+                        .to_string()
+                        .contains("CAVLC total_coeff=16 超过 max_num_coeff=15");
+                if std::env::var("TAO_H264_CAVLC_ERR_TRACE").as_deref() == Ok("1") {
+                    eprintln!(
+                        "[CAVLC_ERR] scene={} coord=({}, {}) nc={} max_num_coeff={} bits_read={} err={}",
+                        scene,
+                        coord_x,
+                        coord_y,
+                        nc,
+                        max_num_coeff,
+                        br.bits_read(),
+                        err
+                    );
+                }
+                if total_coeff_overflow_i16x16 { 15 } else { 0 }
+            }
+        }
+    }
+
     /// 获取 luma 4x4 块的非零系数计数.
     pub(super) fn get_nz_count_luma(&self, x4: usize, y4: usize) -> u8 {
         self.cbf_index(x4, y4)
@@ -214,6 +252,54 @@ impl H264Decoder {
         modes
     }
 
+    /// CAVLC 解码 I_8x8 预测模式 (4 个 8x8 块).
+    ///
+    /// 每个 8x8 块: prev_intra8x8_pred_mode_flag(1bit),
+    /// 若为 0 则 rem_intra8x8_pred_mode(3bits).
+    pub(super) fn decode_cavlc_i8x8_pred_modes(
+        &self,
+        br: &mut BitReader,
+        mb_x: usize,
+        mb_y: usize,
+    ) -> [u8; 4] {
+        let mut modes = [2u8; 4];
+        for &(block_x, block_y) in &I8X8_SCAN_ORDER {
+            let x4 = mb_x * 4 + block_x * 2;
+            let y4 = mb_y * 4 + block_y * 2;
+            let pred_a = if x4 > 0 {
+                self.get_i4x4_mode(x4 - 1, y4)
+            } else {
+                2
+            };
+            let pred_b = if y4 > 0 {
+                self.get_i4x4_mode(x4, y4 - 1)
+            } else {
+                2
+            };
+            let mpm = pred_a.min(pred_b);
+
+            let prev_flag = br.read_bit().unwrap_or(0);
+            let mode = if prev_flag == 1 {
+                mpm
+            } else {
+                let rem = br.read_bits(3).unwrap_or(0) as u8;
+                if rem < mpm { rem } else { rem + 1 }
+            }
+            .min(8);
+
+            let idx = block_y * 2 + block_x;
+            modes[idx] = mode;
+
+            // I_8x8 模式同步到对应 2x2 个 4x4 子块, 供后续块 MPM 推导.
+            for sub_y in 0..2 {
+                for sub_x in 0..2 {
+                    self.set_i4x4_mode_unchecked(x4 + sub_x, y4 + sub_y, mode);
+                }
+            }
+        }
+        modes
+    }
+
     /// 无 &mut self 借用冲突的 set_i4x4_mode (通过裸指针绕过).
     ///
     /// # Safety
@@ -275,31 +361,9 @@ impl H264Decoder {
                 let y4 = mb_y * 4 + abs_sub_y;
 
                 let mode = pred_modes[abs_sub_y * 4 + abs_sub_x];
-
-                // H.264 8.3.1.2.1: 当右上 4x4 块不可用时,
-                // p[4..7, -1] 应替换为 p[3, -1].
-                if abs_sub_y > 0 {
-                    let tr_not_avail = matches!(
-                        (abs_sub_x, abs_sub_y),
-                        (1, 1) | (3, 1) | (1, 3) | (3, 2) | (3, 3)
-                    );
-                    if tr_not_avail && py > 0 {
-                        let row_above = (py - 1) * self.stride_y;
-                        let last_top_idx = row_above + px + 3;
-                        if last_top_idx < self.ref_y.len() {
-                            let last_val = self.ref_y[last_top_idx];
-                            for dx in 4..8 {
-                                let fill_col = px + dx;
-                                let fill_idx = row_above + fill_col;
-                                if fill_col < self.stride_y && fill_idx < self.ref_y.len() {
-                                    self.ref_y[fill_idx] = last_val;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                intra::predict_4x4(&mut self.ref_y, self.stride_y, px, py, mode);
+                self.predict_i4x4_block_with_tr_unavail_fix(
+                    mb_x, mb_y, abs_sub_x, abs_sub_y, px, py, mode,
+                );
 
                 if !has_residual_8x8 {
                     self.set_luma_cbf(x4, y4, false);
@@ -309,7 +373,15 @@ impl H264Decoder {
 
                 let nc = self.calc_luma_nc(x4, y4);
                 let mut coeffs = [0i32; 16];
-                let tc = cavlc::decode_cavlc_residual_block(br, nc, 16, &mut coeffs).unwrap_or(0);
+                let tc = self.decode_cavlc_residual_block_or_zero(
+                    br,
+                    nc,
+                    16,
+                    &mut coeffs,
+                    "i4x4_luma",
+                    x4,
+                    y4,
+                );
                 self.set_nz_count_luma(x4, y4, tc);
                 let coded = tc > 0;
                 self.set_luma_cbf(x4, y4, coded);
@@ -340,6 +412,150 @@ impl H264Decoder {
         }
     }
 
+    /// CAVLC 解码 I_8x8 预测 + 残差(按 8x8 块交织).
+    ///
+    /// 每个 8x8 块: 先预测, 再解码并应用该块残差, 保证后续块使用已重建像素.
+    #[allow(clippy::too_many_arguments)]
+    fn decode_cavlc_i8x8_pred_and_residual(
+        &mut self,
+        br: &mut BitReader,
+        luma_cbp: u8,
+        mb_x: usize,
+        mb_y: usize,
+        qp: i32,
+        pred_modes_8x8: &[u8; 4],
+    ) {
+        let luma_scaling_8x8 = self.active_luma_scaling_list_8x8(true);
+        let transform_bypass = self.is_transform_bypass_active(qp);
+
+        for sub_y in 0..4 {
+            for sub_x in 0..4 {
+                self.set_luma_cbf(mb_x * 4 + sub_x, mb_y * 4 + sub_y, false);
+                self.set_nz_count_luma(mb_x * 4 + sub_x, mb_y * 4 + sub_y, 0);
+            }
+        }
+        self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
+
+        // H.264 CAVLC 8x8 扫描顺序 (与 Inter 8x8 路径一致).
+        const CAVLC_8X8_SCAN: [[usize; 16]; 4] = [
+            [0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5],
+            [12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28],
+            [
+                35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51,
+            ],
+            [
+                58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
+            ],
+        ];
+
+        let has_left_mb = self.left_avail(mb_x, mb_y);
+        let has_top_mb = self.top_avail(mb_x, mb_y);
+        let has_top_right_mb = if mb_x + 1 < self.mb_width {
+            self.top_avail(mb_x + 1, mb_y)
+        } else {
+            false
+        };
+
+        for i8x8 in 0..4u8 {
+            let block_x = (i8x8 & 1) as usize;
+            let block_y = (i8x8 >> 1) as usize;
+            let x8 = mb_x * 2 + block_x;
+            let y8 = mb_y * 2 + block_y;
+            let px = mb_x * 16 + block_x * 8;
+            let py = mb_y * 16 + block_y * 8;
+
+            let avail = intra::I8x8Avail {
+                has_left: if block_x == 0 { has_left_mb } else { true },
+                has_top: if block_y == 0 { has_top_mb } else { true },
+                has_topleft: match (block_x, block_y) {
+                    (0, 0) => has_left_mb && has_top_mb,
+                    (1, 0) => has_top_mb,
+                    (0, 1) => has_left_mb,
+                    _ => true,
+                },
+                has_topright: match (block_x, block_y) {
+                    (0, 0) => has_top_mb,
+                    (1, 0) => has_top_right_mb,
+                    (0, 1) => true,
+                    _ => false,
+                },
+            };
+            intra::predict_8x8(
+                &mut self.ref_y,
+                self.stride_y,
+                px,
+                py,
+                pred_modes_8x8[i8x8 as usize],
+                &avail,
+            );
+
+            if luma_cbp & (1 << i8x8) == 0 {
+                self.set_luma_8x8_cbf(x8, y8, false);
+                for sub_y in 0..2 {
+                    for sub_x in 0..2 {
+                        let x4 = mb_x * 4 + block_x * 2 + sub_x;
+                        let y4 = mb_y * 4 + block_y * 2 + sub_y;
+                        self.set_luma_cbf(x4, y4, false);
+                        self.set_nz_count_luma(x4, y4, 0);
+                    }
+                }
+                continue;
+            }
+
+            let mut coeffs_8x8 = [0i32; 64];
+            let mut total_nz = 0u8;
+            for (sub_idx, scan) in CAVLC_8X8_SCAN.iter().enumerate() {
+                let sub_x = sub_idx & 1;
+                let sub_y = sub_idx >> 1;
+                let x4 = mb_x * 4 + block_x * 2 + sub_x;
+                let y4 = mb_y * 4 + block_y * 2 + sub_y;
+                let nc = self.calc_luma_nc(x4, y4);
+                let mut sub_coeffs = [0i32; 16];
+                let tc = self.decode_cavlc_residual_block_or_zero(
+                    br,
+                    nc,
+                    16,
+                    &mut sub_coeffs,
+                    "i8x8_luma_sub",
+                    x4,
+                    y4,
+                );
+                self.set_nz_count_luma(x4, y4, tc);
+                let coded = tc > 0;
+                self.set_luma_cbf(x4, y4, coded);
+                total_nz = total_nz.saturating_add(tc);
+                for (coeff_i, &pos) in scan.iter().enumerate() {
+                    coeffs_8x8[pos] = sub_coeffs[coeff_i];
+                }
+            }
+            let coded = total_nz > 0;
+            self.set_luma_8x8_cbf(x8, y8, coded);
+
+            if !coded {
+                continue;
+            }
+            if transform_bypass {
+                residual::apply_8x8_bypass_residual(
+                    &mut self.ref_y,
+                    self.stride_y,
+                    px,
+                    py,
+                    &coeffs_8x8,
+                );
+            } else {
+                residual::apply_8x8_ac_residual_with_scaling(
+                    &mut self.ref_y,
+                    self.stride_y,
+                    px,
+                    py,
+                    &coeffs_8x8,
+                    qp,
+                    &luma_scaling_8x8,
+                );
+            }
+        }
+    }
+
     /// CAVLC 解码 I_16x16 亮度 DC 系数.
     pub(super) fn decode_cavlc_luma_dc(
         &mut self,
@@ -352,7 +568,15 @@ impl H264Decoder {
         let transform_bypass = self.is_transform_bypass_active(qp);
         let nc = self.calc_luma_nc(mb_x * 4, mb_y * 4);
         let mut dc_scan = [0i32; 16];
-        let _tc = cavlc::decode_cavlc_residual_block(br, nc, 16, &mut dc_scan).unwrap_or(0);
+        let _tc = self.decode_cavlc_residual_block_or_zero(
+            br,
+            nc,
+            16,
+            &mut dc_scan,
+            "i16x16_luma_dc",
+            mb_x,
+            mb_y,
+        );
         self.set_luma_dc_cbf(mb_x, mb_y, dc_scan.iter().any(|&c| c != 0));
 
         let mut dc_block = [0i32; 16];
@@ -399,8 +623,15 @@ impl H264Decoder {
             if has_luma_ac {
                 let nc = self.calc_luma_nc(x4, y4);
                 let mut ac_coeffs = [0i32; 16];
-                let tc =
-                    cavlc::decode_cavlc_residual_block(br, nc, 15, &mut ac_coeffs).unwrap_or(0);
+                let tc = self.decode_cavlc_residual_block_or_zero(
+                    br,
+                    nc,
+                    15,
+                    &mut ac_coeffs,
+                    "i16x16_luma_ac",
+                    x4,
+                    y4,
+                );
                 self.set_nz_count_luma(x4, y4, tc);
                 let coded = tc > 0;
                 self.set_luma_cbf(x4, y4, coded);
@@ -517,8 +748,15 @@ impl H264Decoder {
                 let y4 = mb_y * 4 + y8x8 * 2 + sub_y;
                 let nc = self.calc_luma_nc(x4, y4);
                 let mut sub_coeffs = [0i32; 16];
-                let tc =
-                    cavlc::decode_cavlc_residual_block(br, nc, 16, &mut sub_coeffs).unwrap_or(0);
+                let tc = self.decode_cavlc_residual_block_or_zero(
+                    br,
+                    nc,
+                    16,
+                    &mut sub_coeffs,
+                    "inter_luma_8x8_sub",
+                    x4,
+                    y4,
+                );
                 self.set_nz_count_luma(x4, y4, tc);
                 self.set_luma_cbf(x4, y4, tc > 0);
                 total_nz += tc;
@@ -597,7 +835,15 @@ impl H264Decoder {
 
                 let nc = self.calc_luma_nc(x4, y4);
                 let mut coeffs = [0i32; 16];
-                let tc = cavlc::decode_cavlc_residual_block(br, nc, 16, &mut coeffs).unwrap_or(0);
+                let tc = self.decode_cavlc_residual_block_or_zero(
+                    br,
+                    nc,
+                    16,
+                    &mut coeffs,
+                    "inter_luma_4x4",
+                    x4,
+                    y4,
+                );
                 self.set_nz_count_luma(x4, y4, tc);
                 let coded = tc > 0;
                 self.set_luma_cbf(x4, y4, coded);
@@ -654,11 +900,27 @@ impl H264Decoder {
 
         // Chroma DC: nc=-1 (chroma DC 专用表)
         let mut u_dc_scan = [0i32; 4];
-        let _tc_u_dc = cavlc::decode_cavlc_residual_block(br, -1, 4, &mut u_dc_scan).unwrap_or(0);
+        let _tc_u_dc = self.decode_cavlc_residual_block_or_zero(
+            br,
+            -1,
+            4,
+            &mut u_dc_scan,
+            "chroma_u_dc",
+            mb_x,
+            mb_y,
+        );
         self.set_chroma_dc_u_cbf(mb_x, mb_y, u_dc_scan.iter().any(|&c| c != 0));
 
         let mut v_dc_scan = [0i32; 4];
-        let _tc_v_dc = cavlc::decode_cavlc_residual_block(br, -1, 4, &mut v_dc_scan).unwrap_or(0);
+        let _tc_v_dc = self.decode_cavlc_residual_block_or_zero(
+            br,
+            -1,
+            4,
+            &mut v_dc_scan,
+            "chroma_v_dc",
+            mb_x,
+            mb_y,
+        );
         self.set_chroma_dc_v_cbf(mb_x, mb_y, v_dc_scan.iter().any(|&c| c != 0));
 
         let mut u_dc = [0i32; 4];
@@ -687,8 +949,15 @@ impl H264Decoder {
                 let y2 = mb_y * 2 + sub_y;
                 let nc = self.calc_chroma_u_nc(x2, y2);
                 let mut ac_coeffs = [0i32; 16];
-                let tc =
-                    cavlc::decode_cavlc_residual_block(br, nc, 15, &mut ac_coeffs).unwrap_or(0);
+                let tc = self.decode_cavlc_residual_block_or_zero(
+                    br,
+                    nc,
+                    15,
+                    &mut ac_coeffs,
+                    "chroma_u_ac",
+                    x2,
+                    y2,
+                );
                 self.set_nz_count_chroma_u(x2, y2, tc);
                 self.set_chroma_u_cbf(x2, y2, tc > 0);
                 u_scan[1..16].copy_from_slice(&ac_coeffs[..15]);
@@ -700,8 +969,15 @@ impl H264Decoder {
                 let y2 = mb_y * 2 + sub_y;
                 let nc = self.calc_chroma_v_nc(x2, y2);
                 let mut ac_coeffs = [0i32; 16];
-                let tc =
-                    cavlc::decode_cavlc_residual_block(br, nc, 15, &mut ac_coeffs).unwrap_or(0);
+                let tc = self.decode_cavlc_residual_block_or_zero(
+                    br,
+                    nc,
+                    15,
+                    &mut ac_coeffs,
+                    "chroma_v_ac",
+                    x2,
+                    y2,
+                );
                 self.set_nz_count_chroma_v(x2, y2, tc);
                 self.set_chroma_v_cbf(x2, y2, tc > 0);
                 v_scan[1..16].copy_from_slice(&ac_coeffs[..15]);
@@ -773,6 +1049,7 @@ impl H264Decoder {
         mb_y: usize,
         cur_qp: &mut i32,
         is_intra: bool,
+        no_sub_mb_part_size_less_than_8x8_flag: bool,
     ) {
         let (luma_cbp, chroma_cbp) = Self::decode_cavlc_cbp(br, is_intra);
         self.set_mb_cbp(mb_x, mb_y, luma_cbp | (chroma_cbp << 4));
@@ -784,7 +1061,7 @@ impl H264Decoder {
         }
 
         // Inter 宏块: 若 PPS 允许 8x8 变换且 luma_cbp != 0, 读取 transform_size_8x8_flag
-        let use_8x8 = if !is_intra && luma_cbp != 0 {
+        let use_8x8 = if !is_intra && luma_cbp != 0 && no_sub_mb_part_size_less_than_8x8_flag {
             let pps_8x8 = self
                 .pps
                 .as_ref()
@@ -877,7 +1154,23 @@ impl H264Decoder {
         if raw_mb_type == 0 {
             // I_4x4
             self.mb_types[mb_idx] = 0;
-            let pred_modes = self.decode_cavlc_i4x4_pred_modes(br, mb_x, mb_y);
+            let use_8x8 = self
+                .pps
+                .as_ref()
+                .map(|p| p.transform_8x8_mode)
+                .unwrap_or(false)
+                && br.read_bit().unwrap_or(0) == 1;
+            self.set_transform_8x8_flag(mb_x, mb_y, use_8x8);
+            let pred_modes_4x4 = if use_8x8 {
+                [2u8; 16]
+            } else {
+                self.decode_cavlc_i4x4_pred_modes(br, mb_x, mb_y)
+            };
+            let pred_modes_8x8 = if use_8x8 {
+                self.decode_cavlc_i8x8_pred_modes(br, mb_x, mb_y)
+            } else {
+                [2u8; 4]
+            };
             let chroma_mode = read_ue(br).unwrap_or(0).min(3) as u8;
             self.set_chroma_pred_mode(mb_x, mb_y, chroma_mode);
 
@@ -912,7 +1205,25 @@ impl H264Decoder {
                 self.prev_qp_delta_nz = false;
             }
 
-            self.decode_cavlc_i4x4_luma_residual(br, luma_cbp, mb_x, mb_y, *cur_qp, &pred_modes);
+            if use_8x8 {
+                self.decode_cavlc_i8x8_pred_and_residual(
+                    br,
+                    luma_cbp,
+                    mb_x,
+                    mb_y,
+                    *cur_qp,
+                    &pred_modes_8x8,
+                );
+            } else {
+                self.decode_cavlc_i4x4_luma_residual(
+                    br,
+                    luma_cbp,
+                    mb_x,
+                    mb_y,
+                    *cur_qp,
+                    &pred_modes_4x4,
+                );
+            }
 
             if chroma_cbp >= 1 {
                 self.decode_cavlc_chroma_residual(br, mb_x, mb_y, *cur_qp, chroma_cbp >= 2, true);

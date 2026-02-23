@@ -325,6 +325,9 @@ pub fn predict_4x4(plane: &mut [u8], stride: usize, x0: usize, y0: usize, mode: 
         6 => predict_4x4_horizontal_down(plane, stride, x0, y0),
         7 => predict_4x4_vertical_left(plane, stride, x0, y0),
         8 => predict_4x4_horizontal_up(plane, stride, x0, y0),
+        9 => predict_4x4_left_dc(plane, stride, x0, y0),
+        10 => predict_4x4_top_dc(plane, stride, x0, y0),
+        11 => fill_block(plane, stride, x0, y0, 4, 4, 128),
         _ => predict_4x4_dc(plane, stride, x0, y0),
     }
 }
@@ -400,6 +403,40 @@ pub fn predict_4x4_dc(plane: &mut [u8], stride: usize, x0: usize, y0: usize) {
     } else {
         128
     };
+    fill_block(plane, stride, x0, y0, 4, 4, dc);
+}
+
+/// 模式 9: LEFT_DC - 仅使用左侧样本求均值.
+fn predict_4x4_left_dc(plane: &mut [u8], stride: usize, x0: usize, y0: usize) {
+    if x0 == 0 {
+        fill_block(plane, stride, x0, y0, 4, 4, 128);
+        return;
+    }
+    let mut sum = 0u32;
+    for dy in 0..4 {
+        let idx = (y0 + dy) * stride + x0 - 1;
+        if idx < plane.len() {
+            sum += u32::from(plane[idx]);
+        }
+    }
+    let dc = ((sum + 2) >> 2) as u8;
+    fill_block(plane, stride, x0, y0, 4, 4, dc);
+}
+
+/// 模式 10: TOP_DC - 仅使用上侧样本求均值.
+fn predict_4x4_top_dc(plane: &mut [u8], stride: usize, x0: usize, y0: usize) {
+    if y0 == 0 {
+        fill_block(plane, stride, x0, y0, 4, 4, 128);
+        return;
+    }
+    let mut sum = 0u32;
+    for dx in 0..4 {
+        let idx = (y0 - 1) * stride + x0 + dx;
+        if idx < plane.len() {
+            sum += u32::from(plane[idx]);
+        }
+    }
+    let dc = ((sum + 2) >> 2) as u8;
     fill_block(plane, stride, x0, y0, 4, 4, dc);
 }
 
@@ -906,9 +943,11 @@ impl I8x8Refs {
                 }
                 t[15] = (raw_t[14] + 3 * raw_t[15] + 2) >> 2;
             } else {
-                let t7 = t[7];
+                // 对齐 FFmpeg `PREDICT_8x8_LOAD_TOPRIGHT`:
+                // top-right 不可用时, t8..t15 直接复制原始 top[7], 不是滤波后的 t7.
+                let t7_raw = raw_t[7];
                 for item in t[8..].iter_mut() {
-                    *item = t7;
+                    *item = t7_raw;
                 }
             }
         } else {
@@ -941,6 +980,11 @@ pub fn predict_8x8(
         6 => predict_8x8_horizontal_down(plane, stride, x0, y0, &r),
         7 => predict_8x8_vertical_left(plane, stride, x0, y0, &r),
         8 => predict_8x8_horizontal_up(plane, stride, x0, y0, &r),
+        // 与 FFmpeg 一致: 边界修正后会出现 9/10/11 三个 DC 派生模式.
+        // 9=LEFT_DC, 10=TOP_DC, 11=DC_128.
+        9 => predict_8x8_dc(plane, stride, x0, y0, &r, true, false),
+        10 => predict_8x8_dc(plane, stride, x0, y0, &r, false, true),
+        11 => predict_8x8_dc(plane, stride, x0, y0, &r, false, false),
         _ => predict_8x8_dc(plane, stride, x0, y0, &r, avail.has_left, avail.has_top),
     }
 }
@@ -1105,37 +1149,43 @@ fn predict_8x8_down_right(plane: &mut [u8], stride: usize, x0: usize, y0: usize,
             set8(plane, stride, x0, y0, $x, $y, $v)
         };
     }
-    s!(0, 7, (l[6] + 2 * l[5] + l[4] + 2) >> 2); // SRC(0,7)
-    // 按 FFmpeg pred8x8l_down_right 逐行赋值
-    s!(0, 6, (l[5] + 2 * l[4] + l[3] + 2) >> 2);
-    s!(1, 7, (l[5] + 2 * l[4] + l[3] + 2) >> 2);
-    s!(0, 5, (l[4] + 2 * l[3] + l[2] + 2) >> 2);
-    s!(1, 6, (l[4] + 2 * l[3] + l[2] + 2) >> 2);
-    s!(2, 7, (l[4] + 2 * l[3] + l[2] + 2) >> 2);
-    s!(0, 4, (l[3] + 2 * l[2] + l[1] + 2) >> 2);
-    s!(1, 5, (l[3] + 2 * l[2] + l[1] + 2) >> 2);
-    s!(2, 6, (l[3] + 2 * l[2] + l[1] + 2) >> 2);
-    s!(3, 7, (l[3] + 2 * l[2] + l[1] + 2) >> 2);
-    s!(0, 3, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
-    s!(1, 4, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
-    s!(2, 5, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
-    s!(3, 6, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
-    s!(4, 7, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
-    s!(0, 2, (l[1] + 2 * l[0] + lt + 2) >> 2);
-    s!(1, 3, (l[1] + 2 * l[0] + lt + 2) >> 2);
-    s!(2, 4, (l[1] + 2 * l[0] + lt + 2) >> 2);
-    s!(3, 5, (l[1] + 2 * l[0] + lt + 2) >> 2);
-    s!(4, 6, (l[1] + 2 * l[0] + lt + 2) >> 2);
-    s!(5, 7, (l[1] + 2 * l[0] + lt + 2) >> 2);
-    s!(0, 1, (l[0] + 2 * lt + t[0] + 2) >> 2);
-    s!(1, 2, (l[0] + 2 * lt + t[0] + 2) >> 2);
-    s!(2, 3, (l[0] + 2 * lt + t[0] + 2) >> 2);
-    s!(3, 4, (l[0] + 2 * lt + t[0] + 2) >> 2);
-    s!(4, 5, (l[0] + 2 * lt + t[0] + 2) >> 2);
-    s!(5, 6, (l[0] + 2 * lt + t[0] + 2) >> 2);
-    s!(6, 7, (l[0] + 2 * lt + t[0] + 2) >> 2);
-    s!(0, 0, (l[0] + 2 * lt + t[0] + 2) >> 2); // SRC(0,0) = SRC(1,1) = ... (主对角线同一公式)
-    // 主对角线: (l0 + 2*lt + t0 + 2) >> 2
+    // 按 FFmpeg pred8x8l_down_right 逐行赋值 (对角线 k=x-y)
+    // k=-7: SRC(0,7)
+    s!(0, 7, (l[7] + 2 * l[6] + l[5] + 2) >> 2);
+    // k=-6: SRC(0,6), SRC(1,7)
+    s!(0, 6, (l[6] + 2 * l[5] + l[4] + 2) >> 2);
+    s!(1, 7, (l[6] + 2 * l[5] + l[4] + 2) >> 2);
+    // k=-5
+    s!(0, 5, (l[5] + 2 * l[4] + l[3] + 2) >> 2);
+    s!(1, 6, (l[5] + 2 * l[4] + l[3] + 2) >> 2);
+    s!(2, 7, (l[5] + 2 * l[4] + l[3] + 2) >> 2);
+    // k=-4
+    s!(0, 4, (l[4] + 2 * l[3] + l[2] + 2) >> 2);
+    s!(1, 5, (l[4] + 2 * l[3] + l[2] + 2) >> 2);
+    s!(2, 6, (l[4] + 2 * l[3] + l[2] + 2) >> 2);
+    s!(3, 7, (l[4] + 2 * l[3] + l[2] + 2) >> 2);
+    // k=-3
+    s!(0, 3, (l[3] + 2 * l[2] + l[1] + 2) >> 2);
+    s!(1, 4, (l[3] + 2 * l[2] + l[1] + 2) >> 2);
+    s!(2, 5, (l[3] + 2 * l[2] + l[1] + 2) >> 2);
+    s!(3, 6, (l[3] + 2 * l[2] + l[1] + 2) >> 2);
+    s!(4, 7, (l[3] + 2 * l[2] + l[1] + 2) >> 2);
+    // k=-2
+    s!(0, 2, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
+    s!(1, 3, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
+    s!(2, 4, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
+    s!(3, 5, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
+    s!(4, 6, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
+    s!(5, 7, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
+    // k=-1
+    s!(0, 1, (l[1] + 2 * l[0] + lt + 2) >> 2);
+    s!(1, 2, (l[1] + 2 * l[0] + lt + 2) >> 2);
+    s!(2, 3, (l[1] + 2 * l[0] + lt + 2) >> 2);
+    s!(3, 4, (l[1] + 2 * l[0] + lt + 2) >> 2);
+    s!(4, 5, (l[1] + 2 * l[0] + lt + 2) >> 2);
+    s!(5, 6, (l[1] + 2 * l[0] + lt + 2) >> 2);
+    s!(6, 7, (l[1] + 2 * l[0] + lt + 2) >> 2);
+    // k=0: 主对角线 (l0 + 2*lt + t0 + 2) >> 2
     s!(0, 0, (l[0] + 2 * lt + t[0] + 2) >> 2);
     s!(1, 1, (l[0] + 2 * lt + t[0] + 2) >> 2);
     s!(2, 2, (l[0] + 2 * lt + t[0] + 2) >> 2);
@@ -1184,21 +1234,25 @@ fn predict_8x8_vertical_right(plane: &mut [u8], stride: usize, x0: usize, y0: us
             set8(plane, stride, x0, y0, $x, $y, $v)
         };
     }
-    s!(0, 6, (l[4] + 2 * l[3] + l[2] + 2) >> 2);
-    s!(0, 7, (l[5] + 2 * l[4] + l[3] + 2) >> 2);
-    s!(0, 4, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
-    s!(1, 6, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
-    s!(0, 5, (l[3] + 2 * l[2] + l[1] + 2) >> 2);
-    s!(1, 7, (l[3] + 2 * l[2] + l[1] + 2) >> 2);
-    s!(0, 2, (l[0] + 2 * lt + t[0] + 2) >> 2);
-    s!(1, 4, (l[0] + 2 * lt + t[0] + 2) >> 2); // 注意: 此处使用带滤波的公式
-    // 实际上 Vertical-Right 中左侧用的是 l[1]+2*l[0]+lt 等
-    s!(0, 2, (l[1] + 2 * l[0] + lt + 2) >> 2);
-    s!(1, 4, (l[1] + 2 * l[0] + lt + 2) >> 2);
-    s!(2, 6, (l[1] + 2 * l[0] + lt + 2) >> 2);
+    // 按 FFmpeg pred8x8l_vertical_right, zVR=2x-y
+    // zVR=-7: SRC(0,7)
+    s!(0, 7, (l[6] + 2 * l[5] + l[4] + 2) >> 2);
+    // zVR=-6: SRC(0,6)
+    s!(0, 6, (l[5] + 2 * l[4] + l[3] + 2) >> 2);
+    // zVR=-5: SRC(0,5), SRC(1,7)
+    s!(0, 5, (l[4] + 2 * l[3] + l[2] + 2) >> 2);
+    s!(1, 7, (l[4] + 2 * l[3] + l[2] + 2) >> 2);
+    // zVR=-4: SRC(0,4), SRC(1,6)
+    s!(0, 4, (l[3] + 2 * l[2] + l[1] + 2) >> 2);
+    s!(1, 6, (l[3] + 2 * l[2] + l[1] + 2) >> 2);
+    // zVR=-3: SRC(0,3), SRC(1,5), SRC(2,7)
     s!(0, 3, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
     s!(1, 5, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
     s!(2, 7, (l[2] + 2 * l[1] + l[0] + 2) >> 2);
+    // zVR=-2: SRC(0,2), SRC(1,4), SRC(2,6)
+    s!(0, 2, (l[1] + 2 * l[0] + lt + 2) >> 2);
+    s!(1, 4, (l[1] + 2 * l[0] + lt + 2) >> 2);
+    s!(2, 6, (l[1] + 2 * l[0] + lt + 2) >> 2);
     s!(0, 1, (l[0] + 2 * lt + t[0] + 2) >> 2);
     s!(1, 3, (l[0] + 2 * lt + t[0] + 2) >> 2);
     s!(2, 5, (l[0] + 2 * lt + t[0] + 2) >> 2);

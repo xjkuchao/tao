@@ -61,8 +61,10 @@ fn test_apply_inter_block_l0_padding_clamps_to_top_left() {
         y,
         u,
         v,
+        frame_num: 0,
         poc: 0,
         is_long_term: false,
+        long_term_frame_idx: None,
     }];
 
     dec.apply_inter_block_l0(&refs, 0, 0, 0, 4, 4, -400, -400, &[], 0, 0);
@@ -108,8 +110,10 @@ fn test_apply_inter_block_l0_padding_clamps_to_bottom_right() {
         y,
         u,
         v,
+        frame_num: 0,
         poc: 0,
         is_long_term: false,
+        long_term_frame_idx: None,
     }];
 
     dec.apply_inter_block_l0(&refs, 0, 0, 0, 4, 4, 400, 400, &[], 0, 0);
@@ -632,7 +636,6 @@ fn test_build_b_direct_motion_spatial_l1_fallback_keeps_input_when_neighbors_abs
 
     let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true, &[], &[]);
     let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
-    let motion_l1 = motion_l1.expect("spatial direct 应提供 L1 运动信息");
     assert_eq!(
         motion_l0.mv_x, 0,
         "L0 邻居存在时应优先使用 L0 邻居预测 MV(x)"
@@ -641,8 +644,10 @@ fn test_build_b_direct_motion_spatial_l1_fallback_keeps_input_when_neighbors_abs
         motion_l0.mv_y, 0,
         "L0 邻居存在时应优先使用 L0 邻居预测 MV(y)"
     );
-    assert_eq!(motion_l1.mv_x, 12, "L1 邻居缺失时应回退输入预测 MV(x)");
-    assert_eq!(motion_l1.mv_y, -8, "L1 邻居缺失时应回退输入预测 MV(y)");
+    assert!(
+        motion_l1.is_none(),
+        "当 L1 参考列表为空时, spatial direct 不应伪造 L1 运动信息"
+    );
 }
 
 #[test]
@@ -699,11 +704,12 @@ fn test_build_b_direct_motion_spatial_uses_independent_l0_neighbor_mv() {
 
     let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true, &[], &[]);
     let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
-    let motion_l1 = motion_l1.expect("spatial direct 应提供 L1 运动信息");
     assert_eq!(motion_l0.mv_x, 20, "L0 应独立使用 list0 邻居预测 MV(x)");
     assert_eq!(motion_l0.mv_y, 0, "L0 应独立使用 list0 邻居预测 MV(y)");
-    assert_eq!(motion_l1.mv_x, 12, "L1 邻居缺失时应回退输入预测 MV(x)");
-    assert_eq!(motion_l1.mv_y, -8, "L1 邻居缺失时应回退输入预测 MV(y)");
+    assert!(
+        motion_l1.is_none(),
+        "当 L1 参考列表为空时, spatial direct 不应伪造 L1 运动信息"
+    );
 }
 
 #[test]
@@ -731,9 +737,14 @@ fn test_build_b_direct_motion_temporal_prefers_list1_colocated_mb() {
         motion_l0.mv_y, 2,
         "temporal direct 应优先使用 list1[0] 共定位宏块的 list0 MV(y), 并按规范缩放"
     );
-    assert!(
-        motion_l1.is_none(),
-        "最小 temporal direct 路径仍应保持 L1 为空"
+    let motion_l1 = motion_l1.expect("temporal direct 应提供 L1 运动信息");
+    assert_eq!(
+        motion_l1.mv_x, -12,
+        "temporal direct 的 L1 MV(x) 应与共定位 MV 做差并保持符号"
+    );
+    assert_eq!(
+        motion_l1.mv_y, -2,
+        "temporal direct 的 L1 MV(y) 应与共定位 MV 做差并保持符号"
     );
 }
 
@@ -933,4 +944,38 @@ fn test_sample_h264_chroma_qpel_edge_clamp() {
 
     let sample = sample_h264_chroma_qpel(&plane, width, width, height, -1, -1, 7, 7);
     assert_eq!(sample, 10, "越界色度采样应按边界复制后再执行插值");
+}
+
+#[test]
+fn test_cabac_amvd_uses_clipped_mvd_cache_value() {
+    let mut dec = build_test_decoder();
+    let stride4 = dec.mb_width * 4;
+
+    // 左邻 4x4: mvd_x=+200,mvd_y=-200, 期望缓存截断为 (+70,-70).
+    dec.set_mvd_block_4x4(0, 4, 4, 4, 200, -200, 0);
+    // 上邻 4x4: mvd_x=-300,mvd_y=300, 期望缓存截断为 (-70,+70).
+    dec.set_mvd_block_4x4(4, 0, 4, 4, -300, 300, 0);
+
+    let left_idx = stride4;
+    let top_idx = 1;
+    assert_eq!(
+        dec.mvd_l0_x_4x4[left_idx], 70,
+        "mvd_cache 的 x 分量应按 FFmpeg 语义截断到 +70"
+    );
+    assert_eq!(
+        dec.mvd_l0_y_4x4[left_idx], -70,
+        "mvd_cache 的 y 分量应按 FFmpeg 语义截断到 -70"
+    );
+    assert_eq!(
+        dec.mvd_l0_x_4x4[top_idx], -70,
+        "mvd_cache 的 x 分量应按 FFmpeg 语义截断到 -70"
+    );
+    assert_eq!(
+        dec.mvd_l0_y_4x4[top_idx], 70,
+        "mvd_cache 的 y 分量应按 FFmpeg 语义截断到 +70"
+    );
+
+    let (amvd_x, amvd_y) = dec.compute_cabac_amvd(1, 1, 0);
+    assert_eq!(amvd_x, 140, "amvd_x 应使用左/上邻居截断后绝对值求和");
+    assert_eq!(amvd_y, 140, "amvd_y 应使用左/上邻居截断后绝对值求和");
 }

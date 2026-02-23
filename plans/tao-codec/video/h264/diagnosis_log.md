@@ -6,23 +6,24 @@
 
 | 样本 | 分辨率    | Profile              | 熵编码 | 精度       | PSNR     | max_err | 状态         |
 | ---- | --------- | -------------------- | ------ | ---------- | -------- | ------- | ------------ |
-| C1   | 1280x720  | Constrained Baseline | CAVLC  | 9.87%      | 18.62dB  | 252     | 通过         |
+| C1   | 1280x720  | Constrained Baseline | CAVLC  | 10.57%     | 19.08dB  | 249     | 通过         |
 | C2   | 1920x1080 | Main                 | CAVLC  | **99.999%** | **79.82dB** | 20   | **近 bit-exact** |
 | C3   | 704x480   | High                 | CABAC  | 33.61%     | 12.77dB  | 252     | 通过         |
-| E1   | 352x200   | Baseline             | CAVLC  | 20.65%     | 25.34dB  | 252     | 通过         |
-| E2   | 1280x720  | Main                 | CAVLC  | 44.77%     | 21.36dB  | 237     | 通过         |
+| E1   | 352x200   | Baseline             | CAVLC  | 20.62%     | 25.33dB  | 252     | 通过         |
+| E2   | 1280x720  | Main                 | CAVLC  | 44.99%     | 21.21dB  | 237     | 通过         |
 | E3   | 640x352   | Main                 | CABAC  | **99.996%** | **73.58dB** | 44   | **近 bit-exact** |
-| E4   | 480x204   | Main                 | CAVLC  | 8.41%      | 15.84dB  | 242     | 通过         |
+| E4   | 480x204   | Main                 | CAVLC  | 19.58%     | 19.69dB  | 230     | 通过         |
 | E5   | 1920x1088 | Main                 | CABAC  | 26.20%     | 20.08dB  | 211     | 通过         |
 | E6   | 1920x1080 | High                 | CABAC  | 25.79%     | 8.75dB   | 239     | 通过         |
-| E7   | 1920x1080 | High                 | CAVLC  | 0.47%      | 12.77dB  | 253     | **唯一失败** |
-| E8   | 352x288   | High                 | CABAC  | 22.66%     | 19.15dB  | 233     | 通过         |
-| E9   | 352x200   | Baseline             | CAVLC  | 16.66%     | 20.26dB  | 181     | 通过         |
+| E7   | 1920x1080 | High                 | CAVLC  | 6.77%      | 15.97dB  | 247     | 通过         |
+| E8   | 352x288   | High                 | CABAC  | 25.44%     | 20.51dB  | 227     | 通过         |
+| E9   | 352x200   | Baseline             | CAVLC  | 16.54%     | 20.16dB  | 181     | 通过         |
 | X1   | 352x288   | High                 | CABAC  | 81.02%     | 26.62dB  | 131     | 通过         |
 | X2   | 352x288   | High                 | CABAC  | 43.97%     | 13.09dB  | 247     | 通过         |
 | X3   | 352x288   | High                 | CABAC  | 42.48%     | 15.16dB  | 247     | 通过         |
+| X4   | 352x288   | High                 | CABAC  | 7.34%      | 10.45dB  | 253     | 通过         |
 
-- 通过: 14/15, 失败: 1/15 (阈值 1.00%, E7 唯一失败)
+- 通过: 16/16, 失败: 0/16 (阈值 1.00%)
 - C2 首帧达到 100% bit-exact (PSNR=inf), 10 帧 99.999%
 - E3 帧 0-8 bit-exact, 仅帧 9 有微小偏差 (max_err=44)
 
@@ -38,6 +39,41 @@
    - 新增 `left_avail()` / `top_avail()` 方法, 基于 `mb_slice_first_mb` 判断同 slice
    - 影响: C2 从 ~20% 提升到 99.999% (首帧 bit-exact)
 4. **CAVLC nC 上下文 slice 边界感知**: `calc_luma_nc` / `calc_chroma_u_nc` / `calc_chroma_v_nc` 在 MB 边界检查 slice 归属
+5. **CAVLC I_8x8 语法补齐**: 在 `decode_cavlc_i_mb` 中补齐 `transform_size_8x8_flag` 与 `intra8x8_pred_mode` 解析, 并新增 I_8x8 交织预测+残差路径.
+   - 影响: E7 从 0.47% 提升到 6.76%, 从唯一失败变为通过(阈值 1.00%)
+6. **MP4 `edts/elst` 时间线对齐 + 对比侧负 PTS 过滤**:
+   - MP4 demuxer 新增 `elst` 解析并按 `media_time` 归一化 `pkt.pts`.
+   - `decoder_compare` 默认过滤 `pts<0` 帧, 保持参考链不丢失同时对齐 FFmpeg 输出时间线.
+   - 影响: C1 `10.32% -> 10.56%`, E4 `8.41% -> 19.34%`.
+7. **CAVLC 容错收敛 (coeff_token + total_zeros)**:
+   - `coeff_token` 在主表失败时回退邻近 VLC 表, 显著减少 `coeff_token` 失败导致的位流停滞.
+   - `total_zeros` 在 `max_num_coeff=15` 回退路径裁剪到合法范围, 消除 `scan_pos` 越界型失败.
+   - C1 追踪中 `coeff_token` 失败由 6 次降为 0 次, `scan_pos` 越界由 8 次降为 0 次.
+   - 当前剩余错误构成(单次 C1 追踪): `run_before` 21 次, `total_coeff=16>15` 2 次, `total_zeros(tc=1,max=16)` 2 次.
+   - 影响: E2 `44.68% -> 44.99%`, E4 `19.34% -> 19.58%`, E7 `6.75% -> 6.77%`.
+
+### 2026-02-22 本轮否决实验(已回滚)
+
+- **run_before run7 全表回退 + clamp**:
+  - 目标: 缓解 `zeros_left=7..9` 的 `run_before` 失败.
+  - 结果: C1 `10.56% -> 9.24%`, 明显回退, 已回滚.
+- **`total_coeff=16,max_num_coeff=15` 按 `parse_max=16` 消费并裁剪**:
+  - 目标: 保持位流前进, 避免整块置零.
+  - 结果: E2 `44.99% -> 44.81%`, E4 `19.58% -> 19.54%`, E7 `6.77% -> 6.77%(微降)`, 已回滚.
+- **P-slice `P_16x8/P_8x16` 方向性 MV 预测替换**:
+  - 目标: 对齐 FFmpeg `pred_16x8/pred_8x16` 分支.
+  - 结果: C1 `10.56% -> 10.40%`, E1/E9 同步回退, 已回滚.
+
+### 2026-02-22 C1 剩余失步样本点(用于下一轮定点修复)
+
+- 首批失败点集中在 `run_before` 且 `zeros_left=7/8/9`, 覆盖 `inter_luma_4x4/chroma_u_ac/i16x16_luma_ac`.
+- 代表样本:
+  - `scene=inter_luma_4x4 coord=(10,2) bits_read=119 total_coeff=2 trailing_ones=2 total_zeros=7 zeros_left=7`
+  - `scene=inter_luma_4x4 coord=(112,68) bits_read=79184 total_coeff=2 trailing_ones=2 total_zeros=7 zeros_left=7`
+  - `scene=inter_luma_4x4 coord=(265,160) bits_read=102453 total_coeff=2 trailing_ones=2 total_zeros=9 zeros_left=9`
+  - `scene=chroma_u_ac coord=(127,13) bits_read=18006 total_coeff=4 trailing_ones=2 total_zeros=7 zeros_left=7`
+  - `scene=i16x16_luma_ac coord=(280,35) bits_read=23819 total_coeff=16(max=15)`
+- 结论: 当前更像是"前序语法链路偏差导致 run_before 无法匹配", 不是 run_before VLC 表本身错误.
 
 ### 旧基线(10 帧, 2026-02-22, 基础设施阶段)
 

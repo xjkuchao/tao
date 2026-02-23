@@ -244,11 +244,14 @@ fn decode_abs_level(
 /// 返回值等价于 FFmpeg 中的 `coeff_abs` 初值, 上层需再加 14.
 fn decode_abs_suffix_bypass(cabac: &mut CabacDecoder) -> u32 {
     let mut j = 0u32;
-    while {
-        let bit = cabac.decode_bypass();
-        bit == 1 && j < 23
-    } {
+    // 对齐 FFmpeg:
+    // while (get_cabac_bypass() && j < 16+7) j++;
+    // 注意 bypass 读取在前, 到达上界时仍会多读取 1bit.
+    while cabac.decode_bypass() == 1 && j < 23 {
         j += 1;
+    }
+    if j >= 20 && std::env::var("TAO_H264_TRACE_BYPASS_CAP").as_deref() == Ok("1") {
+        eprintln!("[H264_COEFF_BYPASS_PREFIX] j={} bits={}", j, cabac.bits_read());
     }
 
     let mut coeff_abs = 1u32;
@@ -390,7 +393,8 @@ pub fn dequant_4x4_ac_with_scaling(coeffs: &mut [i32; 16], qp: i32, scaling_list
         let (row, col) = ZIGZAG_4X4[i];
         let si = scale_index(row, col);
         let base_scale = LEVEL_SCALE[qp_rem as usize][si];
-        let scale = apply_scaling_weight(base_scale, scaling_list[i]);
+        let raster_idx = row * 4 + col;
+        let scale = apply_scaling_weight(base_scale, scaling_list[raster_idx]);
         let scaled = *c * scale;
         if qp_per >= 4 {
             *c = scaled << (qp_per - 4);
@@ -420,37 +424,32 @@ fn scale_index(row: usize, col: usize) -> usize {
 /// 与 FFmpeg 一致采用列优先(column-first)顺序, 避免 `>>1` 截断差异.
 #[allow(dead_code)]
 pub fn idct_4x4(coeffs: &[i32; 16], out: &mut [i32; 16]) {
-    let mut temp = [0i32; 16];
+    // 对齐 FFmpeg `ff_h264_idct_add`:
+    // 先给 DC 系数加 32, 再做两趟蝶形变换, 最终统一 `>> 6`.
+    let mut block = *coeffs;
+    block[0] += 32;
 
-    for j in 0..4 {
-        let s0 = coeffs[j];
-        let s1 = coeffs[4 + j];
-        let s2 = coeffs[8 + j];
-        let s3 = coeffs[12 + j];
-        let e0 = s0 + s2;
-        let e1 = s0 - s2;
-        let e2 = (s1 >> 1) - s3;
-        let e3 = s1 + (s3 >> 1);
-        temp[j] = e0 + e3;
-        temp[4 + j] = e1 + e2;
-        temp[8 + j] = e1 - e2;
-        temp[12 + j] = e0 - e3;
+    for i in 0..4 {
+        let z0 = block[i] + block[i + 8];
+        let z1 = block[i] - block[i + 8];
+        let z2 = (block[i + 4] >> 1) - block[i + 12];
+        let z3 = block[i + 4] + (block[i + 12] >> 1);
+        block[i] = z0 + z3;
+        block[i + 4] = z1 + z2;
+        block[i + 8] = z1 - z2;
+        block[i + 12] = z0 - z3;
     }
 
     for i in 0..4 {
         let s = i * 4;
-        let s0 = temp[s];
-        let s1 = temp[s + 1];
-        let s2 = temp[s + 2];
-        let s3 = temp[s + 3];
-        let e0 = s0 + s2;
-        let e1 = s0 - s2;
-        let e2 = (s1 >> 1) - s3;
-        let e3 = s1 + (s3 >> 1);
-        out[s] = (e0 + e3 + 32) >> 6;
-        out[s + 1] = (e1 + e2 + 32) >> 6;
-        out[s + 2] = (e1 - e2 + 32) >> 6;
-        out[s + 3] = (e0 - e3 + 32) >> 6;
+        let z0 = block[s] + block[s + 2];
+        let z1 = block[s] - block[s + 2];
+        let z2 = (block[s + 1] >> 1) - block[s + 3];
+        let z3 = block[s + 1] + (block[s + 3] >> 1);
+        out[s] = (z0 + z3) >> 6;
+        out[s + 1] = (z1 + z2) >> 6;
+        out[s + 2] = (z1 - z2) >> 6;
+        out[s + 3] = (z0 - z3) >> 6;
     }
 }
 
@@ -493,70 +492,78 @@ pub fn dequant_8x8_ac_with_scaling(
 }
 
 /// H.264 8x8 反整数变换.
-/// 与 FFmpeg 一致采用列优先(column-first)顺序, 避免 `>>1`/`>>2` 截断顺序差异导致舍入偏差.
+/// 对齐 FFmpeg `ff_h264_idct8_add`: 先对 `coeff[0]` 加 32, 再执行两趟变换并最终 `>> 6`.
 pub fn idct_8x8(coeffs: &[i32; 64], out: &mut [i32; 64]) {
-    let mut tmp = [0i32; 64];
+    let mut block = *coeffs;
+    block[0] += 32;
 
-    // 列变换 (第一趟, 与 FFmpeg 一致)
-    for col in 0..8 {
-        let src = [
-            coeffs[col],
-            coeffs[8 + col],
-            coeffs[16 + col],
-            coeffs[24 + col],
-            coeffs[32 + col],
-            coeffs[40 + col],
-            coeffs[48 + col],
-            coeffs[56 + col],
-        ];
-        let dst = inverse_transform_1d_8(src);
-        for row in 0..8 {
-            tmp[row * 8 + col] = dst[row];
-        }
+    // 第一趟: 按列变换.
+    for i in 0..8 {
+        let a0 = block[i] + block[i + 4 * 8];
+        let a2 = block[i] - block[i + 4 * 8];
+        let a4 = (block[i + 2 * 8] >> 1) - block[i + 6 * 8];
+        let a6 = (block[i + 6 * 8] >> 1) + block[i + 2 * 8];
+
+        let b0 = a0 + a6;
+        let b2 = a2 + a4;
+        let b4 = a2 - a4;
+        let b6 = a0 - a6;
+
+        let a1 = -block[i + 3 * 8] + block[i + 5 * 8] - block[i + 7 * 8]
+            - (block[i + 7 * 8] >> 1);
+        let a3 = block[i + 8] + block[i + 7 * 8] - block[i + 3 * 8]
+            - (block[i + 3 * 8] >> 1);
+        let a5 = -block[i + 8] + block[i + 7 * 8] + block[i + 5 * 8]
+            + (block[i + 5 * 8] >> 1);
+        let a7 = block[i + 3 * 8] + block[i + 5 * 8] + block[i + 8] + (block[i + 8] >> 1);
+
+        let b1 = (a7 >> 2) + a1;
+        let b3 = a3 + (a5 >> 2);
+        let b5 = (a3 >> 2) - a5;
+        let b7 = a7 - (a1 >> 2);
+
+        block[i] = b0 + b7;
+        block[i + 7 * 8] = b0 - b7;
+        block[i + 8] = b2 + b5;
+        block[i + 6 * 8] = b2 - b5;
+        block[i + 2 * 8] = b4 + b3;
+        block[i + 5 * 8] = b4 - b3;
+        block[i + 3 * 8] = b6 + b1;
+        block[i + 4 * 8] = b6 - b1;
     }
 
-    // 行变换 (第二趟, 含最终舍入)
-    for row in 0..8 {
-        let mut src = [0i32; 8];
-        src.copy_from_slice(&tmp[row * 8..row * 8 + 8]);
-        let dst = inverse_transform_1d_8(src);
-        for col in 0..8 {
-            out[row * 8 + col] = (dst[col] + 32) >> 6;
-        }
+    // 第二趟: 按行变换 + 最终右移.
+    for i in 0..8 {
+        let row = i * 8;
+        let a0 = block[row] + block[row + 4];
+        let a2 = block[row] - block[row + 4];
+        let a4 = (block[row + 2] >> 1) - block[row + 6];
+        let a6 = (block[row + 6] >> 1) + block[row + 2];
+
+        let b0 = a0 + a6;
+        let b2 = a2 + a4;
+        let b4 = a2 - a4;
+        let b6 = a0 - a6;
+
+        let a1 = -block[row + 3] + block[row + 5] - block[row + 7] - (block[row + 7] >> 1);
+        let a3 = block[row + 1] + block[row + 7] - block[row + 3] - (block[row + 3] >> 1);
+        let a5 = -block[row + 1] + block[row + 7] + block[row + 5] + (block[row + 5] >> 1);
+        let a7 = block[row + 3] + block[row + 5] + block[row + 1] + (block[row + 1] >> 1);
+
+        let b1 = (a7 >> 2) + a1;
+        let b3 = a3 + (a5 >> 2);
+        let b5 = (a3 >> 2) - a5;
+        let b7 = a7 - (a1 >> 2);
+
+        out[row] = (b0 + b7) >> 6;
+        out[row + 1] = (b2 + b5) >> 6;
+        out[row + 2] = (b4 + b3) >> 6;
+        out[row + 3] = (b6 + b1) >> 6;
+        out[row + 4] = (b6 - b1) >> 6;
+        out[row + 5] = (b4 - b3) >> 6;
+        out[row + 6] = (b2 - b5) >> 6;
+        out[row + 7] = (b0 - b7) >> 6;
     }
-}
-
-fn inverse_transform_1d_8(src: [i32; 8]) -> [i32; 8] {
-    let a0 = src[0] + src[4];
-    let a2 = src[0] - src[4];
-    let a4 = (src[2] >> 1) - src[6];
-    let a6 = src[2] + (src[6] >> 1);
-
-    let b0 = a0 + a6;
-    let b2 = a2 + a4;
-    let b4 = a2 - a4;
-    let b6 = a0 - a6;
-
-    let a1 = -src[3] + src[5] - src[7] - (src[7] >> 1);
-    let a3 = src[1] + src[7] - src[3] - (src[3] >> 1);
-    let a5 = -src[1] + src[7] + src[5] + (src[5] >> 1);
-    let a7 = src[3] + src[5] + src[1] + (src[1] >> 1);
-
-    let b1 = a1 + (a7 >> 2);
-    let b7 = a7 - (a1 >> 2);
-    let b3 = a3 + (a5 >> 2);
-    let b5 = (a3 >> 2) - a5;
-
-    [
-        b0 + b7,
-        b2 + b5,
-        b4 + b3,
-        b6 + b1,
-        b6 - b1,
-        b4 - b3,
-        b2 - b5,
-        b0 - b7,
-    ]
 }
 
 // ============================================================
@@ -721,7 +728,7 @@ pub fn apply_8x8_ac_residual(
 
 /// 将 8x8 残差块应用到平面上 (反扫描 + 反量化 + IDCT + 逐像素加法), 支持自定义 scaling_list.
 ///
-/// `scaling_list_scan` 需为 zig-zag 扫描顺序.
+/// `scaling_list_raster` 需为 raster 顺序.
 pub fn apply_8x8_ac_residual_with_scaling(
     plane: &mut [u8],
     stride: usize,
@@ -729,16 +736,14 @@ pub fn apply_8x8_ac_residual_with_scaling(
     y0: usize,
     coeffs_scan: &[i32; 64],
     qp: i32,
-    scaling_list_scan: &[u8; 64],
+    scaling_list_raster: &[u8; 64],
 ) {
     let mut coeffs_raster = [0i32; 64];
-    let mut scaling_raster = [16u8; 64];
     for (scan_pos, &raster_idx) in ZIGZAG_8X8.iter().enumerate() {
         coeffs_raster[raster_idx] = coeffs_scan[scan_pos];
-        scaling_raster[raster_idx] = scaling_list_scan[scan_pos];
     }
 
-    dequant_8x8_ac_with_scaling(&mut coeffs_raster, qp, &scaling_raster);
+    dequant_8x8_ac_with_scaling(&mut coeffs_raster, qp, scaling_list_raster);
 
     let mut spatial = [0i32; 64];
     idct_8x8(&coeffs_raster, &mut spatial);

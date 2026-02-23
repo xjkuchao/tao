@@ -1,7 +1,7 @@
 use super::*;
 
 impl H264Decoder {
-    fn l0_motion_candidate_4x4(&self, x4: isize, y4: isize) -> Option<(i32, i32, i8)> {
+    pub(super) fn l0_motion_candidate_4x4(&self, x4: isize, y4: isize) -> Option<(i32, i32, i8)> {
         if x4 < 0 || y4 < 0 {
             return None;
         }
@@ -17,7 +17,7 @@ impl H264Decoder {
         Some((mv_x, mv_y, ref_idx))
     }
 
-    fn l1_motion_candidate_4x4(&self, x4: isize, y4: isize) -> Option<(i32, i32, i8)> {
+    pub(super) fn l1_motion_candidate_4x4(&self, x4: isize, y4: isize) -> Option<(i32, i32, i8)> {
         if x4 < 0 || y4 < 0 {
             return None;
         }
@@ -132,6 +132,7 @@ impl H264Decoder {
         (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1))
     }
 
+    #[allow(dead_code)]
     pub(super) fn predict_mv_l1_16x16(&self, mb_x: usize, mb_y: usize) -> (i32, i32) {
         self.predict_mv_l1_partition(mb_x, mb_y, 0, 0, 4, 0)
     }

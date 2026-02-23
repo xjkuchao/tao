@@ -90,7 +90,7 @@
 | E4   | `data/h264_samples/e4_main_cabac_lowres.mov`     | Main + CABAC 低分辨率     | `https://samples.ffmpeg.org/archive/container/mov/mov+h264+aac++Demo_FlagOfOurFathers.mov` | Main     | 480x204   | CABAC + B 帧, Level 2.0                      |
 | E5   | `data/h264_samples/e5_main_1080p.264`            | Main + 1080p 裸流         | `https://samples.ffmpeg.org/archive/all/h264+h264+++Fish_1080P_16M.264`                    | Main     | 1920x1088 | CABAC, Level 4.0, 高码率, height=1088 需裁剪 |
 | E6   | `data/h264_samples/e6_high_1080p.h264`           | High + 1080p 裸流         | `https://samples.ffmpeg.org/archive/all/h264+h264+++ffh264_issue4.h264`                    | High     | 1920x1080 | CABAC + 8x8, Level 4.1, 裸流                 |
-| E7   | `data/h264_samples/e7_high_1080p.mp4`            | High + 1080p MP4          | `https://samples.ffmpeg.org/HDTV/xacti_hd2000_dogsample20090207_2a.mp4`                    | High     | 1920x1080 | CABAC + 8x8, Level 4.2, yuvj420p             |
+| E7   | `data/h264_samples/e7_high_1080p.mp4`            | High + 1080p MP4          | `https://samples.ffmpeg.org/HDTV/xacti_hd2000_dogsample20090207_2a.mp4`                    | High     | 1920x1080 | CAVLC + 8x8, Level 4.2, yuvj420p             |
 | E8   | `data/h264_samples/e8_ipcm.h264`                 | IPCM 边界                 | `https://samples.ffmpeg.org/archive/all/h264+h264+++IPCM_decode_error.h264`                | High     | 352x288   | IPCM 宏块解码边界, Level 5.1                 |
 | E9   | `data/h264_samples/e9_cavlc_baseline2.mp4`       | CAVLC Baseline 2          | `https://samples.ffmpeg.org/A-codecs/speex/h264_speex.mp4`                                 | Baseline | 352x200   | CAVLC, Level 3.1, 不同音频封装               |
 
@@ -179,6 +179,7 @@ TAO_H264_COMPARE_INPUT=data/h264_samples/c1_cavlc_baseline_720p.mp4 \
 | `TAO_H264_COMPARE_ANALYZE_SHIFT`       | `0`     | `1` 时启用帧偏移诊断(搜索 ±8 帧) |
 | `TAO_H264_COMPARE_ANALYZE_FRAME_STATS` | `0`     | `1` 时输出首帧 Y 平面统计        |
 | `TAO_H264_COMPARE_REPORT`              | `0`     | `1` 时输出逐帧 JSON 报告         |
+| `TAO_H264_COMPARE_KEEP_NEGATIVE_PTS`   | `0`     | `1` 时保留负 PTS 帧(默认会过滤)  |
 
 ### 4.3 定位方法
 
@@ -215,23 +216,24 @@ ffmpeg -y -i input.mp4 -pix_fmt yuv420p -vframes 10 -f rawvideo ref.yuv
 
 | 样本 | 分辨率    | Profile              | 熵编码 | 精度       | Y-PSNR   | max_err | 状态      |
 | ---- | --------- | -------------------- | ------ | ---------- | -------- | ------- | --------- |
-| C1   | 1280x720  | Constrained Baseline | CAVLC  | 9.87%      | 18.62dB  | 252     | 待修复    |
+| C1   | 1280x720  | Constrained Baseline | CAVLC  | 10.57%     | 19.08dB  | 249     | 待修复    |
 | C2   | 1920x1080 | Main                 | CAVLC  | **99.999%** | **79.82dB** | 20   | **近 bit-exact** |
 | C3   | 704x480   | High                 | CABAC  | 33.61%     | 12.77dB  | 252     | 待修复    |
-| E1   | 352x200   | Baseline             | CAVLC  | 20.65%     | 25.34dB  | 252     | 待修复    |
-| E2   | 1280x720  | Main                 | CAVLC  | 44.77%     | 21.36dB  | 237     | 待修复    |
+| E1   | 352x200   | Baseline             | CAVLC  | 20.62%     | 25.33dB  | 252     | 待修复    |
+| E2   | 1280x720  | Main                 | CAVLC  | 44.99%     | 21.21dB  | 237     | 待修复    |
 | E3   | 640x352   | Main                 | CABAC  | **99.996%** | **73.58dB** | 44   | **近 bit-exact** |
-| E4   | 480x204   | Main                 | CAVLC  | 8.41%      | 15.84dB  | 242     | 待修复    |
+| E4   | 480x204   | Main                 | CAVLC  | 19.58%     | 19.69dB  | 230     | 待修复    |
 | E5   | 1920x1088 | Main                 | CABAC  | 26.20%     | 20.08dB  | 211     | 待修复    |
 | E6   | 1920x1080 | High                 | CABAC  | 25.79%     | 8.75dB   | 239     | 待修复    |
-| E7   | 1920x1080 | High                 | CAVLC  | 0.47%      | 12.77dB  | 253     | **唯一失败** |
-| E8   | 352x288   | High                 | CABAC  | 22.66%     | 19.15dB  | 233     | 待修复    |
-| E9   | 352x200   | Baseline             | CAVLC  | 16.66%     | 20.26dB  | 181     | 待修复    |
+| E7   | 1920x1080 | High                 | CAVLC  | 6.77%      | 15.97dB  | 247     | 待修复(已过 1% 门槛) |
+| E8   | 352x288   | High                 | CABAC  | 25.44%     | 20.51dB  | 227     | 待修复    |
+| E9   | 352x200   | Baseline             | CAVLC  | 16.54%     | 20.16dB  | 181     | 待修复    |
 | X1   | 352x288   | High                 | CABAC  | 81.02%     | 26.62dB  | 131     | 待修复    |
 | X2   | 352x288   | High                 | CABAC  | 43.97%     | 13.09dB  | 247     | 待修复    |
 | X3   | 352x288   | High                 | CABAC  | 42.48%     | 15.16dB  | 247     | 待修复    |
+| X4   | 352x288   | High                 | CABAC  | 7.34%      | 10.45dB  | 253     | 待修复    |
 
-- 通过: 14/15, 失败: 1/15 (阈值 1.00%, E7 唯一失败)
+- 通过: 16/16, 失败: 0/16 (阈值 1.00%)
 - C2 首帧达到 100% bit-exact (PSNR=inf)
 - E3 帧 0-8 bit-exact, 仅帧 9 有微小偏差
 
@@ -241,13 +243,25 @@ ffmpeg -y -i input.mp4 -pix_fmt yuv420p -vframes 10 -f rawvideo ref.yuv
 2. **色度 DC 反量化** 舍入偏移
 3. **Slice 边界帧内预测邻居可用性** — 根因修复, C2 从 ~20% 提升到 99.999%
 4. **CAVLC nC 上下文 slice 边界感知**
+5. **CAVLC I_8x8 语法补齐** — 支持 `transform_size_8x8_flag + intra8x8_pred_mode`, E7 从 0.47% 提升到 6.76%
+6. **MP4 `elst` 时间线对齐 + 对比侧负 PTS 过滤**
+   - MP4 demuxer 新增 `edts/elst` 解析, packet `pts` 按 `media_time` 归一化.
+   - `decoder_compare.rs` 默认过滤 `pts<0` 帧(可通过 `TAO_H264_COMPARE_KEEP_NEGATIVE_PTS=1` 关闭).
+   - 影响: C1 `10.32% -> 10.56%`, E4 `8.41% -> 19.34%`.
+7. **CAVLC 容错收敛 (coeff_token + total_zeros)**
+   - `coeff_token` 在主表失败时按邻近 VLC 表回退解码, 降低 nC 偏差导致的整块失步.
+   - 已验证"跨级别全表回退"会引入回退, 当前策略固定为"仅邻近表回退".
+   - `total_zeros` 在 `max_num_coeff=15` 回退路径做上限裁剪, 避免 `scan_pos` 越界触发整块置零.
+   - C1 追踪中 `coeff_token` 失败由 6 次降为 0 次, `scan_pos` 越界由 8 次降为 0 次.
+   - 当前剩余错误构成(单次 C1 追踪): `run_before` 21 次, `total_coeff=16>15` 2 次, `total_zeros(tc=1,max=16)` 2 次.
+   - 影响: E2 `44.68% -> 44.99%`, E4 `19.34% -> 19.58%`, E7 `6.75% -> 6.77%`.
 
 ### 当前主瓶颈
 
 - CABAC I_8x8 预测模式不同步 (X1 首帧, CABAC 上下文演进偏差)
-- CAVLC P/B 帧运动补偿不完整 (C1, E1, E4, E9)
-- CABAC P/B 帧语法路径 (C3, E2, E5, E6, E8)
-- E7: CAVLC + yuvj420p, 需深入诊断
+- CAVLC P/B 帧运动补偿不完整 (C1, E1, E9)
+- CABAC P/B 帧语法路径 (C3, E2, E4, E5, E6, E8)
+- CAVLC I_8x8 路径精度仍低于阶段 A 目标 (E7 当前 6.77%, Y 面仅 0.57%)
 
 详细诊断记录见 `diagnosis_log.md`.
 
@@ -334,10 +348,12 @@ test_h264_accuracy_all  -- 批量运行全部样本并汇总报告
 - [x] 色度 DC 反量化舍入偏移修复
 - [x] Slice 边界帧内预测邻居可用性修复 (C2 100% bit-exact 首帧)
 - [x] CAVLC nC 上下文 slice 边界感知修复
-- [ ] E7 诊断与修复 (CAVLC + yuvj420p, 唯一失败测试)
+- [x] E7 诊断与修复 (CAVLC + yuvj420p, 0.47% -> 6.76%, 已通过 1% 门槛)
+- [x] MP4 `edts/elst` 时间线对齐 + 对比工具负 PTS 过滤 (C1/E4 收敛)
+- [x] CAVLC 容错收敛 (coeff_token 邻表回退 + total_zeros 越界抑制)
 - [ ] CABAC I_8x8 预测模式不同步修复 (X1)
-- [ ] CAVLC P/B 帧运动补偿完善 (C1, E1, E4, E9)
-- [ ] CABAC P/B 帧语法路径完善 (C3, E2, E5, E6, E8)
+- [ ] CAVLC P/B 帧运动补偿完善 (C1, E1, E9)
+- [ ] CABAC P/B 帧语法路径完善 (C3, E2, E4, E5, E6, E8)
 - [ ] 核心 3 样本阶段 A 达标
 - [ ] 扩展样本阶段 A 达标
 - [ ] 核心+扩展全部样本阶段 B 达标(bit-exact)

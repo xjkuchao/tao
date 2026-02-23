@@ -1,114 +1,344 @@
 use super::*;
 
 impl H264Decoder {
-    fn direct_neighbor_mv_for_list(&self, mb_idx: usize, list1: bool) -> Option<(i32, i32)> {
-        if list1 {
-            if self.ref_idx_l1.get(mb_idx).copied().unwrap_or(-1) < 0 {
-                return None;
-            }
-            Some((
-                self.mv_l1_x.get(mb_idx).copied().unwrap_or(0) as i32,
-                self.mv_l1_y.get(mb_idx).copied().unwrap_or(0) as i32,
-            ))
-        } else {
-            if self.ref_idx_l0.get(mb_idx).copied().unwrap_or(-1) < 0 {
-                return None;
-            }
-            Some((
-                self.mv_l0_x.get(mb_idx).copied().unwrap_or(0) as i32,
-                self.mv_l0_y.get(mb_idx).copied().unwrap_or(0) as i32,
-            ))
+    fn ref_planes_matches_picture(planes: &RefPlanes, pic: &ReferencePicture) -> bool {
+        let pic_is_long_term = pic.long_term_frame_idx.is_some();
+        if planes.is_long_term != pic_is_long_term {
+            return false;
         }
+        if planes.is_long_term {
+            return planes.long_term_frame_idx == pic.long_term_frame_idx;
+        }
+        planes.frame_num == pic.frame_num || planes.poc == pic.poc
     }
 
-    fn is_zero_direct_neighbor_mb(&self, mb_idx: usize) -> bool {
-        let l0_zero = self.ref_idx_l0.get(mb_idx).copied().unwrap_or(-1) == 0
-            && self.mv_l0_x.get(mb_idx).copied().unwrap_or(0) == 0
-            && self.mv_l0_y.get(mb_idx).copied().unwrap_or(0) == 0;
-        let l1_zero = self.ref_idx_l1.get(mb_idx).copied().unwrap_or(-1) == 0
-            && self.mv_l1_x.get(mb_idx).copied().unwrap_or(0) == 0
-            && self.mv_l1_y.get(mb_idx).copied().unwrap_or(0) == 0;
-        l0_zero && l1_zero
+    fn same_reference_picture_identity(a: &ReferencePicture, b: &ReferencePicture) -> bool {
+        if a.long_term_frame_idx.is_some() || b.long_term_frame_idx.is_some() {
+            return a.long_term_frame_idx == b.long_term_frame_idx;
+        }
+        a.frame_num == b.frame_num && a.poc == b.poc
     }
 
-    fn spatial_direct_neighbor_mb_indices(
+    fn frame_num_backward_distance_for(&self, cur_frame_num: u32, frame_num: u32) -> u32 {
+        let max = self.max_frame_num_modulo();
+        if max == 0 {
+            return 0;
+        }
+        let cur = cur_frame_num % max;
+        let target = frame_num % max;
+        let dist = (cur + max - target) % max;
+        if dist == 0 { max } else { dist }
+    }
+
+    fn frame_num_forward_distance_for(&self, cur_frame_num: u32, frame_num: u32) -> u32 {
+        let max = self.max_frame_num_modulo();
+        if max == 0 {
+            return 0;
+        }
+        let cur = cur_frame_num % max;
+        let target = frame_num % max;
+        let dist = (target + max - cur) % max;
+        if dist == 0 { max } else { dist }
+    }
+
+    fn picture_uses_list1_motion(pic: &ReferencePicture) -> bool {
+        pic.ref_idx_l1.iter().any(|&v| v >= 0) || pic.ref_idx_l1_4x4.iter().any(|&v| v >= 0)
+    }
+
+    fn collect_default_reference_list_l0_for_colocated_picture(
         &self,
-        mb_x: usize,
-        mb_y: usize,
-    ) -> (Option<usize>, Option<usize>, Option<usize>) {
-        let left = if mb_x > 0 {
-            self.mb_index(mb_x - 1, mb_y)
-        } else {
-            None
-        };
-        let top = if mb_y > 0 {
-            self.mb_index(mb_x, mb_y - 1)
-        } else {
-            None
-        };
-        let diag = if mb_x + 1 < self.mb_width && mb_y > 0 {
-            self.mb_index(mb_x + 1, mb_y - 1)
-        } else if mb_x > 0 && mb_y > 0 {
-            self.mb_index(mb_x - 1, mb_y - 1)
-        } else {
-            None
-        };
-        (left, top, diag)
-    }
+        col_pic: &ReferencePicture,
+    ) -> Vec<&ReferencePicture> {
+        let is_b_like = Self::picture_uses_list1_motion(col_pic);
+        if is_b_like {
+            let cur_poc = col_pic.poc;
+            let short_refs: Vec<&ReferencePicture> = self
+                .reference_frames
+                .iter()
+                .filter(|pic| {
+                    pic.long_term_frame_idx.is_none()
+                        && !Self::same_reference_picture_identity(pic, col_pic)
+                })
+                .collect();
+            let mut before: Vec<&ReferencePicture> = short_refs
+                .iter()
+                .copied()
+                .filter(|pic| pic.poc < cur_poc)
+                .collect();
+            let mut after: Vec<&ReferencePicture> = short_refs
+                .iter()
+                .copied()
+                .filter(|pic| pic.poc >= cur_poc)
+                .collect();
+            before.sort_by_key(|pic| std::cmp::Reverse(pic.poc));
+            after.sort_by_key(|pic| pic.poc);
+            let mut refs = before;
+            refs.extend(after);
+            let mut long_refs: Vec<&ReferencePicture> = self
+                .reference_frames
+                .iter()
+                .filter(|pic| {
+                    pic.long_term_frame_idx.is_some()
+                        && !Self::same_reference_picture_identity(pic, col_pic)
+                })
+                .collect();
+            long_refs.sort_by_key(|pic| pic.long_term_frame_idx.unwrap_or(u32::MAX));
+            refs.extend(long_refs);
+            return refs;
+        }
 
-    fn spatial_direct_zero_mv_condition(&self, mb_x: usize, mb_y: usize) -> bool {
-        let (left, top, diag) = self.spatial_direct_neighbor_mb_indices(mb_x, mb_y);
-        let mut has_neighbor = false;
-        for idx in [left, top, diag].into_iter().flatten() {
-            has_neighbor = true;
-            if !self.is_zero_direct_neighbor_mb(idx) {
-                return false;
-            }
-        }
-        has_neighbor
-    }
-
-    fn predict_spatial_direct_mv_for_list(
-        &self,
-        mb_x: usize,
-        mb_y: usize,
-        list1: bool,
-        fallback_mv_x: i32,
-        fallback_mv_y: i32,
-    ) -> (i32, i32) {
-        let (left, top, diag) = self.spatial_direct_neighbor_mb_indices(mb_x, mb_y);
-        let cand_a = left.and_then(|idx| self.direct_neighbor_mv_for_list(idx, list1));
-        let cand_b = top.and_then(|idx| self.direct_neighbor_mv_for_list(idx, list1));
-        let cand_c = diag.and_then(|idx| self.direct_neighbor_mv_for_list(idx, list1));
-
-        let mut matched = [(0i32, 0i32); 3];
-        let mut count = 0usize;
-        for cand in [cand_a, cand_b, cand_c].into_iter().flatten() {
-            matched[count] = cand;
-            count += 1;
-        }
-        if count == 0 {
-            return (fallback_mv_x, fallback_mv_y);
-        }
-        if count == 1 {
-            return matched[0];
-        }
-        let a = matched[0];
-        let b = matched[1];
-        let c = if count == 3 { matched[2] } else { matched[1] };
-        (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1))
+        let cur_frame_num = col_pic.frame_num;
+        let mut short_refs: Vec<&ReferencePicture> = self
+            .reference_frames
+            .iter()
+            .filter(|pic| {
+                pic.long_term_frame_idx.is_none() && !Self::same_reference_picture_identity(pic, col_pic)
+            })
+            .collect();
+        short_refs.sort_by_key(|pic| {
+            (
+                self.frame_num_backward_distance_for(cur_frame_num, pic.frame_num),
+                self.frame_num_forward_distance_for(cur_frame_num, pic.frame_num),
+            )
+        });
+        let mut refs = short_refs;
+        let mut long_refs: Vec<&ReferencePicture> = self
+            .reference_frames
+            .iter()
+            .filter(|pic| {
+                pic.long_term_frame_idx.is_some()
+                    && !Self::same_reference_picture_identity(pic, col_pic)
+            })
+            .collect();
+        long_refs.sort_by_key(|pic| pic.long_term_frame_idx.unwrap_or(u32::MAX));
+        refs.extend(long_refs);
+        refs
     }
 
     fn find_reference_picture_for_planes(&self, planes: &RefPlanes) -> Option<&ReferencePicture> {
+        if planes.is_long_term {
+            if let Some(long_idx) = planes.long_term_frame_idx
+                && let Some(found) = self
+                    .reference_frames
+                    .iter()
+                    .rev()
+                    .find(|pic| pic.long_term_frame_idx == Some(long_idx))
+            {
+                return Some(found);
+            }
+        } else if let Some(found) = self
+            .reference_frames
+            .iter()
+            .rev()
+            .find(|pic| pic.long_term_frame_idx.is_none() && pic.frame_num == planes.frame_num)
+        {
+            return Some(found);
+        }
         self.reference_frames.iter().rev().find(|pic| {
             pic.poc == planes.poc && (pic.long_term_frame_idx.is_some() == planes.is_long_term)
         })
     }
 
-    /// 判断共定位宏块是否满足 col_zero_flag 条件 (规范 8.4.1.2.3).
-    ///
-    /// 条件: 共位非 intra、list1[0] 非 long_ref、共位 ref_idx_l0==0 且 |mv_col|<=1.
-    fn col_zero_flag(&self, mb_x: usize, mb_y: usize, ref_l1_list: &[RefPlanes]) -> bool {
+    fn ref_pic_motion_4x4_index(&self, x4: usize, y4: usize) -> Option<usize> {
+        let stride = self.mb_width * 4;
+        let height = self.mb_height * 4;
+        if x4 >= stride || y4 >= height {
+            return None;
+        }
+        Some(y4 * stride + x4)
+    }
+
+    fn ref_pic_l0_motion_at(
+        &self,
+        pic: &ReferencePicture,
+        mb_x: usize,
+        mb_y: usize,
+        part_x4: usize,
+        part_y4: usize,
+    ) -> Option<(i32, i32, i8)> {
+        let x4 = mb_x * 4 + part_x4;
+        let y4 = mb_y * 4 + part_y4;
+        if let Some(idx4) = self.ref_pic_motion_4x4_index(x4, y4) {
+            let ref_idx = pic.ref_idx_l0_4x4.get(idx4).copied().unwrap_or(-1);
+            if ref_idx >= 0 {
+                return Some((
+                    pic.mv_l0_x_4x4.get(idx4).copied().unwrap_or(0) as i32,
+                    pic.mv_l0_y_4x4.get(idx4).copied().unwrap_or(0) as i32,
+                    ref_idx,
+                ));
+            }
+        }
+        let mb_idx = self.mb_index(mb_x, mb_y)?;
+        let ref_idx = pic.ref_idx_l0.get(mb_idx).copied().unwrap_or(-1);
+        if ref_idx < 0 {
+            return None;
+        }
+        Some((
+            pic.mv_l0_x.get(mb_idx).copied().unwrap_or(0) as i32,
+            pic.mv_l0_y.get(mb_idx).copied().unwrap_or(0) as i32,
+            ref_idx,
+        ))
+    }
+
+    fn ref_pic_l1_motion_at(
+        &self,
+        pic: &ReferencePicture,
+        mb_x: usize,
+        mb_y: usize,
+        part_x4: usize,
+        part_y4: usize,
+    ) -> Option<(i32, i32, i8)> {
+        let x4 = mb_x * 4 + part_x4;
+        let y4 = mb_y * 4 + part_y4;
+        if let Some(idx4) = self.ref_pic_motion_4x4_index(x4, y4) {
+            let ref_idx = pic.ref_idx_l1_4x4.get(idx4).copied().unwrap_or(-1);
+            if ref_idx >= 0 {
+                return Some((
+                    pic.mv_l1_x_4x4.get(idx4).copied().unwrap_or(0) as i32,
+                    pic.mv_l1_y_4x4.get(idx4).copied().unwrap_or(0) as i32,
+                    ref_idx,
+                ));
+            }
+        }
+        let mb_idx = self.mb_index(mb_x, mb_y)?;
+        let ref_idx = pic.ref_idx_l1.get(mb_idx).copied().unwrap_or(-1);
+        if ref_idx < 0 {
+            return None;
+        }
+        Some((
+            pic.mv_l1_x.get(mb_idx).copied().unwrap_or(0) as i32,
+            pic.mv_l1_y.get(mb_idx).copied().unwrap_or(0) as i32,
+            ref_idx,
+        ))
+    }
+
+    fn spatial_direct_neighbor_candidates_for_list(
+        &self,
+        x4: usize,
+        y4: usize,
+        part_w4: usize,
+        list1: bool,
+    ) -> [Option<(i32, i32, i8)>; 3] {
+        let cand = |cx4: isize, cy4: isize, list1: bool| -> Option<(i32, i32, i8)> {
+            if cx4 < 0 || cy4 < 0 {
+                return None;
+            }
+            let cx4_u = cx4 as usize;
+            let cy4_u = cy4 as usize;
+            let mb_x = cx4_u / 4;
+            let mb_y = cy4_u / 4;
+            let mb_idx = self.mb_index(mb_x, mb_y);
+            if list1 {
+                self.l1_motion_candidate_4x4(cx4, cy4).or_else(|| {
+                    let idx = mb_idx?;
+                    let ref_idx = self.ref_idx_l1.get(idx).copied().unwrap_or(-1);
+                    if ref_idx < 0 {
+                        return None;
+                    }
+                    Some((
+                        self.mv_l1_x.get(idx).copied().unwrap_or(0) as i32,
+                        self.mv_l1_y.get(idx).copied().unwrap_or(0) as i32,
+                        ref_idx,
+                    ))
+                })
+            } else {
+                self.l0_motion_candidate_4x4(cx4, cy4).or_else(|| {
+                    let idx = mb_idx?;
+                    let ref_idx = self.ref_idx_l0.get(idx).copied().unwrap_or(-1);
+                    if ref_idx < 0 {
+                        return None;
+                    }
+                    Some((
+                        self.mv_l0_x.get(idx).copied().unwrap_or(0) as i32,
+                        self.mv_l0_y.get(idx).copied().unwrap_or(0) as i32,
+                        ref_idx,
+                    ))
+                })
+            }
+        };
+
+        if list1 {
+            let cand_a = cand(x4 as isize - 1, y4 as isize, true);
+            let cand_b = cand(x4 as isize, y4 as isize - 1, true);
+            let cand_c = cand((x4 + part_w4) as isize, y4 as isize - 1, true)
+                .or_else(|| cand(x4 as isize - 1, y4 as isize - 1, true));
+            [cand_a, cand_b, cand_c]
+        } else {
+            let cand_a = cand(x4 as isize - 1, y4 as isize, false);
+            let cand_b = cand(x4 as isize, y4 as isize - 1, false);
+            let cand_c = cand((x4 + part_w4) as isize, y4 as isize - 1, false)
+                .or_else(|| cand(x4 as isize - 1, y4 as isize - 1, false));
+            [cand_a, cand_b, cand_c]
+        }
+    }
+
+    fn spatial_direct_ref_idx_from_neighbors(cands: &[Option<(i32, i32, i8)>; 3]) -> Option<i8> {
+        let mut selected = i8::MAX;
+        let mut found = false;
+        for cand in cands.iter().flatten() {
+            if cand.2 >= 0 {
+                selected = selected.min(cand.2);
+                found = true;
+            }
+        }
+        if found { Some(selected) } else { None }
+    }
+
+    fn spatial_direct_mv_from_neighbors(
+        cands: &[Option<(i32, i32, i8)>; 3],
+        ref_idx: i8,
+        fallback_mv_x: i32,
+        fallback_mv_y: i32,
+    ) -> (i32, i32) {
+        let mut matched = [(0i32, 0i32); 3];
+        let mut matched_count = 0usize;
+        for cand in cands.iter().flatten() {
+            if cand.2 == ref_idx {
+                matched[matched_count] = (cand.0, cand.1);
+                matched_count += 1;
+            }
+        }
+        if matched_count == 1 {
+            return matched[0];
+        }
+        if matched_count >= 2 {
+            let a = matched[0];
+            let b = matched[1];
+            let c = if matched_count == 3 {
+                matched[2]
+            } else {
+                matched[1]
+            };
+            return (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1));
+        }
+
+        let mut all = [(0i32, 0i32); 3];
+        let mut all_count = 0usize;
+        for cand in cands.iter().flatten() {
+            all[all_count] = (cand.0, cand.1);
+            all_count += 1;
+        }
+        if all_count == 0 {
+            return (fallback_mv_x, fallback_mv_y);
+        }
+        if all_count == 1 {
+            return all[0];
+        }
+        let a = all[0];
+        let b = all[1];
+        let c = if all_count == 3 { all[2] } else { all[1] };
+        (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1))
+    }
+
+    /// 判断共定位分区是否满足 col_zero_flag 条件 (规范 8.4.1.2.3).
+    fn col_zero_flag_for_part(
+        &self,
+        mb_x: usize,
+        mb_y: usize,
+        part_x4: usize,
+        part_y4: usize,
+        ref_l1_list: &[RefPlanes],
+    ) -> bool {
         let col_planes = ref_l1_list.first();
         let col_planes = match col_planes {
             Some(p) => p,
@@ -130,12 +360,14 @@ impl H264Decoder {
         if col_is_intra {
             return false;
         }
-        let col_ref = col_pic.ref_idx_l0.get(mb_idx).copied().unwrap_or(-1);
+        let Some((col_mv_x, col_mv_y, col_ref)) =
+            self.ref_pic_l0_motion_at(col_pic, mb_x, mb_y, part_x4, part_y4)
+        else {
+            return false;
+        };
         if col_ref != 0 {
             return false;
         }
-        let col_mv_x = col_pic.mv_l0_x.get(mb_idx).copied().unwrap_or(0);
-        let col_mv_y = col_pic.mv_l0_y.get(mb_idx).copied().unwrap_or(0);
         col_mv_x.abs() <= 1 && col_mv_y.abs() <= 1
     }
 
@@ -143,10 +375,11 @@ impl H264Decoder {
         &self,
         mb_x: usize,
         mb_y: usize,
+        part_x4: usize,
+        part_y4: usize,
         ref_l0_list: &[RefPlanes],
         ref_l1_list: &[RefPlanes],
-    ) -> Option<(i32, i32)> {
-        let mb_idx = self.mb_index(mb_x, mb_y)?;
+    ) -> Option<(i32, i32, i8, &ReferencePicture)> {
         for col_planes in [ref_l1_list.first(), ref_l0_list.first()]
             .into_iter()
             .flatten()
@@ -154,31 +387,223 @@ impl H264Decoder {
             let Some(col_pic) = self.find_reference_picture_for_planes(col_planes) else {
                 continue;
             };
-            let Some(&ref_idx) = col_pic.ref_idx_l0.get(mb_idx) else {
-                continue;
-            };
-            if ref_idx < 0 {
-                continue;
+            if let Some(motion) = self.ref_pic_l0_motion_at(col_pic, mb_x, mb_y, part_x4, part_y4) {
+                return Some((motion.0, motion.1, motion.2, col_pic));
             }
-            let Some(&mv_x) = col_pic.mv_l0_x.get(mb_idx) else {
-                continue;
-            };
-            let Some(&mv_y) = col_pic.mv_l0_y.get(mb_idx) else {
-                continue;
-            };
-            return Some((mv_x as i32, mv_y as i32));
+            if let Some((mv_x, mv_y, _)) =
+                self.ref_pic_l1_motion_at(col_pic, mb_x, mb_y, part_x4, part_y4)
+            {
+                return Some((mv_x, mv_y, 0, col_pic));
+            }
         }
         None
     }
 
-    /// 构建 B-slice Direct 预测的最小运动信息.
-    ///
-    /// temporal direct 路径按 list1[0] 优先定位共定位宏块并读取其 list0 MV,
-    /// 若共定位信息不可用则回退输入预测; spatial direct 路径使用 list0/list1 双向预测.
-    ///
-    /// spatial direct 最小实现:
-    /// - 当左/上邻居都存在且二者均为 list0/list1 的 `ref_idx=0 && mv=(0,0)` 时, 直接输出零 MV.
-    /// - 其它情况: L0/L1 均独立使用邻居预测(缺失时回退输入预测 MV).
+    fn map_col_to_list0_index_with_col_pic(
+        &self,
+        col_ref_idx: i8,
+        col_pic: &ReferencePicture,
+        ref_l0_list: &[RefPlanes],
+    ) -> i8 {
+        if col_ref_idx < 0 || ref_l0_list.is_empty() {
+            return -1;
+        }
+        let col_l0_list = self.collect_default_reference_list_l0_for_colocated_picture(col_pic);
+        if let Some(col_ref_pic) = col_l0_list.get(col_ref_idx as usize).copied()
+            && let Some((idx, _)) = ref_l0_list
+                .iter()
+                .enumerate()
+                .find(|(_, planes)| Self::ref_planes_matches_picture(planes, col_ref_pic))
+        {
+            return idx as i8;
+        }
+        if (col_ref_idx as usize) < ref_l0_list.len() {
+            return col_ref_idx;
+        }
+        -1
+    }
+
+    fn clamp_direct_ref_idx(candidate: Option<i8>, list_len: usize) -> Option<i8> {
+        if list_len == 0 {
+            return None;
+        }
+        let idx = candidate.unwrap_or(0).max(0) as usize;
+        Some(idx.min(list_len - 1) as i8)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_b_direct_motion_for_part(
+        &self,
+        mb_x: usize,
+        mb_y: usize,
+        part_x4: usize,
+        part_y4: usize,
+        part_w4: usize,
+        mv_x: i32,
+        mv_y: i32,
+        direct_spatial_mv_pred_flag: bool,
+        ref_l0_list: &[RefPlanes],
+        ref_l1_list: &[RefPlanes],
+    ) -> (Option<BMotion>, Option<BMotion>) {
+        let force_temporal =
+            std::env::var("TAO_H264_DEBUG_FORCE_TEMPORAL_DIRECT").as_deref() == Ok("1");
+        let force_spatial =
+            std::env::var("TAO_H264_DEBUG_FORCE_SPATIAL_DIRECT").as_deref() == Ok("1");
+        let use_spatial = if force_temporal {
+            false
+        } else if force_spatial {
+            true
+        } else {
+            direct_spatial_mv_pred_flag
+        };
+
+        if use_spatial {
+            let x4 = mb_x * 4 + part_x4;
+            let y4 = mb_y * 4 + part_y4;
+            let l0_cands = self.spatial_direct_neighbor_candidates_for_list(x4, y4, part_w4, false);
+            let l1_cands = self.spatial_direct_neighbor_candidates_for_list(x4, y4, part_w4, true);
+
+            let mut ref_idx_l0 = Self::spatial_direct_ref_idx_from_neighbors(&l0_cands);
+            let mut ref_idx_l1 = Self::spatial_direct_ref_idx_from_neighbors(&l1_cands);
+            // 对齐规范空间 Direct 路径:
+            // 当 L0/L1 都无法由 A/B/C 邻居推导时, 退回 temporal direct 推导,
+            // 避免把双列表都硬钉到 ref_idx=0 导致系统性漂移.
+            if ref_idx_l0.is_none() && ref_idx_l1.is_none() {
+                return self.build_b_direct_motion_for_part(
+                    mb_x,
+                    mb_y,
+                    part_x4,
+                    part_y4,
+                    part_w4,
+                    mv_x,
+                    mv_y,
+                    false,
+                    ref_l0_list,
+                    ref_l1_list,
+                );
+            }
+            if ref_idx_l0.is_none() && !ref_l0_list.is_empty() {
+                ref_idx_l0 = Some(0);
+            }
+            if ref_idx_l1.is_none() && !ref_l1_list.is_empty() {
+                ref_idx_l1 = Some(0);
+            }
+            ref_idx_l0 = Self::clamp_direct_ref_idx(ref_idx_l0, ref_l0_list.len());
+            ref_idx_l1 = Self::clamp_direct_ref_idx(ref_idx_l1, ref_l1_list.len());
+
+            let mut motion_l0 = ref_idx_l0.map(|ref_idx| {
+                let (mv_l0_x, mv_l0_y) =
+                    Self::spatial_direct_mv_from_neighbors(&l0_cands, ref_idx, mv_x, mv_y);
+                BMotion {
+                    mv_x: mv_l0_x,
+                    mv_y: mv_l0_y,
+                    ref_idx,
+                }
+            });
+            let mut motion_l1 = ref_idx_l1.map(|ref_idx| {
+                let (mv_l1_x, mv_l1_y) =
+                    Self::spatial_direct_mv_from_neighbors(&l1_cands, ref_idx, mv_x, mv_y);
+                BMotion {
+                    mv_x: mv_l1_x,
+                    mv_y: mv_l1_y,
+                    ref_idx,
+                }
+            });
+
+            let col_zero = self.col_zero_flag_for_part(mb_x, mb_y, part_x4, part_y4, ref_l1_list);
+            if let Some(motion) = motion_l0.as_mut()
+                && col_zero
+                && motion.ref_idx == 0
+            {
+                motion.mv_x = 0;
+                motion.mv_y = 0;
+            }
+            if let Some(motion) = motion_l1.as_mut()
+                && col_zero
+                && motion.ref_idx == 0
+            {
+                motion.mv_x = 0;
+                motion.mv_y = 0;
+            }
+            return (motion_l0, motion_l1);
+        }
+
+        // Temporal Direct: 按规范用 dist_scale_factor 缩放共定位 MV.
+        let temporal_col = self
+            .temporal_direct_colocated_l0_motion(
+                mb_x,
+                mb_y,
+                part_x4,
+                part_y4,
+                ref_l0_list,
+                ref_l1_list,
+            )
+            .map(|(mx, my, r, pic)| (mx, my, r, Some(pic)))
+            .unwrap_or((mv_x, mv_y, 0, None));
+        let (col_mv_x, col_mv_y, col_ref_idx, col_pic_opt) = temporal_col;
+        let mut ref_idx_l0 = if let Some(col_pic) = col_pic_opt {
+            self.map_col_to_list0_index_with_col_pic(col_ref_idx, col_pic, ref_l0_list)
+        } else if (col_ref_idx as usize) < ref_l0_list.len() {
+            col_ref_idx
+        } else {
+            -1
+        };
+        if ref_idx_l0 < 0 && !ref_l0_list.is_empty() {
+            ref_idx_l0 = 0;
+        }
+        let ref_idx_l1 = if ref_l1_list.is_empty() { -1 } else { 0 };
+
+        let l0_ref = select_ref_planes(ref_l0_list, ref_idx_l0);
+        let l1_ref = select_ref_planes(ref_l1_list, ref_idx_l1);
+        let dist_scale_factor = match (l0_ref, l1_ref) {
+            (Some(r0), Some(r1)) => self
+                .temporal_direct_dist_scale_factor(r0.poc, r1.poc)
+                .unwrap_or(256),
+            _ => 256,
+        };
+        let (direct_l0_mv_x, direct_l1_mv_x) =
+            self.scale_temporal_direct_mv_pair_component(col_mv_x, dist_scale_factor);
+        let (direct_l0_mv_y, direct_l1_mv_y) =
+            self.scale_temporal_direct_mv_pair_component(col_mv_y, dist_scale_factor);
+
+        let col_zero = self.col_zero_flag_for_part(mb_x, mb_y, part_x4, part_y4, ref_l1_list);
+        let motion_l0 = if ref_idx_l0 >= 0 {
+            Some(BMotion {
+                mv_x: if col_zero && ref_idx_l0 == 0 {
+                    0
+                } else {
+                    direct_l0_mv_x
+                },
+                mv_y: if col_zero && ref_idx_l0 == 0 {
+                    0
+                } else {
+                    direct_l0_mv_y
+                },
+                ref_idx: ref_idx_l0,
+            })
+        } else {
+            None
+        };
+        let motion_l1 = if ref_idx_l1 >= 0 {
+            Some(BMotion {
+                mv_x: if col_zero && ref_idx_l1 == 0 {
+                    0
+                } else {
+                    direct_l1_mv_x
+                },
+                mv_y: if col_zero && ref_idx_l1 == 0 {
+                    0
+                } else {
+                    direct_l1_mv_y
+                },
+                ref_idx: ref_idx_l1,
+            })
+        } else {
+            None
+        };
+        (motion_l0, motion_l1)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn build_b_direct_motion(
         &self,
@@ -190,56 +615,18 @@ impl H264Decoder {
         ref_l0_list: &[RefPlanes],
         ref_l1_list: &[RefPlanes],
     ) -> (Option<BMotion>, Option<BMotion>) {
-        let (direct_l0_mv_x, direct_l0_mv_y, direct_l1_mv_x, direct_l1_mv_y) =
-            if direct_spatial_mv_pred_flag && self.spatial_direct_zero_mv_condition(mb_x, mb_y) {
-                (0, 0, 0, 0)
-            } else if direct_spatial_mv_pred_flag {
-                let (l0_mv_x, l0_mv_y) =
-                    self.predict_spatial_direct_mv_for_list(mb_x, mb_y, false, mv_x, mv_y);
-                let (l1_mv_x, l1_mv_y) =
-                    self.predict_spatial_direct_mv_for_list(mb_x, mb_y, true, mv_x, mv_y);
-                (l0_mv_x, l0_mv_y, l1_mv_x, l1_mv_y)
-            } else {
-                // Temporal Direct: 按规范用 dist_scale_factor 缩放共定位 MV.
-                let (col_mv_x, col_mv_y) = self
-                    .temporal_direct_colocated_l0_motion(mb_x, mb_y, ref_l0_list, ref_l1_list)
-                    .unwrap_or((mv_x, mv_y));
-                // 只有当 list0[0] 与 list1[0] 均能找到有效参考帧时才动态计算缩放因子,
-                // 否则回退 dist_scale_factor=256(等效于不缩放,规范 8.4.1.2.3 兜底).
-                let l0_ref = ref_l0_list
-                    .first()
-                    .and_then(|p| self.find_reference_picture_for_planes(p));
-                let l1_ref = ref_l1_list
-                    .first()
-                    .and_then(|p| self.find_reference_picture_for_planes(p));
-                let dist_scale_factor = match (l0_ref, l1_ref) {
-                    (Some(r0), Some(r1)) => self
-                        .temporal_direct_dist_scale_factor(r0.poc, r1.poc)
-                        .unwrap_or(256),
-                    _ => 256,
-                };
-                let (l0_mv_x, l1_mv_x) =
-                    self.scale_temporal_direct_mv_pair_component(col_mv_x, dist_scale_factor);
-                let (l0_mv_y, l1_mv_y) =
-                    self.scale_temporal_direct_mv_pair_component(col_mv_y, dist_scale_factor);
-                (l0_mv_x, l0_mv_y, l1_mv_x, l1_mv_y)
-            };
-        let col_zero = self.col_zero_flag(mb_x, mb_y, ref_l1_list);
-        let motion_l0 = Some(BMotion {
-            mv_x: if col_zero { 0 } else { direct_l0_mv_x },
-            mv_y: if col_zero { 0 } else { direct_l0_mv_y },
-            ref_idx: 0,
-        });
-        let motion_l1 = if direct_spatial_mv_pred_flag {
-            Some(BMotion {
-                mv_x: if col_zero { 0 } else { direct_l1_mv_x },
-                mv_y: if col_zero { 0 } else { direct_l1_mv_y },
-                ref_idx: 0,
-            })
-        } else {
-            None
-        };
-        (motion_l0, motion_l1)
+        self.build_b_direct_motion_for_part(
+            mb_x,
+            mb_y,
+            0,
+            0,
+            4,
+            mv_x,
+            mv_y,
+            direct_spatial_mv_pred_flag,
+            ref_l0_list,
+            ref_l1_list,
+        )
     }
 
     pub(super) fn direct_8x8_inference_enabled(&self) -> bool {
@@ -266,10 +653,15 @@ impl H264Decoder {
         ref_l0_list: &[RefPlanes],
         ref_l1_list: &[RefPlanes],
     ) -> (i32, i32, i8) {
+        let base_part_x4 = sub_x / 4;
+        let base_part_y4 = sub_y / 4;
         if self.direct_8x8_inference_enabled() {
-            let (motion_l0, motion_l1) = self.build_b_direct_motion(
+            let (motion_l0, motion_l1) = self.build_b_direct_motion_for_part(
                 mb_x,
                 mb_y,
+                base_part_x4,
+                base_part_y4,
+                2,
                 pred_mv_x,
                 pred_mv_y,
                 direct_spatial_mv_pred_flag,
@@ -292,8 +684,6 @@ impl H264Decoder {
             );
         }
 
-        let base_part_x4 = sub_x / 4;
-        let base_part_y4 = sub_y / 4;
         let mut part_pred_mv_x = [[0i32; 2]; 2];
         let mut part_pred_mv_y = [[0i32; 2]; 2];
         for part_y in 0..2usize {
@@ -314,9 +704,12 @@ impl H264Decoder {
         let mut last_mv = (pred_mv_x, pred_mv_y, 0i8);
         for part_y in 0..2usize {
             for part_x in 0..2usize {
-                let (motion_l0, motion_l1) = self.build_b_direct_motion(
+                let (motion_l0, motion_l1) = self.build_b_direct_motion_for_part(
                     mb_x,
                     mb_y,
+                    base_part_x4 + part_x,
+                    base_part_y4 + part_y,
+                    1,
                     part_pred_mv_x[part_y][part_x],
                     part_pred_mv_y[part_y][part_x],
                     direct_spatial_mv_pred_flag,
@@ -407,6 +800,7 @@ impl H264Decoder {
         self.mv_l0_x[mb_idx] = pred_x.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         self.mv_l0_y[mb_idx] = pred_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         self.ref_idx_l0[mb_idx] = 0;
+        self.prev_qp_delta_nz = false;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -426,14 +820,34 @@ impl H264Decoder {
     ) {
         self.prev_qp_delta_nz = false;
         let mut cur_qp = slice_qp;
+        let trace_slice = std::env::var("TAO_H264_SLICE_TRACE").as_deref() == Ok("1");
+        let trace_slice_mb = std::env::var("TAO_H264_SLICE_TRACE_MB").as_deref() == Ok("1");
+        let trace_mb_bits = std::env::var("TAO_H264_TRACE_MB_BITS").as_deref() == Ok("1");
+        let trace_mb_limit = std::env::var("TAO_H264_TRACE_MB_LIMIT")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(400);
+        let ignore_terminate =
+            std::env::var("TAO_H264_DEBUG_IGNORE_TERMINATE").as_deref() == Ok("1");
+        let mut decoded_mbs = 0usize;
+        let mut term_break = false;
+        let mut last_mb_idx = first;
 
         for mb_idx in first..total {
+            let bits_before_mb = cabac.bits_read();
             self.mark_mb_slice_first_mb(mb_idx, slice_first_mb);
+            self.set_mb_skip_flag(mb_idx, false);
             let mb_x = mb_idx % self.mb_width;
             let mb_y = mb_idx / self.mb_width;
+            let trace_this_mb = self.should_trace_mb_idx(mb_idx, trace_mb_limit);
+            self.clear_mb_mvd_cache(mb_x, mb_y);
             let skip = self.decode_p_mb_skip_flag(cabac, ctxs, mb_x, mb_y);
 
             if skip {
+                self.set_mb_skip_flag(mb_idx, true);
+                if trace_slice_mb && trace_this_mb {
+                    eprintln!("[H264_P_MB] idx={} mb=({}, {}) skip=1", mb_idx, mb_x, mb_y);
+                }
                 self.decode_p_skip_mb(
                     mb_x,
                     mb_y,
@@ -443,6 +857,12 @@ impl H264Decoder {
                     chroma_log2_weight_denom,
                 );
             } else if let Some(p_mb_type) = self.decode_p_mb_type(cabac, ctxs, mb_x, mb_y) {
+                if trace_slice_mb && trace_this_mb {
+                    eprintln!(
+                        "[H264_P_MB] idx={} mb=({}, {}) skip=0 p_mb_type={}",
+                        mb_idx, mb_x, mb_y, p_mb_type
+                    );
+                }
                 self.decode_p_inter_mb(
                     cabac,
                     ctxs,
@@ -467,6 +887,12 @@ impl H264Decoder {
                     mb_x,
                     mb_y,
                 );
+                if trace_slice_mb && trace_this_mb {
+                    eprintln!(
+                        "[H264_P_MB] idx={} mb=({}, {}) skip=0 intra=1 intra_mb_type={}",
+                        mb_idx, mb_x, mb_y, intra_mb_type
+                    );
+                }
                 self.mb_types[mb_idx] = intra_mb_type as u8;
                 if intra_mb_type == 0 {
                     self.decode_i_4x4_mb(cabac, ctxs, mb_x, mb_y, &mut cur_qp);
@@ -481,9 +907,40 @@ impl H264Decoder {
             if mb_idx < self.mb_qp.len() {
                 self.mb_qp[mb_idx] = cur_qp;
             }
-            if mb_idx + 1 < total && cabac.decode_terminate() == 1 {
-                break;
+            if trace_mb_bits && trace_this_mb {
+                let bits_after_mb = cabac.bits_read();
+                eprintln!(
+                    "[H264_P_MB_BITS] idx={} mb=({}, {}) bits_before={} bits_after={} delta={}",
+                    mb_idx,
+                    mb_x,
+                    mb_y,
+                    bits_before_mb,
+                    bits_after_mb,
+                    bits_after_mb.saturating_sub(bits_before_mb)
+                );
             }
+            decoded_mbs += 1;
+            last_mb_idx = mb_idx;
+            if mb_idx + 1 < total {
+                let terminate = cabac.decode_terminate() == 1;
+                if terminate {
+                    term_break = true;
+                    if !ignore_terminate {
+                        break;
+                    }
+                }
+            }
+        }
+        if trace_slice {
+            eprintln!(
+                "[H264_SLICE_MB] type=P first_mb={} decoded_mbs={} last_mb_idx={} terminate_break={} cabac_bits={}/{}",
+                first,
+                decoded_mbs,
+                last_mb_idx,
+                term_break,
+                cabac.bits_read(),
+                cabac.bits_total()
+            );
         }
     }
 
@@ -495,19 +952,19 @@ impl H264Decoder {
         mb_x: usize,
         mb_y: usize,
     ) -> bool {
-        let left_non_skip = mb_x > 0
+        let left_non_skip = self.left_avail(mb_x, mb_y)
             && self
                 .mb_index(mb_x - 1, mb_y)
-                .and_then(|i| self.mb_types.get(i).copied())
-                .unwrap_or(255)
-                != 255;
-        let top_non_skip = mb_y > 0
+                .and_then(|i| self.mb_skip_flags.get(i).copied())
+                .unwrap_or(0)
+                == 0;
+        let top_non_skip = self.top_avail(mb_x, mb_y)
             && self
                 .mb_index(mb_x, mb_y - 1)
-                .and_then(|i| self.mb_types.get(i).copied())
-                .unwrap_or(255)
-                != 255;
-        let ctx = usize::from(left_non_skip) + (usize::from(top_non_skip) << 1);
+                .and_then(|i| self.mb_skip_flags.get(i).copied())
+                .unwrap_or(0)
+                == 0;
+        let ctx = usize::from(left_non_skip) + usize::from(top_non_skip);
         cabac.decode_decision(&mut ctxs[11 + ctx]) == 1
     }
 
@@ -561,17 +1018,17 @@ impl H264Decoder {
         mb_x: usize,
         mb_y: usize,
     ) -> bool {
-        let left_non_skip = mb_x > 0
+        let left_non_skip = self.left_avail(mb_x, mb_y)
             && self
                 .mb_index(mb_x - 1, mb_y)
-                .and_then(|i| self.mb_types.get(i).copied())
-                .map(|t| t != 254 && t != 255)
+                .and_then(|i| self.mb_skip_flags.get(i).copied())
+                .map(|flag| flag == 0)
                 .unwrap_or(false);
-        let top_non_skip = mb_y > 0
+        let top_non_skip = self.top_avail(mb_x, mb_y)
             && self
                 .mb_index(mb_x, mb_y - 1)
-                .and_then(|i| self.mb_types.get(i).copied())
-                .map(|t| t != 254 && t != 255)
+                .and_then(|i| self.mb_skip_flags.get(i).copied())
+                .map(|flag| flag == 0)
                 .unwrap_or(false);
         let ctx = usize::from(left_non_skip) + usize::from(top_non_skip);
         cabac.decode_decision(&mut ctxs[24 + ctx]) == 1
@@ -585,26 +1042,21 @@ impl H264Decoder {
         mb_x: usize,
         mb_y: usize,
     ) -> BMbType {
-        let left_direct = mb_x > 0
+        // 对齐 FFmpeg `decode_cabac_mb_type`:
+        // unavailable 或 direct 邻居均不贡献上下文; 仅 available 且 non-direct 时贡献 1.
+        let left_non_direct = self.left_avail(mb_x, mb_y)
             && self
                 .mb_index(mb_x - 1, mb_y)
                 .and_then(|i| self.mb_types.get(i).copied())
-                .map(|t| t == 254)
+                .map(|t| t != 254)
                 .unwrap_or(false);
-        let top_direct = mb_y > 0
+        let top_non_direct = self.top_avail(mb_x, mb_y)
             && self
                 .mb_index(mb_x, mb_y - 1)
                 .and_then(|i| self.mb_types.get(i).copied())
-                .map(|t| t == 254)
+                .map(|t| t != 254)
                 .unwrap_or(false);
-
-        let mut ctx = 0usize;
-        if !left_direct {
-            ctx += 1;
-        }
-        if !top_direct {
-            ctx += 1;
-        }
+        let ctx = usize::from(left_non_direct) + usize::from(top_non_direct);
 
         if cabac.decode_decision(&mut ctxs[27 + ctx]) == 0 {
             return BMbType::Direct;
@@ -706,26 +1158,137 @@ impl H264Decoder {
         }
     }
 
-    pub(super) fn decode_ref_idx_l0(
+    fn ref_idx_ctx_neighbor_bin(
+        &self,
+        list: usize,
+        cur_mb_idx: usize,
+        x4: usize,
+        y4: usize,
+        is_b_slice: bool,
+    ) -> usize {
+        let stride = self.mb_width * 4;
+        let h4 = self.mb_height * 4;
+        if x4 >= stride || y4 >= h4 {
+            return 0;
+        }
+        let nb_mb_x = x4 / 4;
+        let nb_mb_y = y4 / 4;
+        let Some(nb_mb_idx) = self.mb_index(nb_mb_x, nb_mb_y) else {
+            return 0;
+        };
+        if nb_mb_idx != cur_mb_idx {
+            match (
+                self.mb_slice_first_mb.get(cur_mb_idx),
+                self.mb_slice_first_mb.get(nb_mb_idx),
+            ) {
+                (Some(&cur), Some(&nb)) if cur != nb => return 0,
+                _ => {}
+            }
+        }
+        if is_b_slice {
+            if self.get_direct_4x4_flag(x4, y4) {
+                return 0;
+            }
+            let mb_ty = self.mb_types.get(nb_mb_idx).copied().unwrap_or_default();
+            if mb_ty == 254 {
+                return 0;
+            }
+        }
+        let idx4 = y4 * stride + x4;
+        let ref_idx = if list == 0 {
+            self.ref_idx_l0_4x4.get(idx4).copied().unwrap_or(-1)
+        } else {
+            self.ref_idx_l1_4x4.get(idx4).copied().unwrap_or(-1)
+        };
+        usize::from(ref_idx > 0)
+    }
+
+    fn ref_idx_ctx_inc(&self, list: usize, x4: usize, y4: usize, is_b_slice: bool) -> usize {
+        let Some(cur_mb_idx) = self.mb_index(x4 / 4, y4 / 4) else {
+            return 0;
+        };
+        let left = if x4 > 0 {
+            self.ref_idx_ctx_neighbor_bin(list, cur_mb_idx, x4 - 1, y4, is_b_slice)
+        } else {
+            0
+        };
+        let top = if y4 > 0 {
+            self.ref_idx_ctx_neighbor_bin(list, cur_mb_idx, x4, y4 - 1, is_b_slice)
+        } else {
+            0
+        };
+        left + (top << 1)
+    }
+
+    pub(super) fn decode_ref_idx(
         &self,
         cabac: &mut CabacDecoder,
         ctxs: &mut [CabacCtx],
-        num_ref_idx_l0: u32,
+        num_ref_idx: u32,
+        list: usize,
+        x4: usize,
+        y4: usize,
+        is_b_slice: bool,
     ) -> u32 {
-        if num_ref_idx_l0 <= 1 {
+        if std::env::var("TAO_H264_DEBUG_FORCE_REF_IDX_ZERO").as_deref() == Ok("1") {
             return 0;
         }
+        if num_ref_idx <= 1 {
+            return 0;
+        }
+        let trace_ref_idx_all = std::env::var("TAO_H264_TRACE_REF_IDX").as_deref() == Ok("1");
+        let trace_ref_idx_oob = std::env::var("TAO_H264_TRACE_REF_IDX_OOB").as_deref() == Ok("1");
+        let trace_ref_idx = trace_ref_idx_all || trace_ref_idx_oob;
         let mut ref_idx = 0u32;
-        let mut ctx = 0usize;
+        let mut ctx = self.ref_idx_ctx_inc(list, x4, y4, is_b_slice);
+        let ctx0 = ctx;
+        let bits_before = if trace_ref_idx { cabac.bits_read() } else { 0 };
+        let mut bins = String::new();
         while cabac.decode_decision(&mut ctxs[54 + ctx]) == 1 {
+            if trace_ref_idx {
+                bins.push('1');
+            }
             ref_idx += 1;
             ctx = (ctx >> 2) + 4;
-            if ref_idx + 1 >= num_ref_idx_l0 {
-                break;
-            }
+            // 对齐 FFmpeg `decode_cabac_mb_ref`: 一直读取到终止 bin(0).
+            // 不能按 `num_ref_idx` 提前截断, 否则会少消费 1bit 导致 CABAC 失步.
             if ref_idx >= 31 {
                 break;
             }
+        }
+        if trace_ref_idx {
+            bins.push('0');
+        }
+        let is_oob = ref_idx >= num_ref_idx;
+        let bits_after = if trace_ref_idx { cabac.bits_read() } else { 0 };
+        if trace_ref_idx_all {
+            eprintln!(
+                "[H264_REF_IDX_TRACE] list={} x4={} y4={} decoded_ref_idx={} active_ref_count={} ctx0={} bins={} bits_before={} bits_after={} oob={}",
+                list,
+                x4,
+                y4,
+                ref_idx,
+                num_ref_idx,
+                ctx0,
+                bins,
+                bits_before,
+                bits_after,
+                is_oob
+            );
+        }
+        if trace_ref_idx_oob && is_oob {
+            eprintln!(
+                "[H264_REF_IDX_OOB] list={} x4={} y4={} decoded_ref_idx={} active_ref_count={} ctx0={} bins={} bits_before={} bits_after={}",
+                list,
+                x4,
+                y4,
+                ref_idx,
+                num_ref_idx,
+                ctx0,
+                bins,
+                bits_before,
+                bits_after
+            );
         }
         ref_idx
     }
@@ -759,9 +1322,19 @@ impl H264Decoder {
 
         if mvd >= 9 {
             let mut k = 3i32;
-            while cabac.decode_bypass() == 1 && k < 24 {
+            // 对齐 FFmpeg `decode_cabac_mb_mvd`:
+            // while (get_cabac_bypass()) { ...; if (k > 24) return INT_MIN; }
+            // 读取 bypass 在前, 命中上界时也会额外消费 1bit.
+            while cabac.decode_bypass() == 1 {
                 mvd += 1 << k;
                 k += 1;
+                if k > 24 {
+                    // 码流异常时返回 0 作为保底, 避免继续扩展导致失控.
+                    return 0;
+                }
+            }
+            if k >= 20 && std::env::var("TAO_H264_TRACE_BYPASS_CAP").as_deref() == Ok("1") {
+                eprintln!("[H264_MVD_BYPASS_PREFIX] k={} bits={}", k, cabac.bits_read());
             }
             while k > 0 {
                 k -= 1;

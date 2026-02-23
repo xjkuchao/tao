@@ -20,6 +20,14 @@ impl H264Decoder {
         } else if self.missing_reference_fallbacks == 9 {
             warn!("H264: 缺失参考帧回退日志过多, 后续同类日志省略");
         }
+        if self.fail_on_missing_reference_fallback
+            && self.missing_reference_fallback_error.is_none()
+        {
+            self.missing_reference_fallback_error = Some(format!(
+                "H264: 命中缺失参考回退门禁, scene={}, ref_idx={}, list_len={}",
+                scene, ref_idx, list_len
+            ));
+        }
     }
 
     pub(super) fn zero_reference_planes(&self) -> RefPlanes {
@@ -27,8 +35,10 @@ impl H264Decoder {
             y: vec![128u8; self.ref_y.len()],
             u: vec![128u8; self.ref_u.len()],
             v: vec![128u8; self.ref_v.len()],
+            frame_num: self.last_frame_num,
             poc: self.last_poc,
             is_long_term: false,
+            long_term_frame_idx: None,
         }
     }
 
@@ -106,16 +116,40 @@ impl H264Decoder {
             .back()
             .map(|pic| (pic.y.clone(), pic.u.clone(), pic.v.clone()));
 
+        let trace_conceal = std::env::var("TAO_H264_TRACE_CONCEAL").as_deref() == Ok("1");
         let mut concealed_mbs = 0usize;
+        let mut missing_mbs = 0usize;
+        let mut error_mbs = 0usize;
+        let mut sample_missing = Vec::new();
+        let mut sample_error = Vec::new();
         for mb_idx in 0..total_mbs {
             let is_missing_mb = has_touched_mb && self.mb_slice_first_mb[mb_idx] == u32::MAX;
             let is_error_mb = self.mb_types[mb_idx] == 252;
+            if is_missing_mb {
+                missing_mbs += 1;
+                if sample_missing.len() < 8 {
+                    sample_missing.push(mb_idx);
+                }
+            }
+            if is_error_mb {
+                error_mbs += 1;
+                if sample_error.len() < 8 {
+                    sample_error.push(mb_idx);
+                }
+            }
             if !is_missing_mb && !is_error_mb {
                 continue;
             }
             self.conceal_macroblock_from_source(mb_idx, source.as_ref());
             self.mb_types[mb_idx] = 253;
             concealed_mbs += 1;
+        }
+
+        if trace_conceal {
+            eprintln!(
+                "[H264_CONCEAL] total_mbs={} missing={} error={} concealed={} sample_missing={:?} sample_error={:?}",
+                total_mbs, missing_mbs, error_mbs, concealed_mbs, sample_missing, sample_error
+            );
         }
 
         if concealed_mbs == 0 {
@@ -195,8 +229,10 @@ impl H264Decoder {
             y: pic.y.clone(),
             u: pic.u.clone(),
             v: pic.v.clone(),
+            frame_num: pic.frame_num,
             poc: pic.poc,
             is_long_term: pic.long_term_frame_idx.is_some(),
+            long_term_frame_idx: pic.long_term_frame_idx,
         }
     }
 
@@ -387,20 +423,75 @@ impl H264Decoder {
         cur_frame_num: u32,
     ) -> Vec<RefPlanes> {
         let target = count.max(1) as usize;
+        let trace_ref_list = std::env::var("TAO_H264_TRACE_REF_LIST").as_deref() == Ok("1");
+        if trace_ref_list {
+            let dpb: Vec<String> = self
+                .reference_frames
+                .iter()
+                .map(|pic| {
+                    format!(
+                        "fn={} poc={} lt={:?}",
+                        pic.frame_num, pic.poc, pic.long_term_frame_idx
+                    )
+                })
+                .collect();
+            eprintln!(
+                "[H264_REF_L0_BUILD] slice_type={} cur_frame_num={} cur_poc={} target={} mods={} dpb_len={} dpb={:?}",
+                self.last_slice_type,
+                cur_frame_num,
+                self.last_poc,
+                target,
+                mods.len(),
+                self.reference_frames.len(),
+                dpb
+            );
+        }
         let mut refs = self.collect_default_reference_list_l0();
         self.apply_ref_pic_list_modifications(&mut refs, mods, cur_frame_num);
         let refs_empty = refs.is_empty();
+        let refs_len = refs.len();
+        let mut empty_missing_ranks = Vec::new();
+        let mut padded_ranks = Vec::new();
         let mut out = Vec::with_capacity(target);
         for rank in 0..target {
-            if let Some(pic) = refs.get(rank).copied().or_else(|| refs.first().copied()) {
+            if let Some(pic) = refs.get(rank).copied() {
                 out.push(Self::reference_to_planes(pic));
             } else {
+                if refs_empty {
+                    empty_missing_ranks.push(rank);
+                } else {
+                    padded_ranks.push(rank);
+                }
                 out.push(self.zero_reference_planes());
             }
         }
         drop(refs);
-        if refs_empty {
+        if refs_empty && !empty_missing_ranks.is_empty() {
             self.record_missing_reference_fallback("build_l0_list_empty", -1, 0);
+        }
+        for &rank in &padded_ranks {
+            self.record_missing_reference_fallback("build_l0_list_padded", rank as i32, refs_len);
+        }
+        if trace_ref_list {
+            let built: Vec<String> = out
+                .iter()
+                .enumerate()
+                .map(|(idx, rp)| {
+                    format!(
+                        "idx={} fn={} poc={} lt={:?}",
+                        idx, rp.frame_num, rp.poc, rp.long_term_frame_idx
+                    )
+                })
+                .collect();
+            eprintln!(
+                "[H264_REF_L0_DONE] target={} refs_len={} empty_missing={:?} padded={:?} missing_fallbacks={} list={:?}",
+                target,
+                refs_len,
+                empty_missing_ranks,
+                padded_ranks,
+                self.missing_reference_fallbacks,
+                built
+            );
         }
         out
     }
@@ -412,20 +503,75 @@ impl H264Decoder {
         cur_frame_num: u32,
     ) -> Vec<RefPlanes> {
         let target = count.max(1) as usize;
+        let trace_ref_list = std::env::var("TAO_H264_TRACE_REF_LIST").as_deref() == Ok("1");
+        if trace_ref_list {
+            let dpb: Vec<String> = self
+                .reference_frames
+                .iter()
+                .map(|pic| {
+                    format!(
+                        "fn={} poc={} lt={:?}",
+                        pic.frame_num, pic.poc, pic.long_term_frame_idx
+                    )
+                })
+                .collect();
+            eprintln!(
+                "[H264_REF_L1_BUILD] slice_type={} cur_frame_num={} cur_poc={} target={} mods={} dpb_len={} dpb={:?}",
+                self.last_slice_type,
+                cur_frame_num,
+                self.last_poc,
+                target,
+                mods.len(),
+                self.reference_frames.len(),
+                dpb
+            );
+        }
         let mut refs = self.collect_default_reference_list_l1();
         self.apply_ref_pic_list_modifications(&mut refs, mods, cur_frame_num);
         let refs_empty = refs.is_empty();
+        let refs_len = refs.len();
+        let mut empty_missing_ranks = Vec::new();
+        let mut padded_ranks = Vec::new();
         let mut out = Vec::with_capacity(target);
         for rank in 0..target {
-            if let Some(pic) = refs.get(rank).copied().or_else(|| refs.first().copied()) {
+            if let Some(pic) = refs.get(rank).copied() {
                 out.push(Self::reference_to_planes(pic));
             } else {
+                if refs_empty {
+                    empty_missing_ranks.push(rank);
+                } else {
+                    padded_ranks.push(rank);
+                }
                 out.push(self.zero_reference_planes());
             }
         }
         drop(refs);
-        if refs_empty {
+        if refs_empty && !empty_missing_ranks.is_empty() {
             self.record_missing_reference_fallback("build_l1_list_empty", -1, 0);
+        }
+        for &rank in &padded_ranks {
+            self.record_missing_reference_fallback("build_l1_list_padded", rank as i32, refs_len);
+        }
+        if trace_ref_list {
+            let built: Vec<String> = out
+                .iter()
+                .enumerate()
+                .map(|(idx, rp)| {
+                    format!(
+                        "idx={} fn={} poc={} lt={:?}",
+                        idx, rp.frame_num, rp.poc, rp.long_term_frame_idx
+                    )
+                })
+                .collect();
+            eprintln!(
+                "[H264_REF_L1_DONE] target={} refs_len={} empty_missing={:?} padded={:?} missing_fallbacks={} list={:?}",
+                target,
+                refs_len,
+                empty_missing_ranks,
+                padded_ranks,
+                self.missing_reference_fallbacks,
+                built
+            );
         }
         out
     }
@@ -523,6 +669,7 @@ impl H264Decoder {
     pub(super) fn push_non_existing_short_term_reference(&mut self, frame_num: u32, poc: i32) {
         self.apply_sliding_window_if_needed_for(frame_num);
         let total_mb = self.mb_width * self.mb_height;
+        let total_4x4 = self.mb_width * 4 * self.mb_height * 4;
         self.reference_frames.push_back(ReferencePicture {
             y: vec![128u8; self.ref_y.len()],
             u: vec![128u8; self.ref_u.len()],
@@ -530,6 +677,15 @@ impl H264Decoder {
             mv_l0_x: vec![0i16; total_mb],
             mv_l0_y: vec![0i16; total_mb],
             ref_idx_l0: vec![-1i8; total_mb],
+            mv_l1_x: vec![0i16; total_mb],
+            mv_l1_y: vec![0i16; total_mb],
+            ref_idx_l1: vec![-1i8; total_mb],
+            mv_l0_x_4x4: vec![0i16; total_4x4],
+            mv_l0_y_4x4: vec![0i16; total_4x4],
+            ref_idx_l0_4x4: vec![-1i8; total_4x4],
+            mv_l1_x_4x4: vec![0i16; total_4x4],
+            mv_l1_y_4x4: vec![0i16; total_4x4],
+            ref_idx_l1_4x4: vec![-1i8; total_4x4],
             mb_types: vec![0u8; total_mb],
             frame_num,
             poc,
@@ -542,9 +698,6 @@ impl H264Decoder {
         if self.last_nal_ref_idc == 0 {
             return;
         }
-        if self.last_slice_type == 1 {
-            return;
-        }
         self.reference_frames.push_back(ReferencePicture {
             y: self.ref_y.clone(),
             u: self.ref_u.clone(),
@@ -552,6 +705,15 @@ impl H264Decoder {
             mv_l0_x: self.mv_l0_x.clone(),
             mv_l0_y: self.mv_l0_y.clone(),
             ref_idx_l0: self.ref_idx_l0.clone(),
+            mv_l1_x: self.mv_l1_x.clone(),
+            mv_l1_y: self.mv_l1_y.clone(),
+            ref_idx_l1: self.ref_idx_l1.clone(),
+            mv_l0_x_4x4: self.mv_l0_x_4x4.clone(),
+            mv_l0_y_4x4: self.mv_l0_y_4x4.clone(),
+            ref_idx_l0_4x4: self.ref_idx_l0_4x4.clone(),
+            mv_l1_x_4x4: self.mv_l1_x_4x4.clone(),
+            mv_l1_y_4x4: self.mv_l1_y_4x4.clone(),
+            ref_idx_l1_4x4: self.ref_idx_l1_4x4.clone(),
             mb_types: self.mb_types.clone(),
             frame_num: self.last_frame_num,
             poc: self.last_poc,
@@ -560,7 +722,7 @@ impl H264Decoder {
     }
 
     pub(super) fn store_reference_with_marking(&mut self) {
-        if self.last_nal_ref_idc == 0 || self.last_slice_type == 1 {
+        if self.last_nal_ref_idc == 0 {
             return;
         }
 

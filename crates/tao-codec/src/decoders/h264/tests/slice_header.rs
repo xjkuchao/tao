@@ -28,6 +28,58 @@ fn test_parse_slice_header_reject_invalid_cabac_init_idc() {
 }
 
 #[test]
+fn test_parse_slice_header_cabac_alignment_on_byte_boundary() {
+    let mut dec = build_test_decoder();
+    let sps0 = build_test_sps(0);
+    dec.sps_map.insert(0, sps0);
+
+    let mut pps7 = build_test_pps();
+    pps7.pps_id = 7;
+    dec.pps_map.insert(7, pps7);
+
+    let rbsp = build_p_slice_header_rbsp(7, 0, 0, 0, 0, 1);
+    let nalu = NalUnit::parse(&[0x01]).expect("测试构造 slice NAL 失败");
+    let header = dec
+        .parse_slice_header(&rbsp, &nalu)
+        .expect("CABAC 对齐应可解析");
+
+    assert_eq!(
+        header.data_bit_offset, 32,
+        "header 结束在字节边界时, 仍需消费 cabac_alignment_one_bit 与补零"
+    );
+    assert_eq!(
+        header.cabac_start_byte, 4,
+        "CABAC 数据起始字节应位于对齐位之后"
+    );
+}
+
+#[test]
+fn test_parse_slice_header_reject_invalid_cabac_alignment_one_bit() {
+    let mut dec = build_test_decoder();
+    let sps0 = build_test_sps(0);
+    dec.sps_map.insert(0, sps0);
+
+    let mut pps7 = build_test_pps();
+    pps7.pps_id = 7;
+    dec.pps_map.insert(7, pps7);
+
+    let mut rbsp = build_p_slice_header_rbsp(7, 0, 0, 0, 0, 1);
+    rbsp[3] &= 0x7f;
+
+    let nalu = NalUnit::parse(&[0x01]).expect("测试构造 slice NAL 失败");
+    let err = match dec.parse_slice_header(&rbsp, &nalu) {
+        Ok(_) => panic!("非法 cabac_alignment_one_bit 应失败"),
+        Err(err) => err,
+    };
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("cabac_alignment_one_bit"),
+        "错误信息应包含 cabac_alignment_one_bit, actual={}",
+        msg
+    );
+}
+
+#[test]
 fn test_parse_dec_ref_pic_marking_idr_flags() {
     let dec = build_test_decoder();
     let nalu = NalUnit::parse(&[0x65]).expect("测试构造 IDR NAL 失败");

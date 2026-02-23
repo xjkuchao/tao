@@ -281,15 +281,18 @@ impl H264Decoder {
         self.reset_chroma_cbf_mb(mb_x, mb_y);
         self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
         self.set_transform_8x8_flag(mb_x, mb_y, false);
+        self.set_direct_block_4x4(mb_x * 16, mb_y * 16, 16, 16, false);
 
         let (pred_mv_x, pred_mv_y) = self.predict_mv_l0_16x16(mb_x, mb_y);
         let mut final_mv_x = pred_mv_x;
         let mut final_mv_y = pred_mv_y;
         let mut final_ref_idx = 0i8;
+        let mut no_sub_mb_part_size_less_than_8x8_flag = true;
 
         match mb_type_idx {
             None => {
                 self.mb_types[mb_idx] = 254;
+                self.set_direct_block_4x4(mb_x * 16, mb_y * 16, 16, 16, true);
                 let (motion_l0, motion_l1) = self.build_b_direct_motion(
                     mb_x,
                     mb_y,
@@ -323,11 +326,181 @@ impl H264Decoder {
                 for slot in &mut sub_types {
                     *slot = self.decode_b_sub_mb_type(cabac, ctxs);
                 }
-                for (sub, sub_type) in sub_types.into_iter().enumerate() {
+                no_sub_mb_part_size_less_than_8x8_flag =
+                    sub_types.iter().all(|&sub_type| sub_type <= 3);
+                let mut sub_part_w = [8usize; 4];
+                let mut sub_part_h = [8usize; 4];
+                let mut sub_part_count = [1usize; 4];
+                let mut sub_dir = [BPredDir::Direct; 4];
+                let mut sub_use_l0 = [false; 4];
+                let mut sub_use_l1 = [false; 4];
+                for (sub, sub_type) in sub_types.iter().copied().enumerate() {
+                    let (part_w, part_h, part_count, dir) = Self::b_sub_mb_info(sub_type);
+                    sub_part_w[sub] = part_w;
+                    sub_part_h[sub] = part_h;
+                    sub_part_count[sub] = part_count;
+                    sub_dir[sub] = dir;
+                    sub_use_l0[sub] = matches!(dir, BPredDir::L0 | BPredDir::Bi);
+                    sub_use_l1[sub] = matches!(dir, BPredDir::L1 | BPredDir::Bi);
+                }
+
+                // 语法顺序必须与规范一致: 先完整读取所有 L0 ref_idx, 再读取所有 L1 ref_idx.
+                // 若按分区交错读取(L0/L1 同时), 在 L1_L0/L0_L1 等组合会导致 CABAC 失步.
+                let mut ref_idx_l0 = [0i8; 4];
+                for sub in 0..4usize {
                     let sx = (sub & 1) * 8;
                     let sy = (sub >> 1) * 8;
-                    let (part_w, part_h, part_count, dir) = Self::b_sub_mb_info(sub_type);
-                    if matches!(dir, BPredDir::Direct) {
+                    if sub_use_l0[sub] {
+                        let idx = if num_ref_idx_l0 > 1 {
+                            self.decode_ref_idx(
+                                cabac,
+                                ctxs,
+                                num_ref_idx_l0,
+                                0,
+                                mb_x * 4 + (sub & 1) * 2,
+                                mb_y * 4 + (sub >> 1) * 2,
+                                true,
+                            )
+                        } else {
+                            0
+                        };
+                        ref_idx_l0[sub] = idx.min(i8::MAX as u32) as i8;
+                        self.set_l0_motion_block_4x4(
+                            mb_x * 16 + sx,
+                            mb_y * 16 + sy,
+                            8,
+                            8,
+                            0,
+                            0,
+                            ref_idx_l0[sub],
+                        );
+                    } else {
+                        self.set_l0_motion_block_4x4(
+                            mb_x * 16 + sx,
+                            mb_y * 16 + sy,
+                            8,
+                            8,
+                            0,
+                            0,
+                            -1,
+                        );
+                    }
+                }
+                let mut ref_idx_l1 = [0i8; 4];
+                for sub in 0..4usize {
+                    let sx = (sub & 1) * 8;
+                    let sy = (sub >> 1) * 8;
+                    if sub_use_l1[sub] {
+                        let idx = if num_ref_idx_l1 > 1 {
+                            self.decode_ref_idx(
+                                cabac,
+                                ctxs,
+                                num_ref_idx_l1,
+                                1,
+                                mb_x * 4 + (sub & 1) * 2,
+                                mb_y * 4 + (sub >> 1) * 2,
+                                true,
+                            )
+                        } else {
+                            0
+                        };
+                        ref_idx_l1[sub] = idx.min(i8::MAX as u32) as i8;
+                        self.set_l1_motion_block_4x4(
+                            mb_x * 16 + sx,
+                            mb_y * 16 + sy,
+                            8,
+                            8,
+                            0,
+                            0,
+                            ref_idx_l1[sub],
+                        );
+                    } else {
+                        self.set_l1_motion_block_4x4(
+                            mb_x * 16 + sx,
+                            mb_y * 16 + sy,
+                            8,
+                            8,
+                            0,
+                            0,
+                            -1,
+                        );
+                    }
+                }
+
+                let mut mvd_l0_x = [[0i32; 4]; 4];
+                let mut mvd_l0_y = [[0i32; 4]; 4];
+                let mut mvd_l1_x = [[0i32; 4]; 4];
+                let mut mvd_l1_y = [[0i32; 4]; 4];
+
+                let part_offset = |part_w: usize, part_h: usize, part_count: usize, part: usize| {
+                    match (part_w, part_h, part_count) {
+                        (8, 8, _) => (0usize, 0usize),
+                        (8, 4, _) => (0usize, part * 4),
+                        (4, 8, _) => (part * 4, 0usize),
+                        _ => ((part & 1) * 4, (part >> 1) * 4),
+                    }
+                };
+
+                for sub in 0..4usize {
+                    if !sub_use_l0[sub] {
+                        continue;
+                    }
+                    let sx = (sub & 1) * 8;
+                    let sy = (sub >> 1) * 8;
+                    for part in 0..sub_part_count[sub] {
+                        let (off_x, off_y) =
+                            part_offset(sub_part_w[sub], sub_part_h[sub], sub_part_count[sub], part);
+                        let x4 = mb_x * 4 + (sx + off_x) / 4;
+                        let y4 = mb_y * 4 + (sy + off_y) / 4;
+                        let (amvd_x, amvd_y) = self.compute_cabac_amvd(x4, y4, 0);
+                        let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
+                        let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
+                        self.set_mvd_block_4x4(
+                            mb_x * 16 + sx + off_x,
+                            mb_y * 16 + sy + off_y,
+                            sub_part_w[sub],
+                            sub_part_h[sub],
+                            mvd_x,
+                            mvd_y,
+                            0,
+                        );
+                        mvd_l0_x[sub][part] = mvd_x;
+                        mvd_l0_y[sub][part] = mvd_y;
+                    }
+                }
+                for sub in 0..4usize {
+                    if !sub_use_l1[sub] {
+                        continue;
+                    }
+                    let sx = (sub & 1) * 8;
+                    let sy = (sub >> 1) * 8;
+                    for part in 0..sub_part_count[sub] {
+                        let (off_x, off_y) =
+                            part_offset(sub_part_w[sub], sub_part_h[sub], sub_part_count[sub], part);
+                        let x4 = mb_x * 4 + (sx + off_x) / 4;
+                        let y4 = mb_y * 4 + (sy + off_y) / 4;
+                        let (amvd_x, amvd_y) = self.compute_cabac_amvd(x4, y4, 1);
+                        let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
+                        let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
+                        self.set_mvd_block_4x4(
+                            mb_x * 16 + sx + off_x,
+                            mb_y * 16 + sy + off_y,
+                            sub_part_w[sub],
+                            sub_part_h[sub],
+                            mvd_x,
+                            mvd_y,
+                            1,
+                        );
+                        mvd_l1_x[sub][part] = mvd_x;
+                        mvd_l1_y[sub][part] = mvd_y;
+                    }
+                }
+
+                for sub in 0..4usize {
+                    let sx = (sub & 1) * 8;
+                    let sy = (sub >> 1) * 8;
+                    if matches!(sub_dir[sub], BPredDir::Direct) {
+                        self.set_direct_block_4x4(mb_x * 16 + sx, mb_y * 16 + sy, 8, 8, true);
                         let (mv_x, mv_y, ref_idx) = self.apply_b_direct_sub_8x8(
                             mb_x,
                             mb_y,
@@ -348,28 +521,51 @@ impl H264Decoder {
                         final_ref_idx = ref_idx;
                         continue;
                     }
-                    for part in 0..part_count {
-                        let (part_off_x, part_off_y) = match (part_w, part_h, part_count) {
-                            (8, 8, _) => (0, 0),
-                            (8, 4, _) => (0, part * 4),
-                            (4, 8, _) => (part * 4, 0),
-                            _ => ((part & 1) * 4, (part >> 1) * 4),
+
+                    for part in 0..sub_part_count[sub] {
+                        let (off_x, off_y) =
+                            part_offset(sub_part_w[sub], sub_part_h[sub], sub_part_count[sub], part);
+                        let bpx_x = mb_x * 16 + sx + off_x;
+                        let bpx_y = mb_y * 16 + sy + off_y;
+                        let part_x4 = (sx + off_x) / 4;
+                        let part_y4 = (sy + off_y) / 4;
+                        let part_w4 = (sub_part_w[sub] / 4).max(1);
+
+                        let motion_l0 = if sub_use_l0[sub] {
+                            let (pred_x, pred_y) = self.predict_mv_l0_partition(
+                                mb_x,
+                                mb_y,
+                                part_x4,
+                                part_y4,
+                                part_w4,
+                                ref_idx_l0[sub],
+                            );
+                            Some(BMotion {
+                                mv_x: pred_x + mvd_l0_x[sub][part],
+                                mv_y: pred_y + mvd_l0_y[sub][part],
+                                ref_idx: ref_idx_l0[sub],
+                            })
+                        } else {
+                            None
                         };
-                        let bpx_x = mb_x * 16 + sx + part_off_x;
-                        let bpx_y = mb_y * 16 + sy + part_off_y;
-                        let (motion_l0, motion_l1) = self.decode_b_partition_motion(
-                            cabac,
-                            ctxs,
-                            dir,
-                            num_ref_idx_l0,
-                            num_ref_idx_l1,
-                            pred_mv_x,
-                            pred_mv_y,
-                            bpx_x,
-                            bpx_y,
-                            part_w,
-                            part_h,
-                        );
+                        let motion_l1 = if sub_use_l1[sub] {
+                            let (pred_x, pred_y) = self.predict_mv_l1_partition(
+                                mb_x,
+                                mb_y,
+                                part_x4,
+                                part_y4,
+                                part_w4,
+                                ref_idx_l1[sub],
+                            );
+                            Some(BMotion {
+                                mv_x: pred_x + mvd_l1_x[sub][part],
+                                mv_y: pred_y + mvd_l1_y[sub][part],
+                                ref_idx: ref_idx_l1[sub],
+                            })
+                        } else {
+                            None
+                        };
+
                         let (mv_x, mv_y, ref_idx) = self.apply_b_prediction_block(
                             motion_l0,
                             motion_l1,
@@ -379,10 +575,10 @@ impl H264Decoder {
                             chroma_log2_weight_denom,
                             ref_l0_list,
                             ref_l1_list,
-                            mb_x * 16 + sx + part_off_x,
-                            mb_y * 16 + sy + part_off_y,
-                            part_w,
-                            part_h,
+                            bpx_x,
+                            bpx_y,
+                            sub_part_w[sub],
+                            sub_part_h[sub],
                         );
                         final_mv_x = mv_x;
                         final_mv_y = mv_y;
@@ -394,31 +590,188 @@ impl H264Decoder {
                 self.mb_types[mb_idx] = 210u8.saturating_add(ty.min(40));
                 if let Some((shape, dir0, dir1)) = Self::b_mb_partition_info(ty) {
                     let part_count = if shape == 0 { 1 } else { 2 };
+                    let mut part_dirs = [BPredDir::Direct; 2];
+                    let mut part_w = [16usize; 2];
+                    let mut part_h = [16usize; 2];
+                    let mut part_off_x = [0usize; 2];
+                    let mut part_off_y = [0usize; 2];
+                    let mut part_x4 = [0usize; 2];
+                    let mut part_y4 = [0usize; 2];
+                    let mut part_w4 = [4usize; 2];
+                    let mut part_use_l0 = [false; 2];
+                    let mut part_use_l1 = [false; 2];
+
                     for part in 0..part_count {
                         let dir = if part == 0 { dir0 } else { dir1 };
-                        let (part_w, part_h, part_off_x, part_off_y) = match shape {
+                        let (w, h, off_x, off_y) = match shape {
                             0 => (16usize, 16usize, 0usize, 0usize),
                             1 => (16usize, 8usize, 0usize, part * 8),
                             _ => (8usize, 16usize, part * 8, 0usize),
                         };
-                        let bpx_x = mb_x * 16 + part_off_x;
-                        let bpx_y = mb_y * 16 + part_off_y;
-                        let (motion_l0, motion_l1) = self.decode_b_partition_motion(
-                            cabac,
-                            ctxs,
-                            dir,
-                            num_ref_idx_l0,
-                            num_ref_idx_l1,
-                            pred_mv_x,
-                            pred_mv_y,
-                            bpx_x,
-                            bpx_y,
-                            part_w,
-                            part_h,
-                        );
+                        part_dirs[part] = dir;
+                        part_w[part] = w;
+                        part_h[part] = h;
+                        part_off_x[part] = off_x;
+                        part_off_y[part] = off_y;
+                        part_x4[part] = off_x / 4;
+                        part_y4[part] = off_y / 4;
+                        part_w4[part] = (w / 4).max(1);
+                        part_use_l0[part] = matches!(dir, BPredDir::L0 | BPredDir::Bi);
+                        part_use_l1[part] = matches!(dir, BPredDir::L1 | BPredDir::Bi);
+                    }
+
+                    let mut ref_idx_l0 = [0i8; 2];
+                    for part in 0..part_count {
+                        let px = mb_x * 16 + part_off_x[part];
+                        let py = mb_y * 16 + part_off_y[part];
+                        if part_use_l0[part] {
+                            let idx = if num_ref_idx_l0 > 1 {
+                                self.decode_ref_idx(
+                                    cabac,
+                                    ctxs,
+                                    num_ref_idx_l0,
+                                    0,
+                                    mb_x * 4 + part_x4[part],
+                                    mb_y * 4 + part_y4[part],
+                                    true,
+                                )
+                            } else {
+                                0
+                            };
+                            ref_idx_l0[part] = idx.min(i8::MAX as u32) as i8;
+                            self.set_l0_motion_block_4x4(
+                                px,
+                                py,
+                                part_w[part],
+                                part_h[part],
+                                0,
+                                0,
+                                ref_idx_l0[part],
+                            );
+                        } else {
+                            self.set_l0_motion_block_4x4(
+                                px,
+                                py,
+                                part_w[part],
+                                part_h[part],
+                                0,
+                                0,
+                                -1,
+                            );
+                        }
+                    }
+                    let mut ref_idx_l1 = [0i8; 2];
+                    for part in 0..part_count {
+                        let px = mb_x * 16 + part_off_x[part];
+                        let py = mb_y * 16 + part_off_y[part];
+                        if part_use_l1[part] {
+                            let idx = if num_ref_idx_l1 > 1 {
+                                self.decode_ref_idx(
+                                    cabac,
+                                    ctxs,
+                                    num_ref_idx_l1,
+                                    1,
+                                    mb_x * 4 + part_x4[part],
+                                    mb_y * 4 + part_y4[part],
+                                    true,
+                                )
+                            } else {
+                                0
+                            };
+                            ref_idx_l1[part] = idx.min(i8::MAX as u32) as i8;
+                            self.set_l1_motion_block_4x4(
+                                px,
+                                py,
+                                part_w[part],
+                                part_h[part],
+                                0,
+                                0,
+                                ref_idx_l1[part],
+                            );
+                        } else {
+                            self.set_l1_motion_block_4x4(
+                                px,
+                                py,
+                                part_w[part],
+                                part_h[part],
+                                0,
+                                0,
+                                -1,
+                            );
+                        }
+                    }
+
+                    let mut motion_l0 = [None; 2];
+                    let mut motion_l1 = [None; 2];
+                    for part in 0..part_count {
+                        if part_use_l0[part] {
+                            let x4 = mb_x * 4 + part_x4[part];
+                            let y4 = mb_y * 4 + part_y4[part];
+                            let (pred_x, pred_y) = self.predict_mv_l0_partition(
+                                mb_x,
+                                mb_y,
+                                part_x4[part],
+                                part_y4[part],
+                                part_w4[part],
+                                ref_idx_l0[part],
+                            );
+                            let (amvd_x, amvd_y) = self.compute_cabac_amvd(x4, y4, 0);
+                            let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
+                            let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
+                            self.set_mvd_block_4x4(
+                                mb_x * 16 + part_off_x[part],
+                                mb_y * 16 + part_off_y[part],
+                                part_w[part],
+                                part_h[part],
+                                mvd_x,
+                                mvd_y,
+                                0,
+                            );
+                            motion_l0[part] = Some(BMotion {
+                                mv_x: pred_x + mvd_x,
+                                mv_y: pred_y + mvd_y,
+                                ref_idx: ref_idx_l0[part],
+                            });
+                        }
+                    }
+                    for part in 0..part_count {
+                        if part_use_l1[part] {
+                            let x4 = mb_x * 4 + part_x4[part];
+                            let y4 = mb_y * 4 + part_y4[part];
+                            let (pred_x, pred_y) = self.predict_mv_l1_partition(
+                                mb_x,
+                                mb_y,
+                                part_x4[part],
+                                part_y4[part],
+                                part_w4[part],
+                                ref_idx_l1[part],
+                            );
+                            let (amvd_x, amvd_y) = self.compute_cabac_amvd(x4, y4, 1);
+                            let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
+                            let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
+                            self.set_mvd_block_4x4(
+                                mb_x * 16 + part_off_x[part],
+                                mb_y * 16 + part_off_y[part],
+                                part_w[part],
+                                part_h[part],
+                                mvd_x,
+                                mvd_y,
+                                1,
+                            );
+                            motion_l1[part] = Some(BMotion {
+                                mv_x: pred_x + mvd_x,
+                                mv_y: pred_y + mvd_y,
+                                ref_idx: ref_idx_l1[part],
+                            });
+                        }
+                    }
+
+                    for part in 0..part_count {
+                        let bpx_x = mb_x * 16 + part_off_x[part];
+                        let bpx_y = mb_y * 16 + part_off_y[part];
                         let (mv_x, mv_y, ref_idx) = self.apply_b_prediction_block(
-                            motion_l0,
-                            motion_l1,
+                            motion_l0[part],
+                            motion_l1[part],
                             l0_weights,
                             l1_weights,
                             luma_log2_weight_denom,
@@ -427,8 +780,8 @@ impl H264Decoder {
                             ref_l1_list,
                             bpx_x,
                             bpx_y,
-                            part_w,
-                            part_h,
+                            part_w[part],
+                            part_h[part],
                         );
                         final_mv_x = mv_x;
                         final_mv_y = mv_y;
@@ -446,32 +799,74 @@ impl H264Decoder {
             self.decode_coded_block_pattern(cabac, ctxs, mb_x, mb_y, false);
         let cbp = luma_cbp | (chroma_cbp << 4);
         self.set_mb_cbp(mb_x, mb_y, cbp);
+        let trace_slice_mb = std::env::var("TAO_H264_SLICE_TRACE_MB").as_deref() == Ok("1");
+        let trace_mb_limit = std::env::var("TAO_H264_TRACE_MB_LIMIT")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(400);
+        if trace_slice_mb && mb_idx < trace_mb_limit {
+            eprintln!(
+                "[H264_B_CBP] idx={} mb=({}, {}) mb_type_idx={:?} luma_cbp={} chroma_cbp={} cbp={}",
+                mb_idx, mb_x, mb_y, mb_type_idx, luma_cbp, chroma_cbp, cbp
+            );
+        }
 
+        let skip_inter_qp_delta =
+            std::env::var("TAO_H264_DEBUG_SKIP_INTER_QP_DELTA").as_deref() == Ok("1");
+        let reset_qp_delta_ctx_on_zero_cbp =
+            std::env::var("TAO_H264_DEBUG_INTER_QP_DELTA_RESET_ON_ZERO").as_deref() == Ok("1");
         if cbp != 0 {
-            let qp_delta = decode_qp_delta(cabac, ctxs, self.prev_qp_delta_nz);
-            self.prev_qp_delta_nz = qp_delta != 0;
-            *cur_qp = wrap_qp((*cur_qp + qp_delta) as i64);
-        } else {
+            if !skip_inter_qp_delta {
+                let qp_delta = decode_qp_delta(cabac, ctxs, self.prev_qp_delta_nz);
+                self.prev_qp_delta_nz = qp_delta != 0;
+                *cur_qp = wrap_qp((*cur_qp + qp_delta) as i64);
+            } else {
+                self.prev_qp_delta_nz = false;
+            }
+        } else if reset_qp_delta_ctx_on_zero_cbp {
             self.prev_qp_delta_nz = false;
         }
 
-        let use_8x8 = luma_cbp != 0
-            && self
-                .pps
-                .as_ref()
-                .map(|p| p.transform_8x8_mode)
-                .unwrap_or(false)
-            && self.decode_transform_size_8x8_flag(cabac, ctxs, mb_x, mb_y);
+        let forced_use_8x8 = std::env::var("TAO_H264_DEBUG_FORCE_INTER_USE_8X8").ok();
+        let use_old_transform_ctx =
+            std::env::var("TAO_H264_DEBUG_INTER_USE_OLD_TRANSFORM_CTX").as_deref() == Ok("1");
+        let use_8x8 = if let Some(v) = forced_use_8x8.as_deref() {
+            luma_cbp != 0 && v == "1"
+        } else {
+            luma_cbp != 0
+                && no_sub_mb_part_size_less_than_8x8_flag
+                && self
+                    .pps
+                    .as_ref()
+                    .map(|p| p.transform_8x8_mode)
+                    .unwrap_or(false)
+                && if use_old_transform_ctx {
+                    self.decode_transform_size_8x8_flag(cabac, ctxs, mb_x, mb_y)
+                } else {
+                    self.decode_transform_size_8x8_flag_inter(cabac, ctxs, mb_x, mb_y)
+                }
+        };
         self.set_transform_8x8_flag(mb_x, mb_y, use_8x8);
 
-        if use_8x8 {
-            self.decode_i8x8_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp, false);
-        } else {
-            self.decode_inter_4x4_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp);
-        }
+        let skip_inter_residual =
+            std::env::var("TAO_H264_DEBUG_SKIP_INTER_RESIDUAL").as_deref() == Ok("1");
+        if !skip_inter_residual {
+            if use_8x8 {
+                self.decode_i8x8_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp, false);
+            } else {
+                self.decode_inter_4x4_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp);
+            }
 
-        if chroma_cbp >= 1 {
-            self.decode_chroma_residual(cabac, ctxs, (mb_x, mb_y), *cur_qp, chroma_cbp >= 2, false);
+            if chroma_cbp >= 1 {
+                self.decode_chroma_residual(
+                    cabac,
+                    ctxs,
+                    (mb_x, mb_y),
+                    *cur_qp,
+                    chroma_cbp >= 2,
+                    false,
+                );
+            }
         }
     }
 
@@ -501,7 +896,7 @@ impl H264Decoder {
         let part_w4 = (part_w / 4).max(1);
 
         if matches!(dir, BPredDir::L0 | BPredDir::Bi) {
-            let ref_idx = self.decode_ref_idx_l0(cabac, ctxs, num_ref_idx_l0);
+            let ref_idx = self.decode_ref_idx(cabac, ctxs, num_ref_idx_l0, 0, x4, y4, true);
             let ref_idx_i8 = ref_idx.min(i8::MAX as u32) as i8;
             let (pred_l0_x, pred_l0_y) =
                 self.predict_mv_l0_partition(mb_x, mb_y, part_x4, part_y4, part_w4, ref_idx_i8);
@@ -518,7 +913,7 @@ impl H264Decoder {
             });
         }
         if matches!(dir, BPredDir::L1 | BPredDir::Bi) {
-            let ref_idx_l1 = self.decode_ref_idx_l0(cabac, ctxs, num_ref_idx_l1);
+            let ref_idx_l1 = self.decode_ref_idx(cabac, ctxs, num_ref_idx_l1, 1, x4, y4, true);
             let ref_idx_l1_i8 = ref_idx_l1.min(i8::MAX as u32) as i8;
             let (pred_l1_x, pred_l1_y) = self.predict_mv_l1_partition(
                 mb_x, mb_y, part_x4, part_y4, part_w4, ref_idx_l1_i8,

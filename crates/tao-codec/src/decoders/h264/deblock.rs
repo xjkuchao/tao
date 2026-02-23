@@ -237,10 +237,7 @@ fn apply_adaptive_deblock_plane(
                 } else {
                     None
                 };
-                if p1 >= plane.len()
-                    || p0 >= plane.len()
-                    || q0 >= plane.len()
-                    || q1 >= plane.len()
+                if p1 >= plane.len() || p0 >= plane.len() || q0 >= plane.len() || q1 >= plane.len()
                 {
                     continue;
                 }
@@ -281,10 +278,7 @@ fn apply_adaptive_deblock_plane(
                 } else {
                     None
                 };
-                if p1 >= plane.len()
-                    || p0 >= plane.len()
-                    || q0 >= plane.len()
-                    || q1 >= plane.len()
+                if p1 >= plane.len() || p0 >= plane.len() || q0 >= plane.len() || q1 >= plane.len()
                 {
                     continue;
                 }
@@ -460,6 +454,15 @@ fn filter_edge_with_bs(
     if tc0 == 0 {
         return;
     }
+    if !strong_luma {
+        // 色度弱滤波: tc = tc0 + 1 (无条件), 只修改 p0/q0
+        let tc = tc0 + 1;
+        let mut delta = ((q0 - p0) * 4 + (p1 - q1) + 4) >> 3;
+        delta = delta.clamp(-tc, tc);
+        plane[p0_idx] = (p0 + delta).clamp(0, 255) as u8;
+        plane[q0_idx] = (q0 - delta).clamp(0, 255) as u8;
+        return;
+    }
     let ap_lt_beta = if let Some(p2i) = p2_idx {
         if p2i < plane.len() {
             (i32::from(plane[p2i]) - p0).abs() < i32::from(beta)
@@ -478,9 +481,7 @@ fn filter_edge_with_bs(
     } else {
         false
     };
-    let tc = tc0
-        + if ap_lt_beta { 1 } else { 0 }
-        + if aq_lt_beta { 1 } else { 0 };
+    let tc = tc0 + if ap_lt_beta { 1 } else { 0 } + if aq_lt_beta { 1 } else { 0 };
     let mut delta = ((q0 - p0) * 4 + (p1 - q1) + 4) >> 3;
     delta = delta.clamp(-tc, tc);
     plane[p0_idx] = (p0 + delta).clamp(0, 255) as u8;

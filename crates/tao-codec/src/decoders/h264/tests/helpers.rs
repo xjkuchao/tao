@@ -132,6 +132,7 @@ pub fn build_test_decoder() -> H264Decoder {
         stride_y: 0,
         stride_c: 0,
         mb_types: Vec::new(),
+        mb_skip_flags: Vec::new(),
         mb_qp: Vec::new(),
         mb_cbp: Vec::new(),
         mb_cbp_ctx: Vec::new(),
@@ -161,6 +162,7 @@ pub fn build_test_decoder() -> H264Decoder {
         mv_l1_x_4x4: Vec::new(),
         mv_l1_y_4x4: Vec::new(),
         ref_idx_l1_4x4: Vec::new(),
+        direct_4x4_flags: Vec::new(),
         mvd_l0_x_4x4: Vec::new(),
         mvd_l0_y_4x4: Vec::new(),
         mvd_l1_x_4x4: Vec::new(),
@@ -183,6 +185,8 @@ pub fn build_test_decoder() -> H264Decoder {
         max_long_term_frame_idx: None,
         max_reference_frames: 4,
         missing_reference_fallbacks: 0,
+        fail_on_missing_reference_fallback: false,
+        missing_reference_fallback_error: None,
         malformed_nal_drops: 0,
         last_sei_payloads: Vec::new(),
         pending_recovery_point_frame_cnt: None,
@@ -221,6 +225,7 @@ pub fn push_dummy_reference_with_long_term(
     long_term_frame_idx: Option<u32>,
 ) {
     let total_mb = dec.mb_width * dec.mb_height;
+    let total_4x4 = dec.mb_width * 4 * dec.mb_height * 4;
     dec.reference_frames.push_back(ReferencePicture {
         y: vec![0u8; dec.ref_y.len()],
         u: vec![0u8; dec.ref_u.len()],
@@ -228,6 +233,15 @@ pub fn push_dummy_reference_with_long_term(
         mv_l0_x: vec![0i16; total_mb],
         mv_l0_y: vec![0i16; total_mb],
         ref_idx_l0: vec![-1i8; total_mb],
+        mv_l1_x: vec![0i16; total_mb],
+        mv_l1_y: vec![0i16; total_mb],
+        ref_idx_l1: vec![-1i8; total_mb],
+        mv_l0_x_4x4: vec![0i16; total_4x4],
+        mv_l0_y_4x4: vec![0i16; total_4x4],
+        ref_idx_l0_4x4: vec![-1i8; total_4x4],
+        mv_l1_x_4x4: vec![0i16; total_4x4],
+        mv_l1_y_4x4: vec![0i16; total_4x4],
+        ref_idx_l1_4x4: vec![-1i8; total_4x4],
         mb_types: vec![0u8; total_mb],
         frame_num,
         poc: frame_num as i32,
@@ -243,6 +257,7 @@ pub fn push_custom_reference(
     long_term_frame_idx: Option<u32>,
 ) {
     let total_mb = dec.mb_width * dec.mb_height;
+    let total_4x4 = dec.mb_width * 4 * dec.mb_height * 4;
     dec.reference_frames.push_back(ReferencePicture {
         y: vec![y_value; dec.ref_y.len()],
         u: vec![128u8; dec.ref_u.len()],
@@ -250,6 +265,15 @@ pub fn push_custom_reference(
         mv_l0_x: vec![0i16; total_mb],
         mv_l0_y: vec![0i16; total_mb],
         ref_idx_l0: vec![-1i8; total_mb],
+        mv_l1_x: vec![0i16; total_mb],
+        mv_l1_y: vec![0i16; total_mb],
+        ref_idx_l1: vec![-1i8; total_mb],
+        mv_l0_x_4x4: vec![0i16; total_4x4],
+        mv_l0_y_4x4: vec![0i16; total_4x4],
+        ref_idx_l0_4x4: vec![-1i8; total_4x4],
+        mv_l1_x_4x4: vec![0i16; total_4x4],
+        mv_l1_y_4x4: vec![0i16; total_4x4],
+        ref_idx_l1_4x4: vec![-1i8; total_4x4],
         mb_types: vec![0u8; total_mb],
         frame_num,
         poc,
@@ -266,13 +290,22 @@ pub fn push_custom_reference_with_l0_motion(
     motion: (i16, i16, i8),
 ) {
     let total_mb = dec.mb_width * dec.mb_height;
+    let total_4x4 = dec.mb_width * 4 * dec.mb_height * 4;
     let mut mv_l0_x = vec![0i16; total_mb];
     let mut mv_l0_y = vec![0i16; total_mb];
     let mut ref_idx_l0 = vec![-1i8; total_mb];
+    let mut mv_l0_x_4x4 = vec![0i16; total_4x4];
+    let mut mv_l0_y_4x4 = vec![0i16; total_4x4];
+    let mut ref_idx_l0_4x4 = vec![-1i8; total_4x4];
     if total_mb > 0 {
         mv_l0_x[0] = motion.0;
         mv_l0_y[0] = motion.1;
         ref_idx_l0[0] = motion.2;
+    }
+    if total_4x4 > 0 {
+        mv_l0_x_4x4[0] = motion.0;
+        mv_l0_y_4x4[0] = motion.1;
+        ref_idx_l0_4x4[0] = motion.2;
     }
     dec.reference_frames.push_back(ReferencePicture {
         y: vec![y_value; dec.ref_y.len()],
@@ -281,6 +314,15 @@ pub fn push_custom_reference_with_l0_motion(
         mv_l0_x,
         mv_l0_y,
         ref_idx_l0,
+        mv_l1_x: vec![0i16; total_mb],
+        mv_l1_y: vec![0i16; total_mb],
+        ref_idx_l1: vec![-1i8; total_mb],
+        mv_l0_x_4x4,
+        mv_l0_y_4x4,
+        ref_idx_l0_4x4,
+        mv_l1_x_4x4: vec![0i16; total_4x4],
+        mv_l1_y_4x4: vec![0i16; total_4x4],
+        ref_idx_l1_4x4: vec![-1i8; total_4x4],
         mb_types: vec![0u8; total_mb],
         frame_num,
         poc,
@@ -295,6 +337,7 @@ pub fn push_horizontal_gradient_reference(
     long_term_frame_idx: Option<u32>,
 ) {
     let total_mb = dec.mb_width * dec.mb_height;
+    let total_4x4 = dec.mb_width * 4 * dec.mb_height * 4;
     let mut y = vec![0u8; dec.ref_y.len()];
     for row in 0..dec.height as usize {
         for col in 0..dec.width as usize {
@@ -308,6 +351,15 @@ pub fn push_horizontal_gradient_reference(
         mv_l0_x: vec![0i16; total_mb],
         mv_l0_y: vec![0i16; total_mb],
         ref_idx_l0: vec![-1i8; total_mb],
+        mv_l1_x: vec![0i16; total_mb],
+        mv_l1_y: vec![0i16; total_mb],
+        ref_idx_l1: vec![-1i8; total_mb],
+        mv_l0_x_4x4: vec![0i16; total_4x4],
+        mv_l0_y_4x4: vec![0i16; total_4x4],
+        ref_idx_l0_4x4: vec![-1i8; total_4x4],
+        mv_l1_x_4x4: vec![0i16; total_4x4],
+        mv_l1_y_4x4: vec![0i16; total_4x4],
+        ref_idx_l1_4x4: vec![-1i8; total_4x4],
         mb_types: vec![0u8; total_mb],
         frame_num,
         poc,
@@ -320,8 +372,10 @@ pub fn build_constant_ref_planes(dec: &H264Decoder, y: u8, u: u8, v: u8) -> RefP
         y: vec![y; dec.ref_y.len()],
         u: vec![u; dec.ref_u.len()],
         v: vec![v; dec.ref_v.len()],
+        frame_num: 0,
         poc: 0,
         is_long_term: false,
+        long_term_frame_idx: None,
     }
 }
 
