@@ -3,7 +3,6 @@
 //! 将原始参数解析结果统一成可执行的 `CommandPlan`.
 
 use crate::cli::parser::{CliError, OptionValueSource, ParsedArgs, ParsedOption};
-use crate::compat::unimplemented;
 
 /// 全局命令.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,7 +107,6 @@ pub struct CommandPlan {
 
     pub avoptions: Vec<(String, String)>,
     pub ordered_execution: Vec<OrderedExecutionItem>,
-    pub unimplemented_hits: Vec<&'static unimplemented::UnimplementedEntry>,
 }
 
 /// 构建执行计划.
@@ -194,10 +192,6 @@ pub fn build_command_plan(parsed: &ParsedArgs) -> Result<CommandPlan, CliError> 
                 plan.avoptions
                     .push((option.canonical.clone(), value.to_string()));
             }
-        }
-
-        if let Some(hit) = unimplemented::find_entry(&option.canonical) {
-            plan.unimplemented_hits.push(hit);
         }
     }
 

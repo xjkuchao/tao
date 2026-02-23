@@ -4,7 +4,6 @@
 
 pub mod app;
 mod cli;
-mod compat;
 mod core;
 mod model;
 mod writer;

@@ -150,39 +150,9 @@ impl RunError {
 }
 
 fn execute_plan(plan: &CommandPlan) -> Result<(), RunError> {
-    let show_banner = should_show_banner(plan.hide_banner, plan.loglevel.as_deref());
-
     if let Some(global) = &plan.global_command {
-        if let Some(hit) = plan.unimplemented_hits.first() {
-            if let Some(result) = try_execute_ffprobe_global_passthrough(plan, global) {
-                return result;
-            }
-            // TODO(ffprobe-compat): 完整实现白名单能力后移除此分支, 当前统一返回 Function not implemented.
-            return Err(RunError::new(
-                format!(
-                    "Option '{}' is not ready yet ({}; module: {}; clear condition: {}): Function not implemented",
-                    hit.option, hit.reason, hit.module, hit.clear_condition
-                ),
-                show_banner,
-            ));
-        }
-
         execute_global_command(plan, global)
     } else {
-        if let Some(hit) = plan.unimplemented_hits.first() {
-            if let Some(result) = try_execute_ffprobe_probe_passthrough(plan) {
-                return result;
-            }
-            // TODO(ffprobe-compat): 完整实现白名单能力后移除此分支, 当前统一返回 Function not implemented.
-            return Err(RunError::new(
-                format!(
-                    "Option '{}' is not ready yet ({}; module: {}; clear condition: {}): Function not implemented",
-                    hit.option, hit.reason, hit.module, hit.clear_condition
-                ),
-                show_banner,
-            ));
-        }
-
         execute_probe_command(plan)
     }
 }
@@ -1184,16 +1154,6 @@ fn to_sexagesimal(seconds: f64) -> String {
     format!(
         "{}{:02}:{:02}:{:02}.{:06}",
         sign, hours, minutes, secs, micros
-    )
-}
-
-fn should_show_banner(hide_banner: bool, loglevel: Option<&str>) -> bool {
-    if hide_banner {
-        return false;
-    }
-    !matches!(
-        loglevel.map(|s| s.to_ascii_lowercase()),
-        Some(level) if matches!(level.as_str(), "quiet" | "panic" | "fatal" | "error")
     )
 }
 
