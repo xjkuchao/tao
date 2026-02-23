@@ -467,9 +467,17 @@ impl H264Decoder {
         }
         drop(refs);
         if refs_empty && !empty_missing_ranks.is_empty() {
+            warn!(
+                "H264: L0 参考列表为空, 使用零参考回退, missing_ranks={:?}",
+                empty_missing_ranks
+            );
             self.record_missing_reference_fallback("build_l0_list_empty", -1, 0);
         }
         for &rank in &padded_ranks {
+            warn!(
+                "H264: L0 参考列表不够长, rank={} refs_len={}, 使用零参考回退",
+                rank, refs_len
+            );
             self.record_missing_reference_fallback("build_l0_list_padded", rank as i32, refs_len);
         }
         if trace_ref_list {
@@ -547,9 +555,17 @@ impl H264Decoder {
         }
         drop(refs);
         if refs_empty && !empty_missing_ranks.is_empty() {
+            warn!(
+                "H264: L1 参考列表为空, 使用零参考回退, missing_ranks={:?}",
+                empty_missing_ranks
+            );
             self.record_missing_reference_fallback("build_l1_list_empty", -1, 0);
         }
         for &rank in &padded_ranks {
+            warn!(
+                "H264: L1 参考列表不够长, rank={} refs_len={}, 使用零参考回退",
+                rank, refs_len
+            );
             self.record_missing_reference_fallback("build_l1_list_padded", rank as i32, refs_len);
         }
         if trace_ref_list {

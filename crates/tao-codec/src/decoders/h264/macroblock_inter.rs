@@ -9,7 +9,7 @@ impl H264Decoder {
         if planes.is_long_term {
             return planes.long_term_frame_idx == pic.long_term_frame_idx;
         }
-        planes.frame_num == pic.frame_num || planes.poc == pic.poc
+        planes.poc == pic.poc
     }
 
     fn same_reference_picture_identity(a: &ReferencePicture, b: &ReferencePicture) -> bool {
@@ -417,10 +417,7 @@ impl H264Decoder {
         {
             return idx as i8;
         }
-        if (col_ref_idx as usize) < ref_l0_list.len() {
-            return col_ref_idx;
-        }
-        -1
+        0
     }
 
     fn clamp_direct_ref_idx(candidate: Option<i8>, list_len: usize) -> Option<i8> {
@@ -1185,14 +1182,22 @@ impl H264Decoder {
                 _ => {}
             }
         }
+        let mb_ty = self.mb_types.get(nb_mb_idx).copied().unwrap_or_default();
         if is_b_slice {
             if self.get_direct_4x4_flag(x4, y4) {
                 return 0;
             }
-            let mb_ty = self.mb_types.get(nb_mb_idx).copied().unwrap_or_default();
             if mb_ty == 254 {
                 return 0;
             }
+        }
+        // For both P and B slices, intra neighbors have implicit ref_idx=0
+        if mb_ty <= 25 {
+            return 0;
+        }
+        // P skip also has implicit ref_idx=0
+        if mb_ty == 255 {
+            return 0;
         }
         let idx4 = y4 * stride + x4;
         let ref_idx = if list == 0 {
@@ -1230,9 +1235,6 @@ impl H264Decoder {
         y4: usize,
         is_b_slice: bool,
     ) -> u32 {
-        if std::env::var("TAO_H264_DEBUG_FORCE_REF_IDX_ZERO").as_deref() == Ok("1") {
-            return 0;
-        }
         if num_ref_idx <= 1 {
             return 0;
         }

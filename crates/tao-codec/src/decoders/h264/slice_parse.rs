@@ -282,13 +282,7 @@ impl H264Decoder {
                 )));
             }
             while br.bits_read() & 7 != 0 {
-                let cabac_alignment_zero_bit = br.read_bit()?;
-                if cabac_alignment_zero_bit != 0 {
-                    return Err(TaoError::InvalidData(format!(
-                        "H264: cabac_alignment_zero_bit 非法, value={}",
-                        cabac_alignment_zero_bit
-                    )));
-                }
+                let _cabac_alignment_zero_bit = br.read_bit()?;
             }
             data_bit_offset = br.bits_read();
         }

@@ -783,19 +783,11 @@ impl H264Decoder {
             );
         }
 
-        let skip_inter_qp_delta =
-            std::env::var("TAO_H264_DEBUG_SKIP_INTER_QP_DELTA").as_deref() == Ok("1");
-        let reset_qp_delta_ctx_on_zero_cbp =
-            std::env::var("TAO_H264_DEBUG_INTER_QP_DELTA_RESET_ON_ZERO").as_deref() == Ok("1");
         if cbp != 0 {
-            if !skip_inter_qp_delta {
-                let qp_delta = decode_qp_delta(cabac, ctxs, self.prev_qp_delta_nz);
-                self.prev_qp_delta_nz = qp_delta != 0;
-                *cur_qp = wrap_qp((*cur_qp + qp_delta) as i64);
-            } else {
-                self.prev_qp_delta_nz = false;
-            }
-        } else if reset_qp_delta_ctx_on_zero_cbp {
+            let qp_delta = decode_qp_delta(cabac, ctxs, self.prev_qp_delta_nz);
+            self.prev_qp_delta_nz = qp_delta != 0;
+            *cur_qp = wrap_qp((*cur_qp + qp_delta) as i64);
+        } else {
             self.prev_qp_delta_nz = false;
         }
         log_stage("qp_delta", cabac, &mut stage_anchor_bits);
