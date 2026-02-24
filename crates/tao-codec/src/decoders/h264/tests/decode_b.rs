@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::super::{PredWeightL0, RefPlanes};
 
 use super::helpers::*;
@@ -84,7 +86,7 @@ fn test_decode_cavlc_slice_data_b_skip_run_temporal_direct_list1_col_zero_consis
         for row in 0..dec.height as usize {
             let edge_idx = row * dec.stride_y + 1;
             if edge_idx < ref_l0.y.len() {
-                ref_l0.y[edge_idx] = 255;
+                Arc::make_mut(&mut ref_l0.y)[edge_idx] = 255;
             }
         }
     }

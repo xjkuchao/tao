@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::super::{
     BMotion, PredWeightL0, RefPlanes, sample_h264_chroma_qpel, sample_h264_luma_qpel,
 };
@@ -58,9 +60,9 @@ fn test_apply_inter_block_l0_padding_clamps_to_top_left() {
         }
     }
     let refs = vec![RefPlanes {
-        y,
-        u,
-        v,
+        y: Arc::new(y),
+        u: Arc::new(u),
+        v: Arc::new(v),
         frame_num: 0,
         poc: 0,
         is_long_term: false,
@@ -107,9 +109,9 @@ fn test_apply_inter_block_l0_padding_clamps_to_bottom_right() {
         }
     }
     let refs = vec![RefPlanes {
-        y,
-        u,
-        v,
+        y: Arc::new(y),
+        u: Arc::new(u),
+        v: Arc::new(v),
         frame_num: 0,
         poc: 0,
         is_long_term: false,
@@ -230,16 +232,19 @@ fn test_apply_b_prediction_block_default_bi_weighted_rounding_fractional_mv() {
 
     let ref_l0 = vec![build_constant_ref_planes(&dec, 40, 50, 60)];
     let mut ref_l1_plane = build_constant_ref_planes(&dec, 0, 0, 0);
+    let l1_y_plane = Arc::make_mut(&mut ref_l1_plane.y);
     for row in 0..dec.height as usize {
         for col in 0..dec.width as usize {
-            ref_l1_plane.y[row * dec.stride_y + col] = ((row * 7 + col * 3) % 200 + 20) as u8;
+            l1_y_plane[row * dec.stride_y + col] = ((row * 7 + col * 3) % 200 + 20) as u8;
         }
     }
+    let l1_u_plane = Arc::make_mut(&mut ref_l1_plane.u);
+    let l1_v_plane = Arc::make_mut(&mut ref_l1_plane.v);
     for row in 0..(dec.height as usize / 2) {
         for col in 0..(dec.width as usize / 2) {
             let idx = row * dec.stride_c + col;
-            ref_l1_plane.u[idx] = ((idx * 5) % 200 + 10) as u8;
-            ref_l1_plane.v[idx] = ((idx * 7) % 200 + 30) as u8;
+            l1_u_plane[idx] = ((idx * 5) % 200 + 10) as u8;
+            l1_v_plane[idx] = ((idx * 7) % 200 + 30) as u8;
         }
     }
     let ref_l1 = vec![ref_l1_plane.clone()];

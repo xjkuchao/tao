@@ -32,9 +32,9 @@ impl H264Decoder {
 
     pub(super) fn zero_reference_planes(&self) -> RefPlanes {
         RefPlanes {
-            y: vec![128u8; self.ref_y.len()],
-            u: vec![128u8; self.ref_u.len()],
-            v: vec![128u8; self.ref_v.len()],
+            y: self.zero_ref_y.clone(),
+            u: self.zero_ref_u.clone(),
+            v: self.zero_ref_v.clone(),
             frame_num: self.last_frame_num,
             poc: self.last_poc,
             is_long_term: false,
@@ -45,7 +45,7 @@ impl H264Decoder {
     fn conceal_macroblock_from_source(
         &mut self,
         mb_idx: usize,
-        source: Option<&(Vec<u8>, Vec<u8>, Vec<u8>)>,
+        source: Option<&(Arc<Vec<u8>>, Arc<Vec<u8>>, Arc<Vec<u8>>)>,
     ) {
         let mb_x = mb_idx % self.mb_width;
         let mb_y = mb_idx / self.mb_width;
@@ -687,9 +687,9 @@ impl H264Decoder {
         let total_mb = self.mb_width * self.mb_height;
         let total_4x4 = self.mb_width * 4 * self.mb_height * 4;
         self.reference_frames.push_back(ReferencePicture {
-            y: vec![128u8; self.ref_y.len()],
-            u: vec![128u8; self.ref_u.len()],
-            v: vec![128u8; self.ref_v.len()],
+            y: Arc::new(vec![128u8; self.ref_y.len()]),
+            u: Arc::new(vec![128u8; self.ref_u.len()]),
+            v: Arc::new(vec![128u8; self.ref_v.len()]),
             mv_l0_x: vec![0i16; total_mb],
             mv_l0_y: vec![0i16; total_mb],
             ref_idx_l0: vec![-1i8; total_mb],
@@ -717,9 +717,9 @@ impl H264Decoder {
             return;
         }
         self.reference_frames.push_back(ReferencePicture {
-            y: self.ref_y.clone(),
-            u: self.ref_u.clone(),
-            v: self.ref_v.clone(),
+            y: Arc::new(self.ref_y.clone()),
+            u: Arc::new(self.ref_u.clone()),
+            v: Arc::new(self.ref_v.clone()),
             mv_l0_x: self.mv_l0_x.clone(),
             mv_l0_y: self.mv_l0_y.clone(),
             ref_idx_l0: self.ref_idx_l0.clone(),

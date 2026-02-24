@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 use tao_core::{PixelFormat, Rational};
 
@@ -129,6 +130,9 @@ pub fn build_test_decoder() -> H264Decoder {
         ref_y: Vec::new(),
         ref_u: Vec::new(),
         ref_v: Vec::new(),
+        zero_ref_y: Arc::new(Vec::new()),
+        zero_ref_u: Arc::new(Vec::new()),
+        zero_ref_v: Arc::new(Vec::new()),
         stride_y: 0,
         stride_c: 0,
         mb_types: Vec::new(),
@@ -253,9 +257,9 @@ pub fn push_dummy_reference_with_long_term(
     let total_mb = dec.mb_width * dec.mb_height;
     let total_4x4 = dec.mb_width * 4 * dec.mb_height * 4;
     dec.reference_frames.push_back(ReferencePicture {
-        y: vec![0u8; dec.ref_y.len()],
-        u: vec![0u8; dec.ref_u.len()],
-        v: vec![0u8; dec.ref_v.len()],
+        y: Arc::new(vec![0u8; dec.ref_y.len()]),
+        u: Arc::new(vec![0u8; dec.ref_u.len()]),
+        v: Arc::new(vec![0u8; dec.ref_v.len()]),
         mv_l0_x: vec![0i16; total_mb],
         mv_l0_y: vec![0i16; total_mb],
         ref_idx_l0: vec![-1i8; total_mb],
@@ -287,9 +291,9 @@ pub fn push_custom_reference(
     let total_mb = dec.mb_width * dec.mb_height;
     let total_4x4 = dec.mb_width * 4 * dec.mb_height * 4;
     dec.reference_frames.push_back(ReferencePicture {
-        y: vec![y_value; dec.ref_y.len()],
-        u: vec![128u8; dec.ref_u.len()],
-        v: vec![128u8; dec.ref_v.len()],
+        y: Arc::new(vec![y_value; dec.ref_y.len()]),
+        u: Arc::new(vec![128u8; dec.ref_u.len()]),
+        v: Arc::new(vec![128u8; dec.ref_v.len()]),
         mv_l0_x: vec![0i16; total_mb],
         mv_l0_y: vec![0i16; total_mb],
         ref_idx_l0: vec![-1i8; total_mb],
@@ -342,9 +346,9 @@ pub fn push_custom_reference_with_l0_motion(
         ref_idx_l0_4x4[0] = motion.2;
     }
     dec.reference_frames.push_back(ReferencePicture {
-        y: vec![y_value; dec.ref_y.len()],
-        u: vec![128u8; dec.ref_u.len()],
-        v: vec![128u8; dec.ref_v.len()],
+        y: Arc::new(vec![y_value; dec.ref_y.len()]),
+        u: Arc::new(vec![128u8; dec.ref_u.len()]),
+        v: Arc::new(vec![128u8; dec.ref_v.len()]),
         mv_l0_x,
         mv_l0_y,
         ref_idx_l0,
@@ -398,9 +402,9 @@ pub fn push_custom_reference_with_l1_motion_and_ref_l1_poc(
         ref_idx_l1_4x4[0] = motion.2;
     }
     dec.reference_frames.push_back(ReferencePicture {
-        y: vec![y_value; dec.ref_y.len()],
-        u: vec![128u8; dec.ref_u.len()],
-        v: vec![128u8; dec.ref_v.len()],
+        y: Arc::new(vec![y_value; dec.ref_y.len()]),
+        u: Arc::new(vec![128u8; dec.ref_u.len()]),
+        v: Arc::new(vec![128u8; dec.ref_v.len()]),
         mv_l0_x: vec![0i16; total_mb],
         mv_l0_y: vec![0i16; total_mb],
         ref_idx_l0: vec![-1i8; total_mb],
@@ -437,9 +441,9 @@ pub fn push_horizontal_gradient_reference(
         }
     }
     dec.reference_frames.push_back(ReferencePicture {
-        y,
-        u: vec![128u8; dec.ref_u.len()],
-        v: vec![128u8; dec.ref_v.len()],
+        y: Arc::new(y),
+        u: Arc::new(vec![128u8; dec.ref_u.len()]),
+        v: Arc::new(vec![128u8; dec.ref_v.len()]),
         mv_l0_x: vec![0i16; total_mb],
         mv_l0_y: vec![0i16; total_mb],
         ref_idx_l0: vec![-1i8; total_mb],
@@ -463,9 +467,9 @@ pub fn push_horizontal_gradient_reference(
 
 pub fn build_constant_ref_planes(dec: &H264Decoder, y: u8, u: u8, v: u8) -> RefPlanes {
     RefPlanes {
-        y: vec![y; dec.ref_y.len()],
-        u: vec![u; dec.ref_u.len()],
-        v: vec![v; dec.ref_v.len()],
+        y: Arc::new(vec![y; dec.ref_y.len()]),
+        u: Arc::new(vec![u; dec.ref_u.len()]),
+        v: Arc::new(vec![v; dec.ref_v.len()]),
         frame_num: 0,
         poc: 0,
         is_long_term: false,

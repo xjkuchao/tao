@@ -30,6 +30,7 @@ mod tests;
 
 use common::*;
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use syntax::*;
 
 use log::{debug, warn};
@@ -205,9 +206,9 @@ enum BMbType {
 
 #[derive(Clone)]
 struct ReferencePicture {
-    y: Vec<u8>,
-    u: Vec<u8>,
-    v: Vec<u8>,
+    y: Arc<Vec<u8>>,
+    u: Arc<Vec<u8>>,
+    v: Arc<Vec<u8>>,
     /// 参考帧宏块级 list0 MV X (1/4 像素).
     mv_l0_x: Vec<i16>,
     /// 参考帧宏块级 list0 MV Y (1/4 像素).
@@ -252,9 +253,9 @@ struct BMotion {
 
 #[derive(Clone)]
 struct RefPlanes {
-    y: Vec<u8>,
-    u: Vec<u8>,
-    v: Vec<u8>,
+    y: Arc<Vec<u8>>,
+    u: Arc<Vec<u8>>,
+    v: Arc<Vec<u8>>,
     frame_num: u32,
     poc: i32,
     is_long_term: bool,
@@ -294,6 +295,10 @@ pub struct H264Decoder {
     ref_y: Vec<u8>,
     ref_u: Vec<u8>,
     ref_v: Vec<u8>,
+    /// 零参考回退缓冲(共享), 避免频繁重复分配整帧零值平面.
+    zero_ref_y: Arc<Vec<u8>>,
+    zero_ref_u: Arc<Vec<u8>>,
+    zero_ref_v: Arc<Vec<u8>>,
     stride_y: usize,
     stride_c: usize,
     /// 每个宏块的类型 (0=I_4x4, 1-24=I_16x16, 25=I_PCM, 255=P_Skip)
@@ -492,6 +497,9 @@ impl H264Decoder {
             ref_y: Vec::new(),
             ref_u: Vec::new(),
             ref_v: Vec::new(),
+            zero_ref_y: Arc::new(Vec::new()),
+            zero_ref_u: Arc::new(Vec::new()),
+            zero_ref_v: Arc::new(Vec::new()),
             stride_y: 0,
             stride_c: 0,
             mb_types: Vec::new(),
@@ -598,6 +606,9 @@ impl H264Decoder {
         self.ref_y = vec![128u8; self.stride_y * self.mb_height * 16];
         self.ref_u = vec![128u8; self.stride_c * self.mb_height * 8];
         self.ref_v = vec![128u8; self.stride_c * self.mb_height * 8];
+        self.zero_ref_y = Arc::new(vec![128u8; self.ref_y.len()]);
+        self.zero_ref_u = Arc::new(vec![128u8; self.ref_u.len()]);
+        self.zero_ref_v = Arc::new(vec![128u8; self.ref_v.len()]);
         self.mb_types = vec![0u8; total_mb];
         self.mb_skip_flags = vec![0u8; total_mb];
         self.mb_qp = vec![26i32; total_mb];
