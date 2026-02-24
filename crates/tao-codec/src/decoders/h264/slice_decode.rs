@@ -230,6 +230,7 @@ impl H264Decoder {
                 header.frame_num,
             );
             self.last_ref_l0_poc = ref_l0_list.iter().map(|rp| rp.poc).collect();
+            self.last_ref_l1_poc.clear();
             self.decode_p_slice_mbs(
                 &mut cabac,
                 &mut ctxs,
@@ -257,6 +258,7 @@ impl H264Decoder {
             &header.ref_pic_list_mod_l1,
             header.frame_num,
         );
+        self.last_ref_l1_poc = ref_l1_list.iter().map(|rp| rp.poc).collect();
         self.decode_b_slice_mbs(
             &mut cabac,
             &mut ctxs,
@@ -382,6 +384,7 @@ impl H264Decoder {
         } else {
             Vec::new()
         };
+        self.last_ref_l1_poc = ref_l1_list.iter().map(|rp| rp.poc).collect();
         let trace_cavlc_bits = std::env::var("TAO_H264_CAVLC_BIT_TRACE").is_ok();
         let mut skip_run_left = 0u32;
         for mb_idx in first..total_mbs {

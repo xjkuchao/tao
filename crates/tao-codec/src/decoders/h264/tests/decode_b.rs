@@ -70,6 +70,62 @@ fn test_decode_cavlc_slice_data_b_skip_run_temporal_direct_uses_colocated_mv() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_b_skip_run_temporal_direct_list1_col_zero_consistent_output_and_mv()
+{
+    let mut dec = build_test_decoder();
+    dec.last_slice_type = 1;
+    dec.last_poc = 16;
+    push_custom_reference(&mut dec, 1, 8, 0, None);
+    {
+        let ref_l0 = dec
+            .reference_frames
+            .back_mut()
+            .expect("应存在 list0 参考帧");
+        for row in 0..dec.height as usize {
+            let edge_idx = row * dec.stride_y + 1;
+            if edge_idx < ref_l0.y.len() {
+                ref_l0.y[edge_idx] = 255;
+            }
+        }
+    }
+    push_custom_reference_with_l1_motion_and_ref_l1_poc(
+        &mut dec,
+        2,
+        16,
+        100,
+        None,
+        (1, 0, 0),
+        vec![8],
+    );
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+    header.direct_spatial_mv_pred_flag = false;
+
+    // mb_skip_run = 1, 覆盖单宏块帧
+    let rbsp = build_rbsp_from_ues(&[1]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    assert_eq!(
+        dec.ref_y[0], 50,
+        "col_zero(list1 回退分支)命中后应按零 MV 融合采样, 输出像素应与零位移一致"
+    );
+    assert_eq!(dec.mv_l0_x[0], 0, "col_zero 命中后记录的 L0 MV(x) 应为 0");
+    assert_eq!(dec.mv_l0_y[0], 0, "col_zero 命中后记录的 L0 MV(y) 应为 0");
+    assert_eq!(
+        dec.ref_idx_l0[0], 0,
+        "col_zero 命中后记录的 L0 ref_idx 应为 0"
+    );
+    assert_eq!(dec.mv_l1_x[0], 0, "col_zero 命中后记录的 L1 MV(x) 应为 0");
+    assert_eq!(dec.mv_l1_y[0], 0, "col_zero 命中后记录的 L1 MV(y) 应为 0");
+    assert_eq!(
+        dec.ref_idx_l1[0], 0,
+        "col_zero 命中后记录的 L1 ref_idx 应为 0"
+    );
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_b_skip_run_uses_predicted_mv_from_left_neighbor() {
     let mut dec = build_test_decoder();
     dec.width = 32;

@@ -771,6 +771,141 @@ fn test_build_b_direct_motion_temporal_fallbacks_to_l0_colocated_mb() {
 }
 
 #[test]
+fn test_build_b_direct_motion_temporal_colocated_list1_keeps_real_ref_idx() {
+    let mut dec = build_test_decoder();
+    dec.last_slice_type = 1;
+    dec.last_poc = 10;
+    push_custom_reference_with_l1_motion_and_ref_l1_poc(
+        &mut dec,
+        9,
+        14,
+        90,
+        None,
+        (20, 4, 1),
+        vec![2, 8],
+    );
+
+    let mut ref_l0_a = build_constant_ref_planes(&dec, 20, 128, 128);
+    ref_l0_a.frame_num = 1;
+    ref_l0_a.poc = 2;
+    let mut ref_l0_b = build_constant_ref_planes(&dec, 30, 128, 128);
+    ref_l0_b.frame_num = 2;
+    ref_l0_b.poc = 8;
+    let ref_l0_list = vec![ref_l0_a, ref_l0_b];
+
+    let mut ref_l1_0 = build_constant_ref_planes(&dec, 40, 128, 128);
+    ref_l1_0.frame_num = 9;
+    ref_l1_0.poc = 14;
+    let ref_l1_list = vec![ref_l1_0];
+
+    let (motion_l0, motion_l1) =
+        dec.build_b_direct_motion(0, 0, 0, 0, false, &ref_l0_list, &ref_l1_list);
+    let motion_l0 = motion_l0.expect("temporal direct 应提供 L0 运动信息");
+    let motion_l1 = motion_l1.expect("temporal direct 应提供 L1 运动信息");
+    assert_eq!(
+        motion_l0.ref_idx, 1,
+        "colocated list1 的真实 ref_idx=1 必须保留"
+    );
+    assert_eq!(motion_l0.mv_x, 7, "L0 MV(x) 应按真实 ref_idx 计算缩放");
+    assert_eq!(motion_l0.mv_y, 1, "L0 MV(y) 应按真实 ref_idx 计算缩放");
+    assert_eq!(
+        motion_l1.ref_idx, 0,
+        "temporal direct 的 L1 ref_idx 固定为 0"
+    );
+    assert_eq!(motion_l1.mv_x, -13, "L1 MV(x) 应与共定位 MV 做差");
+    assert_eq!(motion_l1.mv_y, -3, "L1 MV(y) 应与共定位 MV 做差");
+}
+
+#[test]
+fn test_build_b_direct_motion_temporal_map_col_uses_ref_l1_poc() {
+    let mut dec = build_test_decoder();
+    dec.last_slice_type = 1;
+    dec.last_poc = 10;
+    push_custom_reference_with_l1_motion_and_ref_l1_poc(
+        &mut dec,
+        9,
+        14,
+        90,
+        None,
+        (20, 4, 0),
+        vec![8],
+    );
+    {
+        let col_pic = dec.reference_frames.back_mut().expect("应存在共定位参考帧");
+        col_pic.ref_l0_poc = vec![2];
+    }
+
+    let mut ref_l0_a = build_constant_ref_planes(&dec, 20, 128, 128);
+    ref_l0_a.frame_num = 1;
+    ref_l0_a.poc = 2;
+    let mut ref_l0_b = build_constant_ref_planes(&dec, 30, 128, 128);
+    ref_l0_b.frame_num = 2;
+    ref_l0_b.poc = 8;
+    let ref_l0_list = vec![ref_l0_a, ref_l0_b];
+
+    let mut ref_l1_0 = build_constant_ref_planes(&dec, 40, 128, 128);
+    ref_l1_0.frame_num = 9;
+    ref_l1_0.poc = 14;
+    let ref_l1_list = vec![ref_l1_0];
+
+    let (motion_l0, _) = dec.build_b_direct_motion(0, 0, 0, 0, false, &ref_l0_list, &ref_l1_list);
+    let motion_l0 = motion_l0.expect("temporal direct 应提供 L0 运动信息");
+    assert_eq!(
+        motion_l0.ref_idx, 1,
+        "map_col 应使用 ref_l1_poc(8) 映射到当前 list0 索引 1, 不能误用 ref_l0_poc(2)"
+    );
+}
+
+#[test]
+fn test_build_b_direct_motion_temporal_col_zero_uses_list1_fallback_branch() {
+    let mut dec = build_test_decoder();
+    dec.last_slice_type = 1;
+    dec.last_poc = 16;
+    push_custom_reference_with_l1_motion_and_ref_l1_poc(
+        &mut dec,
+        9,
+        16,
+        90,
+        None,
+        (1, -1, 0),
+        vec![8],
+    );
+
+    let mut ref_l0_0 = build_constant_ref_planes(&dec, 20, 128, 128);
+    ref_l0_0.frame_num = 1;
+    ref_l0_0.poc = 8;
+    let ref_l0_list = vec![ref_l0_0];
+
+    let mut ref_l1_0 = build_constant_ref_planes(&dec, 40, 128, 128);
+    ref_l1_0.frame_num = 9;
+    ref_l1_0.poc = 16;
+    let ref_l1_list = vec![ref_l1_0];
+
+    let (motion_l0, motion_l1) =
+        dec.build_b_direct_motion(0, 0, 0, 0, false, &ref_l0_list, &ref_l1_list);
+    let motion_l0 = motion_l0.expect("temporal direct 应提供 L0 运动信息");
+    let motion_l1 = motion_l1.expect("temporal direct 应提供 L1 运动信息");
+    assert_eq!(motion_l0.ref_idx, 0, "L0 索引应映射到当前 list0[0]");
+    assert_eq!(motion_l1.ref_idx, 0, "L1 索引应固定为 0");
+    assert_eq!(
+        motion_l0.mv_x, 0,
+        "col_zero list1 回退分支命中后 L0 MV(x) 应清零"
+    );
+    assert_eq!(
+        motion_l0.mv_y, 0,
+        "col_zero list1 回退分支命中后 L0 MV(y) 应清零"
+    );
+    assert_eq!(
+        motion_l1.mv_x, 0,
+        "col_zero list1 回退分支命中后 L1 MV(x) 应清零"
+    );
+    assert_eq!(
+        motion_l1.mv_y, 0,
+        "col_zero list1 回退分支命中后 L1 MV(y) 应清零"
+    );
+}
+
+#[test]
 
 fn test_compute_slice_poc_type2_wrap_and_non_ref() {
     let mut dec = build_test_decoder();
