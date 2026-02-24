@@ -711,8 +711,10 @@ fn boundary_strength_within_mb_common(
 
 fn motion_boundary_strength(ctx: &DeblockMbContext<'_>, idx_a: usize, idx_b: usize) -> u8 {
     combine_motion_list_mismatch(
-        list_motion_mismatch(ctx.ref_idx_l0, ctx.mv_l0_x, ctx.mv_l0_y, idx_a, idx_b),
-        list_motion_mismatch(ctx.ref_idx_l1, ctx.mv_l1_x, ctx.mv_l1_y, idx_a, idx_b),
+        motion_sample_at(ctx.ref_idx_l0, ctx.mv_l0_x, ctx.mv_l0_y, idx_a),
+        motion_sample_at(ctx.ref_idx_l0, ctx.mv_l0_x, ctx.mv_l0_y, idx_b),
+        motion_sample_at(ctx.ref_idx_l1, ctx.mv_l1_x, ctx.mv_l1_y, idx_a),
+        motion_sample_at(ctx.ref_idx_l1, ctx.mv_l1_x, ctx.mv_l1_y, idx_b),
     )
     .unwrap_or(1)
 }
@@ -822,35 +824,75 @@ fn cross_slice_boundary_is_disabled(
     sid_a != u32::MAX && sid_b != u32::MAX && sid_a != sid_b
 }
 
-fn list_motion_mismatch(
+#[derive(Clone, Copy)]
+struct MotionSample {
+    ref_idx: i8,
+    mv_x: i16,
+    mv_y: i16,
+}
+
+fn motion_sample_at(
     ref_idx: Option<&[i8]>,
     mv_x: Option<&[i16]>,
     mv_y: Option<&[i16]>,
-    idx_a: usize,
-    idx_b: usize,
-) -> Option<bool> {
+    idx: usize,
+) -> Option<MotionSample> {
     let (Some(ref_idx), Some(mv_x), Some(mv_y)) = (ref_idx, mv_x, mv_y) else {
         return None;
     };
-    if idx_a >= ref_idx.len() || idx_b >= ref_idx.len() {
+    if idx >= ref_idx.len() {
         return None;
     }
-    if idx_a >= mv_x.len() || idx_b >= mv_x.len() || idx_a >= mv_y.len() || idx_b >= mv_y.len() {
+    if idx >= mv_x.len() || idx >= mv_y.len() {
         return None;
     }
-    if ref_idx[idx_a] != ref_idx[idx_b] {
+    Some(MotionSample {
+        ref_idx: ref_idx[idx],
+        mv_x: mv_x[idx],
+        mv_y: mv_y[idx],
+    })
+}
+
+fn list_motion_mismatch(a: Option<MotionSample>, b: Option<MotionSample>) -> Option<bool> {
+    let (Some(a), Some(b)) = (a, b) else {
+        return None;
+    };
+    if a.ref_idx != b.ref_idx {
         return Some(true);
     }
-    if ref_idx[idx_a] < 0 {
+    if a.ref_idx < 0 {
         return Some(false);
     }
-    let mv_dx = (i32::from(mv_x[idx_a]) - i32::from(mv_x[idx_b])).abs();
-    let mv_dy = (i32::from(mv_y[idx_a]) - i32::from(mv_y[idx_b])).abs();
+    let mv_dx = (i32::from(a.mv_x) - i32::from(b.mv_x)).abs();
+    let mv_dy = (i32::from(a.mv_y) - i32::from(b.mv_y)).abs();
     Some(mv_dx >= 4 || mv_dy >= 4)
 }
 
-fn combine_motion_list_mismatch(list0: Option<bool>, list1: Option<bool>) -> Option<u8> {
+fn combine_motion_list_mismatch(
+    l0_a: Option<MotionSample>,
+    l0_b: Option<MotionSample>,
+    l1_a: Option<MotionSample>,
+    l1_b: Option<MotionSample>,
+) -> Option<u8> {
+    let list0 = list_motion_mismatch(l0_a, l0_b);
+    let list1 = list_motion_mismatch(l1_a, l1_b);
+
     if list0.unwrap_or(false) || list1.unwrap_or(false) {
+        // 对齐 FFmpeg 的 B-slice 交叉匹配语义:
+        // 直接匹配不一致时,若 L0/L1 交叉参考一致,则再按交叉 MV 判断.
+        if let (Some(a0), Some(b0), Some(a1), Some(b1)) = (l0_a, l0_b, l1_a, l1_b) {
+            let cross_ref_match = a0.ref_idx >= 0
+                && b0.ref_idx >= 0
+                && a1.ref_idx >= 0
+                && b1.ref_idx >= 0
+                && a0.ref_idx == b1.ref_idx
+                && a1.ref_idx == b0.ref_idx;
+            if cross_ref_match {
+                let cross_l0 = list_motion_mismatch(Some(a0), Some(b1)).unwrap_or(false);
+                let cross_l1 = list_motion_mismatch(Some(a1), Some(b0)).unwrap_or(false);
+                return Some(if cross_l0 || cross_l1 { 1 } else { 0 });
+            }
+        }
         return Some(1);
     }
     if list0.is_some() || list1.is_some() {
@@ -890,20 +932,10 @@ fn motion_boundary_strength_4x4(
     let idx_a = luma4x4_index(ctx.mb_width, ctx.mb_height, x4_a, y4_a)?;
     let idx_b = luma4x4_index(ctx.mb_width, ctx.mb_height, x4_b, y4_b)?;
     combine_motion_list_mismatch(
-        list_motion_mismatch(
-            ctx.ref_idx_l0_4x4,
-            ctx.mv_l0_x_4x4,
-            ctx.mv_l0_y_4x4,
-            idx_a,
-            idx_b,
-        ),
-        list_motion_mismatch(
-            ctx.ref_idx_l1_4x4,
-            ctx.mv_l1_x_4x4,
-            ctx.mv_l1_y_4x4,
-            idx_a,
-            idx_b,
-        ),
+        motion_sample_at(ctx.ref_idx_l0_4x4, ctx.mv_l0_x_4x4, ctx.mv_l0_y_4x4, idx_a),
+        motion_sample_at(ctx.ref_idx_l0_4x4, ctx.mv_l0_x_4x4, ctx.mv_l0_y_4x4, idx_b),
+        motion_sample_at(ctx.ref_idx_l1_4x4, ctx.mv_l1_x_4x4, ctx.mv_l1_y_4x4, idx_a),
+        motion_sample_at(ctx.ref_idx_l1_4x4, ctx.mv_l1_x_4x4, ctx.mv_l1_y_4x4, idx_b),
     )
 }
 

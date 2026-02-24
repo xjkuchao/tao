@@ -452,6 +452,8 @@ pub struct H264Decoder {
     debug_force_inter_mb0_use_8x8: bool,
     /// `TAO_H264_DEBUG_INTER_USE_OLD_TRANSFORM_CTX` 缓存.
     debug_inter_use_old_transform_ctx: bool,
+    /// `TAO_H264_DEBUG_INTER_PARSE_T8X8_USE_4X4` 缓存.
+    debug_inter_parse_t8x8_use_4x4: bool,
     /// `TAO_H264_DEBUG_SKIP_INTER_RESIDUAL` 缓存.
     debug_skip_inter_residual: bool,
     /// `TAO_H264_DEBUG_SKIP_INTER_LUMA_RESIDUAL` 缓存.
@@ -577,6 +579,7 @@ impl H264Decoder {
             debug_force_inter_use_8x8: None,
             debug_force_inter_mb0_use_8x8: false,
             debug_inter_use_old_transform_ctx: false,
+            debug_inter_parse_t8x8_use_4x4: false,
             debug_skip_inter_residual: false,
             debug_skip_inter_luma_residual: false,
             debug_skip_inter_chroma_residual: false,
@@ -1197,6 +1200,8 @@ impl H264Decoder {
             std::env::var("TAO_H264_DEBUG_FORCE_INTER_MB0_USE_8X8").as_deref() == Ok("1");
         self.debug_inter_use_old_transform_ctx =
             std::env::var("TAO_H264_DEBUG_INTER_USE_OLD_TRANSFORM_CTX").as_deref() == Ok("1");
+        self.debug_inter_parse_t8x8_use_4x4 =
+            std::env::var("TAO_H264_DEBUG_INTER_PARSE_T8X8_USE_4X4").as_deref() == Ok("1");
         self.debug_skip_inter_residual =
             std::env::var("TAO_H264_DEBUG_SKIP_INTER_RESIDUAL").as_deref() == Ok("1");
         self.debug_skip_inter_luma_residual =
@@ -1460,3 +1465,4 @@ impl Decoder for H264Decoder {
         self.mb_slice_first_mb.fill(u32::MAX);
     }
 }
+mod test_ctx;

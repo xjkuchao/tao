@@ -816,7 +816,7 @@ fn analyze_frame_stats_enabled() -> bool {
         .unwrap_or(false)
 }
 
-fn print_first_frame_stats(path: &str, width: u32, height: u32, ff: &[u8], tao: &[u8]) {
+fn print_frame_stats(path: &str, frame_idx: usize, width: u32, height: u32, ff: &[u8], tao: &[u8]) {
     let y_size = (width as usize) * (height as usize);
     let y_ff = &ff[..y_size.min(ff.len())];
     let y_tao = &tao[..y_size.min(tao.len())];
@@ -833,8 +833,9 @@ fn print_first_frame_stats(path: &str, width: u32, height: u32, ff: &[u8], tao: 
         y_tao.iter().map(|&v| v as u64).sum::<u64>() as f64 / y_tao.len() as f64
     };
     println!(
-        "[{}] 首帧Y统计: FFmpeg(mean={:.3}, v128={}/{}), Tao(mean={:.3}, v128={}/{})",
+        "[{}] 帧{} Y统计: FFmpeg(mean={:.3}, v128={}/{}), Tao(mean={:.3}, v128={}/{})",
         path,
+        frame_idx,
         ff_mean,
         ff_128,
         y_ff.len(),
@@ -846,7 +847,10 @@ fn print_first_frame_stats(path: &str, width: u32, height: u32, ff: &[u8], tao: 
     let w = width as usize;
     let dump_rows = 4.min(height as usize);
     let dump_cols = 128.min(w);
-    println!("[{}] 首帧Y像素(前{}行x{}列):", path, dump_rows, dump_cols);
+    println!(
+        "[{}] 帧{} Y像素(前{}行x{}列):",
+        path, frame_idx, dump_rows, dump_cols
+    );
     for row in 0..dump_rows {
         let off = row * w;
         let ff_row: Vec<u8> = y_ff[off..off + dump_cols].to_vec();
@@ -888,17 +892,18 @@ fn print_first_frame_stats(path: &str, width: u32, height: u32, ff: &[u8], tao: 
     }
     if let Some((x, y, ff_v, tao_v, d)) = first_mismatch {
         println!(
-            "[{}] 首个不匹配: ({},{}) FF={} Tao={} diff={}",
-            path, x, y, ff_v, tao_v, d
+            "[{}] 帧{} 首个不匹配: ({},{}) FF={} Tao={} diff={}",
+            path, frame_idx, x, y, ff_v, tao_v, d
         );
     }
     println!(
-        "[{}] 最大误差位置: ({},{}) diff={}",
-        path, max_err_pos.0, max_err_pos.1, max_err_pos.2
+        "[{}] 帧{} 最大误差位置: ({},{}) diff={}",
+        path, frame_idx, max_err_pos.0, max_err_pos.1, max_err_pos.2
     );
     println!(
-        "[{}] 误差分布: 0:{} 1:{} 2-3:{} 4-7:{} 8-15:{} 16-31:{} 32-63:{} 64+:{}",
+        "[{}] 帧{} 误差分布: 0:{} 1:{} 2-3:{} 4-7:{} 8-15:{} 16-31:{} 32-63:{} 64+:{}",
         path,
+        frame_idx,
         err_hist[0],
         err_hist[1],
         err_hist[2],
@@ -928,16 +933,16 @@ fn print_first_frame_stats(path: &str, width: u32, height: u32, ff: &[u8], tao: 
         let mb_x = x / 16;
         let mb_y = y / 16;
         println!(
-            "[{}] 首个大误差(>=10): ({},{}) MB({},{}) FF={} Tao={} diff={}",
-            path, x, y, mb_x, mb_y, fv, tv, d
+            "[{}] 帧{} 首个大误差(>=10): ({},{}) MB({},{}) FF={} Tao={} diff={}",
+            path, frame_idx, x, y, mb_x, mb_y, fv, tv, d
         );
     }
     if let Some((x, y, fv, tv, d)) = first_huge {
         let mb_x = x / 16;
         let mb_y = y / 16;
         println!(
-            "[{}] 首个极大误差(>=64): ({},{}) MB({},{}) FF={} Tao={} diff={}",
-            path, x, y, mb_x, mb_y, fv, tv, d
+            "[{}] 帧{} 首个极大误差(>=64): ({},{}) MB({},{}) FF={} Tao={} diff={}",
+            path, frame_idx, x, y, mb_x, mb_y, fv, tv, d
         );
     }
 
@@ -948,8 +953,8 @@ fn print_first_frame_stats(path: &str, width: u32, height: u32, ff: &[u8], tao: 
         let start_row = mb_y * 16;
         let start_col = mb_x * 16;
         println!(
-            "[{}] 首个不匹配宏块({},{}), 像素({},{})附近:",
-            path, mb_x, mb_y, x, y
+            "[{}] 帧{} 首个不匹配宏块({},{}), 像素({},{})附近:",
+            path, frame_idx, mb_x, mb_y, x, y
         );
         for r in start_row..(start_row + 4).min(height as usize) {
             let off = r * w + start_col;
@@ -989,8 +994,8 @@ fn print_first_frame_stats(path: &str, width: u32, height: u32, ff: &[u8], tao: 
                 }
                 if max_d >= 1 && !found {
                     println!(
-                        "[{}] 首个大误差MB: ({},{}) max_d={}",
-                        path, mb_col, mb_row, max_d
+                        "[{}] 帧{} 首个大误差MB: ({},{}) max_d={}",
+                        path, frame_idx, mb_col, mb_row, max_d
                     );
                     for dy in 0..8 {
                         let py = mb_row * 16 + dy;
@@ -1214,6 +1219,14 @@ fn print_compare_stats(path: &str, tao_frames: usize, ff_frames: usize, stats: &
         stats.v.psnr(),
         stats.v.precision_pct(),
     );
+    let first_mismatch = stats.first_mismatch_frame.map(|v| v as i64).unwrap_or(-1);
+    println!(
+        "[{}] SCORE precision={:.6} first_mismatch={} frames={}",
+        path,
+        stats.global_precision_pct(),
+        first_mismatch,
+        stats.frame_count
+    );
     if let Some(frame_idx) = stats.first_mismatch_frame {
         eprintln!("[{}] 首个不一致帧索引={}", path, frame_idx);
     }
@@ -1288,7 +1301,18 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if analyze_frame_stats_enabled() && !ff_frames.is_empty() && !tao_frames.is_empty() {
-        print_first_frame_stats(path, tao_w, tao_h, &ff_frames[0], &tao_frames[0]);
+        print_frame_stats(path, 0, tao_w, tao_h, &ff_frames[0], &tao_frames[0]);
+        if std::env::var("TAO_H264_COMPARE_ANALYZE_FIRST_MISMATCH_FRAME")
+            .as_deref()
+            == Ok("1")
+        {
+            let n = ff_frames.len().min(tao_frames.len());
+            if let Some(first_idx) = (0..n).find(|&i| ff_frames[i] != tao_frames[i])
+                && first_idx > 0
+            {
+                print_frame_stats(path, first_idx, tao_w, tao_h, &ff_frames[first_idx], &tao_frames[first_idx]);
+            }
+        }
 
         // 检查帧对齐: Tao 帧 0 与 FFmpeg 各帧的精度
         let y_size = (tao_w as usize) * (tao_h as usize);

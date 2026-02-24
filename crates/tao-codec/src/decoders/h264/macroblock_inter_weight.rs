@@ -809,7 +809,8 @@ impl H264Decoder {
         let forced_use_8x8 = self.debug_force_inter_use_8x8;
         let force_mb0_use_8x8 = self.debug_force_inter_mb0_use_8x8;
         let use_old_transform_ctx = self.debug_inter_use_old_transform_ctx;
-        let use_8x8 = if let Some(v) = forced_use_8x8 {
+        let parse_t8x8_use_4x4 = self.debug_inter_parse_t8x8_use_4x4;
+        let parsed_use_8x8 = if let Some(v) = forced_use_8x8 {
             luma_cbp != 0 && v
         } else if force_mb0_use_8x8 && mb_idx == 0 {
             luma_cbp != 0
@@ -827,6 +828,7 @@ impl H264Decoder {
                     self.decode_transform_size_8x8_flag_inter(cabac, ctxs, mb_x, mb_y)
                 }
         };
+        let use_8x8_residual = parsed_use_8x8 && !parse_t8x8_use_4x4;
         log_stage("transform_size_8x8_flag", cabac, &mut stage_anchor_bits);
         if trace_slice_mb && trace_this_mb {
             let forced_use_8x8_label = match forced_use_8x8 {
@@ -835,11 +837,18 @@ impl H264Decoder {
                 None => "auto",
             };
             eprintln!(
-                "[H264_P_T8X8] idx={} mb=({}, {}) p_mb_type={} use_8x8={} forced={}",
-                mb_idx, mb_x, mb_y, p_mb_type, use_8x8, forced_use_8x8_label
+                "[H264_P_T8X8] idx={} mb=({}, {}) p_mb_type={} parsed_use_8x8={} residual_use_8x8={} forced={} parse_use4x4={}",
+                mb_idx,
+                mb_x,
+                mb_y,
+                p_mb_type,
+                parsed_use_8x8,
+                use_8x8_residual,
+                forced_use_8x8_label,
+                parse_t8x8_use_4x4
             );
         }
-        self.set_transform_8x8_flag(mb_x, mb_y, use_8x8);
+        self.set_transform_8x8_flag(mb_x, mb_y, parsed_use_8x8);
 
         let skip_inter_residual = self.debug_skip_inter_residual;
         let skip_inter_luma_residual = self.debug_skip_inter_luma_residual;
@@ -851,7 +860,7 @@ impl H264Decoder {
         };
         if !skip_inter_residual {
             if !skip_inter_luma_residual {
-                if use_8x8 {
+                if use_8x8_residual {
                     self.decode_i8x8_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp, false);
                 } else {
                     self.decode_inter_4x4_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp);

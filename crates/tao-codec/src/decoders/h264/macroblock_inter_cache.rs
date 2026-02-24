@@ -839,7 +839,8 @@ impl H264Decoder {
 
         let forced_use_8x8 = self.debug_force_inter_use_8x8;
         let use_old_transform_ctx = self.debug_inter_use_old_transform_ctx;
-        let use_8x8 = if let Some(v) = forced_use_8x8 {
+        let parse_t8x8_use_4x4 = self.debug_inter_parse_t8x8_use_4x4;
+        let parsed_use_8x8 = if let Some(v) = forced_use_8x8 {
             luma_cbp != 0 && v
         } else {
             luma_cbp != 0
@@ -855,11 +856,12 @@ impl H264Decoder {
                     self.decode_transform_size_8x8_flag_inter(cabac, ctxs, mb_x, mb_y)
                 }
         };
-        self.set_transform_8x8_flag(mb_x, mb_y, use_8x8);
+        let use_8x8_residual = parsed_use_8x8 && !parse_t8x8_use_4x4;
+        self.set_transform_8x8_flag(mb_x, mb_y, parsed_use_8x8);
 
         let skip_inter_residual = self.debug_skip_inter_residual;
         if !skip_inter_residual {
-            if use_8x8 {
+            if use_8x8_residual {
                 self.decode_i8x8_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp, false);
             } else {
                 self.decode_inter_4x4_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp);

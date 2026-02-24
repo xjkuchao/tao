@@ -75,6 +75,7 @@ impl<'a> CabacDecoder<'a> {
     }
 
     /// 带上下文模型的算术解码 (regular mode)
+    #[track_caller]
     pub fn decode_decision(&mut self, ctx: &mut CabacCtx) -> u32 {
         let q_idx = ((self.cod_i_range >> 6) & 3) as usize;
         let s = ctx.state as usize;
@@ -96,6 +97,11 @@ impl<'a> CabacDecoder<'a> {
             self.renormalize();
             symbol
         };
+        if self.bin_trace_limit > 0 {
+            let caller = std::panic::Location::caller();
+            eprintln!("[CABAC_BIN] {}:{} state={} mps={} res={}", caller.file().split('/').last().unwrap_or(""), caller.line(), s, ctx.mps, result);
+            self.bin_trace_limit -= 1;
+        }
         result
     }
 

@@ -319,6 +319,26 @@ TAO_H264_SLICE_TRACE=1 TAO_H264_SLICE_TRACE_MB=1 \
 
 目标: 不再广撒网, 直接锁定 `frame 2` 起始链路分叉点, 降低试错成本.
 
+### 自动轮转脚本(新增)
+
+可直接使用以下脚本执行 `G0->G1->G2->G3` 全流程, 自动生成分数和轮次日志:
+
+```bash
+TAO_ROUND_SKIP_STRICT=1 \
+  plans/tao-codec/video/h264/run_accuracy_round.sh R{n} "本轮假设说明"
+```
+
+产物:
+
+- 原始日志: `data/h264_round_logs/R{n}_f{3|10|67|299}.log`
+- 分数基线: `data/h264_round_logs/best_score.env`
+- 轮次汇总: `plans/tao-codec/video/h264/round_journal.md`
+
+说明:
+
+- 当脚本判定 `Score=(P299, first_mismatch, P67, P10)` 提升时, 默认执行 5 项严格验证.
+- 调试阶段可设置 `TAO_ROUND_SKIP_STRICT=1` 跳过严格验证, 仅用于快速收敛, 不可用于提交.
+
 ### Step 1. 固化基线 (每轮开工先跑, 防止误判)
 
 ```bash

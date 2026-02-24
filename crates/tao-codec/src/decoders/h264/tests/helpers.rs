@@ -210,6 +210,7 @@ pub fn build_test_decoder() -> H264Decoder {
         debug_force_inter_use_8x8: None,
         debug_force_inter_mb0_use_8x8: false,
         debug_inter_use_old_transform_ctx: false,
+        debug_inter_parse_t8x8_use_4x4: false,
         debug_skip_inter_residual: false,
         debug_skip_inter_luma_residual: false,
         debug_skip_inter_chroma_residual: false,

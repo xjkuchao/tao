@@ -472,7 +472,11 @@ impl H264Decoder {
             h,
             mv_x_qpel,
             mv_y_qpel,
-            p_l0_weight(l0_weights, ref_idx),
+            if std::env::var("TAO_H264_DEBUG_DISABLE_WEIGHTED_PRED").as_deref() == Ok("1") {
+                None
+            } else {
+                p_l0_weight(l0_weights, ref_idx)
+            },
             luma_log2_weight_denom,
             chroma_log2_weight_denom,
         );

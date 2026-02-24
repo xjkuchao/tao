@@ -469,7 +469,16 @@ impl H264Decoder {
                 col_pic.frame_num
             );
         }
-        0
+        if ref_l0_list.is_empty() {
+            -1
+        } else {
+            let idx = col_ref_idx.max(0) as usize;
+            if idx < ref_l0_list.len() {
+                idx as i8
+            } else {
+                0
+            }
+        }
     }
 
     fn clamp_direct_ref_idx(candidate: Option<i8>, list_len: usize) -> Option<i8> {
@@ -862,6 +871,7 @@ impl H264Decoder {
     ) {
         self.prev_qp_delta_nz = false;
         let mut cur_qp = slice_qp;
+        eprintln!("[TAO_DEBUG] decode_p_slice_mbs: first={} total={}", first, total);
         let trace_slice = self.trace_slice;
         let trace_slice_mb = self.trace_slice_mb;
         let trace_mb_bits = self.trace_mb_bits;
@@ -873,10 +883,14 @@ impl H264Decoder {
 
         let trace_cabac_state = self.trace_cabac_state;
         let cabac_bin_trace_limit = self.trace_cabac_bins;
-        if cabac_bin_trace_limit > 0 {
-            cabac.bin_trace_limit = cabac_bin_trace_limit;
-        }
         for mb_idx in first..total {
+            if cabac_bin_trace_limit > 0 && cabac.bin_trace_limit == 0 {
+                if let Some((s, e)) = self.trace_mb_range {
+                    if mb_idx >= s && mb_idx <= e {
+                        cabac.bin_trace_limit = cabac_bin_trace_limit;
+                    }
+                }
+            }
             let bits_before_mb = cabac.bits_read();
             if trace_cabac_state && mb_idx < first + 200 {
                 let (r, o) = cabac.state_range_offset();
@@ -1328,6 +1342,19 @@ impl H264Decoder {
                 "[H264_REF_IDX_OOB] list={} x4={} y4={} decoded_ref_idx={} active_ref_count={} ctx0={} bins={} bits_before={} bits_after={}",
                 list, x4, y4, ref_idx, num_ref_idx, ctx0, bins, bits_before, bits_after
             );
+        }
+        if is_oob {
+            if std::env::var("TAO_H264_DEBUG_REFIDX_CLAMP0").as_deref() == Ok("1") {
+                return 0;
+            }
+            if std::env::var("TAO_H264_DEBUG_REFIDX_CLAMP_LAST").as_deref() == Ok("1") {
+                return num_ref_idx.saturating_sub(1);
+            }
+            if std::env::var("TAO_H264_DEBUG_REFIDX_MOD").as_deref() == Ok("1")
+                && num_ref_idx > 0
+            {
+                return ref_idx % num_ref_idx;
+            }
         }
         ref_idx
     }
