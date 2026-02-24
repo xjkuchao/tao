@@ -297,6 +297,7 @@ impl H264Decoder {
         let luma_src_y = dst_y as i32 + floor_div(mv_y_qpel, 4);
         let luma_fx = mod_floor(mv_x_qpel, 4) as u8;
         let luma_fy = mod_floor(mv_y_qpel, 4) as u8;
+
         if let Some(weight) = pred_weight {
             weighted_copy_luma_block_with_h264_qpel(
                 src_y,

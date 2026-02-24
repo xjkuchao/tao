@@ -1,25 +1,53 @@
-# H264 解码器精度 100% 提升计划 (第3轮更新)
+# H264 解码器精度 100% 提升计划 (第5轮续跑交接)
+
+## 超短交接清单
+
+- 当前状态: `frame0=100%`, 首个不一致帧固定 `frame1`, `frame2` 起明显劣化.
+- 基线命令: `TAO_H264_COMPARE_INPUT=data/1_h264.mp4 TAO_H264_COMPARE_FRAMES=3 TAO_H264_COMPARE_REQUIRED_PRECISION=0 TAO_H264_COMPARE_ANALYZE_FRAME_STATS=1 TAO_H264_COMPARE_SKIP_DEBLOCK=1 TAO_SKIP_DEBLOCK=1 cargo test --test run_decoder h264::test_h264_compare_sample_1 -- --nocapture --ignored`
+- 预期现象: `frame1≈99%` 且 `pix0 FF=217/Tao=208`; `frame2≈54%`.
+- 首要切入: `B_Direct/Temporal Direct` 共定位 MV 与 `map_col_to_list0` 参考映射.
+- 重点函数: `build_b_direct_motion_for_part` / `apply_b_direct_sub_8x8` / `temporal_direct_colocated_l0_motion`.
+- 限流追踪: `TAO_H264_SLICE_TRACE_MB=1 TAO_H264_TRACE_MB_LIMIT=8 TAO_H264_TRACE_P_MB_DETAIL=1 TAO_H264_TRACE_P_STAGE_BITS=1`.
+- 门禁顺序: `3帧 -> 10帧 -> 67帧 -> 299帧`.
+- 规则: 仅在定位失败时再开 `TAO_H264_TRACE_CABAC_STATE` 与 `TAO_H264_TRACE_CABAC_TERM`.
 
 **目标文件**: `data/1_h264.mp4` (1920×1080, Main/High profile, CABAC, 多参考 P/B slices)
 **对比基准**: ffmpeg 逐帧像素输出
-**最后更新**: 2026-02-24 (Session 3)
+**最后更新**: 2026-02-24 (Session 5 / R5-1 进行中)
 
 ---
 
 ## 当前精度状态
 
-| 测试范围            | Y精度      | U精度  | V精度  | 总体精度  |
-| ------------------- | ---------- | ------ | ------ | --------- |
-| 首帧 (frame 0, I帧) | **77.20%** | 99.90% | 99.80% | ~84.7%    |
-| 全片 (299帧)        | -          | -      | -      | **84.7%** |
-| 首帧 max_err        | 13         | 小     | 小     | -         |
+| 测试范围            | Y精度       | U精度   | V精度   | 总体精度 |
+| ------------------- | ----------- | ------- | ------- | -------- |
+| 首帧 (frame 0, I帧) | **100.00%** | 100.00% | 100.00% | 100.00%  |
+| 前3帧 (0-2)         | 79.61%      | 94.65%  | 94.56%  | 84.61%   |
+| 120帧 (0-119)       | 9.94%       | 34.93%  | 37.03%  | 18.62%   |
+| 当前 max_err        | 229         | 139     | 138     | 229      |
 
 关键观测:
 
-- U/V 精度 >99.9%, 问题几乎完全在 Y 通道
-- 首帧是纯 I 帧, Y=77.2% → I 帧内预测/变换/残差路径存在大量错误
-- 关闭 deblock (TAO_SKIP_DEBLOCK=1): Y=66.15%, U=93.58%, V=91.77%
-- 开启 deblock: Y=77.2%, U=99.9%, V=99.8% → deblock **有益**, 已排除为 bug 源
+- I 帧问题已基本清空, frame 0 可稳定 bit-exact.
+- 首个不一致帧固定为 frame 1 (P 帧), 且 frame 1 的像素级偏差会在后续参考链路中快速放大.
+- frame 1 首像素长期表现为 FF=217, Tao=208, 对应先前定位的 inter residual/CABAC 漂移症状.
+- 临时关闭 inter residual (`TAO_H264_DEBUG_SKIP_INTER_RESIDUAL=1`) 仅改变局部像素, 不能阻止 frame 2 起系统性劣化.
+
+---
+
+## Session 5 覆盖说明 (用于续跑, 优先级高于下方历史阶段)
+
+下方 Session 1-3 记录保留用于追溯, 但当前主战场已切换:
+
+- 旧问题主轴: I 帧 Y 通道精度.
+- 当前问题主轴: P/B 帧的 CABAC/运动补偿耦合漂移, 导致参考面污染与误差级联.
+
+本轮已确认:
+
+1. `frame 0` 在关闭 deblock 对比条件下仍 `100%`.
+2. `frame 1` 精度约 `98.7%~99.1%`, 但存在关键像素偏差 (0,0).
+3. `frame 2` 直接跌至约 `54%`, 说明根因在帧间链路而非单一像素后处理.
+4. 曾尝试调整 inter `transform_size_8x8_flag` 上下文推导, 全片指标变差, 已回退 (避免错误方向继续消耗).
 
 ---
 
@@ -287,6 +315,80 @@ TAO_H264_SLICE_TRACE=1 TAO_H264_SLICE_TRACE_MB=1 \
 
 ---
 
+## 下一轮低成本执行计划 (R5-1 续跑指令)
+
+目标: 不再广撒网, 直接锁定 `frame 2` 起始链路分叉点, 降低试错成本.
+
+### Step 1. 固化基线 (每轮开工先跑, 防止误判)
+
+```bash
+TAO_H264_COMPARE_INPUT=data/1_h264.mp4 TAO_H264_COMPARE_FRAMES=3 \
+  TAO_H264_COMPARE_REQUIRED_PRECISION=0 TAO_H264_COMPARE_ANALYZE_FRAME_STATS=1 \
+  TAO_H264_COMPARE_SKIP_DEBLOCK=1 TAO_SKIP_DEBLOCK=1 \
+  cargo test --test run_decoder h264::test_h264_compare_sample_1 -- --nocapture --ignored
+```
+
+验收点:
+
+- frame0=100%.
+- frame1 约 99%, pix0 仍可复现 FF=217/Tao=208.
+- frame2 约 54%.
+
+### Step 2. 只看关键首段 MB, 限制日志体量
+
+```bash
+TAO_H264_COMPARE_INPUT=data/1_h264.mp4 TAO_H264_COMPARE_FRAMES=3 \
+  TAO_H264_COMPARE_REQUIRED_PRECISION=0 TAO_H264_COMPARE_SKIP_DEBLOCK=1 TAO_SKIP_DEBLOCK=1 \
+  TAO_H264_SLICE_TRACE_MB=1 TAO_H264_TRACE_MB_LIMIT=8 \
+  TAO_H264_TRACE_P_MB_DETAIL=1 TAO_H264_TRACE_P_STAGE_BITS=1 \
+  cargo test --test run_decoder h264::test_h264_compare_sample_1 -- --nocapture --ignored
+```
+
+目的:
+
+- 锁定 frame1/2 前 8 个 MB 的 bit 消耗与语法阶段分叉 (skip, mb_type, ref_idx, mvd, cbp, residual).
+
+### Step 3. B_Direct 专项对比 (优先)
+
+关注文件:
+
+- `crates/tao-codec/src/decoders/h264/macroblock_inter.rs`
+- `crates/tao-codec/src/decoders/h264/macroblock_inter_cache.rs`
+- `crates/tao-codec/src/decoders/h264/macroblock_inter_mv.rs`
+
+重点函数:
+
+- `build_b_direct_motion_for_part`
+- `build_b_direct_motion`
+- `apply_b_direct_sub_8x8`
+- `temporal_direct_colocated_l0_motion`
+- `map_col_to_list0_index_with_col_pic`
+
+对齐参考:
+
+- `data/tmp_ffmpeg_src/libavcodec/h264_direct.c`
+- `data/tmp_ffmpeg_src/libavcodec/h264_mvpred.h`
+
+### Step 4. 仅在必要时开启 CABAC 深追踪
+
+```bash
+TAO_H264_COMPARE_INPUT=data/1_h264.mp4 TAO_H264_COMPARE_FRAMES=3 \
+  TAO_H264_COMPARE_REQUIRED_PRECISION=0 TAO_H264_COMPARE_SKIP_DEBLOCK=1 TAO_SKIP_DEBLOCK=1 \
+  TAO_H264_TRACE_CABAC_STATE=1 TAO_H264_TRACE_CABAC_TERM=1 \
+  cargo test --test run_decoder h264::test_h264_compare_sample_1 -- --nocapture --ignored
+```
+
+触发条件: 仅当 Step 2 无法定位分叉阶段时使用, 避免日志噪声。
+
+### Step 5. 阶段门禁
+
+- 小门禁: 先过 `FRAMES=3`, 再过 `FRAMES=10`.
+- 中门禁: `FRAMES=67`.
+- 大门禁: 全片 `FRAMES=299`.
+- 每次有明显提升后再进入 5 项严格验证与推送流程.
+
+---
+
 ## 全片验收门禁 (Y 修复后执行)
 
 ```bash
@@ -308,13 +410,15 @@ cargo test --test run_decoder h264::test_h264_accuracy_all -- --nocapture --igno
 
 ## 精度进展记录
 
-| Session    | 首帧 Y | 首帧总体 | 全片 (299帧) | 主要修复                        |
-| ---------- | ------ | -------- | ------------ | ------------------------------- |
-| 基线       | ~59.4% | ~59.4%   | ~13.9%       | -                               |
-| Session 1  | ~77%   | ~77%     | 大幅提升     | BUG-1..6, CABAC 字节对齐        |
-| Session 2  | 77.2%  | ~84.7%   | 84.7%        | IDCT 4x4/8x8 pass 顺序          |
-| Session 3  | 77.2%  | ~84.7%   | 84.7%        | I_8x8 topright fix (精度无变化) |
-| 下一轮目标 | >95%   | >95%     | >95%         | 待 Phase A-E 定位 I 帧 Y 错误源 |
+| Session    | 首帧 Y | 首帧总体 | 全片 (299帧)    | 主要修复                           |
+| ---------- | ------ | -------- | --------------- | ---------------------------------- |
+| 基线       | ~59.4% | ~59.4%   | ~13.9%          | -                                  |
+| Session 1  | ~77%   | ~77%     | 大幅提升        | BUG-1..6, CABAC 字节对齐           |
+| Session 2  | 77.2%  | ~84.7%   | 84.7%           | IDCT 4x4/8x8 pass 顺序             |
+| Session 3  | 77.2%  | ~84.7%   | 84.7%           | I_8x8 topright fix (精度无变化)    |
+| Session 4  | 100%   | 100%     | 未完成          | I 帧链路修复完成, frame0 bit-exact |
+| Session 5  | 100%   | 100%     | 18.62%\*(120帧) | 进入 P/B 帧漂移定位 (R5-1进行中)   |
+| 下一轮目标 | 100%   | 100%     | >30%→>60%→100%  | 优先修复 frame1→frame2 链路分叉    |
 
 ---
 

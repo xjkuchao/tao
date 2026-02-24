@@ -995,9 +995,23 @@ impl H264Decoder {
                 }
 
                 let cbf_inc = self.luma_cbf_ctx_inc(x4, y4, false);
+                let bits_before_block = cabac.bits_read();
                 let mut raw_coeffs =
                     decode_residual_block(cabac, ctxs, &residual::CAT_LUMA_4X4, cbf_inc);
                 let coded = raw_coeffs.iter().any(|&c| c != 0);
+                if std::env::var("TAO_H264_TRACE_INTER_COEFF").is_ok()
+                    && mb_x == 0
+                    && mb_y == 0
+                    && (i8x8 == 0 || coded)
+                {
+                    let bits_after_block = cabac.bits_read();
+                    eprintln!(
+                        "[INTER_COEFF] mb=({},{}) i8x8={} sub={} x4={} y4={} cbf_inc={} coded={} bits={} coeffs={:?}",
+                        mb_x, mb_y, i8x8, i_sub, x4, y4, cbf_inc, coded,
+                        bits_after_block - bits_before_block,
+                        &raw_coeffs
+                    );
+                }
                 self.set_luma_cbf(x4, y4, coded);
                 if coded {
                     coded_8x8 = true;

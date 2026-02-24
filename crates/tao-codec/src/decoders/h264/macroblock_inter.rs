@@ -848,8 +848,23 @@ impl H264Decoder {
         let mut term_break = false;
         let mut last_mb_idx = first;
 
+        let trace_cabac_state = std::env::var("TAO_H264_TRACE_CABAC_STATE").as_deref() == Ok("1");
+        let cabac_bin_trace_limit = std::env::var("TAO_H264_TRACE_CABAC_BINS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0);
+        if cabac_bin_trace_limit > 0 {
+            cabac.bin_trace_limit = cabac_bin_trace_limit;
+        }
         for mb_idx in first..total {
             let bits_before_mb = cabac.bits_read();
+            if trace_cabac_state && mb_idx < first + 200 {
+                let (r, o) = cabac.state_range_offset();
+                eprintln!(
+                    "[CABAC_STATE] mb_idx={} bits={} range={} offset={}",
+                    mb_idx, bits_before_mb, r, o
+                );
+            }
             self.mark_mb_slice_first_mb(mb_idx, slice_first_mb);
             self.set_mb_skip_flag(mb_idx, false);
             let mb_x = mb_idx % self.mb_width;

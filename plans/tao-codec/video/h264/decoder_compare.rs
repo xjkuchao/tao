@@ -969,20 +969,14 @@ fn print_first_frame_stats(path: &str, width: u32, height: u32, ff: &[u8], tao: 
                 let mut max_d = 0i32;
                 for dy in 0..16 {
                     let py = mb_row * 16 + dy;
-                    if py >= height as usize {
-                        break;
-                    }
+                    if py >= height as usize { break; }
                     for dx in 0..16 {
                         let px = mb_col * 16 + dx;
-                        if px >= w {
-                            break;
-                        }
+                        if px >= w { break; }
                         let i = py * w + px;
                         if i < y_ff.len() && i < y_tao.len() {
                             let d = (y_ff[i] as i32 - y_tao[i] as i32).abs();
-                            if d > max_d {
-                                max_d = d;
-                            }
+                            if d > max_d { max_d = d; }
                         }
                     }
                 }
@@ -993,16 +987,12 @@ fn print_first_frame_stats(path: &str, width: u32, height: u32, ff: &[u8], tao: 
                     );
                     for dy in 0..8 {
                         let py = mb_row * 16 + dy;
-                        if py >= height as usize {
-                            break;
-                        }
+                        if py >= height as usize { break; }
                         let off = py * w + mb_col * 16;
                         let end = (off + 16).min(y_ff.len());
                         let diff: Vec<i32> = y_ff[off..end]
-                            .iter()
-                            .zip(y_tao[off..end].iter())
-                            .map(|(&a, &b)| a as i32 - b as i32)
-                            .collect();
+                            .iter().zip(y_tao[off..end].iter())
+                            .map(|(&a, &b)| a as i32 - b as i32).collect();
                         println!("  dy{}: diff={:?}", dy, diff);
                     }
                     found = true;
