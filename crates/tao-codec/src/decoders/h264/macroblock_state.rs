@@ -549,7 +549,7 @@ impl H264Decoder {
 
     /// 计算 CABAC MVD 上下文: 左/上 4x4 邻居 MVD 绝对值之和.
     pub(super) fn compute_cabac_amvd(&self, x4: usize, y4: usize, list: usize) -> (i32, i32) {
-        if std::env::var("TAO_H264_DEBUG_FORCE_AMVD_ZERO").as_deref() == Ok("1") {
+        if self.debug_force_amvd_zero {
             return (0, 0);
         }
         let stride = self.mb_width * 4;

@@ -3,6 +3,8 @@
 //! 包含 CABAC 残差语法元素解码, 反扫描, 反量化, 反 Hadamard 变换.
 
 use super::cabac::{CabacCtx, CabacDecoder};
+use smallvec::SmallVec;
+use std::sync::OnceLock;
 
 // ============================================================
 // 块类别定义
@@ -93,6 +95,17 @@ pub const CAT_LUMA_8X8: BlockCat = BlockCat {
     use_sig_map_8x8: true,
 };
 
+fn trace_bypass_cap_enabled() -> bool {
+    static TRACE_BYPASS_CAP: OnceLock<bool> = OnceLock::new();
+    *TRACE_BYPASS_CAP
+        .get_or_init(|| std::env::var("TAO_H264_TRACE_BYPASS_CAP").as_deref() == Ok("1"))
+}
+
+fn trace_coeff_target_cached() -> &'static Option<String> {
+    static TRACE_COEFF_TARGET: OnceLock<Option<String>> = OnceLock::new();
+    TRACE_COEFF_TARGET.get_or_init(|| std::env::var("TAO_H264_TRACE_COEFF").ok())
+}
+
 // ============================================================
 // CABAC 残差块解码
 // ============================================================
@@ -106,9 +119,10 @@ pub fn decode_residual_block(
     ctxs: &mut [CabacCtx],
     cat: &BlockCat,
     cbf_ctx_inc: usize,
-) -> Vec<i32> {
+) -> SmallVec<[i32; 64]> {
     let n = cat.max_coeff;
-    let mut coeffs = vec![0i32; n];
+    let mut coeffs = SmallVec::<[i32; 64]>::with_capacity(n);
+    coeffs.resize(n, 0);
 
     if !cat.skip_cbf {
         // 解码 coded_block_flag
@@ -137,8 +151,8 @@ fn decode_significance_map_8x8(
     cabac: &mut CabacDecoder,
     ctxs: &mut [CabacCtx],
     cat: &BlockCat,
-) -> Vec<usize> {
-    let mut positions = Vec::new();
+) -> SmallVec<[usize; 64]> {
+    let mut positions = SmallVec::<[usize; 64]>::with_capacity(64);
     for i in 0..63usize {
         let sig_idx = cat.sig_offset + usize::from(SIG_COEFF_FLAG_OFFSET_8X8[i]);
         let sig = cabac.decode_decision(&mut ctxs[sig_idx]);
@@ -162,9 +176,9 @@ fn decode_significance_map(
     cabac: &mut CabacDecoder,
     ctxs: &mut [CabacCtx],
     cat: &BlockCat,
-) -> Vec<usize> {
+) -> SmallVec<[usize; 64]> {
     let last_pos = cat.max_coeff - 1;
-    let mut positions = Vec::new();
+    let mut positions = SmallVec::<[usize; 64]>::with_capacity(cat.max_coeff);
 
     for i in 0..last_pos {
         let sig_idx = cat.sig_offset + i;
@@ -250,7 +264,7 @@ fn decode_abs_suffix_bypass(cabac: &mut CabacDecoder) -> u32 {
     while cabac.decode_bypass() == 1 && j < 23 {
         j += 1;
     }
-    if j >= 20 && std::env::var("TAO_H264_TRACE_BYPASS_CAP").as_deref() == Ok("1") {
+    if j >= 20 && trace_bypass_cap_enabled() {
         eprintln!(
             "[H264_COEFF_BYPASS_PREFIX] j={} bits={}",
             j,
@@ -741,7 +755,7 @@ pub fn apply_8x8_ac_residual_with_scaling(
     qp: i32,
     scaling_list_raster: &[u8; 64],
 ) {
-    let trace_target = std::env::var("TAO_H264_TRACE_COEFF").ok();
+    let trace_target = trace_coeff_target_cached();
     let trace = trace_target.as_ref().map_or(false, |v| {
         if v == "1" {
             x0 == 0 && y0 == 0

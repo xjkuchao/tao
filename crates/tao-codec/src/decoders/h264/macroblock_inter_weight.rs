@@ -192,15 +192,11 @@ impl H264Decoder {
         ref_l0_list: &[RefPlanes],
     ) {
         let mb_idx = mb_y * self.mb_width + mb_x;
-        let trace_slice_mb = std::env::var("TAO_H264_SLICE_TRACE_MB").as_deref() == Ok("1");
-        let trace_mb_limit = std::env::var("TAO_H264_TRACE_MB_LIMIT")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(400);
+        let trace_slice_mb = self.trace_slice_mb;
+        let trace_mb_limit = self.trace_mb_limit;
         let trace_this_mb = self.should_trace_mb_idx(mb_idx, trace_mb_limit);
         let trace_mb_detail = self.trace_mb_detail_enabled() && trace_this_mb;
-        let trace_stage_bits =
-            std::env::var("TAO_H264_TRACE_P_STAGE_BITS").as_deref() == Ok("1") && trace_this_mb;
+        let trace_stage_bits = self.trace_p_stage_bits && trace_this_mb;
         let stage_start_bits = trace_stage_bits.then(|| cabac.bits_read());
         let mut stage_anchor_bits = stage_start_bits;
         let log_stage = |stage: &str, cabac: &CabacDecoder, anchor: &mut Option<usize>| {
@@ -810,13 +806,11 @@ impl H264Decoder {
         }
         log_stage("qp_delta", cabac, &mut stage_anchor_bits);
 
-        let forced_use_8x8 = std::env::var("TAO_H264_DEBUG_FORCE_INTER_USE_8X8").ok();
-        let force_mb0_use_8x8 =
-            std::env::var("TAO_H264_DEBUG_FORCE_INTER_MB0_USE_8X8").as_deref() == Ok("1");
-        let use_old_transform_ctx =
-            std::env::var("TAO_H264_DEBUG_INTER_USE_OLD_TRANSFORM_CTX").as_deref() == Ok("1");
-        let use_8x8 = if let Some(v) = forced_use_8x8.as_deref() {
-            luma_cbp != 0 && v == "1"
+        let forced_use_8x8 = self.debug_force_inter_use_8x8;
+        let force_mb0_use_8x8 = self.debug_force_inter_mb0_use_8x8;
+        let use_old_transform_ctx = self.debug_inter_use_old_transform_ctx;
+        let use_8x8 = if let Some(v) = forced_use_8x8 {
+            luma_cbp != 0 && v
         } else if force_mb0_use_8x8 && mb_idx == 0 {
             luma_cbp != 0
         } else {
@@ -835,24 +829,21 @@ impl H264Decoder {
         };
         log_stage("transform_size_8x8_flag", cabac, &mut stage_anchor_bits);
         if trace_slice_mb && trace_this_mb {
+            let forced_use_8x8_label = match forced_use_8x8 {
+                Some(true) => "1",
+                Some(false) => "0",
+                None => "auto",
+            };
             eprintln!(
                 "[H264_P_T8X8] idx={} mb=({}, {}) p_mb_type={} use_8x8={} forced={}",
-                mb_idx,
-                mb_x,
-                mb_y,
-                p_mb_type,
-                use_8x8,
-                forced_use_8x8.as_deref().unwrap_or("auto")
+                mb_idx, mb_x, mb_y, p_mb_type, use_8x8, forced_use_8x8_label
             );
         }
         self.set_transform_8x8_flag(mb_x, mb_y, use_8x8);
 
-        let skip_inter_residual =
-            std::env::var("TAO_H264_DEBUG_SKIP_INTER_RESIDUAL").as_deref() == Ok("1");
-        let skip_inter_luma_residual =
-            std::env::var("TAO_H264_DEBUG_SKIP_INTER_LUMA_RESIDUAL").as_deref() == Ok("1");
-        let skip_inter_chroma_residual =
-            std::env::var("TAO_H264_DEBUG_SKIP_INTER_CHROMA_RESIDUAL").as_deref() == Ok("1");
+        let skip_inter_residual = self.debug_skip_inter_residual;
+        let skip_inter_luma_residual = self.debug_skip_inter_luma_residual;
+        let skip_inter_chroma_residual = self.debug_skip_inter_chroma_residual;
         let before_luma_bits = if trace_stage_bits {
             Some(cabac.bits_read())
         } else {
@@ -916,10 +907,10 @@ impl H264Decoder {
     ) {
         self.prev_qp_delta_nz = false;
         let mut cur_qp = slice_qp;
-        let trace_slice = std::env::var("TAO_H264_SLICE_TRACE").as_deref() == Ok("1");
-        let trace_slice_mb = std::env::var("TAO_H264_SLICE_TRACE_MB").as_deref() == Ok("1");
-        let ignore_terminate =
-            std::env::var("TAO_H264_DEBUG_IGNORE_TERMINATE").as_deref() == Ok("1");
+        let trace_slice = self.trace_slice;
+        let trace_slice_mb = self.trace_slice_mb;
+        let trace_mb_limit = self.trace_mb_limit;
+        let ignore_terminate = self.debug_ignore_terminate;
         let mut decoded_mbs = 0usize;
         let mut term_break = false;
         let mut last_mb_idx = first;
@@ -929,12 +920,13 @@ impl H264Decoder {
             self.set_mb_skip_flag(mb_idx, false);
             let mb_x = mb_idx % self.mb_width;
             let mb_y = mb_idx / self.mb_width;
+            let trace_this_mb = self.should_trace_mb_idx(mb_idx, trace_mb_limit);
             self.clear_mb_mvd_cache(mb_x, mb_y);
             let skip = self.decode_b_mb_skip_flag(cabac, ctxs, mb_x, mb_y);
 
             if skip {
                 self.set_mb_skip_flag(mb_idx, true);
-                if trace_slice_mb {
+                if trace_slice_mb && trace_this_mb {
                     eprintln!("[H264_B_MB] idx={} mb=({}, {}) skip=1", mb_idx, mb_x, mb_y);
                 }
                 self.mb_types[mb_idx] = 254;
@@ -976,7 +968,7 @@ impl H264Decoder {
             } else {
                 match self.decode_b_mb_type(cabac, ctxs, mb_x, mb_y) {
                     BMbType::Intra => {
-                        if trace_slice_mb {
+                        if trace_slice_mb && trace_this_mb {
                             eprintln!(
                                 "[H264_B_MB] idx={} mb=({}, {}) skip=0 mb_type=intra",
                                 mb_idx, mb_x, mb_y
@@ -1011,7 +1003,7 @@ impl H264Decoder {
                         }
                     }
                     BMbType::Direct => {
-                        if trace_slice_mb {
+                        if trace_slice_mb && trace_this_mb {
                             eprintln!(
                                 "[H264_B_MB] idx={} mb=({}, {}) skip=0 mb_type=direct",
                                 mb_idx, mb_x, mb_y
@@ -1036,7 +1028,7 @@ impl H264Decoder {
                         );
                     }
                     BMbType::Inter(mb_type_idx) => {
-                        if trace_slice_mb {
+                        if trace_slice_mb && trace_this_mb {
                             eprintln!(
                                 "[H264_B_MB] idx={} mb=({}, {}) skip=0 mb_type=inter({})",
                                 mb_idx, mb_x, mb_y, mb_type_idx

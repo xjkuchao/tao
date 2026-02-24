@@ -236,6 +236,8 @@ struct ReferencePicture {
     mb_types: Vec<u8>,
     /// 该参考帧解码时其 L0 参考列表中各参考帧的 POC (用于 temporal direct MapColToList0).
     ref_l0_poc: Vec<i32>,
+    /// 该参考帧解码时其 L1 参考列表中各参考帧的 POC (用于 temporal direct MapColToList0).
+    ref_l1_poc: Vec<i32>,
     frame_num: u32,
     poc: i32,
     long_term_frame_idx: Option<u32>,
@@ -379,6 +381,8 @@ pub struct H264Decoder {
     last_poc: i32,
     /// 最近一次 slice 解码时 L0 参考列表的 POC 值 (用于 temporal direct MapColToList0).
     last_ref_l0_poc: Vec<i32>,
+    /// 最近一次 slice 解码时 L1 参考列表的 POC 值 (用于 temporal direct MapColToList0).
+    last_ref_l1_poc: Vec<i32>,
     /// 最近一次 slice 的量化参数.
     last_slice_qp: i32,
     /// 最近一次 slice 的去块滤波控制.
@@ -415,6 +419,52 @@ pub struct H264Decoder {
     last_sei_payloads: Vec<sei::SeiPayload>,
     /// recovery_point 等待计数(到 0 时将下一非 IDR 图像标记为随机访问点).
     pending_recovery_point_frame_cnt: Option<u32>,
+    /// 宏块追踪范围缓存. `None` 表示按默认 limit 判定.
+    trace_mb_range: Option<(usize, usize)>,
+    /// 宏块明细追踪开关缓存.
+    trace_mb_detail: bool,
+    /// `TAO_H264_TRACE_MB_LIMIT` 缓存.
+    trace_mb_limit: usize,
+    /// `TAO_H264_SLICE_TRACE` 缓存.
+    trace_slice: bool,
+    /// `TAO_H264_SLICE_TRACE_MB` 缓存.
+    trace_slice_mb: bool,
+    /// `TAO_H264_TRACE_MB_BITS` 缓存.
+    trace_mb_bits: bool,
+    /// `TAO_H264_TRACE_CABAC_STATE` 缓存.
+    trace_cabac_state: bool,
+    /// `TAO_H264_TRACE_CABAC_BINS` 缓存.
+    trace_cabac_bins: u32,
+    /// `TAO_H264_TRACE_P_STAGE_BITS` 缓存.
+    trace_p_stage_bits: bool,
+    /// `TAO_H264_TRACE_INTER_COEFF` 缓存.
+    trace_inter_coeff: bool,
+    /// `TAO_H264_DEBUG_IGNORE_TERMINATE` 缓存.
+    debug_ignore_terminate: bool,
+    /// `TAO_H264_DEBUG_FORCE_INTER_USE_8X8` 缓存.
+    debug_force_inter_use_8x8: Option<bool>,
+    /// `TAO_H264_DEBUG_FORCE_INTER_MB0_USE_8X8` 缓存.
+    debug_force_inter_mb0_use_8x8: bool,
+    /// `TAO_H264_DEBUG_INTER_USE_OLD_TRANSFORM_CTX` 缓存.
+    debug_inter_use_old_transform_ctx: bool,
+    /// `TAO_H264_DEBUG_SKIP_INTER_RESIDUAL` 缓存.
+    debug_skip_inter_residual: bool,
+    /// `TAO_H264_DEBUG_SKIP_INTER_LUMA_RESIDUAL` 缓存.
+    debug_skip_inter_luma_residual: bool,
+    /// `TAO_H264_DEBUG_SKIP_INTER_CHROMA_RESIDUAL` 缓存.
+    debug_skip_inter_chroma_residual: bool,
+    /// `TAO_H264_DEBUG_FORCE_AMVD_ZERO` 缓存.
+    debug_force_amvd_zero: bool,
+    /// `TAO_H264_TRACE_REF_IDX` 缓存.
+    trace_ref_idx_all: bool,
+    /// `TAO_H264_TRACE_REF_IDX_OOB` 缓存.
+    trace_ref_idx_oob: bool,
+    /// `TAO_H264_TRACE_B_DIRECT` 缓存.
+    trace_b_direct: bool,
+    /// `TAO_H264_DEBUG_FORCE_TEMPORAL_DIRECT` 缓存.
+    force_temporal_direct: bool,
+    /// `TAO_H264_DEBUG_FORCE_SPATIAL_DIRECT` 缓存.
+    force_spatial_direct: bool,
     output_queue: VecDeque<Frame>,
     reorder_buffer: Vec<ReorderFrameEntry>,
     reorder_depth: usize,
@@ -486,6 +536,7 @@ impl H264Decoder {
             last_nal_ref_idc: 0,
             last_poc: 0,
             last_ref_l0_poc: Vec::new(),
+            last_ref_l1_poc: Vec::new(),
             last_slice_qp: 26,
             last_disable_deblocking_filter_idc: 0,
             last_slice_alpha_c0_offset_div2: 0,
@@ -504,6 +555,29 @@ impl H264Decoder {
             malformed_nal_drops: 0,
             last_sei_payloads: Vec::new(),
             pending_recovery_point_frame_cnt: None,
+            trace_mb_range: None,
+            trace_mb_detail: false,
+            trace_mb_limit: 400,
+            trace_slice: false,
+            trace_slice_mb: false,
+            trace_mb_bits: false,
+            trace_cabac_state: false,
+            trace_cabac_bins: 0,
+            trace_p_stage_bits: false,
+            trace_inter_coeff: false,
+            debug_ignore_terminate: false,
+            debug_force_inter_use_8x8: None,
+            debug_force_inter_mb0_use_8x8: false,
+            debug_inter_use_old_transform_ctx: false,
+            debug_skip_inter_residual: false,
+            debug_skip_inter_luma_residual: false,
+            debug_skip_inter_chroma_residual: false,
+            debug_force_amvd_zero: false,
+            trace_ref_idx_all: false,
+            trace_ref_idx_oob: false,
+            trace_b_direct: false,
+            force_temporal_direct: false,
+            force_spatial_direct: false,
             output_queue: VecDeque::new(),
             reorder_buffer: Vec::new(),
             reorder_depth: 2,
@@ -1083,17 +1157,61 @@ impl H264Decoder {
         self.missing_reference_fallback_error = None;
     }
 
+    fn refresh_trace_options_from_env(&mut self) {
+        self.trace_mb_range = std::env::var("TAO_H264_TRACE_MB_RANGE")
+            .ok()
+            .and_then(|raw| parse_trace_mb_range(&raw));
+        self.trace_mb_detail = std::env::var("TAO_H264_TRACE_MB_DETAIL").as_deref() == Ok("1");
+        self.trace_mb_limit = std::env::var("TAO_H264_TRACE_MB_LIMIT")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(400);
+        self.trace_slice = std::env::var("TAO_H264_SLICE_TRACE").as_deref() == Ok("1");
+        self.trace_slice_mb = std::env::var("TAO_H264_SLICE_TRACE_MB").as_deref() == Ok("1");
+        self.trace_mb_bits = std::env::var("TAO_H264_TRACE_MB_BITS").as_deref() == Ok("1");
+        self.trace_cabac_state = std::env::var("TAO_H264_TRACE_CABAC_STATE").as_deref() == Ok("1");
+        self.trace_cabac_bins = std::env::var("TAO_H264_TRACE_CABAC_BINS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0);
+        self.trace_p_stage_bits =
+            std::env::var("TAO_H264_TRACE_P_STAGE_BITS").as_deref() == Ok("1");
+        self.trace_inter_coeff = std::env::var("TAO_H264_TRACE_INTER_COEFF").is_ok();
+        self.debug_ignore_terminate =
+            std::env::var("TAO_H264_DEBUG_IGNORE_TERMINATE").as_deref() == Ok("1");
+        self.debug_force_inter_use_8x8 = std::env::var("TAO_H264_DEBUG_FORCE_INTER_USE_8X8")
+            .ok()
+            .map(|v| v == "1");
+        self.debug_force_inter_mb0_use_8x8 =
+            std::env::var("TAO_H264_DEBUG_FORCE_INTER_MB0_USE_8X8").as_deref() == Ok("1");
+        self.debug_inter_use_old_transform_ctx =
+            std::env::var("TAO_H264_DEBUG_INTER_USE_OLD_TRANSFORM_CTX").as_deref() == Ok("1");
+        self.debug_skip_inter_residual =
+            std::env::var("TAO_H264_DEBUG_SKIP_INTER_RESIDUAL").as_deref() == Ok("1");
+        self.debug_skip_inter_luma_residual =
+            std::env::var("TAO_H264_DEBUG_SKIP_INTER_LUMA_RESIDUAL").as_deref() == Ok("1");
+        self.debug_skip_inter_chroma_residual =
+            std::env::var("TAO_H264_DEBUG_SKIP_INTER_CHROMA_RESIDUAL").as_deref() == Ok("1");
+        self.debug_force_amvd_zero =
+            std::env::var("TAO_H264_DEBUG_FORCE_AMVD_ZERO").as_deref() == Ok("1");
+        self.trace_ref_idx_all = std::env::var("TAO_H264_TRACE_REF_IDX").as_deref() == Ok("1");
+        self.trace_ref_idx_oob = std::env::var("TAO_H264_TRACE_REF_IDX_OOB").as_deref() == Ok("1");
+        self.trace_b_direct = std::env::var("TAO_H264_TRACE_B_DIRECT").as_deref() == Ok("1");
+        self.force_temporal_direct =
+            std::env::var("TAO_H264_DEBUG_FORCE_TEMPORAL_DIRECT").as_deref() == Ok("1");
+        self.force_spatial_direct =
+            std::env::var("TAO_H264_DEBUG_FORCE_SPATIAL_DIRECT").as_deref() == Ok("1");
+    }
+
     pub(super) fn should_trace_mb_idx(&self, mb_idx: usize, default_limit: usize) -> bool {
-        if let Ok(raw) = std::env::var("TAO_H264_TRACE_MB_RANGE")
-            && let Some((start, end)) = parse_trace_mb_range(&raw)
-        {
+        if let Some((start, end)) = self.trace_mb_range {
             return (start..=end).contains(&mb_idx);
         }
         mb_idx < default_limit
     }
 
     pub(super) fn trace_mb_detail_enabled(&self) -> bool {
-        std::env::var("TAO_H264_TRACE_MB_DETAIL").as_deref() == Ok("1")
+        self.trace_mb_detail
     }
 
     fn take_missing_reference_fallback_error(&mut self) -> Option<String> {
@@ -1126,6 +1244,8 @@ impl Decoder for H264Decoder {
         self.last_frame_num = 0;
         self.last_nal_ref_idc = 0;
         self.last_poc = 0;
+        self.last_ref_l0_poc.clear();
+        self.last_ref_l1_poc.clear();
         self.last_slice_qp = 26;
         self.last_disable_deblocking_filter_idc = 0;
         self.last_slice_alpha_c0_offset_div2 = 0;
@@ -1162,6 +1282,7 @@ impl Decoder for H264Decoder {
         self.reorder_buffer.clear();
         self.decode_order_counter = 0;
         self.pending_frame = None;
+        self.refresh_trace_options_from_env();
         self.opened = true;
         if self.width > 0 && self.height > 0 {
             debug!("H264 解码器已打开: {}x{}", self.width, self.height);
@@ -1190,7 +1311,7 @@ impl Decoder for H264Decoder {
             self.record_malformed_nal_drop("send_packet_split", &err);
         }
         let mut idr_reset_done = false;
-        let trace_slice = std::env::var("TAO_H264_SLICE_TRACE").as_deref() == Ok("1");
+        let trace_slice = self.trace_slice;
 
         for nalu in &nalus {
             match nalu.nal_type {

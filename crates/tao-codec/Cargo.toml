@@ -14,3 +14,4 @@ tao-core.workspace = true
 thiserror.workspace = true
 log.workspace = true
 bytes.workspace = true
+smallvec.workspace = true

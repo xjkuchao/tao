@@ -173,6 +173,7 @@ pub fn build_test_decoder() -> H264Decoder {
         last_nal_ref_idc: 0,
         last_poc: 0,
         last_ref_l0_poc: Vec::new(),
+        last_ref_l1_poc: Vec::new(),
         last_slice_qp: 26,
         last_disable_deblocking_filter_idc: 0,
         last_slice_alpha_c0_offset_div2: 0,
@@ -191,6 +192,29 @@ pub fn build_test_decoder() -> H264Decoder {
         malformed_nal_drops: 0,
         last_sei_payloads: Vec::new(),
         pending_recovery_point_frame_cnt: None,
+        trace_mb_range: None,
+        trace_mb_detail: false,
+        trace_mb_limit: 400,
+        trace_slice: false,
+        trace_slice_mb: false,
+        trace_mb_bits: false,
+        trace_cabac_state: false,
+        trace_cabac_bins: 0,
+        trace_p_stage_bits: false,
+        trace_inter_coeff: false,
+        debug_ignore_terminate: false,
+        debug_force_inter_use_8x8: None,
+        debug_force_inter_mb0_use_8x8: false,
+        debug_inter_use_old_transform_ctx: false,
+        debug_skip_inter_residual: false,
+        debug_skip_inter_luma_residual: false,
+        debug_skip_inter_chroma_residual: false,
+        debug_force_amvd_zero: false,
+        trace_ref_idx_all: false,
+        trace_ref_idx_oob: false,
+        trace_b_direct: false,
+        force_temporal_direct: false,
+        force_spatial_direct: false,
         output_queue: VecDeque::new(),
         reorder_buffer: Vec::new(),
         reorder_depth: 2,
@@ -200,6 +224,7 @@ pub fn build_test_decoder() -> H264Decoder {
         flushing: false,
     };
     dec.init_buffers();
+    dec.refresh_trace_options_from_env();
     dec
 }
 
@@ -245,6 +270,7 @@ pub fn push_dummy_reference_with_long_term(
         ref_idx_l1_4x4: vec![-1i8; total_4x4],
         mb_types: vec![0u8; total_mb],
         ref_l0_poc: Vec::new(),
+        ref_l1_poc: Vec::new(),
         frame_num,
         poc: frame_num as i32,
         long_term_frame_idx,
@@ -278,6 +304,7 @@ pub fn push_custom_reference(
         ref_idx_l1_4x4: vec![-1i8; total_4x4],
         mb_types: vec![0u8; total_mb],
         ref_l0_poc: Vec::new(),
+        ref_l1_poc: Vec::new(),
         frame_num,
         poc,
         long_term_frame_idx,
@@ -300,10 +327,14 @@ pub fn push_custom_reference_with_l0_motion(
     let mut mv_l0_x_4x4 = vec![0i16; total_4x4];
     let mut mv_l0_y_4x4 = vec![0i16; total_4x4];
     let mut ref_idx_l0_4x4 = vec![-1i8; total_4x4];
+    let mut mb_types = vec![0u8; total_mb];
     if total_mb > 0 {
         mv_l0_x[0] = motion.0;
         mv_l0_y[0] = motion.1;
         ref_idx_l0[0] = motion.2;
+        if motion.2 >= 0 {
+            mb_types[0] = 254;
+        }
     }
     if total_4x4 > 0 {
         mv_l0_x_4x4[0] = motion.0;
@@ -326,8 +357,65 @@ pub fn push_custom_reference_with_l0_motion(
         mv_l1_x_4x4: vec![0i16; total_4x4],
         mv_l1_y_4x4: vec![0i16; total_4x4],
         ref_idx_l1_4x4: vec![-1i8; total_4x4],
-        mb_types: vec![0u8; total_mb],
+        mb_types,
         ref_l0_poc: Vec::new(),
+        ref_l1_poc: Vec::new(),
+        frame_num,
+        poc,
+        long_term_frame_idx,
+    });
+}
+
+pub fn push_custom_reference_with_l1_motion_and_ref_l1_poc(
+    dec: &mut H264Decoder,
+    frame_num: u32,
+    poc: i32,
+    y_value: u8,
+    long_term_frame_idx: Option<u32>,
+    motion: (i16, i16, i8),
+    ref_l1_poc: Vec<i32>,
+) {
+    let total_mb = dec.mb_width * dec.mb_height;
+    let total_4x4 = dec.mb_width * 4 * dec.mb_height * 4;
+    let mut mv_l1_x = vec![0i16; total_mb];
+    let mut mv_l1_y = vec![0i16; total_mb];
+    let mut ref_idx_l1 = vec![-1i8; total_mb];
+    let mut mv_l1_x_4x4 = vec![0i16; total_4x4];
+    let mut mv_l1_y_4x4 = vec![0i16; total_4x4];
+    let mut ref_idx_l1_4x4 = vec![-1i8; total_4x4];
+    let mut mb_types = vec![0u8; total_mb];
+    if total_mb > 0 {
+        mv_l1_x[0] = motion.0;
+        mv_l1_y[0] = motion.1;
+        ref_idx_l1[0] = motion.2;
+        if motion.2 >= 0 {
+            mb_types[0] = 254;
+        }
+    }
+    if total_4x4 > 0 {
+        mv_l1_x_4x4[0] = motion.0;
+        mv_l1_y_4x4[0] = motion.1;
+        ref_idx_l1_4x4[0] = motion.2;
+    }
+    dec.reference_frames.push_back(ReferencePicture {
+        y: vec![y_value; dec.ref_y.len()],
+        u: vec![128u8; dec.ref_u.len()],
+        v: vec![128u8; dec.ref_v.len()],
+        mv_l0_x: vec![0i16; total_mb],
+        mv_l0_y: vec![0i16; total_mb],
+        ref_idx_l0: vec![-1i8; total_mb],
+        mv_l1_x,
+        mv_l1_y,
+        ref_idx_l1,
+        mv_l0_x_4x4: vec![0i16; total_4x4],
+        mv_l0_y_4x4: vec![0i16; total_4x4],
+        ref_idx_l0_4x4: vec![-1i8; total_4x4],
+        mv_l1_x_4x4,
+        mv_l1_y_4x4,
+        ref_idx_l1_4x4,
+        mb_types,
+        ref_l0_poc: Vec::new(),
+        ref_l1_poc,
         frame_num,
         poc,
         long_term_frame_idx,
@@ -366,6 +454,7 @@ pub fn push_horizontal_gradient_reference(
         ref_idx_l1_4x4: vec![-1i8; total_4x4],
         mb_types: vec![0u8; total_mb],
         ref_l0_poc: Vec::new(),
+        ref_l1_poc: Vec::new(),
         frame_num,
         poc,
         long_term_frame_idx,

@@ -361,15 +361,23 @@ impl H264Decoder {
         if col_is_intra {
             return false;
         }
-        let Some((col_mv_x, col_mv_y, col_ref)) =
+        if let Some((col_mv_x, col_mv_y, col_ref_l0)) =
             self.ref_pic_l0_motion_at(col_pic, mb_x, mb_y, part_x4, part_y4)
+        {
+            if col_ref_l0 == 0 {
+                return col_mv_x.abs() <= 1 && col_mv_y.abs() <= 1;
+            }
+            if col_ref_l0 >= 0 {
+                return false;
+            }
+        }
+
+        let Some((col_l1_mv_x, col_l1_mv_y, col_ref_l1)) =
+            self.ref_pic_l1_motion_at(col_pic, mb_x, mb_y, part_x4, part_y4)
         else {
             return false;
         };
-        if col_ref != 0 {
-            return false;
-        }
-        col_mv_x.abs() <= 1 && col_mv_y.abs() <= 1
+        col_ref_l1 == 0 && col_l1_mv_x.abs() <= 1 && col_l1_mv_y.abs() <= 1
     }
 
     fn temporal_direct_colocated_l0_motion(
@@ -380,21 +388,33 @@ impl H264Decoder {
         part_y4: usize,
         ref_l0_list: &[RefPlanes],
         ref_l1_list: &[RefPlanes],
-    ) -> Option<(i32, i32, i8, &ReferencePicture)> {
-        for col_planes in [ref_l1_list.first(), ref_l0_list.first()]
-            .into_iter()
-            .flatten()
+    ) -> Option<(i32, i32, i8, u8, &ReferencePicture)> {
+        if let Some(col_planes) = ref_l1_list.first()
+            && let Some(col_pic) = self.find_reference_picture_for_planes(col_planes)
         {
-            let Some(col_pic) = self.find_reference_picture_for_planes(col_planes) else {
-                continue;
-            };
             if let Some(motion) = self.ref_pic_l0_motion_at(col_pic, mb_x, mb_y, part_x4, part_y4) {
-                return Some((motion.0, motion.1, motion.2, col_pic));
+                return Some((motion.0, motion.1, motion.2, 0, col_pic));
             }
-            if let Some((mv_x, mv_y, _)) =
+            if let Some((mv_x, mv_y, col_ref_idx)) =
                 self.ref_pic_l1_motion_at(col_pic, mb_x, mb_y, part_x4, part_y4)
             {
-                return Some((mv_x, mv_y, 0, col_pic));
+                return Some((mv_x, mv_y, col_ref_idx, 1, col_pic));
+            }
+            // 对齐 FFmpeg temporal direct: list1[0] 共定位图像存在时, 不跨图回退到 list0[0].
+            return None;
+        }
+
+        if let Some(col_planes) = ref_l0_list.first() {
+            let Some(col_pic) = self.find_reference_picture_for_planes(col_planes) else {
+                return None;
+            };
+            if let Some(motion) = self.ref_pic_l0_motion_at(col_pic, mb_x, mb_y, part_x4, part_y4) {
+                return Some((motion.0, motion.1, motion.2, 0, col_pic));
+            }
+            if let Some((mv_x, mv_y, col_ref_idx)) =
+                self.ref_pic_l1_motion_at(col_pic, mb_x, mb_y, part_x4, part_y4)
+            {
+                return Some((mv_x, mv_y, col_ref_idx, 1, col_pic));
             }
         }
         None
@@ -403,15 +423,22 @@ impl H264Decoder {
     fn map_col_to_list0_index_with_col_pic(
         &self,
         col_ref_idx: i8,
+        col_list: u8,
         col_pic: &ReferencePicture,
         ref_l0_list: &[RefPlanes],
     ) -> i8 {
         if col_ref_idx < 0 || ref_l0_list.is_empty() {
             return -1;
         }
-        // BUG-4 修复: 使用共定位图片解码时存储的 L0 POC 进行 POC 匹配,
+        let trace_b_direct = self.trace_b_direct;
+        let col_ref_poc_table = if col_list == 1 {
+            &col_pic.ref_l1_poc
+        } else {
+            &col_pic.ref_l0_poc
+        };
+        // BUG-4 修复: 使用共定位图片解码时存储的参考列表 POC 进行匹配,
         // 而非从当前 DPB 重建 (DPB 可能已在 MMCO/新帧进入后发生变化).
-        if let Some(&col_ref_poc) = col_pic.ref_l0_poc.get(col_ref_idx as usize) {
+        if let Some(&col_ref_poc) = col_ref_poc_table.get(col_ref_idx as usize) {
             if let Some((idx, _)) = ref_l0_list
                 .iter()
                 .enumerate()
@@ -430,6 +457,17 @@ impl H264Decoder {
             {
                 return idx as i8;
             }
+        }
+        if trace_b_direct {
+            eprintln!(
+                "[H264_B_DIRECT] map_col_to_list0 失败: col_list={} col_ref_idx={} col_ref_table_len={} cur_l0_len={} col_pic_poc={} col_pic_frame_num={}",
+                col_list,
+                col_ref_idx,
+                col_ref_poc_table.len(),
+                ref_l0_list.len(),
+                col_pic.poc,
+                col_pic.frame_num
+            );
         }
         0
     }
@@ -456,10 +494,8 @@ impl H264Decoder {
         ref_l0_list: &[RefPlanes],
         ref_l1_list: &[RefPlanes],
     ) -> (Option<BMotion>, Option<BMotion>) {
-        let force_temporal =
-            std::env::var("TAO_H264_DEBUG_FORCE_TEMPORAL_DIRECT").as_deref() == Ok("1");
-        let force_spatial =
-            std::env::var("TAO_H264_DEBUG_FORCE_SPATIAL_DIRECT").as_deref() == Ok("1");
+        let force_temporal = self.force_temporal_direct;
+        let force_spatial = self.force_spatial_direct;
         let use_spatial = if force_temporal {
             false
         } else if force_spatial {
@@ -543,11 +579,11 @@ impl H264Decoder {
                 ref_l0_list,
                 ref_l1_list,
             )
-            .map(|(mx, my, r, pic)| (mx, my, r, Some(pic)))
-            .unwrap_or((mv_x, mv_y, 0, None));
-        let (col_mv_x, col_mv_y, col_ref_idx, col_pic_opt) = temporal_col;
+            .map(|(mx, my, r, col_list, pic)| (mx, my, r, col_list, Some(pic)))
+            .unwrap_or((mv_x, mv_y, 0, 0, None));
+        let (col_mv_x, col_mv_y, col_ref_idx, col_list, col_pic_opt) = temporal_col;
         let mut ref_idx_l0 = if let Some(col_pic) = col_pic_opt {
-            self.map_col_to_list0_index_with_col_pic(col_ref_idx, col_pic, ref_l0_list)
+            self.map_col_to_list0_index_with_col_pic(col_ref_idx, col_list, col_pic, ref_l0_list)
         } else if (col_ref_idx as usize) < ref_l0_list.len() {
             col_ref_idx
         } else {
@@ -689,14 +725,10 @@ impl H264Decoder {
             );
         }
 
-        let mut part_pred_mv_x = [[0i32; 2]; 2];
-        let mut part_pred_mv_y = [[0i32; 2]; 2];
+        let mut last_mv = (pred_mv_x, pred_mv_y, 0i8);
         for part_y in 0..2usize {
             for part_x in 0..2usize {
-                (
-                    part_pred_mv_x[part_y][part_x],
-                    part_pred_mv_y[part_y][part_x],
-                ) = self.predict_mv_l0_partition(
+                let (part_pred_mv_x, part_pred_mv_y) = self.predict_mv_l0_partition(
                     mb_x,
                     mb_y,
                     base_part_x4 + part_x,
@@ -704,19 +736,14 @@ impl H264Decoder {
                     1,
                     0,
                 );
-            }
-        }
-        let mut last_mv = (pred_mv_x, pred_mv_y, 0i8);
-        for part_y in 0..2usize {
-            for part_x in 0..2usize {
                 let (motion_l0, motion_l1) = self.build_b_direct_motion_for_part(
                     mb_x,
                     mb_y,
                     base_part_x4 + part_x,
                     base_part_y4 + part_y,
                     1,
-                    part_pred_mv_x[part_y][part_x],
-                    part_pred_mv_y[part_y][part_x],
+                    part_pred_mv_x,
+                    part_pred_mv_y,
                     direct_spatial_mv_pred_flag,
                     ref_l0_list,
                     ref_l1_list,
@@ -835,24 +862,17 @@ impl H264Decoder {
     ) {
         self.prev_qp_delta_nz = false;
         let mut cur_qp = slice_qp;
-        let trace_slice = std::env::var("TAO_H264_SLICE_TRACE").as_deref() == Ok("1");
-        let trace_slice_mb = std::env::var("TAO_H264_SLICE_TRACE_MB").as_deref() == Ok("1");
-        let trace_mb_bits = std::env::var("TAO_H264_TRACE_MB_BITS").as_deref() == Ok("1");
-        let trace_mb_limit = std::env::var("TAO_H264_TRACE_MB_LIMIT")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(400);
-        let ignore_terminate =
-            std::env::var("TAO_H264_DEBUG_IGNORE_TERMINATE").as_deref() == Ok("1");
+        let trace_slice = self.trace_slice;
+        let trace_slice_mb = self.trace_slice_mb;
+        let trace_mb_bits = self.trace_mb_bits;
+        let trace_mb_limit = self.trace_mb_limit;
+        let ignore_terminate = self.debug_ignore_terminate;
         let mut decoded_mbs = 0usize;
         let mut term_break = false;
         let mut last_mb_idx = first;
 
-        let trace_cabac_state = std::env::var("TAO_H264_TRACE_CABAC_STATE").as_deref() == Ok("1");
-        let cabac_bin_trace_limit = std::env::var("TAO_H264_TRACE_CABAC_BINS")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(0);
+        let trace_cabac_state = self.trace_cabac_state;
+        let cabac_bin_trace_limit = self.trace_cabac_bins;
         if cabac_bin_trace_limit > 0 {
             cabac.bin_trace_limit = cabac_bin_trace_limit;
         }
@@ -1272,8 +1292,8 @@ impl H264Decoder {
         if num_ref_idx <= 1 {
             return 0;
         }
-        let trace_ref_idx_all = std::env::var("TAO_H264_TRACE_REF_IDX").as_deref() == Ok("1");
-        let trace_ref_idx_oob = std::env::var("TAO_H264_TRACE_REF_IDX_OOB").as_deref() == Ok("1");
+        let trace_ref_idx_all = self.trace_ref_idx_all;
+        let trace_ref_idx_oob = self.trace_ref_idx_oob;
         let trace_ref_idx = trace_ref_idx_all || trace_ref_idx_oob;
         let mut ref_idx = 0u32;
         let mut ctx = self.ref_idx_ctx_inc(list, x4, y4, is_b_slice);

@@ -820,11 +820,8 @@ impl H264Decoder {
             self.decode_coded_block_pattern(cabac, ctxs, mb_x, mb_y, false);
         let cbp = luma_cbp | (chroma_cbp << 4);
         self.set_mb_cbp(mb_x, mb_y, cbp);
-        let trace_slice_mb = std::env::var("TAO_H264_SLICE_TRACE_MB").as_deref() == Ok("1");
-        let trace_mb_limit = std::env::var("TAO_H264_TRACE_MB_LIMIT")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(400);
+        let trace_slice_mb = self.trace_slice_mb;
+        let trace_mb_limit = self.trace_mb_limit;
         if trace_slice_mb && mb_idx < trace_mb_limit {
             eprintln!(
                 "[H264_B_CBP] idx={} mb=({}, {}) mb_type_idx={:?} luma_cbp={} chroma_cbp={} cbp={}",
@@ -840,11 +837,10 @@ impl H264Decoder {
             self.prev_qp_delta_nz = false;
         }
 
-        let forced_use_8x8 = std::env::var("TAO_H264_DEBUG_FORCE_INTER_USE_8X8").ok();
-        let use_old_transform_ctx =
-            std::env::var("TAO_H264_DEBUG_INTER_USE_OLD_TRANSFORM_CTX").as_deref() == Ok("1");
-        let use_8x8 = if let Some(v) = forced_use_8x8.as_deref() {
-            luma_cbp != 0 && v == "1"
+        let forced_use_8x8 = self.debug_force_inter_use_8x8;
+        let use_old_transform_ctx = self.debug_inter_use_old_transform_ctx;
+        let use_8x8 = if let Some(v) = forced_use_8x8 {
+            luma_cbp != 0 && v
         } else {
             luma_cbp != 0
                 && no_sub_mb_part_size_less_than_8x8_flag
@@ -861,8 +857,7 @@ impl H264Decoder {
         };
         self.set_transform_8x8_flag(mb_x, mb_y, use_8x8);
 
-        let skip_inter_residual =
-            std::env::var("TAO_H264_DEBUG_SKIP_INTER_RESIDUAL").as_deref() == Ok("1");
+        let skip_inter_residual = self.debug_skip_inter_residual;
         if !skip_inter_residual {
             if use_8x8 {
                 self.decode_i8x8_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp, false);
@@ -999,15 +994,18 @@ impl H264Decoder {
                 let mut raw_coeffs =
                     decode_residual_block(cabac, ctxs, &residual::CAT_LUMA_4X4, cbf_inc);
                 let coded = raw_coeffs.iter().any(|&c| c != 0);
-                if std::env::var("TAO_H264_TRACE_INTER_COEFF").is_ok()
-                    && mb_x == 0
-                    && mb_y == 0
-                    && (i8x8 == 0 || coded)
-                {
+                if self.trace_inter_coeff && mb_x == 0 && mb_y == 0 && (i8x8 == 0 || coded) {
                     let bits_after_block = cabac.bits_read();
                     eprintln!(
                         "[INTER_COEFF] mb=({},{}) i8x8={} sub={} x4={} y4={} cbf_inc={} coded={} bits={} coeffs={:?}",
-                        mb_x, mb_y, i8x8, i_sub, x4, y4, cbf_inc, coded,
+                        mb_x,
+                        mb_y,
+                        i8x8,
+                        i_sub,
+                        x4,
+                        y4,
+                        cbf_inc,
+                        coded,
                         bits_after_block - bits_before_block,
                         &raw_coeffs
                     );

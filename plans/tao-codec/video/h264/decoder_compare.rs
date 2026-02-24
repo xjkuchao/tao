@@ -9,6 +9,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use tao::codec::codec_parameters::{CodecParamsType, VideoCodecParams};
 use tao::codec::frame::{Frame, VideoFrame};
@@ -352,14 +353,15 @@ fn resolve_frame_size(width: u32, height: u32) -> Result<usize, Box<dyn std::err
     Ok(y + uv * 2)
 }
 
-fn pack_plane(
+fn append_plane_packed(
+    out: &mut Vec<u8>,
     src: &[u8],
     linesize: usize,
     width: usize,
     height: usize,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     if width == 0 || height == 0 {
-        return Ok(Vec::new());
+        return Ok(());
     }
     if linesize < width {
         return Err(format!(
@@ -374,12 +376,15 @@ fn pack_plane(
     if src.len() < need {
         return Err(format!("视频平面数据长度不足: 实际={}, 期望>={}", src.len(), need).into());
     }
-    let mut out = Vec::with_capacity(width * height);
+    if linesize == width {
+        out.extend_from_slice(&src[..width * height]);
+        return Ok(());
+    }
     for row in 0..height {
         let off = row * linesize;
         out.extend_from_slice(&src[off..off + width]);
     }
-    Ok(out)
+    Ok(())
 }
 
 fn pack_yuv420p(vf: &VideoFrame) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
@@ -395,14 +400,10 @@ fn pack_yuv420p(vf: &VideoFrame) -> Result<Vec<u8>, Box<dyn std::error::Error>> 
     let cw = vf.width.div_ceil(2) as usize;
     let ch = vf.height.div_ceil(2) as usize;
 
-    let y = pack_plane(&vf.data[0], vf.linesize[0], w, h)?;
-    let u = pack_plane(&vf.data[1], vf.linesize[1], cw, ch)?;
-    let v = pack_plane(&vf.data[2], vf.linesize[2], cw, ch)?;
-
-    let mut out = Vec::with_capacity(y.len() + u.len() + v.len());
-    out.extend_from_slice(&y);
-    out.extend_from_slice(&u);
-    out.extend_from_slice(&v);
+    let mut out = Vec::with_capacity(w * h + cw * ch * 2);
+    append_plane_packed(&mut out, &vf.data[0], vf.linesize[0], w, h)?;
+    append_plane_packed(&mut out, &vf.data[1], vf.linesize[1], cw, ch)?;
+    append_plane_packed(&mut out, &vf.data[2], vf.linesize[2], cw, ch)?;
     Ok(out)
 }
 
@@ -969,14 +970,20 @@ fn print_first_frame_stats(path: &str, width: u32, height: u32, ff: &[u8], tao: 
                 let mut max_d = 0i32;
                 for dy in 0..16 {
                     let py = mb_row * 16 + dy;
-                    if py >= height as usize { break; }
+                    if py >= height as usize {
+                        break;
+                    }
                     for dx in 0..16 {
                         let px = mb_col * 16 + dx;
-                        if px >= w { break; }
+                        if px >= w {
+                            break;
+                        }
                         let i = py * w + px;
                         if i < y_ff.len() && i < y_tao.len() {
                             let d = (y_ff[i] as i32 - y_tao[i] as i32).abs();
-                            if d > max_d { max_d = d; }
+                            if d > max_d {
+                                max_d = d;
+                            }
                         }
                     }
                 }
@@ -987,12 +994,16 @@ fn print_first_frame_stats(path: &str, width: u32, height: u32, ff: &[u8], tao: 
                     );
                     for dy in 0..8 {
                         let py = mb_row * 16 + dy;
-                        if py >= height as usize { break; }
+                        if py >= height as usize {
+                            break;
+                        }
                         let off = py * w + mb_col * 16;
                         let end = (off + 16).min(y_ff.len());
                         let diff: Vec<i32> = y_ff[off..end]
-                            .iter().zip(y_tao[off..end].iter())
-                            .map(|(&a, &b)| a as i32 - b as i32).collect();
+                            .iter()
+                            .zip(y_tao[off..end].iter())
+                            .map(|(&a, &b)| a as i32 - b as i32)
+                            .collect();
                         println!("  dy{}: diff={:?}", dy, diff);
                     }
                     found = true;
@@ -1209,10 +1220,21 @@ fn print_compare_stats(path: &str, tao_frames: usize, ff_frames: usize, stats: &
 }
 
 fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let timing_enabled = std::env::var("TAO_H264_COMPARE_TIMING").as_deref() == Ok("1");
+    let t_total = Instant::now();
     if fail_on_ref_fallback_enabled() {
         println!("[{}] 已启用缺失参考回退硬失败门禁", path);
     }
+    let t_tao = Instant::now();
     let (tao_w, tao_h, tao_frames, tao_stream_index) = decode_h264_with_tao(path)?;
+    if timing_enabled {
+        println!(
+            "[{}] 计时: Tao解码={}ms, Tao帧数={}",
+            path,
+            t_tao.elapsed().as_millis(),
+            tao_frames.len()
+        );
+    }
 
     if std::env::var("TAO_H264_COMPARE_DUMP_TAO").unwrap_or_default() == "1"
         && !tao_frames.is_empty()
@@ -1230,8 +1252,17 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    let t_ff = Instant::now();
     let (ff_w, ff_h, ff_frames) =
         decode_h264_with_ffmpeg(path, tao_stream_index, Some((tao_w, tao_h)))?;
+    if timing_enabled {
+        println!(
+            "[{}] 计时: FFmpeg解码={}ms, FF帧数={}",
+            path,
+            t_ff.elapsed().as_millis(),
+            ff_frames.len()
+        );
+    }
 
     if tao_w != ff_w || tao_h != ff_h {
         return Err(format!(
@@ -1349,7 +1380,15 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         print_mb_error_map(path, tao_w, tao_h, &ff_frames[0], &tao_frames[0]);
     }
 
+    let t_compare = Instant::now();
     let (stats, per_frame_reports) = compare_video(tao_w, tao_h, &ff_frames, &tao_frames)?;
+    if timing_enabled {
+        println!(
+            "[{}] 计时: 像素对比={}ms",
+            path,
+            t_compare.elapsed().as_millis()
+        );
+    }
     print_compare_stats(path, tao_frames.len(), ff_frames.len(), &stats);
 
     if report_enabled() && !per_frame_reports.is_empty() {
@@ -1382,6 +1421,13 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
+    if timing_enabled {
+        println!(
+            "[{}] 计时: 总耗时={}ms",
+            path,
+            t_total.elapsed().as_millis()
+        );
+    }
     Ok(())
 }
 

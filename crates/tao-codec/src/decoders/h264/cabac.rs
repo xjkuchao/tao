@@ -4,6 +4,7 @@
 
 use super::cabac_init_ext::{CABAC_INIT_I_EXT_460_1011, CABAC_INIT_PB0_EXT_460_1011};
 use super::cabac_init_pb::{CABAC_INIT_PB1, CABAC_INIT_PB2};
+use std::sync::OnceLock;
 
 /// CABAC 上下文模型
 #[derive(Clone, Copy)]
@@ -22,6 +23,11 @@ pub struct CabacDecoder<'a> {
     cod_i_range: u32,
     cod_i_offset: u32,
     pub bin_trace_limit: u32,
+}
+
+fn trace_cabac_terminate_enabled() -> bool {
+    static TRACE_CABAC_TERM: OnceLock<bool> = OnceLock::new();
+    *TRACE_CABAC_TERM.get_or_init(|| std::env::var("TAO_H264_TRACE_CABAC_TERM").is_ok())
 }
 
 impl<'a> CabacDecoder<'a> {
@@ -111,7 +117,7 @@ impl<'a> CabacDecoder<'a> {
         let offset_before = self.cod_i_offset;
         self.cod_i_range = self.cod_i_range.saturating_sub(2);
         let result = if self.cod_i_offset >= self.cod_i_range {
-            if std::env::var("TAO_H264_TRACE_CABAC_TERM").is_ok() {
+            if trace_cabac_terminate_enabled() {
                 eprintln!(
                     "[CABAC_TERM] terminate=1 range_before={} offset_before={} range_after={} bits_read={}",
                     range_before,
