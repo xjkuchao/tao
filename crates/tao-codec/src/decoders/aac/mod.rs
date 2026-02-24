@@ -19,9 +19,9 @@ pub(crate) mod tables;
 mod tests;
 use std::cell::Cell;
 
-use log::info;
 use tao_core::bitreader::BitReader;
 use tao_core::{ChannelLayout, SampleFormat, TaoError, TaoResult};
+use tracing::info;
 
 use crate::codec_id::CodecId;
 use crate::codec_parameters::{CodecParameters, CodecParamsType};

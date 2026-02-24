@@ -4,7 +4,7 @@
 
 use std::sync::OnceLock;
 
-use log::debug;
+use tracing::debug;
 
 use super::bitreader::{BitReader, ReverseBitReader};
 use super::tables::*;

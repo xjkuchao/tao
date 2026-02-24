@@ -12,6 +12,6 @@ default = []
 [dependencies]
 tao-core.workspace = true
 thiserror.workspace = true
-log.workspace = true
+tracing.workspace = true
 bytes.workspace = true
 smallvec.workspace = true

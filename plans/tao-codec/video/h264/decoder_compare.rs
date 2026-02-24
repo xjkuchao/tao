@@ -5,7 +5,7 @@
 //! 2) TAO_H264_COMPARE_INPUT=data/2_h264.mp4 cargo test --test run_decoder h264:: -- --nocapture --ignored
 //! 3) TAO_H264_COMPARE_INPUT=https://samples.ffmpeg.org/V-codecs/h264/interlaced_crop.mp4 cargo test --test run_decoder h264:: -- --nocapture --ignored
 
-use std::io::Write;
+use std::io::{BufReader, Read, Write};
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -481,9 +481,6 @@ fn decode_h264_with_tao(path: &str) -> DecodeResult {
     let mut actual_w = width;
     let mut actual_h = height;
     let frame_limit = compare_frames_limit();
-    let drop_negative_pts = std::env::var("TAO_H264_COMPARE_KEEP_NEGATIVE_PTS")
-        .map(|v| !(v == "1" || v.eq_ignore_ascii_case("true")))
-        .unwrap_or(true);
     let mut demux_eof = false;
     let mut packet_index: u64 = 0;
 
@@ -522,10 +519,7 @@ fn decode_h264_with_tao(path: &str) -> DecodeResult {
         loop {
             match decoder.receive_frame() {
                 Ok(Frame::Video(vf)) => {
-                    if drop_negative_pts
-                        && vf.pts != tao::core::timestamp::NOPTS_VALUE
-                        && vf.pts < 0
-                    {
+                    if vf.pts != tao::core::timestamp::NOPTS_VALUE && vf.pts < 0 {
                         continue;
                     }
                     actual_w = vf.width;
@@ -651,11 +645,7 @@ fn decode_h264_with_ffmpeg(
     let frame_limit = compare_frames_limit().to_string();
     let map_spec = format!("0:{}", probe.stream_idx);
     let tmp = make_ffmpeg_tmp_path("h264_cmp");
-    let skip_deblock = std::env::var("TAO_H264_COMPARE_SKIP_DEBLOCK").is_ok();
     let mut cmd = Command::new("ffmpeg");
-    if skip_deblock {
-        cmd.args(["-skip_loop_filter", "all"]);
-    }
     let out_fmt = if probe.is_full_range {
         "yuvj420p"
     } else {
@@ -685,33 +675,36 @@ fn decode_h264_with_ffmpeg(
         return Err("ffmpeg 解码失败".into());
     }
 
-    let raw = std::fs::read(&tmp)?;
-    let _ = std::fs::remove_file(&tmp);
     let frame_size = resolve_frame_size(width, height)?;
     if frame_size == 0 {
         return Err("无效视频帧大小, 无法对比".into());
     }
-    if raw.len() < frame_size {
+    let file = std::fs::File::open(&tmp)?;
+    let file_len = file.metadata()?.len() as usize;
+    if file_len < frame_size {
+        let _ = std::fs::remove_file(&tmp);
         return Err(format!(
             "ffmpeg 输出数据过小: 实际={}, 期望>={}",
-            raw.len(),
-            frame_size
+            file_len, frame_size
         )
         .into());
     }
-    if !raw.len().is_multiple_of(frame_size) {
+    if !file_len.is_multiple_of(frame_size) {
         eprintln!(
             "[H264] ffmpeg 输出长度不是帧大小整数倍: 总字节={}, 帧大小={}, 尾部字节将忽略",
-            raw.len(),
-            frame_size
+            file_len, frame_size
         );
     }
-    let frame_count = raw.len() / frame_size;
+    let frame_count = file_len / frame_size;
+    let mut reader = BufReader::new(file);
     let mut frames = Vec::with_capacity(frame_count);
-    for i in 0..frame_count {
-        let off = i * frame_size;
-        frames.push(raw[off..off + frame_size].to_vec());
+    for _ in 0..frame_count {
+        let mut buf = vec![0u8; frame_size];
+        reader.read_exact(&mut buf)?;
+        frames.push(buf);
     }
+    drop(reader);
+    let _ = std::fs::remove_file(&tmp);
     Ok((width, height, frames))
 }
 
@@ -767,9 +760,9 @@ fn compare_frame(
     stats.frame_count += 1;
 
     if stats.first_mismatch_frame.is_none()
-        && (!y_ref.iter().zip(y_test).all(|(a, b)| a == b)
-            || !u_ref.iter().zip(u_test).all(|(a, b)| a == b)
-            || !v_ref.iter().zip(v_test).all(|(a, b)| a == b))
+        && (frame_y.equal_bytes < frame_y.total_bytes
+            || frame_u.equal_bytes < frame_u.total_bytes
+            || frame_v.equal_bytes < frame_v.total_bytes)
     {
         stats.first_mismatch_frame = Some(frame_idx);
     }
@@ -804,260 +797,6 @@ fn compare_video(
     Ok((stats, reports))
 }
 
-fn analyze_shift_enabled() -> bool {
-    std::env::var("TAO_H264_COMPARE_ANALYZE_SHIFT")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
-
-fn analyze_frame_stats_enabled() -> bool {
-    std::env::var("TAO_H264_COMPARE_ANALYZE_FRAME_STATS")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
-
-fn print_frame_stats(path: &str, frame_idx: usize, width: u32, height: u32, ff: &[u8], tao: &[u8]) {
-    let y_size = (width as usize) * (height as usize);
-    let y_ff = &ff[..y_size.min(ff.len())];
-    let y_tao = &tao[..y_size.min(tao.len())];
-    let ff_128 = y_ff.iter().filter(|&&v| v == 128).count();
-    let tao_128 = y_tao.iter().filter(|&&v| v == 128).count();
-    let ff_mean = if y_ff.is_empty() {
-        0.0
-    } else {
-        y_ff.iter().map(|&v| v as u64).sum::<u64>() as f64 / y_ff.len() as f64
-    };
-    let tao_mean = if y_tao.is_empty() {
-        0.0
-    } else {
-        y_tao.iter().map(|&v| v as u64).sum::<u64>() as f64 / y_tao.len() as f64
-    };
-    println!(
-        "[{}] 帧{} Y统计: FFmpeg(mean={:.3}, v128={}/{}), Tao(mean={:.3}, v128={}/{})",
-        path,
-        frame_idx,
-        ff_mean,
-        ff_128,
-        y_ff.len(),
-        tao_mean,
-        tao_128,
-        y_tao.len()
-    );
-
-    let w = width as usize;
-    let dump_rows = 4.min(height as usize);
-    let dump_cols = 128.min(w);
-    println!(
-        "[{}] 帧{} Y像素(前{}行x{}列):",
-        path, frame_idx, dump_rows, dump_cols
-    );
-    for row in 0..dump_rows {
-        let off = row * w;
-        let ff_row: Vec<u8> = y_ff[off..off + dump_cols].to_vec();
-        let tao_row: Vec<u8> = y_tao[off..off + dump_cols].to_vec();
-        println!("  行{}: FF={:?}", row, ff_row);
-        println!("  行{}: Tao={:?}", row, tao_row);
-    }
-
-    // 找到第一个不匹配像素
-    let mut first_mismatch = None;
-    let mut max_err_pos = (0usize, 0usize, 0i32);
-    let mut err_hist = [0u64; 8]; // [0, 1, 2-3, 4-7, 8-15, 16-31, 32-63, 64+]
-    for i in 0..y_ff.len().min(y_tao.len()) {
-        let diff = (y_ff[i] as i32 - y_tao[i] as i32).abs();
-        if diff > 0 && first_mismatch.is_none() {
-            first_mismatch = Some((i % w, i / w, y_ff[i], y_tao[i], diff));
-        }
-        if diff > max_err_pos.2 {
-            max_err_pos = (i % w, i / w, diff);
-        }
-        let bucket = if diff == 0 {
-            0
-        } else if diff == 1 {
-            1
-        } else if diff <= 3 {
-            2
-        } else if diff <= 7 {
-            3
-        } else if diff <= 15 {
-            4
-        } else if diff <= 31 {
-            5
-        } else if diff <= 63 {
-            6
-        } else {
-            7
-        };
-        err_hist[bucket] += 1;
-    }
-    if let Some((x, y, ff_v, tao_v, d)) = first_mismatch {
-        println!(
-            "[{}] 帧{} 首个不匹配: ({},{}) FF={} Tao={} diff={}",
-            path, frame_idx, x, y, ff_v, tao_v, d
-        );
-    }
-    println!(
-        "[{}] 帧{} 最大误差位置: ({},{}) diff={}",
-        path, frame_idx, max_err_pos.0, max_err_pos.1, max_err_pos.2
-    );
-    println!(
-        "[{}] 帧{} 误差分布: 0:{} 1:{} 2-3:{} 4-7:{} 8-15:{} 16-31:{} 32-63:{} 64+:{}",
-        path,
-        frame_idx,
-        err_hist[0],
-        err_hist[1],
-        err_hist[2],
-        err_hist[3],
-        err_hist[4],
-        err_hist[5],
-        err_hist[6],
-        err_hist[7]
-    );
-
-    // 找到首个大误差 (>=10) 和极大误差 (>=64) 的位置
-    let mut first_big = None;
-    let mut first_huge = None;
-    for i in 0..y_ff.len().min(y_tao.len()) {
-        let diff = (y_ff[i] as i32 - y_tao[i] as i32).abs();
-        if diff >= 10 && first_big.is_none() {
-            first_big = Some((i % w, i / w, y_ff[i], y_tao[i], diff));
-        }
-        if diff >= 64 && first_huge.is_none() {
-            first_huge = Some((i % w, i / w, y_ff[i], y_tao[i], diff));
-        }
-        if first_big.is_some() && first_huge.is_some() {
-            break;
-        }
-    }
-    if let Some((x, y, fv, tv, d)) = first_big {
-        let mb_x = x / 16;
-        let mb_y = y / 16;
-        println!(
-            "[{}] 帧{} 首个大误差(>=10): ({},{}) MB({},{}) FF={} Tao={} diff={}",
-            path, frame_idx, x, y, mb_x, mb_y, fv, tv, d
-        );
-    }
-    if let Some((x, y, fv, tv, d)) = first_huge {
-        let mb_x = x / 16;
-        let mb_y = y / 16;
-        println!(
-            "[{}] 帧{} 首个极大误差(>=64): ({},{}) MB({},{}) FF={} Tao={} diff={}",
-            path, frame_idx, x, y, mb_x, mb_y, fv, tv, d
-        );
-    }
-
-    // 显示第一个不匹配位置附近的宏块
-    if let Some((x, y, _, _, _)) = first_mismatch {
-        let mb_x = x / 16;
-        let mb_y = y / 16;
-        let start_row = mb_y * 16;
-        let start_col = mb_x * 16;
-        println!(
-            "[{}] 帧{} 首个不匹配宏块({},{}), 像素({},{})附近:",
-            path, frame_idx, mb_x, mb_y, x, y
-        );
-        for r in start_row..(start_row + 4).min(height as usize) {
-            let off = r * w + start_col;
-            let end = (off + 16).min(y_ff.len());
-            let ff_row: Vec<u8> = y_ff[off..end].to_vec();
-            let tao_row: Vec<u8> = y_tao[off..end].to_vec();
-            println!("  行{}: FF={:?}", r, ff_row);
-            println!("  行{}: Tao={:?}", r, tao_row);
-        }
-    }
-
-    if std::env::var("TAO_H264_COMPARE_LOCATE_ERROR_MB").as_deref() == Ok("1") {
-        let mb_rows = (height as usize + 15) / 16;
-        let mb_cols = (width as usize + 15) / 16;
-        let mut found = false;
-        'outer: for mb_row in 0..mb_rows {
-            for mb_col in 0..mb_cols {
-                let mut max_d = 0i32;
-                for dy in 0..16 {
-                    let py = mb_row * 16 + dy;
-                    if py >= height as usize {
-                        break;
-                    }
-                    for dx in 0..16 {
-                        let px = mb_col * 16 + dx;
-                        if px >= w {
-                            break;
-                        }
-                        let i = py * w + px;
-                        if i < y_ff.len() && i < y_tao.len() {
-                            let d = (y_ff[i] as i32 - y_tao[i] as i32).abs();
-                            if d > max_d {
-                                max_d = d;
-                            }
-                        }
-                    }
-                }
-                if max_d >= 1 && !found {
-                    println!(
-                        "[{}] 帧{} 首个大误差MB: ({},{}) max_d={}",
-                        path, frame_idx, mb_col, mb_row, max_d
-                    );
-                    for dy in 0..8 {
-                        let py = mb_row * 16 + dy;
-                        if py >= height as usize {
-                            break;
-                        }
-                        let off = py * w + mb_col * 16;
-                        let end = (off + 16).min(y_ff.len());
-                        let diff: Vec<i32> = y_ff[off..end]
-                            .iter()
-                            .zip(y_tao[off..end].iter())
-                            .map(|(&a, &b)| a as i32 - b as i32)
-                            .collect();
-                        println!("  dy{}: diff={:?}", dy, diff);
-                    }
-                    found = true;
-                    break 'outer;
-                }
-            }
-        }
-    }
-}
-
-/// 估计参考序列与测试序列的最佳帧偏移.
-/// 返回 `(最佳偏移, 对齐后的逐字节相等率百分比)`.
-fn estimate_best_shift(reference: &[Vec<u8>], test: &[Vec<u8>], max_shift: isize) -> (isize, f64) {
-    let mut best_shift = 0isize;
-    let mut best_precision = -1.0f64;
-
-    for shift in -max_shift..=max_shift {
-        let mut equal = 0u64;
-        let mut total = 0u64;
-        for (i, r) in reference.iter().enumerate() {
-            let j = i as isize + shift;
-            if j < 0 {
-                continue;
-            }
-            let j = j as usize;
-            if j >= test.len() {
-                continue;
-            }
-            let t = &test[j];
-            let n = r.len().min(t.len());
-            for k in 0..n {
-                total += 1;
-                if r[k] == t[k] {
-                    equal += 1;
-                }
-            }
-        }
-        if total == 0 {
-            continue;
-        }
-        let precision = equal as f64 * 100.0 / total as f64;
-        if precision > best_precision {
-            best_precision = precision;
-            best_shift = shift;
-        }
-    }
-    (best_shift, best_precision.max(0.0))
-}
-
 fn resolve_input() -> Result<String, Box<dyn std::error::Error>> {
     let mut after_dd = std::env::args().skip_while(|v| v != "--").skip(1);
     if let Some(arg) = after_dd.next() {
@@ -1071,118 +810,135 @@ fn resolve_input() -> Result<String, Box<dyn std::error::Error>> {
     Err("请通过参数或 TAO_H264_COMPARE_INPUT 指定 MP4/H264 文件或 URL".into())
 }
 
-fn print_mb_error_map(path: &str, w: u32, h: u32, ref_frame: &[u8], tao_frame: &[u8]) {
+fn print_mb_error_map(
+    path: &str,
+    frame_idx: usize,
+    w: u32,
+    h: u32,
+    ref_frame: &[u8],
+    tao_frame: &[u8],
+) {
     let w = w as usize;
     let h = h as usize;
     let y_size = w * h;
     if ref_frame.len() < y_size || tao_frame.len() < y_size {
         return;
     }
-    let mb_w = (w + 15) / 16;
-    let mb_h = (h + 15) / 16;
+    let ref_y = &ref_frame[..y_size];
+    let tao_y = &tao_frame[..y_size];
+    let mb_w = w.div_ceil(16);
+    let mb_h = h.div_ceil(16);
+
+    // 单次遍历: 收集所有 MB 统计 + 4x4 子块信息
     let mut worst_mb = (0usize, 0usize, 0u32, 0i32);
-    println!("[{}] 宏块误差图 (帧0, Y平面, {}x{} MBs):", path, mb_w, mb_h);
+    let mut first_err_mb: Option<(usize, usize, u32)> = None;
+    let mut error_mbs: Vec<(usize, usize, u32, f64)> = Vec::new();
+    let mut detail_mbs: Vec<(usize, usize, u32, Vec<f64>)> = Vec::new();
+
+    println!(
+        "[{}] 宏块误差图 (帧{}, Y平面, {}x{} MBs):",
+        path, frame_idx, mb_w, mb_h
+    );
+
     for mby in 0..mb_h {
         for mbx in 0..mb_w {
             let mut max_err: u32 = 0;
             let mut sum_diff: i64 = 0;
             let mut cnt = 0u32;
+            let mut sub_sums = [[0i64; 4]; 4];
+            let mut sub_cnts = [[0u32; 4]; 4];
+
             for dy in 0..16 {
                 let y = mby * 16 + dy;
                 if y >= h {
                     break;
                 }
+                let sby = dy / 4;
                 for dx in 0..16 {
                     let x = mbx * 16 + dx;
                     if x >= w {
                         break;
                     }
                     let idx = y * w + x;
-                    let diff = ref_frame[idx] as i32 - tao_frame[idx] as i32;
-                    max_err = max_err.max(diff.unsigned_abs());
+                    let diff = ref_y[idx] as i32 - tao_y[idx] as i32;
+                    let abs_d = diff.unsigned_abs();
+                    max_err = max_err.max(abs_d);
                     sum_diff += diff as i64;
                     cnt += 1;
+                    let sbx = dx / 4;
+                    sub_sums[sby][sbx] += diff as i64;
+                    sub_cnts[sby][sbx] += 1;
                 }
             }
-            if max_err > worst_mb.2 {
-                worst_mb = (mbx, mby, max_err, (sum_diff / cnt as i64) as i32);
+
+            if cnt == 0 {
+                continue;
             }
+            let avg = sum_diff as f64 / cnt as f64;
+            let avg_i = (sum_diff / cnt as i64) as i32;
+
+            if max_err > worst_mb.2 {
+                worst_mb = (mbx, mby, max_err, avg_i);
+            }
+
+            // 首个有误差的 MB (吸收 LOCATE_ERROR_MB 功能)
+            if max_err >= 1 && first_err_mb.is_none() {
+                first_err_mb = Some((mbx, mby, max_err));
+            }
+
             if max_err > 10 {
-                let avg = sum_diff as f64 / cnt as f64;
+                error_mbs.push((mbx, mby, max_err, avg));
                 println!(
                     "  MB({},{}) max_err={} avg_diff={:.1}",
                     mbx, mby, max_err, avg
                 );
             }
+
+            if max_err >= 30 {
+                let subs: Vec<f64> = sub_sums
+                    .iter()
+                    .zip(sub_cnts.iter())
+                    .flat_map(|(row_s, row_c)| {
+                        row_s
+                            .iter()
+                            .zip(row_c.iter())
+                            .map(|(&s, &c)| if c > 0 { s as f64 / c as f64 } else { 0.0 })
+                    })
+                    .collect();
+                detail_mbs.push((mbx, mby, max_err, subs));
+            }
         }
     }
+
     println!(
         "  最差MB({},{}) max_err={} avg_diff={}",
         worst_mb.0, worst_mb.1, worst_mb.2, worst_mb.3
     );
-    let mut detail_mbs: Vec<(usize, usize, u32, i32)> = Vec::new();
-    for mby in 0..mb_h {
-        for mbx in 0..mb_w {
-            let mut max_err: u32 = 0;
-            let mut sum_diff: i64 = 0;
-            let mut cnt = 0u32;
-            for dy in 0..16 {
-                let y = mby * 16 + dy;
-                if y >= h {
-                    break;
-                }
-                for dx in 0..16 {
-                    let x = mbx * 16 + dx;
-                    if x >= w {
-                        break;
-                    }
-                    let idx = y * w + x;
-                    let diff = ref_frame[idx] as i32 - tao_frame[idx] as i32;
-                    max_err = max_err.max(diff.unsigned_abs());
-                    sum_diff += diff as i64;
-                    cnt += 1;
-                }
-            }
-            if max_err >= 30 {
-                detail_mbs.push((mbx, mby, max_err, (sum_diff / cnt as i64) as i32));
-            }
+
+    // 首个误差 MB 的像素差异详情
+    if let Some((mbx, mby, max_d)) = first_err_mb {
+        println!("  首个误差MB({},{}) max_err={}, 像素差异:", mbx, mby, max_d);
+        for dy in 0..8.min(h.saturating_sub(mby * 16)) {
+            let py = mby * 16 + dy;
+            let off = py * w + mbx * 16;
+            let end = (off + 16).min(y_size);
+            let diff: Vec<i32> = ref_y[off..end]
+                .iter()
+                .zip(tao_y[off..end].iter())
+                .map(|(&a, &b)| a as i32 - b as i32)
+                .collect();
+            println!("    dy{}: diff={:?}", dy, diff);
         }
     }
-    for &(mbx, mby, me, _) in &detail_mbs {
-        let mut sub_errs = Vec::new();
-        for sby in 0..4 {
-            for sbx in 0..4 {
-                let mut se: i64 = 0;
-                let mut sc = 0u32;
-                for dy in 0..4 {
-                    let y = mby * 16 + sby * 4 + dy;
-                    if y >= h {
-                        break;
-                    }
-                    for dx in 0..4 {
-                        let x = mbx * 16 + sbx * 4 + dx;
-                        if x >= w {
-                            break;
-                        }
-                        let idx = y * w + x;
-                        se += (ref_frame[idx] as i32 - tao_frame[idx] as i32) as i64;
-                        sc += 1;
-                    }
-                }
-                if sc > 0 {
-                    sub_errs.push(se as f64 / sc as f64);
-                }
-            }
-        }
+
+    // 高误差 MB 的 4x4 子块详情
+    for (mbx, mby, me, subs) in &detail_mbs {
         println!(
             "  MB({},{}) max_err={} 4x4子块avg_diff={:?}",
             mbx,
             mby,
             me,
-            sub_errs
-                .iter()
-                .map(|v| format!("{:.0}", v))
-                .collect::<Vec<_>>()
+            subs.iter().map(|v| format!("{:.0}", v)).collect::<Vec<_>>()
         );
     }
 }
@@ -1249,22 +1005,6 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    if std::env::var("TAO_H264_COMPARE_DUMP_TAO").unwrap_or_default() == "1"
-        && !tao_frames.is_empty()
-    {
-        let stem = std::path::Path::new(path)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("frame");
-        let dump_path = format!("data/tao_{}_frame0.yuv", stem);
-        std::fs::write(&dump_path, &tao_frames[0]).ok();
-        eprintln!(
-            "[诊断] Tao 帧0 已写入 {} ({} 字节)",
-            dump_path,
-            tao_frames[0].len()
-        );
-    }
-
     let t_ff = Instant::now();
     let (ff_w, ff_h, ff_frames) =
         decode_h264_with_ffmpeg(path, tao_stream_index, Some((tao_w, tao_h)))?;
@@ -1300,108 +1040,24 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    if analyze_frame_stats_enabled() && !ff_frames.is_empty() && !tao_frames.is_empty() {
-        print_frame_stats(path, 0, tao_w, tao_h, &ff_frames[0], &tao_frames[0]);
-        if std::env::var("TAO_H264_COMPARE_ANALYZE_FIRST_MISMATCH_FRAME")
-            .as_deref()
-            == Ok("1")
-        {
-            let n = ff_frames.len().min(tao_frames.len());
-            if let Some(first_idx) = (0..n).find(|&i| ff_frames[i] != tao_frames[i])
-                && first_idx > 0
-            {
-                print_frame_stats(path, first_idx, tao_w, tao_h, &ff_frames[first_idx], &tao_frames[first_idx]);
-            }
-        }
-
-        // 检查帧对齐: Tao 帧 0 与 FFmpeg 各帧的精度
-        let y_size = (tao_w as usize) * (tao_h as usize);
-        if ff_frames.len() >= 3 && tao_frames.len() >= 2 {
-            for shift in [-1i32, 0, 1] {
-                let mut total_eq = 0u64;
-                let mut total_cnt = 0u64;
-                let n = ff_frames.len().min(tao_frames.len());
-                for fi in 0..n {
-                    let fj = fi as i32 + shift;
-                    if fj < 0 || fj as usize >= ff_frames.len() {
-                        continue;
-                    }
-                    let sz = ff_frames[fj as usize].len().min(tao_frames[fi].len());
-                    let eq = (0..sz)
-                        .filter(|&i| ff_frames[fj as usize][i] == tao_frames[fi][i])
-                        .count();
-                    total_eq += eq as u64;
-                    total_cnt += sz as u64;
-                }
-                if total_cnt > 0 {
-                    println!(
-                        "[{}] 帧偏移测试 shift={}: 精度={:.2}%",
-                        path,
-                        shift,
-                        total_eq as f64 * 100.0 / total_cnt as f64
-                    );
-                }
-            }
-        }
-
-        let n = ff_frames.len().min(tao_frames.len());
-        for fi in 0..n {
-            let sz = ff_frames[fi].len().min(tao_frames[fi].len());
-            let eq = (0..sz)
-                .filter(|&i| ff_frames[fi][i] == tao_frames[fi][i])
-                .count();
-            let max_e = (0..sz)
-                .map(|i| (ff_frames[fi][i] as i32 - tao_frames[fi][i] as i32).unsigned_abs())
-                .max()
-                .unwrap_or(0);
-            let ff_y_mean = if y_size <= ff_frames[fi].len() {
-                ff_frames[fi][..y_size]
-                    .iter()
-                    .map(|&v| v as f64)
-                    .sum::<f64>()
-                    / y_size as f64
-            } else {
-                0.0
-            };
-            let tao_y_mean = if y_size <= tao_frames[fi].len() {
-                tao_frames[fi][..y_size]
-                    .iter()
-                    .map(|&v| v as f64)
-                    .sum::<f64>()
-                    / y_size as f64
-            } else {
-                0.0
-            };
-            let ff_pix0 = ff_frames[fi].get(0).copied().unwrap_or(0);
-            let tao_pix0 = tao_frames[fi].get(0).copied().unwrap_or(0);
-            println!(
-                "[{}] 帧{}: 精度={:.2}%, max_err={}, FF_Y均值={:.1} Tao_Y均值={:.1}, pix0: FF={} Tao={}",
-                path,
-                fi,
-                eq as f64 * 100.0 / sz as f64,
-                max_e,
-                ff_y_mean,
-                tao_y_mean,
-                ff_pix0,
-                tao_pix0
-            );
-        }
-    }
-
-    if analyze_shift_enabled() {
-        let max_shift = 8isize;
-        let (shift, precision) = estimate_best_shift(&ff_frames, &tao_frames, max_shift);
-        println!(
-            "[{}] 偏移诊断: shift={}, 对齐精度={:.6}% (搜索范围=±{})",
-            path, shift, precision, max_shift
-        );
-    }
-
     if std::env::var("TAO_H264_COMPARE_MB_DIAG").unwrap_or_default() == "1"
         && !ff_frames.is_empty()
         && !tao_frames.is_empty()
     {
-        print_mb_error_map(path, tao_w, tao_h, &ff_frames[0], &tao_frames[0]);
+        // 帧0 宏块诊断
+        print_mb_error_map(path, 0, tao_w, tao_h, &ff_frames[0], &tao_frames[0]);
+        // 首个不一致帧宏块诊断 (若不是帧0)
+        let n = ff_frames.len().min(tao_frames.len());
+        if let Some(first_idx) = (1..n).find(|&i| ff_frames[i] != tao_frames[i]) {
+            print_mb_error_map(
+                path,
+                first_idx,
+                tao_w,
+                tao_h,
+                &ff_frames[first_idx],
+                &tao_frames[first_idx],
+            );
+        }
     }
 
     let t_compare = Instant::now();
@@ -1414,6 +1070,23 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     print_compare_stats(path, tao_frames.len(), ff_frames.len(), &stats);
+
+    // 输出不一致帧摘要 (吸收 ANALYZE_FRAME_STATS/ANALYZE_FIRST_MISMATCH_FRAME 核心功能)
+    for r in &per_frame_reports {
+        if r.y_precision < 100.0 || r.u_precision < 100.0 || r.v_precision < 100.0 {
+            println!(
+                "[{}] 帧{}: Y精度={:.4}% U精度={:.4}% V精度={:.4}% max_err=Y:{}/U:{}/V:{}",
+                path,
+                r.frame_idx,
+                r.y_precision,
+                r.u_precision,
+                r.v_precision,
+                r.y_max_err,
+                r.u_max_err,
+                r.v_max_err,
+            );
+        }
+    }
 
     if report_enabled() && !per_frame_reports.is_empty() {
         write_per_frame_report(path, &per_frame_reports);

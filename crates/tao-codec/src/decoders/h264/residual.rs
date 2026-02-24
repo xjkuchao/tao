@@ -4,7 +4,6 @@
 
 use super::cabac::{CabacCtx, CabacDecoder};
 use smallvec::SmallVec;
-use std::sync::OnceLock;
 
 // ============================================================
 // 块类别定义
@@ -94,17 +93,6 @@ pub const CAT_LUMA_8X8: BlockCat = BlockCat {
     skip_cbf: true,
     use_sig_map_8x8: true,
 };
-
-fn trace_bypass_cap_enabled() -> bool {
-    static TRACE_BYPASS_CAP: OnceLock<bool> = OnceLock::new();
-    *TRACE_BYPASS_CAP
-        .get_or_init(|| std::env::var("TAO_H264_TRACE_BYPASS_CAP").as_deref() == Ok("1"))
-}
-
-fn trace_coeff_target_cached() -> &'static Option<String> {
-    static TRACE_COEFF_TARGET: OnceLock<Option<String>> = OnceLock::new();
-    TRACE_COEFF_TARGET.get_or_init(|| std::env::var("TAO_H264_TRACE_COEFF").ok())
-}
 
 // ============================================================
 // CABAC 残差块解码
@@ -264,13 +252,6 @@ fn decode_abs_suffix_bypass(cabac: &mut CabacDecoder) -> u32 {
     while cabac.decode_bypass() == 1 && j < 23 {
         j += 1;
     }
-    if j >= 20 && trace_bypass_cap_enabled() {
-        eprintln!(
-            "[H264_COEFF_BYPASS_PREFIX] j={} bits={}",
-            j,
-            cabac.bits_read()
-        );
-    }
 
     let mut coeff_abs = 1u32;
     for _ in 0..j {
@@ -330,20 +311,8 @@ pub fn inverse_hadamard_2x2(block: &mut [i32; 4]) {
 // 反量化
 // ============================================================
 
-const FLAT_SCALING_LIST_4X4: [u8; 16] = [16; 16];
-#[allow(dead_code)]
-const FLAT_SCALING_LIST_8X8: [u8; 64] = [16; 64];
-
 fn apply_scaling_weight(base_scale: i32, weight: u8) -> i32 {
     base_scale * i32::from(weight)
-}
-
-/// Luma DC 系数反量化 (I_16x16)
-///
-/// 对 Hadamard 变换后的 DC 系数进行反量化
-#[allow(dead_code)]
-pub fn dequant_luma_dc(coeffs: &mut [i32; 16], qp: i32) {
-    dequant_luma_dc_with_scaling(coeffs, qp, &FLAT_SCALING_LIST_4X4);
 }
 
 /// Luma DC 系数反量化 (I_16x16), 支持自定义 4x4 scaling_list.
@@ -363,12 +332,6 @@ pub fn dequant_luma_dc_with_scaling(coeffs: &mut [i32; 16], qp: i32, scaling_lis
             *c = (*c * scale + (1 << (shift - 1))) >> shift;
         }
     }
-}
-
-/// Chroma DC 系数反量化 (4:2:0)
-#[allow(dead_code)]
-pub fn dequant_chroma_dc(coeffs: &mut [i32; 4], qp: i32) {
-    dequant_chroma_dc_with_scaling(coeffs, qp, &FLAT_SCALING_LIST_4X4);
 }
 
 /// Chroma DC 系数反量化 (4:2:0), 支持自定义 4x4 scaling_list.
@@ -391,14 +354,7 @@ pub fn dequant_chroma_dc_with_scaling(coeffs: &mut [i32; 4], qp: i32, scaling_li
     }
 }
 
-/// 4x4 AC 系数反量化 (通用, AC 残差解码时使用)
-#[allow(dead_code)]
-pub fn dequant_4x4_ac(coeffs: &mut [i32; 16], qp: i32) {
-    dequant_4x4_ac_with_scaling(coeffs, qp, &FLAT_SCALING_LIST_4X4);
-}
-
 /// 4x4 AC 系数反量化, 支持自定义 4x4 scaling_list.
-#[allow(dead_code)]
 pub fn dequant_4x4_ac_with_scaling(coeffs: &mut [i32; 16], qp: i32, scaling_list: &[u8; 16]) {
     let qp_per = qp / 6;
     let qp_rem = qp % 6;
@@ -424,7 +380,6 @@ pub fn dequant_4x4_ac_with_scaling(coeffs: &mut [i32; 16], qp: i32, scaling_list
 }
 
 /// 根据 4x4 块内位置确定缩放因子索引
-#[allow(dead_code)]
 fn scale_index(row: usize, col: usize) -> usize {
     let r = row & 1;
     let c = col & 1;
@@ -442,7 +397,6 @@ fn scale_index(row: usize, col: usize) -> usize {
 /// 按 H.264 spec 8.5.12.1 顺序: 先行变换, 后列变换.
 /// tao 的系数是标准 raster 顺序 (row-major), 因此需要行优先处理.
 /// (ffmpeg 因 TRANSPOSE 宏将系数转置存储, 其 "列优先" IDCT 等效于行优先.)
-#[allow(dead_code)]
 pub fn idct_4x4(coeffs: &[i32; 16], out: &mut [i32; 16]) {
     let mut block = *coeffs;
     block[0] += 32;
@@ -471,14 +425,6 @@ pub fn idct_4x4(coeffs: &[i32; 16], out: &mut [i32; 16]) {
         out[i + 8] = (z1 - z2) >> 6;
         out[i + 12] = (z0 - z3) >> 6;
     }
-}
-
-/// 8x8 AC 系数反量化.
-///
-/// 输入系数需为 raster 顺序.
-#[allow(dead_code)]
-pub fn dequant_8x8_ac(coeffs: &mut [i32; 64], qp: i32) {
-    dequant_8x8_ac_with_scaling(coeffs, qp, &FLAT_SCALING_LIST_8X8);
 }
 
 /// 8x8 AC 系数反量化, 支持自定义 8x8 scaling_list.
@@ -588,7 +534,6 @@ pub fn idct_8x8(coeffs: &[i32; 64], out: &mut [i32; 64]) {
 // ============================================================
 
 /// 4x4 zigzag 扫描顺序 (帧编码): scan_pos → (row, col)
-#[allow(dead_code)]
 pub const ZIGZAG_4X4: [(usize, usize); 16] = [
     (0, 0),
     (0, 1),
@@ -609,16 +554,11 @@ pub const ZIGZAG_4X4: [(usize, usize); 16] = [
 ];
 
 /// 8x8 zigzag 扫描顺序 (帧编码): scan_pos -> raster_idx.
-#[allow(dead_code)]
 pub const ZIGZAG_8X8: [usize; 64] = [
     0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
     13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,
     52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
 ];
-
-/// 2x2 chroma DC 扫描顺序
-#[allow(dead_code)]
-pub const SCAN_CHROMA_DC: [(usize, usize); 4] = [(0, 0), (0, 1), (1, 0), (1, 1)];
 
 // ============================================================
 // 量化参数表
@@ -722,27 +662,6 @@ pub fn apply_4x4_bypass_residual(
     }
 }
 
-/// 将 8x8 残差块应用到平面上 (反扫描 + 反量化 + IDCT + 逐像素加法)
-#[allow(dead_code)]
-pub fn apply_8x8_ac_residual(
-    plane: &mut [u8],
-    stride: usize,
-    x0: usize,
-    y0: usize,
-    coeffs_scan: &[i32; 64],
-    qp: i32,
-) {
-    apply_8x8_ac_residual_with_scaling(
-        plane,
-        stride,
-        x0,
-        y0,
-        coeffs_scan,
-        qp,
-        &FLAT_SCALING_LIST_8X8,
-    );
-}
-
 /// 将 8x8 残差块应用到平面上 (反扫描 + 反量化 + IDCT + 逐像素加法), 支持自定义 scaling_list.
 ///
 /// `scaling_list_raster` 需为 raster 顺序.
@@ -755,57 +674,15 @@ pub fn apply_8x8_ac_residual_with_scaling(
     qp: i32,
     scaling_list_raster: &[u8; 64],
 ) {
-    let trace_target = trace_coeff_target_cached();
-    let trace = trace_target.as_ref().map_or(false, |v| {
-        if v == "1" {
-            x0 == 0 && y0 == 0
-        } else if let Some((tx, ty)) = v.split_once(',') {
-            tx.parse::<usize>().ok() == Some(x0) && ty.parse::<usize>().ok() == Some(y0)
-        } else {
-            false
-        }
-    });
-
     let mut coeffs_raster = [0i32; 64];
     for (scan_pos, &raster_idx) in ZIGZAG_8X8.iter().enumerate() {
         coeffs_raster[raster_idx] = coeffs_scan[scan_pos];
     }
 
-    if trace {
-        let nz: Vec<(usize, i32)> = coeffs_raster
-            .iter()
-            .enumerate()
-            .filter(|&(_, v)| *v != 0)
-            .map(|(i, v)| (i, *v))
-            .collect();
-        eprintln!(
-            "[TRACE_COEFF] 位置=({},{}) qp={} 反扫描后非零系数: {:?}",
-            x0, y0, qp, nz
-        );
-    }
-
     dequant_8x8_ac_with_scaling(&mut coeffs_raster, qp, scaling_list_raster);
-
-    if trace {
-        let nz: Vec<(usize, i32)> = coeffs_raster
-            .iter()
-            .enumerate()
-            .filter(|&(_, v)| *v != 0)
-            .map(|(i, v)| (i, *v))
-            .collect();
-        eprintln!("[TRACE_COEFF] 反量化后非零系数: {:?}", nz);
-    }
 
     let mut spatial = [0i32; 64];
     idct_8x8(&coeffs_raster, &mut spatial);
-
-    if trace {
-        eprintln!("[TRACE_COEFF] IDCT输出(行0): {:?}", &spatial[0..8]);
-        eprintln!("[TRACE_COEFF] IDCT输出(行1): {:?}", &spatial[8..16]);
-
-        let pred: Vec<u8> = (0..8).map(|dx| plane[y0 * stride + x0 + dx]).collect();
-        eprintln!("[TRACE_COEFF] 预测值(行0): {:?}", pred);
-    }
 
     for dy in 0..8 {
         for dx in 0..8 {
@@ -815,11 +692,6 @@ pub fn apply_8x8_ac_residual_with_scaling(
                 plane[idx] = val.clamp(0, 255) as u8;
             }
         }
-    }
-
-    if trace {
-        let final_row: Vec<u8> = (0..8).map(|dx| plane[y0 * stride + x0 + dx]).collect();
-        eprintln!("[TRACE_COEFF] 最终像素(行0): {:?}", final_row);
     }
 }
 
@@ -872,7 +744,7 @@ mod tests {
         let mut coeffs_scan = [0i32; 64];
         coeffs_scan[0] = 64;
 
-        apply_8x8_ac_residual(&mut plane, 16, 4, 4, &coeffs_scan, 26);
+        apply_8x8_ac_residual_with_scaling(&mut plane, 16, 4, 4, &coeffs_scan, 26, &[16u8; 64]);
 
         let changed = |x_begin: usize, y_begin: usize| -> usize {
             let mut count = 0usize;
@@ -935,7 +807,7 @@ mod tests {
         let mut scaling = [16u8; 16];
         scaling[0] = 32;
 
-        dequant_4x4_ac(&mut default_coeffs, 24);
+        dequant_4x4_ac_with_scaling(&mut default_coeffs, 24, &[16u8; 16]);
         dequant_4x4_ac_with_scaling(&mut custom_coeffs, 24, &scaling);
 
         assert_eq!(
@@ -953,7 +825,7 @@ mod tests {
         let mut scaling = [16u8; 64];
         scaling[0] = 32;
 
-        dequant_8x8_ac(&mut default_coeffs, 36);
+        dequant_8x8_ac_with_scaling(&mut default_coeffs, 36, &[16u8; 64]);
         dequant_8x8_ac_with_scaling(&mut custom_coeffs, 36, &scaling);
 
         assert_eq!(
@@ -972,7 +844,15 @@ mod tests {
         let mut scaling = [16u8; 64];
         scaling[0] = 32;
 
-        apply_8x8_ac_residual(&mut plane_default, 16, 4, 4, &coeffs_scan, 26);
+        apply_8x8_ac_residual_with_scaling(
+            &mut plane_default,
+            16,
+            4,
+            4,
+            &coeffs_scan,
+            26,
+            &[16u8; 64],
+        );
         apply_8x8_ac_residual_with_scaling(&mut plane_custom, 16, 4, 4, &coeffs_scan, 26, &scaling);
 
         let diff_sum = |plane: &[u8]| -> i32 {

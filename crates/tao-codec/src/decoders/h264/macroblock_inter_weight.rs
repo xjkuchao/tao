@@ -192,34 +192,6 @@ impl H264Decoder {
         ref_l0_list: &[RefPlanes],
     ) {
         let mb_idx = mb_y * self.mb_width + mb_x;
-        let trace_slice_mb = self.trace_slice_mb;
-        let trace_mb_limit = self.trace_mb_limit;
-        let trace_this_mb = self.should_trace_mb_idx(mb_idx, trace_mb_limit);
-        let trace_mb_detail = self.trace_mb_detail_enabled() && trace_this_mb;
-        let trace_stage_bits = self.trace_p_stage_bits && trace_this_mb;
-        let stage_start_bits = trace_stage_bits.then(|| cabac.bits_read());
-        let mut stage_anchor_bits = stage_start_bits;
-        let log_stage = |stage: &str, cabac: &CabacDecoder, anchor: &mut Option<usize>| {
-            if let Some(prev_bits) = *anchor {
-                let now = cabac.bits_read();
-                let total_delta = stage_start_bits
-                    .map(|start| now.saturating_sub(start))
-                    .unwrap_or(0);
-                eprintln!(
-                    "[H264_P_STAGE_BITS] idx={} mb=({}, {}) p_mb_type={} stage={} bits_before={} bits_after={} delta={} total_delta={}",
-                    mb_idx,
-                    mb_x,
-                    mb_y,
-                    p_mb_type,
-                    stage,
-                    prev_bits,
-                    now,
-                    now.saturating_sub(prev_bits),
-                    total_delta
-                );
-                *anchor = Some(now);
-            }
-        };
         self.set_luma_dc_cbf(mb_x, mb_y, false);
         self.reset_chroma_cbf_mb(mb_x, mb_y);
         self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
@@ -240,37 +212,11 @@ impl H264Decoder {
                 let (pred_mv_x, pred_mv_y) =
                     self.predict_mv_l0_partition(mb_x, mb_y, 0, 0, 4, ref_idx_i8);
                 let (amvd_x, amvd_y) = self.compute_cabac_amvd(mb_x * 4, mb_y * 4, 0);
-                let bits_before_mvd = if trace_mb_detail {
-                    cabac.bits_read()
-                } else {
-                    0
-                };
                 let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
                 let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
                 self.set_mvd_block_4x4(mb_x * 16, mb_y * 16, 16, 16, mvd_x, mvd_y, 0);
                 final_mv_x = pred_mv_x + mvd_x;
                 final_mv_y = pred_mv_y + mvd_y;
-                if trace_mb_detail {
-                    let bits_after_mvd = cabac.bits_read();
-                    eprintln!(
-                        "[H264_P_MV] idx={} mb=({}, {}) type=16x16 ref_idx={} pred=({}, {}) amvd=({}, {}) mvd=({}, {}) mv=({}, {}) bits_before={} bits_after={} delta={}",
-                        mb_idx,
-                        mb_x,
-                        mb_y,
-                        final_ref_idx,
-                        pred_mv_x,
-                        pred_mv_y,
-                        amvd_x,
-                        amvd_y,
-                        mvd_x,
-                        mvd_y,
-                        final_mv_x,
-                        final_mv_y,
-                        bits_before_mvd,
-                        bits_after_mvd,
-                        bits_after_mvd.saturating_sub(bits_before_mvd)
-                    );
-                }
                 self.apply_inter_block_l0(
                     ref_l0_list,
                     final_ref_idx,
@@ -313,46 +259,18 @@ impl H264Decoder {
                         ref_idx_i8,
                     );
                 }
-                for part in 0..2usize {
-                    let ref_idx = ref_idx_parts[part];
+                for (part, &ref_idx) in ref_idx_parts.iter().enumerate() {
                     let ref_idx_i8 = ref_idx.min(i8::MAX as u32) as i8;
                     let (part_pred_mv_x, part_pred_mv_y) =
                         self.predict_mv_l0_16x8(mb_x, mb_y, part, ref_idx_i8);
                     let y_off = part * 8;
                     let (amvd_x, amvd_y) =
                         self.compute_cabac_amvd(mb_x * 4, mb_y * 4 + part * 2, 0);
-                    let bits_before_mvd = if trace_mb_detail {
-                        cabac.bits_read()
-                    } else {
-                        0
-                    };
                     let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
                     let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
                     self.set_mvd_block_4x4(mb_x * 16, mb_y * 16 + y_off, 16, 8, mvd_x, mvd_y, 0);
                     let mv_x = part_pred_mv_x + mvd_x;
                     let mv_y = part_pred_mv_y + mvd_y;
-                    if trace_mb_detail {
-                        let bits_after_mvd = cabac.bits_read();
-                        eprintln!(
-                            "[H264_P_MV] idx={} mb=({}, {}) type=16x8 part={} ref_idx={} pred=({}, {}) amvd=({}, {}) mvd=({}, {}) mv=({}, {}) bits_before={} bits_after={} delta={}",
-                            mb_idx,
-                            mb_x,
-                            mb_y,
-                            part,
-                            ref_idx,
-                            part_pred_mv_x,
-                            part_pred_mv_y,
-                            amvd_x,
-                            amvd_y,
-                            mvd_x,
-                            mvd_y,
-                            mv_x,
-                            mv_y,
-                            bits_before_mvd,
-                            bits_after_mvd,
-                            bits_after_mvd.saturating_sub(bits_before_mvd)
-                        );
-                    }
                     self.apply_inter_block_l0(
                         ref_l0_list,
                         ref_idx,
@@ -399,46 +317,18 @@ impl H264Decoder {
                         ref_idx_i8,
                     );
                 }
-                for part in 0..2usize {
-                    let ref_idx = ref_idx_parts[part];
+                for (part, &ref_idx) in ref_idx_parts.iter().enumerate() {
                     let ref_idx_i8 = ref_idx.min(i8::MAX as u32) as i8;
                     let (part_pred_mv_x, part_pred_mv_y) =
                         self.predict_mv_l0_8x16(mb_x, mb_y, part, ref_idx_i8);
                     let x_off = part * 8;
                     let (amvd_x, amvd_y) =
                         self.compute_cabac_amvd(mb_x * 4 + part * 2, mb_y * 4, 0);
-                    let bits_before_mvd = if trace_mb_detail {
-                        cabac.bits_read()
-                    } else {
-                        0
-                    };
                     let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
                     let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
                     self.set_mvd_block_4x4(mb_x * 16 + x_off, mb_y * 16, 8, 16, mvd_x, mvd_y, 0);
                     let mv_x = part_pred_mv_x + mvd_x;
                     let mv_y = part_pred_mv_y + mvd_y;
-                    if trace_mb_detail {
-                        let bits_after_mvd = cabac.bits_read();
-                        eprintln!(
-                            "[H264_P_MV] idx={} mb=({}, {}) type=8x16 part={} ref_idx={} pred=({}, {}) amvd=({}, {}) mvd=({}, {}) mv=({}, {}) bits_before={} bits_after={} delta={}",
-                            mb_idx,
-                            mb_x,
-                            mb_y,
-                            part,
-                            ref_idx,
-                            part_pred_mv_x,
-                            part_pred_mv_y,
-                            amvd_x,
-                            amvd_y,
-                            mvd_x,
-                            mvd_y,
-                            mv_x,
-                            mv_y,
-                            bits_before_mvd,
-                            bits_after_mvd,
-                            bits_after_mvd.saturating_sub(bits_before_mvd)
-                        );
-                    }
                     self.apply_inter_block_l0(
                         ref_l0_list,
                         ref_idx,
@@ -459,14 +349,8 @@ impl H264Decoder {
             }
             _ => {
                 let mut sub_types = [0u8; 4];
-                for sub in 0..4usize {
-                    sub_types[sub] = self.decode_p_sub_mb_type(cabac, ctxs);
-                }
-                if trace_mb_detail {
-                    eprintln!(
-                        "[H264_P_SUB] idx={} mb=({}, {}) sub_types=[{},{},{},{}]",
-                        mb_idx, mb_x, mb_y, sub_types[0], sub_types[1], sub_types[2], sub_types[3]
-                    );
+                for slot in &mut sub_types {
+                    *slot = self.decode_p_sub_mb_type(cabac, ctxs);
                 }
                 no_sub_mb_part_size_less_than_8x8_flag =
                     sub_types.iter().all(|&sub_type| sub_type == 0);
@@ -489,12 +373,6 @@ impl H264Decoder {
                     };
                     *slot = ref_idx;
                     let ref_idx_i8 = ref_idx.min(i8::MAX as u32) as i8;
-                    if trace_mb_detail {
-                        eprintln!(
-                            "[H264_P_SUB_REF] idx={} mb=({}, {}) sub={} sub_type={} ref_idx={}",
-                            mb_idx, mb_x, mb_y, sub, sub_types[sub], ref_idx
-                        );
-                    }
                     self.set_l0_motion_block_4x4(
                         mb_x * 16 + (sub & 1) * 8,
                         mb_y * 16 + (sub >> 1) * 8,
@@ -525,38 +403,11 @@ impl H264Decoder {
                             let px_x = mb_x * 16 + sx;
                             let px_y = mb_y * 16 + sy;
                             let (amvd_x, amvd_y) = self.compute_cabac_amvd(px_x / 4, px_y / 4, 0);
-                            let bits_before_mvd = if trace_mb_detail {
-                                cabac.bits_read()
-                            } else {
-                                0
-                            };
                             let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
                             let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
                             self.set_mvd_block_4x4(px_x, px_y, 8, 8, mvd_x, mvd_y, 0);
                             let mv_x = pred_mv_x + mvd_x;
                             let mv_y = pred_mv_y + mvd_y;
-                            if trace_mb_detail {
-                                let bits_after_mvd = cabac.bits_read();
-                                eprintln!(
-                                    "[H264_P_SUB_MV] idx={} mb=({}, {}) sub={} sub_type=8x8 part=0 ref_idx={} pred=({}, {}) amvd=({}, {}) mvd=({}, {}) mv=({}, {}) bits_before={} bits_after={} delta={}",
-                                    mb_idx,
-                                    mb_x,
-                                    mb_y,
-                                    sub,
-                                    ref_idx,
-                                    pred_mv_x,
-                                    pred_mv_y,
-                                    amvd_x,
-                                    amvd_y,
-                                    mvd_x,
-                                    mvd_y,
-                                    mv_x,
-                                    mv_y,
-                                    bits_before_mvd,
-                                    bits_after_mvd,
-                                    bits_after_mvd.saturating_sub(bits_before_mvd)
-                                );
-                            }
                             self.apply_inter_block_l0(
                                 ref_l0_list,
                                 ref_idx,
@@ -588,39 +439,11 @@ impl H264Decoder {
                                 let px_y = mb_y * 16 + sy + part * 4;
                                 let (amvd_x, amvd_y) =
                                     self.compute_cabac_amvd(px_x / 4, px_y / 4, 0);
-                                let bits_before_mvd = if trace_mb_detail {
-                                    cabac.bits_read()
-                                } else {
-                                    0
-                                };
                                 let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
                                 let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
                                 self.set_mvd_block_4x4(px_x, px_y, 8, 4, mvd_x, mvd_y, 0);
                                 let mv_x = pred_mv_x + mvd_x;
                                 let mv_y = pred_mv_y + mvd_y;
-                                if trace_mb_detail {
-                                    let bits_after_mvd = cabac.bits_read();
-                                    eprintln!(
-                                        "[H264_P_SUB_MV] idx={} mb=({}, {}) sub={} sub_type=8x4 part={} ref_idx={} pred=({}, {}) amvd=({}, {}) mvd=({}, {}) mv=({}, {}) bits_before={} bits_after={} delta={}",
-                                        mb_idx,
-                                        mb_x,
-                                        mb_y,
-                                        sub,
-                                        part,
-                                        ref_idx,
-                                        pred_mv_x,
-                                        pred_mv_y,
-                                        amvd_x,
-                                        amvd_y,
-                                        mvd_x,
-                                        mvd_y,
-                                        mv_x,
-                                        mv_y,
-                                        bits_before_mvd,
-                                        bits_after_mvd,
-                                        bits_after_mvd.saturating_sub(bits_before_mvd)
-                                    );
-                                }
                                 self.apply_inter_block_l0(
                                     ref_l0_list,
                                     ref_idx,
@@ -653,39 +476,11 @@ impl H264Decoder {
                                 let px_y = mb_y * 16 + sy;
                                 let (amvd_x, amvd_y) =
                                     self.compute_cabac_amvd(px_x / 4, px_y / 4, 0);
-                                let bits_before_mvd = if trace_mb_detail {
-                                    cabac.bits_read()
-                                } else {
-                                    0
-                                };
                                 let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
                                 let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
                                 self.set_mvd_block_4x4(px_x, px_y, 4, 8, mvd_x, mvd_y, 0);
                                 let mv_x = pred_mv_x + mvd_x;
                                 let mv_y = pred_mv_y + mvd_y;
-                                if trace_mb_detail {
-                                    let bits_after_mvd = cabac.bits_read();
-                                    eprintln!(
-                                        "[H264_P_SUB_MV] idx={} mb=({}, {}) sub={} sub_type=4x8 part={} ref_idx={} pred=({}, {}) amvd=({}, {}) mvd=({}, {}) mv=({}, {}) bits_before={} bits_after={} delta={}",
-                                        mb_idx,
-                                        mb_x,
-                                        mb_y,
-                                        sub,
-                                        part,
-                                        ref_idx,
-                                        pred_mv_x,
-                                        pred_mv_y,
-                                        amvd_x,
-                                        amvd_y,
-                                        mvd_x,
-                                        mvd_y,
-                                        mv_x,
-                                        mv_y,
-                                        bits_before_mvd,
-                                        bits_after_mvd,
-                                        bits_after_mvd.saturating_sub(bits_before_mvd)
-                                    );
-                                }
                                 self.apply_inter_block_l0(
                                     ref_l0_list,
                                     ref_idx,
@@ -719,11 +514,6 @@ impl H264Decoder {
                                     let px_y = mb_y * 16 + sy + part_y * 4;
                                     let (amvd_x, amvd_y) =
                                         self.compute_cabac_amvd(px_x / 4, px_y / 4, 0);
-                                    let bits_before_mvd = if trace_mb_detail {
-                                        cabac.bits_read()
-                                    } else {
-                                        0
-                                    };
                                     let mvd_x =
                                         self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
                                     let mvd_y =
@@ -731,30 +521,6 @@ impl H264Decoder {
                                     self.set_mvd_block_4x4(px_x, px_y, 4, 4, mvd_x, mvd_y, 0);
                                     let mv_x = pred_mv_x + mvd_x;
                                     let mv_y = pred_mv_y + mvd_y;
-                                    if trace_mb_detail {
-                                        let bits_after_mvd = cabac.bits_read();
-                                        let part = part_y * 2 + part_x;
-                                        eprintln!(
-                                            "[H264_P_SUB_MV] idx={} mb=({}, {}) sub={} sub_type=4x4 part={} ref_idx={} pred=({}, {}) amvd=({}, {}) mvd=({}, {}) mv=({}, {}) bits_before={} bits_after={} delta={}",
-                                            mb_idx,
-                                            mb_x,
-                                            mb_y,
-                                            sub,
-                                            part,
-                                            ref_idx,
-                                            pred_mv_x,
-                                            pred_mv_y,
-                                            amvd_x,
-                                            amvd_y,
-                                            mvd_x,
-                                            mvd_y,
-                                            mv_x,
-                                            mv_y,
-                                            bits_before_mvd,
-                                            bits_after_mvd,
-                                            bits_after_mvd.saturating_sub(bits_before_mvd)
-                                        );
-                                    }
                                     self.apply_inter_block_l0(
                                         ref_l0_list,
                                         ref_idx,
@@ -778,8 +544,6 @@ impl H264Decoder {
                 }
             }
         }
-        log_stage("motion", cabac, &mut stage_anchor_bits);
-
         self.mv_l0_x[mb_idx] = final_mv_x.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         self.mv_l0_y[mb_idx] = final_mv_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         self.ref_idx_l0[mb_idx] = final_ref_idx.min(i8::MAX as u32) as i8;
@@ -787,15 +551,20 @@ impl H264Decoder {
 
         let (luma_cbp, chroma_cbp) =
             self.decode_coded_block_pattern(cabac, ctxs, mb_x, mb_y, false);
-        log_stage("cbp", cabac, &mut stage_anchor_bits);
         let cbp = luma_cbp | (chroma_cbp << 4);
         self.set_mb_cbp(mb_x, mb_y, cbp);
-        if trace_slice_mb && trace_this_mb {
-            eprintln!(
-                "[H264_P_CBP] idx={} mb=({}, {}) p_mb_type={} luma_cbp={} chroma_cbp={} cbp={}",
-                mb_idx, mb_x, mb_y, p_mb_type, luma_cbp, chroma_cbp, cbp
-            );
-        }
+
+        // H.264 规范 7.3.5.1: transform_size_8x8_flag 必须在 mb_qp_delta 之前解析
+        let parsed_use_8x8 = luma_cbp != 0
+            && no_sub_mb_part_size_less_than_8x8_flag
+            && self
+                .pps
+                .as_ref()
+                .map(|p| p.transform_8x8_mode)
+                .unwrap_or(false)
+            && self.decode_transform_size_8x8_flag_inter(cabac, ctxs, mb_x, mb_y);
+        let use_8x8_residual = parsed_use_8x8;
+        self.set_transform_8x8_flag(mb_x, mb_y, parsed_use_8x8);
 
         if cbp != 0 {
             let qp_delta = decode_qp_delta(cabac, ctxs, self.prev_qp_delta_nz);
@@ -804,94 +573,13 @@ impl H264Decoder {
         } else {
             self.prev_qp_delta_nz = false;
         }
-        log_stage("qp_delta", cabac, &mut stage_anchor_bits);
-
-        let forced_use_8x8 = self.debug_force_inter_use_8x8;
-        let force_mb0_use_8x8 = self.debug_force_inter_mb0_use_8x8;
-        let use_old_transform_ctx = self.debug_inter_use_old_transform_ctx;
-        let parse_t8x8_use_4x4 = self.debug_inter_parse_t8x8_use_4x4;
-        let parsed_use_8x8 = if let Some(v) = forced_use_8x8 {
-            luma_cbp != 0 && v
-        } else if force_mb0_use_8x8 && mb_idx == 0 {
-            luma_cbp != 0
+        if use_8x8_residual {
+            self.decode_i8x8_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp, false);
         } else {
-            luma_cbp != 0
-                && no_sub_mb_part_size_less_than_8x8_flag
-                && self
-                    .pps
-                    .as_ref()
-                    .map(|p| p.transform_8x8_mode)
-                    .unwrap_or(false)
-                && if use_old_transform_ctx {
-                    self.decode_transform_size_8x8_flag(cabac, ctxs, mb_x, mb_y)
-                } else {
-                    self.decode_transform_size_8x8_flag_inter(cabac, ctxs, mb_x, mb_y)
-                }
-        };
-        let use_8x8_residual = parsed_use_8x8 && !parse_t8x8_use_4x4;
-        log_stage("transform_size_8x8_flag", cabac, &mut stage_anchor_bits);
-        if trace_slice_mb && trace_this_mb {
-            let forced_use_8x8_label = match forced_use_8x8 {
-                Some(true) => "1",
-                Some(false) => "0",
-                None => "auto",
-            };
-            eprintln!(
-                "[H264_P_T8X8] idx={} mb=({}, {}) p_mb_type={} parsed_use_8x8={} residual_use_8x8={} forced={} parse_use4x4={}",
-                mb_idx,
-                mb_x,
-                mb_y,
-                p_mb_type,
-                parsed_use_8x8,
-                use_8x8_residual,
-                forced_use_8x8_label,
-                parse_t8x8_use_4x4
-            );
+            self.decode_inter_4x4_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp);
         }
-        self.set_transform_8x8_flag(mb_x, mb_y, parsed_use_8x8);
-
-        let skip_inter_residual = self.debug_skip_inter_residual;
-        let skip_inter_luma_residual = self.debug_skip_inter_luma_residual;
-        let skip_inter_chroma_residual = self.debug_skip_inter_chroma_residual;
-        let before_luma_bits = if trace_stage_bits {
-            Some(cabac.bits_read())
-        } else {
-            None
-        };
-        if !skip_inter_residual {
-            if !skip_inter_luma_residual {
-                if use_8x8_residual {
-                    self.decode_i8x8_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp, false);
-                } else {
-                    self.decode_inter_4x4_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp);
-                }
-            }
-        }
-        if let Some(before) = before_luma_bits {
-            stage_anchor_bits = Some(before);
-            log_stage("luma_residual", cabac, &mut stage_anchor_bits);
-        }
-        let before_chroma_bits = if trace_stage_bits {
-            Some(cabac.bits_read())
-        } else {
-            None
-        };
-        if !skip_inter_residual {
-            if chroma_cbp >= 1 && !skip_inter_chroma_residual {
-                self.decode_chroma_residual(
-                    cabac,
-                    ctxs,
-                    (mb_x, mb_y),
-                    *cur_qp,
-                    chroma_cbp >= 2,
-                    false,
-                );
-            }
-        }
-        if let Some(before) = before_chroma_bits {
-            stage_anchor_bits = Some(before);
-            log_stage("chroma_residual", cabac, &mut stage_anchor_bits);
-            log_stage("total", cabac, &mut stage_anchor_bits);
+        if chroma_cbp >= 1 {
+            self.decode_chroma_residual(cabac, ctxs, (mb_x, mb_y), *cur_qp, chroma_cbp >= 2, false);
         }
     }
 
@@ -916,28 +604,16 @@ impl H264Decoder {
     ) {
         self.prev_qp_delta_nz = false;
         let mut cur_qp = slice_qp;
-        let trace_slice = self.trace_slice;
-        let trace_slice_mb = self.trace_slice_mb;
-        let trace_mb_limit = self.trace_mb_limit;
-        let ignore_terminate = self.debug_ignore_terminate;
-        let mut decoded_mbs = 0usize;
-        let mut term_break = false;
-        let mut last_mb_idx = first;
-
         for mb_idx in first..total {
             self.mark_mb_slice_first_mb(mb_idx, slice_first_mb);
             self.set_mb_skip_flag(mb_idx, false);
             let mb_x = mb_idx % self.mb_width;
             let mb_y = mb_idx / self.mb_width;
-            let trace_this_mb = self.should_trace_mb_idx(mb_idx, trace_mb_limit);
             self.clear_mb_mvd_cache(mb_x, mb_y);
             let skip = self.decode_b_mb_skip_flag(cabac, ctxs, mb_x, mb_y);
 
             if skip {
                 self.set_mb_skip_flag(mb_idx, true);
-                if trace_slice_mb && trace_this_mb {
-                    eprintln!("[H264_B_MB] idx={} mb=({}, {}) skip=1", mb_idx, mb_x, mb_y);
-                }
                 self.mb_types[mb_idx] = 254;
                 self.set_mb_cbp(mb_x, mb_y, 0);
                 self.set_transform_8x8_flag(mb_x, mb_y, false);
@@ -977,12 +653,6 @@ impl H264Decoder {
             } else {
                 match self.decode_b_mb_type(cabac, ctxs, mb_x, mb_y) {
                     BMbType::Intra => {
-                        if trace_slice_mb && trace_this_mb {
-                            eprintln!(
-                                "[H264_B_MB] idx={} mb=({}, {}) skip=0 mb_type=intra",
-                                mb_idx, mb_x, mb_y
-                            );
-                        }
                         let intra_mb_type = decode_intra_mb_type(
                             cabac,
                             ctxs,
@@ -1012,12 +682,6 @@ impl H264Decoder {
                         }
                     }
                     BMbType::Direct => {
-                        if trace_slice_mb && trace_this_mb {
-                            eprintln!(
-                                "[H264_B_MB] idx={} mb=({}, {}) skip=0 mb_type=direct",
-                                mb_idx, mb_x, mb_y
-                            );
-                        }
                         self.decode_b_inter_mb(
                             cabac,
                             ctxs,
@@ -1037,12 +701,6 @@ impl H264Decoder {
                         );
                     }
                     BMbType::Inter(mb_type_idx) => {
-                        if trace_slice_mb && trace_this_mb {
-                            eprintln!(
-                                "[H264_B_MB] idx={} mb=({}, {}) skip=0 mb_type=inter({})",
-                                mb_idx, mb_x, mb_y, mb_type_idx
-                            );
-                        }
                         self.decode_b_inter_mb(
                             cabac,
                             ctxs,
@@ -1067,28 +725,12 @@ impl H264Decoder {
             if mb_idx < self.mb_qp.len() {
                 self.mb_qp[mb_idx] = cur_qp;
             }
-            decoded_mbs += 1;
-            last_mb_idx = mb_idx;
             if mb_idx + 1 < total {
                 let terminate = cabac.decode_terminate() == 1;
                 if terminate {
-                    term_break = true;
-                    if !ignore_terminate {
-                        break;
-                    }
+                    break;
                 }
             }
-        }
-        if trace_slice {
-            eprintln!(
-                "[H264_SLICE_MB] type=B first_mb={} decoded_mbs={} last_mb_idx={} terminate_break={} cabac_bits={}/{}",
-                first,
-                decoded_mbs,
-                last_mb_idx,
-                term_break,
-                cabac.bits_read(),
-                cabac.bits_total()
-            );
         }
     }
 }

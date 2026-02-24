@@ -405,9 +405,7 @@ impl H264Decoder {
         }
 
         if let Some(col_planes) = ref_l0_list.first() {
-            let Some(col_pic) = self.find_reference_picture_for_planes(col_planes) else {
-                return None;
-            };
+            let col_pic = self.find_reference_picture_for_planes(col_planes)?;
             if let Some(motion) = self.ref_pic_l0_motion_at(col_pic, mb_x, mb_y, part_x4, part_y4) {
                 return Some((motion.0, motion.1, motion.2, 0, col_pic));
             }
@@ -430,7 +428,6 @@ impl H264Decoder {
         if col_ref_idx < 0 || ref_l0_list.is_empty() {
             return -1;
         }
-        let trace_b_direct = self.trace_b_direct;
         let col_ref_poc_table = if col_list == 1 {
             &col_pic.ref_l1_poc
         } else {
@@ -457,17 +454,6 @@ impl H264Decoder {
             {
                 return idx as i8;
             }
-        }
-        if trace_b_direct {
-            eprintln!(
-                "[H264_B_DIRECT] map_col_to_list0 失败: col_list={} col_ref_idx={} col_ref_table_len={} cur_l0_len={} col_pic_poc={} col_pic_frame_num={}",
-                col_list,
-                col_ref_idx,
-                col_ref_poc_table.len(),
-                ref_l0_list.len(),
-                col_pic.poc,
-                col_pic.frame_num
-            );
         }
         if ref_l0_list.is_empty() {
             -1
@@ -503,15 +489,7 @@ impl H264Decoder {
         ref_l0_list: &[RefPlanes],
         ref_l1_list: &[RefPlanes],
     ) -> (Option<BMotion>, Option<BMotion>) {
-        let force_temporal = self.force_temporal_direct;
-        let force_spatial = self.force_spatial_direct;
-        let use_spatial = if force_temporal {
-            false
-        } else if force_spatial {
-            true
-        } else {
-            direct_spatial_mv_pred_flag
-        };
+        let use_spatial = direct_spatial_mv_pred_flag;
 
         if use_spatial {
             let x4 = mb_x * 4 + part_x4;
@@ -871,47 +849,16 @@ impl H264Decoder {
     ) {
         self.prev_qp_delta_nz = false;
         let mut cur_qp = slice_qp;
-        eprintln!("[TAO_DEBUG] decode_p_slice_mbs: first={} total={}", first, total);
-        let trace_slice = self.trace_slice;
-        let trace_slice_mb = self.trace_slice_mb;
-        let trace_mb_bits = self.trace_mb_bits;
-        let trace_mb_limit = self.trace_mb_limit;
-        let ignore_terminate = self.debug_ignore_terminate;
-        let mut decoded_mbs = 0usize;
-        let mut term_break = false;
-        let mut last_mb_idx = first;
-
-        let trace_cabac_state = self.trace_cabac_state;
-        let cabac_bin_trace_limit = self.trace_cabac_bins;
         for mb_idx in first..total {
-            if cabac_bin_trace_limit > 0 && cabac.bin_trace_limit == 0 {
-                if let Some((s, e)) = self.trace_mb_range {
-                    if mb_idx >= s && mb_idx <= e {
-                        cabac.bin_trace_limit = cabac_bin_trace_limit;
-                    }
-                }
-            }
-            let bits_before_mb = cabac.bits_read();
-            if trace_cabac_state && mb_idx < first + 200 {
-                let (r, o) = cabac.state_range_offset();
-                eprintln!(
-                    "[CABAC_STATE] mb_idx={} bits={} range={} offset={}",
-                    mb_idx, bits_before_mb, r, o
-                );
-            }
             self.mark_mb_slice_first_mb(mb_idx, slice_first_mb);
             self.set_mb_skip_flag(mb_idx, false);
             let mb_x = mb_idx % self.mb_width;
             let mb_y = mb_idx / self.mb_width;
-            let trace_this_mb = self.should_trace_mb_idx(mb_idx, trace_mb_limit);
             self.clear_mb_mvd_cache(mb_x, mb_y);
             let skip = self.decode_p_mb_skip_flag(cabac, ctxs, mb_x, mb_y);
 
             if skip {
                 self.set_mb_skip_flag(mb_idx, true);
-                if trace_slice_mb && trace_this_mb {
-                    eprintln!("[H264_P_MB] idx={} mb=({}, {}) skip=1", mb_idx, mb_x, mb_y);
-                }
                 self.decode_p_skip_mb(
                     mb_x,
                     mb_y,
@@ -921,12 +868,6 @@ impl H264Decoder {
                     chroma_log2_weight_denom,
                 );
             } else if let Some(p_mb_type) = self.decode_p_mb_type(cabac, ctxs, mb_x, mb_y) {
-                if trace_slice_mb && trace_this_mb {
-                    eprintln!(
-                        "[H264_P_MB] idx={} mb=({}, {}) skip=0 p_mb_type={}",
-                        mb_idx, mb_x, mb_y, p_mb_type
-                    );
-                }
                 self.decode_p_inter_mb(
                     cabac,
                     ctxs,
@@ -951,12 +892,6 @@ impl H264Decoder {
                     mb_x,
                     mb_y,
                 );
-                if trace_slice_mb && trace_this_mb {
-                    eprintln!(
-                        "[H264_P_MB] idx={} mb=({}, {}) skip=0 intra=1 intra_mb_type={}",
-                        mb_idx, mb_x, mb_y, intra_mb_type
-                    );
-                }
                 self.mb_types[mb_idx] = intra_mb_type as u8;
                 if intra_mb_type == 0 {
                     self.decode_i_4x4_mb(cabac, ctxs, mb_x, mb_y, &mut cur_qp);
@@ -972,40 +907,12 @@ impl H264Decoder {
             if mb_idx < self.mb_qp.len() {
                 self.mb_qp[mb_idx] = cur_qp;
             }
-            if trace_mb_bits && trace_this_mb {
-                let bits_after_mb = cabac.bits_read();
-                eprintln!(
-                    "[H264_P_MB_BITS] idx={} mb=({}, {}) bits_before={} bits_after={} delta={}",
-                    mb_idx,
-                    mb_x,
-                    mb_y,
-                    bits_before_mb,
-                    bits_after_mb,
-                    bits_after_mb.saturating_sub(bits_before_mb)
-                );
-            }
-            decoded_mbs += 1;
-            last_mb_idx = mb_idx;
             if mb_idx + 1 < total {
                 let terminate = cabac.decode_terminate() == 1;
                 if terminate {
-                    term_break = true;
-                    if !ignore_terminate {
-                        break;
-                    }
+                    break;
                 }
             }
-        }
-        if trace_slice {
-            eprintln!(
-                "[H264_SLICE_MB] type=P first_mb={} decoded_mbs={} last_mb_idx={} terminate_break={} cabac_bits={}/{}",
-                first,
-                decoded_mbs,
-                last_mb_idx,
-                term_break,
-                cabac.bits_read(),
-                cabac.bits_total()
-            );
         }
     }
 
@@ -1293,6 +1200,7 @@ impl H264Decoder {
         left + (top << 1)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_ref_idx(
         &self,
         cabac: &mut CabacDecoder,
@@ -1306,54 +1214,15 @@ impl H264Decoder {
         if num_ref_idx <= 1 {
             return 0;
         }
-        let trace_ref_idx_all = self.trace_ref_idx_all;
-        let trace_ref_idx_oob = self.trace_ref_idx_oob;
-        let trace_ref_idx = trace_ref_idx_all || trace_ref_idx_oob;
         let mut ref_idx = 0u32;
         let mut ctx = self.ref_idx_ctx_inc(list, x4, y4, is_b_slice);
-        let ctx0 = ctx;
-        let bits_before = if trace_ref_idx { cabac.bits_read() } else { 0 };
-        let mut bins = String::new();
         while cabac.decode_decision(&mut ctxs[54 + ctx]) == 1 {
-            if trace_ref_idx {
-                bins.push('1');
-            }
             ref_idx += 1;
             ctx = (ctx >> 2) + 4;
             // 对齐 FFmpeg `decode_cabac_mb_ref`: 一直读取到终止 bin(0).
             // 不能按 `num_ref_idx` 提前截断, 否则会少消费 1bit 导致 CABAC 失步.
             if ref_idx >= 31 {
                 break;
-            }
-        }
-        if trace_ref_idx {
-            bins.push('0');
-        }
-        let is_oob = ref_idx >= num_ref_idx;
-        let bits_after = if trace_ref_idx { cabac.bits_read() } else { 0 };
-        if trace_ref_idx_all {
-            eprintln!(
-                "[H264_REF_IDX_TRACE] list={} x4={} y4={} decoded_ref_idx={} active_ref_count={} ctx0={} bins={} bits_before={} bits_after={} oob={}",
-                list, x4, y4, ref_idx, num_ref_idx, ctx0, bins, bits_before, bits_after, is_oob
-            );
-        }
-        if trace_ref_idx_oob && is_oob {
-            eprintln!(
-                "[H264_REF_IDX_OOB] list={} x4={} y4={} decoded_ref_idx={} active_ref_count={} ctx0={} bins={} bits_before={} bits_after={}",
-                list, x4, y4, ref_idx, num_ref_idx, ctx0, bins, bits_before, bits_after
-            );
-        }
-        if is_oob {
-            if std::env::var("TAO_H264_DEBUG_REFIDX_CLAMP0").as_deref() == Ok("1") {
-                return 0;
-            }
-            if std::env::var("TAO_H264_DEBUG_REFIDX_CLAMP_LAST").as_deref() == Ok("1") {
-                return num_ref_idx.saturating_sub(1);
-            }
-            if std::env::var("TAO_H264_DEBUG_REFIDX_MOD").as_deref() == Ok("1")
-                && num_ref_idx > 0
-            {
-                return ref_idx % num_ref_idx;
             }
         }
         ref_idx
@@ -1398,13 +1267,6 @@ impl H264Decoder {
                     // 码流异常时返回 0 作为保底, 避免继续扩展导致失控.
                     return 0;
                 }
-            }
-            if k >= 20 && std::env::var("TAO_H264_TRACE_BYPASS_CAP").as_deref() == Ok("1") {
-                eprintln!(
-                    "[H264_MVD_BYPASS_PREFIX] k={} bits={}",
-                    k,
-                    cabac.bits_read()
-                );
             }
             while k > 0 {
                 k -= 1;

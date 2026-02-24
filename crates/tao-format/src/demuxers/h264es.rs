@@ -354,8 +354,11 @@ mod tests {
 
     #[test]
     fn test_find_start_code() {
+        // data: [00 00 00 01 67 42 00 00 01 68]
+        //        ^-- 4字节起始码@0       ^-- 3字节起始码@6
         let data = [0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x00, 0x01, 0x68];
         assert_eq!(find_start_code(&data, 0), Some(0));
-        assert_eq!(find_start_code(&data, 1), Some(6));
+        // 跳过首个4字节起始码后(偏移4), 下一个3字节起始码位于偏移6
+        assert_eq!(find_start_code(&data, 4), Some(6));
     }
 }

@@ -11,9 +11,9 @@
 //! - 不进行帧内/帧间预测
 //! - 不进行 CABAC 熵解码
 
-use log::debug;
 use tao_core::color::{ColorRange, ColorSpace};
 use tao_core::{PixelFormat, Rational, TaoError, TaoResult};
+use tracing::debug;
 
 use crate::codec_id::CodecId;
 use crate::codec_parameters::{CodecParameters, CodecParamsType};

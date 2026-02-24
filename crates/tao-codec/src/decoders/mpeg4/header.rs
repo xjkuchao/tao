@@ -1,7 +1,7 @@
 //! VOL/VOP 头部解析
 
-use log::{debug, trace, warn};
 use tao_core::TaoError;
+use tracing::{debug, trace, warn};
 
 use super::Mpeg4Decoder;
 use super::bitreader::{BitReader, find_start_code_range};

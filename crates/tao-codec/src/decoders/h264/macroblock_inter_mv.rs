@@ -142,11 +142,6 @@ impl H264Decoder {
         (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1))
     }
 
-    #[allow(dead_code)]
-    pub(super) fn predict_mv_l1_16x16(&self, mb_x: usize, mb_y: usize) -> (i32, i32) {
-        self.predict_mv_l1_partition(mb_x, mb_y, 0, 0, 4, 0)
-    }
-
     /// 16x8 分区的方向性 MV 预测 (对标 FFmpeg pred_16x8_motion).
     ///
     /// - part=0 (上半): 优先使用上邻居 MV (若 ref 匹配)
@@ -169,13 +164,11 @@ impl H264Decoder {
                     return (mv_x, mv_y);
                 }
             }
-        } else {
-            if let Some((mv_x, mv_y, left_ref)) =
-                self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
-            {
-                if left_ref == ref_idx {
-                    return (mv_x, mv_y);
-                }
+        } else if let Some((mv_x, mv_y, left_ref)) =
+            self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
+        {
+            if left_ref == ref_idx {
+                return (mv_x, mv_y);
             }
         }
         self.predict_mv_l0_partition(mb_x, mb_y, 0, part * 2, 4, ref_idx)
@@ -234,13 +227,11 @@ impl H264Decoder {
                     return (mv_x, mv_y);
                 }
             }
-        } else {
-            if let Some((mv_x, mv_y, left_ref)) =
-                self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
-            {
-                if left_ref == ref_idx {
-                    return (mv_x, mv_y);
-                }
+        } else if let Some((mv_x, mv_y, left_ref)) =
+            self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
+        {
+            if left_ref == ref_idx {
+                return (mv_x, mv_y);
             }
         }
         self.predict_mv_l1_partition(mb_x, mb_y, 0, part * 2, 4, ref_idx)
@@ -472,11 +463,7 @@ impl H264Decoder {
             h,
             mv_x_qpel,
             mv_y_qpel,
-            if std::env::var("TAO_H264_DEBUG_DISABLE_WEIGHTED_PRED").as_deref() == Ok("1") {
-                None
-            } else {
-                p_l0_weight(l0_weights, ref_idx)
-            },
+            p_l0_weight(l0_weights, ref_idx),
             luma_log2_weight_denom,
             chroma_log2_weight_denom,
         );

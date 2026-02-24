@@ -4,8 +4,8 @@
 //! 不做任何压缩, 直接透传像素数据.
 
 use bytes::Bytes;
-use log::debug;
 use tao_core::{PixelFormat, TaoError, TaoResult};
+use tracing::debug;
 
 use crate::codec_id::CodecId;
 use crate::codec_parameters::{CodecParameters, CodecParamsType};

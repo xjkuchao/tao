@@ -49,6 +49,7 @@ const I8X8_SCAN_ORDER: [(usize, usize); 4] = [(0, 0), (1, 0), (0, 1), (1, 1)];
 // ============================================================
 
 impl H264Decoder {
+    #[allow(clippy::too_many_arguments)]
     fn decode_cavlc_residual_block_or_zero(
         &self,
         br: &mut BitReader,
@@ -56,8 +57,8 @@ impl H264Decoder {
         max_num_coeff: usize,
         coeffs: &mut [i32],
         scene: &str,
-        coord_x: usize,
-        coord_y: usize,
+        _coord_x: usize,
+        _coord_y: usize,
     ) -> u8 {
         match cavlc::decode_cavlc_residual_block(br, nc, max_num_coeff, coeffs) {
             Ok(tc) => tc,
@@ -67,18 +68,6 @@ impl H264Decoder {
                     && err
                         .to_string()
                         .contains("CAVLC total_coeff=16 超过 max_num_coeff=15");
-                if std::env::var("TAO_H264_CAVLC_ERR_TRACE").as_deref() == Ok("1") {
-                    eprintln!(
-                        "[CAVLC_ERR] scene={} coord=({}, {}) nc={} max_num_coeff={} bits_read={} err={}",
-                        scene,
-                        coord_x,
-                        coord_y,
-                        nc,
-                        max_num_coeff,
-                        br.bits_read(),
-                        err
-                    );
-                }
                 if total_coeff_overflow_i16x16 { 15 } else { 0 }
             }
         }
@@ -1107,22 +1096,6 @@ impl H264Decoder {
                     self.set_nz_count_chroma_u(x2, y2, 0);
                     self.set_nz_count_chroma_v(x2, y2, 0);
                 }
-            }
-        }
-    }
-
-    /// 清除一个宏块的全部 CAVLC nz 计数 (skip MB 或无残差时).
-    #[allow(dead_code)]
-    pub(super) fn clear_cavlc_nz_counts(&mut self, mb_x: usize, mb_y: usize) {
-        for sub_y in 0..4 {
-            for sub_x in 0..4 {
-                self.set_nz_count_luma(mb_x * 4 + sub_x, mb_y * 4 + sub_y, 0);
-            }
-        }
-        for sub_y in 0..2 {
-            for sub_x in 0..2 {
-                self.set_nz_count_chroma_u(mb_x * 2 + sub_x, mb_y * 2 + sub_y, 0);
-                self.set_nz_count_chroma_v(mb_x * 2 + sub_x, mb_y * 2 + sub_y, 0);
             }
         }
     }

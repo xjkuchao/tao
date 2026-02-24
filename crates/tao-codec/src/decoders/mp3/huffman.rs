@@ -7,10 +7,10 @@
 use super::bitreader::BitReader;
 use super::huffman_explicit_tables as explicit;
 use super::tables::{MPA_HUFF_LENS, MPA_HUFF_OFFSET, MPA_HUFF_SYMS};
-use log::warn;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tao_core::{TaoError, TaoResult};
+use tracing::warn;
 
 // ============================================================================
 // Big Values 快速查找表 (表 1-31)

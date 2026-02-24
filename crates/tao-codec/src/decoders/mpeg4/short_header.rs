@@ -9,8 +9,8 @@
 //! - 无 quarter-pixel
 //! - GOB (Group of Blocks) 结构
 
-use log::{debug, trace};
 use tao_core::{TaoError, TaoResult};
+use tracing::{debug, trace};
 
 use super::Mpeg4Decoder;
 use super::bitreader::BitReader;

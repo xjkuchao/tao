@@ -51,8 +51,8 @@ mod tables;
 mod tests;
 mod types;
 mod vlc;
-use log::{debug, trace, warn};
 use tao_core::{PixelFormat, TaoError, TaoResult};
+use tracing::{debug, trace, warn};
 
 use crate::codec_id::CodecId;
 use crate::codec_parameters::{CodecParameters, CodecParamsType};

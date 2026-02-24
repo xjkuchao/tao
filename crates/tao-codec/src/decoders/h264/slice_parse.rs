@@ -4,20 +4,10 @@ impl H264Decoder {
     /// 解析 slice header, 返回 CABAC 数据起始位置
     pub(super) fn parse_slice_header(&self, rbsp: &[u8], nalu: &NalUnit) -> TaoResult<SliceHeader> {
         let mut br = BitReader::new(rbsp);
-        let trace_header = std::env::var("TAO_H264_SLICE_HEADER_TRACE").as_deref() == Ok("1");
 
         let first_mb = read_ue(&mut br)?;
         let slice_type = read_ue(&mut br)? % 5;
         let pps_id = read_ue(&mut br)?;
-        if trace_header {
-            eprintln!(
-                "[H264_SLICE_PARSE] step=base first_mb={} slice_type={} pps_id={} bits={}",
-                first_mb,
-                slice_type,
-                pps_id,
-                br.bits_read()
-            );
-        }
         let pps = self
             .pps_map
             .get(&pps_id)
@@ -43,13 +33,6 @@ impl H264Decoder {
 
         // frame_num
         let frame_num = br.read_bits(sps.log2_max_frame_num)?;
-        if trace_header {
-            eprintln!(
-                "[H264_SLICE_PARSE] step=frame_num frame_num={} bits={}",
-                frame_num,
-                br.bits_read()
-            );
-        }
 
         let mut field_pic = false;
         if !sps.frame_mbs_only {
@@ -75,26 +58,10 @@ impl H264Decoder {
             if pps.pic_order_present && !field_pic {
                 delta_poc_bottom = read_se(&mut br)?;
             }
-            if trace_header {
-                eprintln!(
-                    "[H264_SLICE_PARSE] step=poc0 poc_lsb={:?} delta_poc_bottom={} bits={}",
-                    pic_order_cnt_lsb,
-                    delta_poc_bottom,
-                    br.bits_read()
-                );
-            }
         } else if sps.poc_type == 1 && !sps.delta_pic_order_always_zero_flag {
             delta_poc_0 = read_se(&mut br)?;
             if pps.pic_order_present && !field_pic {
                 delta_poc_1 = read_se(&mut br)?;
-            }
-            if trace_header {
-                eprintln!(
-                    "[H264_SLICE_PARSE] step=poc1 delta0={} delta1={} bits={}",
-                    delta_poc_0,
-                    delta_poc_1,
-                    br.bits_read()
-                );
             }
         }
 
@@ -105,9 +72,6 @@ impl H264Decoder {
         }
         let mut num_ref_idx_l0 = pps.num_ref_idx_l0_default_active;
         let mut num_ref_idx_l1 = pps.num_ref_idx_l1_default_active;
-        let mut override_refs = false;
-        let mut num_ref_idx_l0_override_minus1: Option<u32> = None;
-        let mut num_ref_idx_l1_override_minus1: Option<u32> = None;
 
         let is_b = slice_type == 1;
         let is_i = slice_type == 2 || slice_type == 4;
@@ -116,14 +80,12 @@ impl H264Decoder {
             if is_b {
                 direct_spatial_mv_pred_flag = br.read_bit()? == 1;
             }
-            override_refs = br.read_bit()? == 1;
+            let override_refs = br.read_bit()? == 1;
             if override_refs {
                 let l0_minus1 = read_ue(&mut br)?;
-                num_ref_idx_l0_override_minus1 = Some(l0_minus1);
                 num_ref_idx_l0 = l0_minus1 + 1;
                 if is_b {
                     let l1_minus1 = read_ue(&mut br)?;
-                    num_ref_idx_l1_override_minus1 = Some(l1_minus1);
                     num_ref_idx_l1 = l1_minus1 + 1;
                 }
             }
@@ -140,31 +102,9 @@ impl H264Decoder {
                 )));
             }
         }
-        if trace_header {
-            eprintln!(
-                "[H264_SLICE_PARSE] step=ref_count is_b={} direct_spatial={} redundant_pic_cnt={} override_refs={} l0_minus1={:?} l1_minus1={:?} num_ref_l0={} num_ref_l1={} bits={}",
-                is_b,
-                direct_spatial_mv_pred_flag,
-                redundant_pic_cnt,
-                override_refs,
-                num_ref_idx_l0_override_minus1,
-                num_ref_idx_l1_override_minus1,
-                num_ref_idx_l0,
-                num_ref_idx_l1,
-                br.bits_read()
-            );
-        }
 
         let (ref_pic_list_mod_l0, ref_pic_list_mod_l1) =
             self.parse_ref_pic_list_mod(&mut br, slice_type, num_ref_idx_l0, num_ref_idx_l1)?;
-        if trace_header {
-            eprintln!(
-                "[H264_SLICE_PARSE] step=ref_mod l0_mod={} l1_mod={} bits={}",
-                ref_pic_list_mod_l0.len(),
-                ref_pic_list_mod_l1.len(),
-                br.bits_read()
-            );
-        }
         let (luma_log2_weight_denom, chroma_log2_weight_denom, l0_weights, l1_weights) = self
             .parse_pred_weight_table(
                 &mut br,
@@ -174,23 +114,7 @@ impl H264Decoder {
                 num_ref_idx_l0,
                 num_ref_idx_l1,
             )?;
-        if trace_header {
-            eprintln!(
-                "[H264_SLICE_PARSE] step=pred_weight luma_denom={} chroma_denom={} l0_weights={} l1_weights={} bits={}",
-                luma_log2_weight_denom,
-                chroma_log2_weight_denom,
-                l0_weights.len(),
-                l1_weights.len(),
-                br.bits_read()
-            );
-        }
         let dec_ref_pic_marking = self.parse_dec_ref_pic_marking(&mut br, nalu)?;
-        if trace_header {
-            eprintln!(
-                "[H264_SLICE_PARSE] step=dec_ref_pic_marking bits={}",
-                br.bits_read()
-            );
-        }
 
         // CABAC init
         let mut cabac_init_idc = 0u8;
@@ -204,13 +128,6 @@ impl H264Decoder {
             }
             cabac_init_idc = cabac_init_idc_raw as u8;
         }
-        if trace_header {
-            eprintln!(
-                "[H264_SLICE_PARSE] step=cabac_init cabac_init_idc={} bits={}",
-                cabac_init_idc,
-                br.bits_read()
-            );
-        }
 
         // slice_qp_delta
         let qp_delta = read_se(&mut br)?;
@@ -220,14 +137,6 @@ impl H264Decoder {
                 "H264: slice_qp 超出范围, slice_qp={}",
                 slice_qp
             )));
-        }
-        if trace_header {
-            eprintln!(
-                "[H264_SLICE_PARSE] step=qp slice_qp={} qp_delta={} bits={}",
-                slice_qp,
-                qp_delta,
-                br.bits_read()
-            );
         }
 
         // 跳过去块效应滤波器参数
@@ -262,15 +171,6 @@ impl H264Decoder {
                 slice_beta_offset_div2 = beta;
             }
         }
-        if trace_header {
-            eprintln!(
-                "[H264_SLICE_PARSE] step=deblock disable={} alpha={} beta={} bits={}",
-                disable_deblocking_filter_idc,
-                slice_alpha_c0_offset_div2,
-                slice_beta_offset_div2,
-                br.bits_read()
-            );
-        }
 
         let mut data_bit_offset = br.bits_read();
         if pps.entropy_coding_mode == 1 {
@@ -291,12 +191,6 @@ impl H264Decoder {
             data_bit_offset = br.bits_read();
         }
         let cabac_start = br.byte_position();
-        if trace_header {
-            eprintln!(
-                "[H264_SLICE_PARSE] step=cabac_start data_bit_offset={} cabac_start_byte={}",
-                data_bit_offset, cabac_start
-            );
-        }
 
         Ok(SliceHeader {
             first_mb,

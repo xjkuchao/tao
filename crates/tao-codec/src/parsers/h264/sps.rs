@@ -602,6 +602,7 @@ fn parse_scaling_list_8x8(br: &mut BitReader) -> TaoResult<([u8; 64], bool)> {
 /// 解析 VUI 参数 (部分)
 ///
 /// 返回 (SAR, fps, max_num_reorder_frames, max_dec_frame_buffering)
+#[allow(clippy::type_complexity)]
 fn parse_vui(
     br: &mut BitReader,
 ) -> TaoResult<(Rational, Option<Rational>, Option<u32>, Option<u32>)> {

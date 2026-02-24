@@ -820,14 +820,18 @@ impl H264Decoder {
             self.decode_coded_block_pattern(cabac, ctxs, mb_x, mb_y, false);
         let cbp = luma_cbp | (chroma_cbp << 4);
         self.set_mb_cbp(mb_x, mb_y, cbp);
-        let trace_slice_mb = self.trace_slice_mb;
-        let trace_mb_limit = self.trace_mb_limit;
-        if trace_slice_mb && mb_idx < trace_mb_limit {
-            eprintln!(
-                "[H264_B_CBP] idx={} mb=({}, {}) mb_type_idx={:?} luma_cbp={} chroma_cbp={} cbp={}",
-                mb_idx, mb_x, mb_y, mb_type_idx, luma_cbp, chroma_cbp, cbp
-            );
-        }
+
+        // H.264 规范 7.3.5.1: transform_size_8x8_flag 必须在 mb_qp_delta 之前解析
+        let parsed_use_8x8 = luma_cbp != 0
+            && no_sub_mb_part_size_less_than_8x8_flag
+            && self
+                .pps
+                .as_ref()
+                .map(|p| p.transform_8x8_mode)
+                .unwrap_or(false)
+            && self.decode_transform_size_8x8_flag_inter(cabac, ctxs, mb_x, mb_y);
+        let use_8x8_residual = parsed_use_8x8;
+        self.set_transform_8x8_flag(mb_x, mb_y, parsed_use_8x8);
 
         if cbp != 0 {
             let qp_delta = decode_qp_delta(cabac, ctxs, self.prev_qp_delta_nz);
@@ -837,120 +841,14 @@ impl H264Decoder {
             self.prev_qp_delta_nz = false;
         }
 
-        let forced_use_8x8 = self.debug_force_inter_use_8x8;
-        let use_old_transform_ctx = self.debug_inter_use_old_transform_ctx;
-        let parse_t8x8_use_4x4 = self.debug_inter_parse_t8x8_use_4x4;
-        let parsed_use_8x8 = if let Some(v) = forced_use_8x8 {
-            luma_cbp != 0 && v
+        if use_8x8_residual {
+            self.decode_i8x8_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp, false);
         } else {
-            luma_cbp != 0
-                && no_sub_mb_part_size_less_than_8x8_flag
-                && self
-                    .pps
-                    .as_ref()
-                    .map(|p| p.transform_8x8_mode)
-                    .unwrap_or(false)
-                && if use_old_transform_ctx {
-                    self.decode_transform_size_8x8_flag(cabac, ctxs, mb_x, mb_y)
-                } else {
-                    self.decode_transform_size_8x8_flag_inter(cabac, ctxs, mb_x, mb_y)
-                }
-        };
-        let use_8x8_residual = parsed_use_8x8 && !parse_t8x8_use_4x4;
-        self.set_transform_8x8_flag(mb_x, mb_y, parsed_use_8x8);
-
-        let skip_inter_residual = self.debug_skip_inter_residual;
-        if !skip_inter_residual {
-            if use_8x8_residual {
-                self.decode_i8x8_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp, false);
-            } else {
-                self.decode_inter_4x4_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp);
-            }
-
-            if chroma_cbp >= 1 {
-                self.decode_chroma_residual(
-                    cabac,
-                    ctxs,
-                    (mb_x, mb_y),
-                    *cur_qp,
-                    chroma_cbp >= 2,
-                    false,
-                );
-            }
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn decode_b_partition_motion(
-        &mut self,
-        cabac: &mut CabacDecoder,
-        ctxs: &mut [CabacCtx],
-        dir: BPredDir,
-        num_ref_idx_l0: u32,
-        num_ref_idx_l1: u32,
-        pred_mv_x: i32,
-        pred_mv_y: i32,
-        px_x: usize,
-        px_y: usize,
-        part_w: usize,
-        part_h: usize,
-    ) -> (Option<BMotion>, Option<BMotion>) {
-        let mut motion_l0 = None;
-        let mut motion_l1 = None;
-        let x4 = px_x / 4;
-        let y4 = px_y / 4;
-        let mb_x = px_x / 16;
-        let mb_y = px_y / 16;
-        let part_x4 = x4 % 4;
-        let part_y4 = y4 % 4;
-        let part_w4 = (part_w / 4).max(1);
-
-        if matches!(dir, BPredDir::L0 | BPredDir::Bi) {
-            let ref_idx = self.decode_ref_idx(cabac, ctxs, num_ref_idx_l0, 0, x4, y4, true);
-            let ref_idx_i8 = ref_idx.min(i8::MAX as u32) as i8;
-            let (pred_l0_x, pred_l0_y) =
-                self.predict_mv_l0_partition(mb_x, mb_y, part_x4, part_y4, part_w4, ref_idx_i8);
-            let (amvd_x, amvd_y) = self.compute_cabac_amvd(x4, y4, 0);
-            let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
-            let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
-            self.set_mvd_block_4x4(px_x, px_y, part_w, part_h, mvd_x, mvd_y, 0);
-            let mv_l0_x = pred_l0_x + mvd_x;
-            let mv_l0_y = pred_l0_y + mvd_y;
-            motion_l0 = Some(BMotion {
-                mv_x: mv_l0_x,
-                mv_y: mv_l0_y,
-                ref_idx: ref_idx_i8,
-            });
-        }
-        if matches!(dir, BPredDir::L1 | BPredDir::Bi) {
-            let ref_idx_l1 = self.decode_ref_idx(cabac, ctxs, num_ref_idx_l1, 1, x4, y4, true);
-            let ref_idx_l1_i8 = ref_idx_l1.min(i8::MAX as u32) as i8;
-            let (pred_l1_x, pred_l1_y) =
-                self.predict_mv_l1_partition(mb_x, mb_y, part_x4, part_y4, part_w4, ref_idx_l1_i8);
-            let (amvd_x, amvd_y) = self.compute_cabac_amvd(x4, y4, 1);
-            let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
-            let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
-            self.set_mvd_block_4x4(px_x, px_y, part_w, part_h, mvd_x, mvd_y, 1);
-            let mv_l1_x = pred_l1_x + mvd_x;
-            let mv_l1_y = pred_l1_y + mvd_y;
-            motion_l1 = Some(BMotion {
-                mv_x: mv_l1_x,
-                mv_y: mv_l1_y,
-                ref_idx: ref_idx_l1_i8,
-            });
+            self.decode_inter_4x4_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp);
         }
 
-        if motion_l0.is_none() && motion_l1.is_none() {
-            (
-                Some(BMotion {
-                    mv_x: pred_mv_x,
-                    mv_y: pred_mv_y,
-                    ref_idx: 0,
-                }),
-                None,
-            )
-        } else {
-            (motion_l0, motion_l1)
+        if chroma_cbp >= 1 {
+            self.decode_chroma_residual(cabac, ctxs, (mb_x, mb_y), *cur_qp, chroma_cbp >= 2, false);
         }
     }
 
@@ -992,26 +890,9 @@ impl H264Decoder {
                 }
 
                 let cbf_inc = self.luma_cbf_ctx_inc(x4, y4, false);
-                let bits_before_block = cabac.bits_read();
                 let mut raw_coeffs =
                     decode_residual_block(cabac, ctxs, &residual::CAT_LUMA_4X4, cbf_inc);
                 let coded = raw_coeffs.iter().any(|&c| c != 0);
-                if self.trace_inter_coeff && mb_x == 0 && mb_y == 0 && (i8x8 == 0 || coded) {
-                    let bits_after_block = cabac.bits_read();
-                    eprintln!(
-                        "[INTER_COEFF] mb=({},{}) i8x8={} sub={} x4={} y4={} cbf_inc={} coded={} bits={} coeffs={:?}",
-                        mb_x,
-                        mb_y,
-                        i8x8,
-                        i_sub,
-                        x4,
-                        y4,
-                        cbf_inc,
-                        coded,
-                        bits_after_block - bits_before_block,
-                        &raw_coeffs
-                    );
-                }
                 self.set_luma_cbf(x4, y4, coded);
                 if coded {
                     coded_8x8 = true;

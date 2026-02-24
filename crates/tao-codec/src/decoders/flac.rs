@@ -30,10 +30,10 @@
 //! CRC-16:        16 bits
 //! ```
 
-use log::debug;
 use tao_core::bitreader::BitReader;
 use tao_core::crc;
 use tao_core::{ChannelLayout, SampleFormat, TaoError, TaoResult};
+use tracing::debug;
 
 use crate::codec_id::CodecId;
 use crate::codec_parameters::{CodecParameters, CodecParamsType};

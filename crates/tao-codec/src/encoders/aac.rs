@@ -10,10 +10,10 @@
 //! - ADTS 帧头 (7 字节, protection_absent=1)
 
 use bytes::Bytes;
-use log::debug;
 use std::f64::consts::PI;
 use tao_core::bitwriter::BitWriter;
 use tao_core::{ChannelLayout, SampleFormat, TaoError, TaoResult};
+use tracing::debug;
 
 use crate::codec_id::CodecId;
 use crate::codec_parameters::{CodecParameters, CodecParamsType};

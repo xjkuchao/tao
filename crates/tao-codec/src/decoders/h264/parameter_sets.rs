@@ -60,12 +60,6 @@ pub(super) fn parse_pps(rbsp: &[u8]) -> TaoResult<super::Pps> {
             num_slice_groups_minus1
         )));
     }
-    if std::env::var("TAO_H264_TRACE_PPS").as_deref() == Ok("1") {
-        eprintln!(
-            "[H264_PPS] pps_id={} sps_id={} num_slice_groups_minus1={}",
-            pps_id, sps_id, num_slice_groups_minus1
-        );
-    }
     if num_slice_groups_minus1 > 0 {
         skip_pps_slice_groups(&mut br, num_slice_groups_minus1)?;
     }

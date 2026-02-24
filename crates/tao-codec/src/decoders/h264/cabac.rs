@@ -4,7 +4,6 @@
 
 use super::cabac_init_ext::{CABAC_INIT_I_EXT_460_1011, CABAC_INIT_PB0_EXT_460_1011};
 use super::cabac_init_pb::{CABAC_INIT_PB1, CABAC_INIT_PB2};
-use std::sync::OnceLock;
 
 /// CABAC 上下文模型
 #[derive(Clone, Copy)]
@@ -22,12 +21,6 @@ pub struct CabacDecoder<'a> {
     raw_pos: usize,
     cod_i_range: u32,
     cod_i_offset: u32,
-    pub bin_trace_limit: u32,
-}
-
-fn trace_cabac_terminate_enabled() -> bool {
-    static TRACE_CABAC_TERM: OnceLock<bool> = OnceLock::new();
-    *TRACE_CABAC_TERM.get_or_init(|| std::env::var("TAO_H264_TRACE_CABAC_TERM").is_ok())
 }
 
 impl<'a> CabacDecoder<'a> {
@@ -68,7 +61,6 @@ impl<'a> CabacDecoder<'a> {
             raw_pos: 0,
             cod_i_range: 510,
             cod_i_offset: 0,
-            bin_trace_limit: 0,
         };
         out.init_decoder_from(0);
         out
@@ -82,7 +74,7 @@ impl<'a> CabacDecoder<'a> {
         let range_lps = RANGE_TAB_LPS[s][q_idx] as u32;
         self.cod_i_range -= range_lps;
 
-        let result = if self.cod_i_offset < self.cod_i_range {
+        if self.cod_i_offset < self.cod_i_range {
             ctx.state = TRANS_IDX_MPS[s];
             self.renormalize();
             ctx.mps as u32
@@ -96,48 +88,31 @@ impl<'a> CabacDecoder<'a> {
             ctx.state = TRANS_IDX_LPS[s];
             self.renormalize();
             symbol
-        };
-        if self.bin_trace_limit > 0 {
-            let caller = std::panic::Location::caller();
-            eprintln!("[CABAC_BIN] {}:{} state={} mps={} res={}", caller.file().split('/').last().unwrap_or(""), caller.line(), s, ctx.mps, result);
-            self.bin_trace_limit -= 1;
         }
-        result
     }
 
     /// 旁路模式解码 (等概率)
     pub fn decode_bypass(&mut self) -> u32 {
         self.cod_i_offset = (self.cod_i_offset << 1) | self.read_input_bit();
-        let result = if self.cod_i_offset >= self.cod_i_range {
+
+        if self.cod_i_offset >= self.cod_i_range {
             self.cod_i_offset -= self.cod_i_range;
             1
         } else {
             0
-        };
-        result
+        }
     }
 
     /// 终止模式解码 (end_of_slice_flag)
     pub fn decode_terminate(&mut self) -> u32 {
-        let range_before = self.cod_i_range;
-        let offset_before = self.cod_i_offset;
         self.cod_i_range = self.cod_i_range.saturating_sub(2);
-        let result = if self.cod_i_offset >= self.cod_i_range {
-            if trace_cabac_terminate_enabled() {
-                eprintln!(
-                    "[CABAC_TERM] terminate=1 range_before={} offset_before={} range_after={} bits_read={}",
-                    range_before,
-                    offset_before,
-                    self.cod_i_range,
-                    self.bits_read()
-                );
-            }
+
+        if self.cod_i_offset >= self.cod_i_range {
             1
         } else {
             self.renormalize();
             0
-        };
-        result
+        }
     }
 
     /// 对齐到 I_PCM 原始样本起点
@@ -162,21 +137,6 @@ impl<'a> CabacDecoder<'a> {
     /// I_PCM 结束后重启 CABAC 引擎
     pub fn restart_engine(&mut self) {
         self.init_decoder_from(self.raw_pos);
-    }
-
-    /// 返回 CABAC 输入流已消费的 bit 数.
-    pub fn bits_read(&self) -> usize {
-        self.bit_pos
-    }
-
-    /// 返回 CABAC 引擎的 (range, offset) 状态.
-    pub fn state_range_offset(&self) -> (u32, u32) {
-        (self.cod_i_range, self.cod_i_offset)
-    }
-
-    /// 返回 CABAC 输入流总 bit 数.
-    pub fn bits_total(&self) -> usize {
-        self.data.len().saturating_mul(8)
     }
 }
 

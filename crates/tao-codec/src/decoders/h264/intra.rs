@@ -2,6 +2,9 @@
 //!
 //! 提供 Intra_16x16 亮度预测 (4 种模式) 和色度 8x8 预测 (4 种模式).
 
+// 帧内预测大量使用按索引访问的数组表达式, 允许该模式以保持代码可读性
+#![allow(clippy::needless_range_loop)]
+
 /// Intra_16x16 亮度预测: 根据模式分发
 pub fn predict_16x16(
     plane: &mut [u8],

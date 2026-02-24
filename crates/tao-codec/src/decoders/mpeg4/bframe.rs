@@ -6,8 +6,8 @@
 //! - Backward 模式: 使用后向参考帧 (时间上较晚)
 //! - Interpolate 模式: 使用两个参考帧的加权平均
 
-use log::trace;
 use tao_core::TaoResult;
+use tracing::trace;
 
 use super::Mpeg4Decoder;
 use super::bitreader::BitReader;

@@ -7,7 +7,7 @@
 //! - 2 个 warping 点: 仿射变换 (平移+旋转+缩放, 4自由度)
 //! - 3 个 warping 点: 透视变换 (完整 6 自由度)
 
-use log::trace;
+use tracing::trace;
 
 use super::Mpeg4Decoder;
 use super::bitreader::BitReader;

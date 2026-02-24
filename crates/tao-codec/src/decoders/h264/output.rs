@@ -42,6 +42,7 @@ impl H264Decoder {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     fn conceal_macroblock_from_source(
         &mut self,
         mb_idx: usize,
@@ -116,40 +117,16 @@ impl H264Decoder {
             .back()
             .map(|pic| (pic.y.clone(), pic.u.clone(), pic.v.clone()));
 
-        let trace_conceal = std::env::var("TAO_H264_TRACE_CONCEAL").as_deref() == Ok("1");
         let mut concealed_mbs = 0usize;
-        let mut missing_mbs = 0usize;
-        let mut error_mbs = 0usize;
-        let mut sample_missing = Vec::new();
-        let mut sample_error = Vec::new();
         for mb_idx in 0..total_mbs {
             let is_missing_mb = has_touched_mb && self.mb_slice_first_mb[mb_idx] == u32::MAX;
             let is_error_mb = self.mb_types[mb_idx] == 252;
-            if is_missing_mb {
-                missing_mbs += 1;
-                if sample_missing.len() < 8 {
-                    sample_missing.push(mb_idx);
-                }
-            }
-            if is_error_mb {
-                error_mbs += 1;
-                if sample_error.len() < 8 {
-                    sample_error.push(mb_idx);
-                }
-            }
             if !is_missing_mb && !is_error_mb {
                 continue;
             }
             self.conceal_macroblock_from_source(mb_idx, source.as_ref());
             self.mb_types[mb_idx] = 253;
             concealed_mbs += 1;
-        }
-
-        if trace_conceal {
-            eprintln!(
-                "[H264_CONCEAL] total_mbs={} missing={} error={} concealed={} sample_missing={:?} sample_error={:?}",
-                total_mbs, missing_mbs, error_mbs, concealed_mbs, sample_missing, sample_error
-            );
         }
 
         if concealed_mbs == 0 {
@@ -423,29 +400,6 @@ impl H264Decoder {
         cur_frame_num: u32,
     ) -> Vec<RefPlanes> {
         let target = count.max(1) as usize;
-        let trace_ref_list = std::env::var("TAO_H264_TRACE_REF_LIST").as_deref() == Ok("1");
-        if trace_ref_list {
-            let dpb: Vec<String> = self
-                .reference_frames
-                .iter()
-                .map(|pic| {
-                    format!(
-                        "fn={} poc={} lt={:?}",
-                        pic.frame_num, pic.poc, pic.long_term_frame_idx
-                    )
-                })
-                .collect();
-            eprintln!(
-                "[H264_REF_L0_BUILD] slice_type={} cur_frame_num={} cur_poc={} target={} mods={} dpb_len={} dpb={:?}",
-                self.last_slice_type,
-                cur_frame_num,
-                self.last_poc,
-                target,
-                mods.len(),
-                self.reference_frames.len(),
-                dpb
-            );
-        }
         let mut refs = self.collect_default_reference_list_l0();
         self.apply_ref_pic_list_modifications(&mut refs, mods, cur_frame_num);
         let refs_empty = refs.is_empty();
@@ -480,27 +434,6 @@ impl H264Decoder {
             );
             self.record_missing_reference_fallback("build_l0_list_padded", rank as i32, refs_len);
         }
-        if trace_ref_list {
-            let built: Vec<String> = out
-                .iter()
-                .enumerate()
-                .map(|(idx, rp)| {
-                    format!(
-                        "idx={} fn={} poc={} lt={:?}",
-                        idx, rp.frame_num, rp.poc, rp.long_term_frame_idx
-                    )
-                })
-                .collect();
-            eprintln!(
-                "[H264_REF_L0_DONE] target={} refs_len={} empty_missing={:?} padded={:?} missing_fallbacks={} list={:?}",
-                target,
-                refs_len,
-                empty_missing_ranks,
-                padded_ranks,
-                self.missing_reference_fallbacks,
-                built
-            );
-        }
         out
     }
 
@@ -511,29 +444,6 @@ impl H264Decoder {
         cur_frame_num: u32,
     ) -> Vec<RefPlanes> {
         let target = count.max(1) as usize;
-        let trace_ref_list = std::env::var("TAO_H264_TRACE_REF_LIST").as_deref() == Ok("1");
-        if trace_ref_list {
-            let dpb: Vec<String> = self
-                .reference_frames
-                .iter()
-                .map(|pic| {
-                    format!(
-                        "fn={} poc={} lt={:?}",
-                        pic.frame_num, pic.poc, pic.long_term_frame_idx
-                    )
-                })
-                .collect();
-            eprintln!(
-                "[H264_REF_L1_BUILD] slice_type={} cur_frame_num={} cur_poc={} target={} mods={} dpb_len={} dpb={:?}",
-                self.last_slice_type,
-                cur_frame_num,
-                self.last_poc,
-                target,
-                mods.len(),
-                self.reference_frames.len(),
-                dpb
-            );
-        }
         let mut refs = self.collect_default_reference_list_l1();
         self.apply_ref_pic_list_modifications(&mut refs, mods, cur_frame_num);
         let refs_empty = refs.is_empty();
@@ -567,27 +477,6 @@ impl H264Decoder {
                 rank, refs_len
             );
             self.record_missing_reference_fallback("build_l1_list_padded", rank as i32, refs_len);
-        }
-        if trace_ref_list {
-            let built: Vec<String> = out
-                .iter()
-                .enumerate()
-                .map(|(idx, rp)| {
-                    format!(
-                        "idx={} fn={} poc={} lt={:?}",
-                        idx, rp.frame_num, rp.poc, rp.long_term_frame_idx
-                    )
-                })
-                .collect();
-            eprintln!(
-                "[H264_REF_L1_DONE] target={} refs_len={} empty_missing={:?} padded={:?} missing_fallbacks={} list={:?}",
-                target,
-                refs_len,
-                empty_missing_ranks,
-                padded_ranks,
-                self.missing_reference_fallbacks,
-                built
-            );
         }
         out
     }
@@ -885,8 +774,7 @@ impl H264Decoder {
         let h = self.height as usize;
         self.conceal_frame_level_errors();
 
-        let skip_deblock = std::env::var("TAO_SKIP_DEBLOCK").is_ok();
-        if !skip_deblock && self.last_disable_deblocking_filter_idc != 1 {
+        if self.last_disable_deblocking_filter_idc != 1 {
             let (chroma_qp_index_offset, second_chroma_qp_index_offset) = self
                 .pps
                 .as_ref()

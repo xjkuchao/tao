@@ -196,30 +196,6 @@ pub fn build_test_decoder() -> H264Decoder {
         malformed_nal_drops: 0,
         last_sei_payloads: Vec::new(),
         pending_recovery_point_frame_cnt: None,
-        trace_mb_range: None,
-        trace_mb_detail: false,
-        trace_mb_limit: 400,
-        trace_slice: false,
-        trace_slice_mb: false,
-        trace_mb_bits: false,
-        trace_cabac_state: false,
-        trace_cabac_bins: 0,
-        trace_p_stage_bits: false,
-        trace_inter_coeff: false,
-        debug_ignore_terminate: false,
-        debug_force_inter_use_8x8: None,
-        debug_force_inter_mb0_use_8x8: false,
-        debug_inter_use_old_transform_ctx: false,
-        debug_inter_parse_t8x8_use_4x4: false,
-        debug_skip_inter_residual: false,
-        debug_skip_inter_luma_residual: false,
-        debug_skip_inter_chroma_residual: false,
-        debug_force_amvd_zero: false,
-        trace_ref_idx_all: false,
-        trace_ref_idx_oob: false,
-        trace_b_direct: false,
-        force_temporal_direct: false,
-        force_spatial_direct: false,
         output_queue: VecDeque::new(),
         reorder_buffer: Vec::new(),
         reorder_depth: 2,
@@ -229,7 +205,6 @@ pub fn build_test_decoder() -> H264Decoder {
         flushing: false,
     };
     dec.init_buffers();
-    dec.refresh_trace_options_from_env();
     dec
 }
 

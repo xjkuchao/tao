@@ -331,6 +331,7 @@ fn apply_adaptive_deblock_plane(
 }
 
 /// 计算每条边的 alpha/beta 阈值 (基于相邻宏块 QP 均值).
+#[allow(clippy::too_many_arguments)]
 fn edge_thresholds(
     mb_ctx: Option<&DeblockMbContext<'_>>,
     x: usize,

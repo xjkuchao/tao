@@ -549,9 +549,6 @@ impl H264Decoder {
 
     /// 计算 CABAC MVD 上下文: 左/上 4x4 邻居 MVD 绝对值之和.
     pub(super) fn compute_cabac_amvd(&self, x4: usize, y4: usize, list: usize) -> (i32, i32) {
-        if self.debug_force_amvd_zero {
-            return (0, 0);
-        }
         let stride = self.mb_width * 4;
         let h4 = self.mb_height * 4;
         if x4 >= stride || y4 >= h4 {
@@ -790,11 +787,11 @@ impl H264Decoder {
 
     /// 按 FFmpeg inter 语义解码 transform_size_8x8_flag.
     ///
-    /// 邻居上下文:
+    /// 邻居上下文 (对应 FFmpeg neighbor_transform_size 计算):
     /// - unavailable -> 0
-    /// - Direct 邻居 -> 0
-    /// - 邻居已使用 8x8 变换 -> 0
-    /// - 其它 -> 1
+    /// - Direct 宏块邻居 -> 0 (避免跨预测模式干扰)
+    /// - 邻居已使用 8x8 变换 -> 1
+    /// - 其它 -> 0
     pub(super) fn decode_transform_size_8x8_flag_inter(
         &self,
         cabac: &mut CabacDecoder,
@@ -802,9 +799,6 @@ impl H264Decoder {
         mb_x: usize,
         mb_y: usize,
     ) -> bool {
-        let mb_idx = mb_y * self.mb_width + mb_x;
-        let trace_mb_detail =
-            self.trace_mb_detail_enabled() && self.should_trace_mb_idx(mb_idx, usize::MAX);
         let left_ctx = if self.left_avail(mb_x, mb_y) {
             if let Some(left_mb_idx) = self.mb_index(mb_x - 1, mb_y) {
                 let left_is_direct =
@@ -815,7 +809,9 @@ impl H264Decoder {
                     .copied()
                     .unwrap_or(0)
                     != 0;
-                usize::from(!left_is_direct && !left_is_8x8dct)
+                // 与 FFmpeg neighbor_transform_size 逻辑一致: 邻居使用 8x8 变换时 ctx+1
+                // Direct 宏块视为不使用 8x8 变换 (避免跨预测模式干扰)
+                usize::from(!left_is_direct && left_is_8x8dct)
             } else {
                 0
             }
@@ -832,7 +828,7 @@ impl H264Decoder {
                     .copied()
                     .unwrap_or(0)
                     != 0;
-                usize::from(!top_is_direct && !top_is_8x8dct)
+                usize::from(!top_is_direct && top_is_8x8dct)
             } else {
                 0
             }
@@ -840,48 +836,10 @@ impl H264Decoder {
             0
         };
         let idx = 399usize + left_ctx + top_ctx;
-        let bits_before = if trace_mb_detail {
-            cabac.bits_read()
-        } else {
-            0
-        };
         if idx < ctxs.len() {
-            let bin = cabac.decode_decision(&mut ctxs[idx]) == 1;
-            if trace_mb_detail {
-                let bits_after = cabac.bits_read();
-                eprintln!(
-                    "[H264_T8X8_CTX] idx={} mb=({}, {}) left_ctx={} top_ctx={} ctx_idx={} bin={} bits_before={} bits_after={} delta={}",
-                    mb_idx,
-                    mb_x,
-                    mb_y,
-                    left_ctx,
-                    top_ctx,
-                    idx,
-                    u8::from(bin),
-                    bits_before,
-                    bits_after,
-                    bits_after.saturating_sub(bits_before)
-                );
-            }
-            bin
+            cabac.decode_decision(&mut ctxs[idx]) == 1
         } else {
-            let bin = cabac.decode_decision(&mut ctxs[68]) == 1;
-            if trace_mb_detail {
-                let bits_after = cabac.bits_read();
-                eprintln!(
-                    "[H264_T8X8_CTX] idx={} mb=({}, {}) left_ctx={} top_ctx={} ctx_idx=fallback68 bin={} bits_before={} bits_after={} delta={}",
-                    mb_idx,
-                    mb_x,
-                    mb_y,
-                    left_ctx,
-                    top_ctx,
-                    u8::from(bin),
-                    bits_before,
-                    bits_after,
-                    bits_after.saturating_sub(bits_before)
-                );
-            }
-            bin
+            cabac.decode_decision(&mut ctxs[68]) == 1
         }
     }
 

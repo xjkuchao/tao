@@ -3,8 +3,8 @@
 //! 实现 Theora 视频编解码器的解码功能.
 //! Theora 是一个开源的、免版税的视频编解码器，基于 VP3.
 
-use log::{debug, warn};
 use tao_core::{PixelFormat, Rational, TaoError, TaoResult};
+use tracing::{debug, warn};
 
 use crate::codec_id::CodecId;
 use crate::codec_parameters::CodecParameters;

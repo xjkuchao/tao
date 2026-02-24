@@ -17,9 +17,9 @@ mod residue;
 mod setup;
 mod synthesis;
 
-use log::warn;
 use std::collections::{HashMap, VecDeque};
 use tao_core::{ChannelLayout, Rational, TaoError, TaoResult};
+use tracing::warn;
 
 use crate::codec_id::CodecId;
 use crate::codec_parameters::{AudioCodecParams, CodecParameters, CodecParamsType};

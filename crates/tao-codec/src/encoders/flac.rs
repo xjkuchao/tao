@@ -9,10 +9,10 @@
 //! - CRC-8 (帧头) 和 CRC-16 (帧尾)
 
 use bytes::Bytes;
-use log::debug;
 use tao_core::bitwriter::BitWriter;
 use tao_core::crc;
 use tao_core::{ChannelLayout, SampleFormat, TaoError, TaoResult};
+use tracing::debug;
 
 use crate::codec_id::CodecId;
 use crate::codec_parameters::{CodecParameters, CodecParamsType};
