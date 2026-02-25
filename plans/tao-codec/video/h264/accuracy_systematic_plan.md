@@ -7,12 +7,12 @@
 首要目标: `data/1.mp4` 和 `data/2.mp4` 达到阶段 A (PSNR≥50dB, 精度≥99%, max_err≤2)。
 次要目标: C1-C3, E1-E9, X1-X4 全部达标。
 
-## 当前精度基线
+## 当前精度基线 (2026-02-25 更新)
 
 | 样本 | 精度 | 状态 | 熵编码 |
 |------|------|------|--------|
-| data/1.mp4 | 9.02% | 严重偏差 | CABAC High |
-| data/2.mp4 | ~24.35% | 严重偏差 | CABAC |
+| data/1.mp4 | **100.000%** (299帧) | **bit-exact** | CABAC High |
+| data/2.mp4 | 57.01% (10帧) | 待修复 | CABAC Main + B帧 |
 | C2 | 99.998% | 近 bit-exact | CABAC Main |
 | E3 | 99.984% | 近 bit-exact | CABAC Main |
 | X1 | 100% | bit-exact | CABAC I-only |
@@ -21,12 +21,15 @@
 
 ## 关键观察
 
+- data/1.mp4 (High CABAC) **100% bit-exact (299帧)** → High profile CABAC 路径完全正确
 - X1 (I-only) 100% bit-exact → 帧内预测路径已正确
 - C2/E3 (Main CABAC) 近 bit-exact → Main profile CABAC 基本正确
-- data/1.mp4 (High CABAC) 仅 9% → **High profile 特有路径(8x8 变换/预测)** 高度可疑
+- data/2.mp4 (Main CABAC + B帧) Frame 0 bit-exact, Frame 1 (P) 99.56%, B帧大幅偏差
+  - P帧误差极度局部化 (max_err=30, 仅 0.44% 像素受影响)
+  - B帧误差主要由 P帧误差级联放大导致
+  - data/2.mp4 使用 weighted_bipred_idc=2 (隐式加权) + weighted_pred_flag=1
+  - 禁用加权预测无效果 (默认权重为恒等变换)
 - 所有 CAVLC 样本精度极低 → CAVLC 路径有独立的系统性问题
-- ref_idx CABAC 越界仍在发生 → CABAC 上下文在某些流中仍有漂移
-- weighted prediction 有调试禁用开关 → 可能存在已知 bug
 
 ## 功能模块大块划分 (8 大模块)
 
