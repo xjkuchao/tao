@@ -1,5 +1,12 @@
 use super::*;
 
+#[derive(Clone, Copy)]
+enum MotionNeighbor {
+    PartNotAvailable,
+    ListNotUsed,
+    Available { mv_x: i32, mv_y: i32, ref_idx: i8 },
+}
+
 impl H264Decoder {
     pub(super) fn weighted_pred_disabled_by_env() -> bool {
         std::env::var("TAO_H264_DISABLE_WEIGHTED_PRED")
@@ -50,61 +57,37 @@ impl H264Decoder {
     ) -> (i32, i32) {
         let x4 = mb_x * 4 + part_x4;
         let y4 = mb_y * 4 + part_y4;
-
-        let mut cand_a = self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize);
-        if let Some(_) = cand_a
-            && !self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4)
-        {
-            cand_a = None;
+        let a = self.l0_motion_neighbor_state(
+            x4,
+            y4,
+            x4 as isize - 1,
+            y4 as isize,
+            ref_idx,
+        );
+        let b = self.l0_motion_neighbor_state(
+            x4,
+            y4,
+            x4 as isize,
+            y4 as isize - 1,
+            ref_idx,
+        );
+        let mut c = self.l0_motion_neighbor_state(
+            x4,
+            y4,
+            (x4 + part_w4) as isize,
+            y4 as isize - 1,
+            ref_idx,
+        );
+        if matches!(c, MotionNeighbor::PartNotAvailable) {
+            c = self.l0_motion_neighbor_state(
+                x4,
+                y4,
+                x4 as isize - 1,
+                y4 as isize - 1,
+                ref_idx,
+            );
         }
-        let mut cand_b = self.l0_motion_candidate_4x4(x4 as isize, y4 as isize - 1);
-        if let Some(_) = cand_b
-            && !self.same_slice_4x4(x4, y4, x4, y4.saturating_sub(1))
-        {
-            cand_b = None;
-        }
-        let mut cand_c = self.l0_motion_candidate_4x4((x4 + part_w4) as isize, y4 as isize - 1);
-        if let Some(_) = cand_c
-            && !self.same_slice_4x4(x4, y4, x4 + part_w4, y4.saturating_sub(1))
-        {
-            cand_c = None;
-        }
-        if cand_c.is_none() {
-            let mut cand_d = self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize - 1);
-            if let Some(_) = cand_d
-                && !self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4.saturating_sub(1))
-            {
-                cand_d = None;
-            }
-            cand_c = cand_d;
-        }
-
-        let mut matched = [(0i32, 0i32); 3];
-        let mut matched_count = 0usize;
-        for cand in [cand_a, cand_b, cand_c].into_iter().flatten() {
-            if cand.2 == ref_idx {
-                matched[matched_count] = (cand.0, cand.1);
-                matched_count += 1;
-            }
-        }
-
-        if matched_count == 1 {
-            return matched[0];
-        }
-
-        // 对齐 ffmpeg pred_motion: 不可用邻居使用 (0,0), 非级联默认值.
-        let a = cand_a.map(|(x, y, _)| (x, y)).unwrap_or((0, 0));
-        let b = cand_b.map(|(x, y, _)| (x, y)).unwrap_or((0, 0));
-        let c = cand_c.map(|(x, y, _)| (x, y)).unwrap_or((0, 0));
-        // 当匹配邻居数量 >=2 时, 仍应按原始 A/B/C 取中值, 而非仅在匹配集合内取中值.
-        if matched_count >= 2 {
-            return (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1));
-        }
-        // spec: 仅 A 可用 (B/C 都不可用) 时直接返回 A.
-        if cand_b.is_none() && cand_c.is_none() && cand_a.is_some() {
-            return a;
-        }
-        (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1))
+        Self::predict_motion_from_neighbors(a, b, c, ref_idx)
     }
 
     pub(super) fn predict_mv_l0_16x16(&self, mb_x: usize, mb_y: usize) -> (i32, i32) {
@@ -123,61 +106,153 @@ impl H264Decoder {
     ) -> (i32, i32) {
         let x4 = mb_x * 4 + part_x4;
         let y4 = mb_y * 4 + part_y4;
+        let a = self.l1_motion_neighbor_state(
+            x4,
+            y4,
+            x4 as isize - 1,
+            y4 as isize,
+            ref_idx,
+        );
+        let b = self.l1_motion_neighbor_state(
+            x4,
+            y4,
+            x4 as isize,
+            y4 as isize - 1,
+            ref_idx,
+        );
+        let mut c = self.l1_motion_neighbor_state(
+            x4,
+            y4,
+            (x4 + part_w4) as isize,
+            y4 as isize - 1,
+            ref_idx,
+        );
+        if matches!(c, MotionNeighbor::PartNotAvailable) {
+            c = self.l1_motion_neighbor_state(
+                x4,
+                y4,
+                x4 as isize - 1,
+                y4 as isize - 1,
+                ref_idx,
+            );
+        }
+        Self::predict_motion_from_neighbors(a, b, c, ref_idx)
+    }
 
-        let mut cand_a = self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize);
-        if let Some(_) = cand_a
-            && !self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4)
-        {
-            cand_a = None;
+    fn l0_motion_neighbor_state(
+        &self,
+        cur_x4: usize,
+        cur_y4: usize,
+        nbr_x4: isize,
+        nbr_y4: isize,
+        _ref_idx: i8,
+    ) -> MotionNeighbor {
+        if nbr_x4 < 0 || nbr_y4 < 0 {
+            return MotionNeighbor::PartNotAvailable;
         }
-        let mut cand_b = self.l1_motion_candidate_4x4(x4 as isize, y4 as isize - 1);
-        if let Some(_) = cand_b
-            && !self.same_slice_4x4(x4, y4, x4, y4.saturating_sub(1))
+        let nbr_x4 = nbr_x4 as usize;
+        let nbr_y4 = nbr_y4 as usize;
+        if self.motion_l0_4x4_index(nbr_x4, nbr_y4).is_none()
+            || !self.same_slice_4x4(cur_x4, cur_y4, nbr_x4, nbr_y4)
         {
-            cand_b = None;
+            return MotionNeighbor::PartNotAvailable;
         }
-        let mut cand_c = self.l1_motion_candidate_4x4((x4 + part_w4) as isize, y4 as isize - 1);
-        if let Some(_) = cand_c
-            && !self.same_slice_4x4(x4, y4, x4 + part_w4, y4.saturating_sub(1))
+        match self.l0_motion_candidate_4x4(nbr_x4 as isize, nbr_y4 as isize) {
+            Some((mv_x, mv_y, ref_idx)) => MotionNeighbor::Available {
+                mv_x,
+                mv_y,
+                ref_idx,
+            },
+            None => MotionNeighbor::ListNotUsed,
+        }
+    }
+
+    fn l1_motion_neighbor_state(
+        &self,
+        cur_x4: usize,
+        cur_y4: usize,
+        nbr_x4: isize,
+        nbr_y4: isize,
+        _ref_idx: i8,
+    ) -> MotionNeighbor {
+        if nbr_x4 < 0 || nbr_y4 < 0 {
+            return MotionNeighbor::PartNotAvailable;
+        }
+        let nbr_x4 = nbr_x4 as usize;
+        let nbr_y4 = nbr_y4 as usize;
+        if self.motion_l1_4x4_index(nbr_x4, nbr_y4).is_none()
+            || !self.same_slice_4x4(cur_x4, cur_y4, nbr_x4, nbr_y4)
         {
-            cand_c = None;
+            return MotionNeighbor::PartNotAvailable;
         }
-        if cand_c.is_none() {
-            let mut cand_d = self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize - 1);
-            if let Some(_) = cand_d
-                && !self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4.saturating_sub(1))
-            {
-                cand_d = None;
+        match self.l1_motion_candidate_4x4(nbr_x4 as isize, nbr_y4 as isize) {
+            Some((mv_x, mv_y, ref_idx)) => MotionNeighbor::Available {
+                mv_x,
+                mv_y,
+                ref_idx,
+            },
+            None => MotionNeighbor::ListNotUsed,
+        }
+    }
+
+    fn neighbor_mv(n: MotionNeighbor) -> (i32, i32) {
+        match n {
+            MotionNeighbor::Available { mv_x, mv_y, .. } => (mv_x, mv_y),
+            MotionNeighbor::ListNotUsed | MotionNeighbor::PartNotAvailable => (0, 0),
+        }
+    }
+
+    fn predict_motion_from_neighbors(
+        a: MotionNeighbor,
+        b: MotionNeighbor,
+        c: MotionNeighbor,
+        ref_idx: i8,
+    ) -> (i32, i32) {
+        let a_ref = match a {
+            MotionNeighbor::Available { ref_idx, .. } => ref_idx,
+            MotionNeighbor::ListNotUsed => -1,
+            MotionNeighbor::PartNotAvailable => -2,
+        };
+        let b_ref = match b {
+            MotionNeighbor::Available { ref_idx, .. } => ref_idx,
+            MotionNeighbor::ListNotUsed => -1,
+            MotionNeighbor::PartNotAvailable => -2,
+        };
+        let c_ref = match c {
+            MotionNeighbor::Available { ref_idx, .. } => ref_idx,
+            MotionNeighbor::ListNotUsed => -1,
+            MotionNeighbor::PartNotAvailable => -2,
+        };
+
+        let a_mv = Self::neighbor_mv(a);
+        let b_mv = Self::neighbor_mv(b);
+        let c_mv = Self::neighbor_mv(c);
+        let match_count = usize::from(a_ref == ref_idx)
+            + usize::from(b_ref == ref_idx)
+            + usize::from(c_ref == ref_idx);
+
+        if match_count > 1 {
+            return (
+                median3(a_mv.0, b_mv.0, c_mv.0),
+                median3(a_mv.1, b_mv.1, c_mv.1),
+            );
+        }
+        if match_count == 1 {
+            if a_ref == ref_idx {
+                return a_mv;
             }
-            cand_c = cand_d;
-        }
-
-        let mut matched = [(0i32, 0i32); 3];
-        let mut matched_count = 0usize;
-        for cand in [cand_a, cand_b, cand_c].into_iter().flatten() {
-            if cand.2 == ref_idx {
-                matched[matched_count] = (cand.0, cand.1);
-                matched_count += 1;
+            if b_ref == ref_idx {
+                return b_mv;
             }
+            return c_mv;
         }
-
-        if matched_count == 1 {
-            return matched[0];
+        if b_ref == -2 && c_ref == -2 && a_ref != -2 {
+            return a_mv;
         }
-
-        // 对齐 ffmpeg pred_motion: 不可用邻居使用 (0,0), 非级联默认值.
-        let a = cand_a.map(|(x, y, _)| (x, y)).unwrap_or((0, 0));
-        let b = cand_b.map(|(x, y, _)| (x, y)).unwrap_or((0, 0));
-        let c = cand_c.map(|(x, y, _)| (x, y)).unwrap_or((0, 0));
-        // 当匹配邻居数量 >=2 时, 仍应按原始 A/B/C 取中值, 而非仅在匹配集合内取中值.
-        if matched_count >= 2 {
-            return (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1));
-        }
-        // spec: 仅 A 可用 (B/C 都不可用) 时直接返回 A.
-        if cand_b.is_none() && cand_c.is_none() && cand_a.is_some() {
-            return a;
-        }
-        (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1))
+        (
+            median3(a_mv.0, b_mv.0, c_mv.0),
+            median3(a_mv.1, b_mv.1, c_mv.1),
+        )
     }
 
     /// 16x8 分区的方向性 MV 预测 (对标 FFmpeg pred_16x8_motion).
