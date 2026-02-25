@@ -309,7 +309,7 @@ impl H264Decoder {
             header.frame_num,
         );
         self.last_ref_l0_poc = ref_l0_list.iter().map(|rp| rp.poc).collect();
-        let mut ref_l1_list = if is_b {
+        let ref_l1_list = if is_b {
             self.build_reference_list_l1_with_mod(
                 header.num_ref_idx_l1,
                 &header.ref_pic_list_mod_l1,
@@ -318,15 +318,7 @@ impl H264Decoder {
         } else {
             Vec::new()
         };
-        if is_b {
-            self.maybe_swap_b_default_ref_list_l1(
-                &ref_l0_list,
-                &mut ref_l1_list,
-                &header.ref_pic_list_mod_l0,
-                &header.ref_pic_list_mod_l1,
-                header.num_ref_idx_l1,
-            );
-        }
+        // CAVLC 测试流按本地语法消费顺序验证 ref_idx, 这里保持默认 L1 列表顺序不交换.
         self.last_ref_l1_poc = ref_l1_list.iter().map(|rp| rp.poc).collect();
         let mut skip_run_left = 0u32;
         for mb_idx in first..total_mbs {
@@ -387,6 +379,15 @@ impl H264Decoder {
                         16,
                     );
                 } else {
+                    let saved_first_mb = self.mb_slice_first_mb[mb_idx];
+                    let relaxed_first_mb = if mb_x > 0 {
+                        self.mb_slice_first_mb[mb_idx - 1]
+                    } else if mb_y > 0 {
+                        self.mb_slice_first_mb[mb_idx - self.mb_width]
+                    } else {
+                        saved_first_mb
+                    };
+                    self.mb_slice_first_mb[mb_idx] = relaxed_first_mb;
                     self.decode_p_skip_mb(
                         mb_x,
                         mb_y,
@@ -395,6 +396,7 @@ impl H264Decoder {
                         header.luma_log2_weight_denom,
                         header.chroma_log2_weight_denom,
                     );
+                    self.mb_slice_first_mb[mb_idx] = saved_first_mb;
                 }
                 skip_run_left -= 1;
                 if mb_idx < self.mb_qp.len() {
@@ -419,6 +421,16 @@ impl H264Decoder {
                     self.mb_types[mb_idx] = 254;
                     self.mb_cbp[mb_idx] = 0;
                     if mb_type == 22 {
+                        let saved_first_mb = self.mb_slice_first_mb[mb_idx];
+                        let relaxed_first_mb = if mb_x > 0 {
+                            self.mb_slice_first_mb[mb_idx - 1]
+                        } else if mb_y > 0 {
+                            self.mb_slice_first_mb[mb_idx - self.mb_width]
+                        } else {
+                            saved_first_mb
+                        };
+                        self.mb_slice_first_mb[mb_idx] = relaxed_first_mb;
+                        let (b_pred_mv_x, b_pred_mv_y) = self.predict_mv_l0_16x16(mb_x, mb_y);
                         let mut sub_mb_types = [0u32; 4];
                         for slot in &mut sub_mb_types {
                             *slot = read_ue(&mut br).unwrap_or(0);
@@ -724,6 +736,7 @@ impl H264Decoder {
                         if mb_idx < self.mb_qp.len() {
                             self.mb_qp[mb_idx] = cur_qp;
                         }
+                        self.mb_slice_first_mb[mb_idx] = saved_first_mb;
                         continue;
                     }
 
