@@ -659,6 +659,7 @@ impl H264Decoder {
                             32,
                             false,
                             &self.mb_types,
+                            None,
                             self.mb_width,
                             mb_x,
                             mb_y,

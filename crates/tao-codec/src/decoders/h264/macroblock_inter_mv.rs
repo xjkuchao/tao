@@ -45,11 +45,33 @@ impl H264Decoder {
         let x4 = mb_x * 4 + part_x4;
         let y4 = mb_y * 4 + part_y4;
 
-        let cand_a = self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize);
-        let cand_b = self.l0_motion_candidate_4x4(x4 as isize, y4 as isize - 1);
-        let cand_c = self
-            .l0_motion_candidate_4x4((x4 + part_w4) as isize, y4 as isize - 1)
-            .or_else(|| self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize - 1));
+        let mut cand_a = self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize);
+        if let Some(_) = cand_a
+            && !self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4)
+        {
+            cand_a = None;
+        }
+        let mut cand_b = self.l0_motion_candidate_4x4(x4 as isize, y4 as isize - 1);
+        if let Some(_) = cand_b
+            && !self.same_slice_4x4(x4, y4, x4, y4.saturating_sub(1))
+        {
+            cand_b = None;
+        }
+        let mut cand_c = self.l0_motion_candidate_4x4((x4 + part_w4) as isize, y4 as isize - 1);
+        if let Some(_) = cand_c
+            && !self.same_slice_4x4(x4, y4, x4 + part_w4, y4.saturating_sub(1))
+        {
+            cand_c = None;
+        }
+        if cand_c.is_none() {
+            let mut cand_d = self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize - 1);
+            if let Some(_) = cand_d
+                && !self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4.saturating_sub(1))
+            {
+                cand_d = None;
+            }
+            cand_c = cand_d;
+        }
 
         let mut matched = [(0i32, 0i32); 3];
         let mut matched_count = 0usize;
@@ -63,21 +85,15 @@ impl H264Decoder {
         if matched_count == 1 {
             return matched[0];
         }
-        if matched_count >= 2 {
-            let a = matched[0];
-            let b = matched[1];
-            let c = if matched_count == 3 {
-                matched[2]
-            } else {
-                matched[1]
-            };
-            return (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1));
-        }
 
         // 对齐 ffmpeg pred_motion: 不可用邻居使用 (0,0), 非级联默认值.
         let a = cand_a.map(|(x, y, _)| (x, y)).unwrap_or((0, 0));
         let b = cand_b.map(|(x, y, _)| (x, y)).unwrap_or((0, 0));
         let c = cand_c.map(|(x, y, _)| (x, y)).unwrap_or((0, 0));
+        // 当匹配邻居数量 >=2 时, 仍应按原始 A/B/C 取中值, 而非仅在匹配集合内取中值.
+        if matched_count >= 2 {
+            return (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1));
+        }
         // spec: 仅 A 可用 (B/C 都不可用) 时直接返回 A.
         if cand_b.is_none() && cand_c.is_none() && cand_a.is_some() {
             return a;
@@ -102,11 +118,33 @@ impl H264Decoder {
         let x4 = mb_x * 4 + part_x4;
         let y4 = mb_y * 4 + part_y4;
 
-        let cand_a = self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize);
-        let cand_b = self.l1_motion_candidate_4x4(x4 as isize, y4 as isize - 1);
-        let cand_c = self
-            .l1_motion_candidate_4x4((x4 + part_w4) as isize, y4 as isize - 1)
-            .or_else(|| self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize - 1));
+        let mut cand_a = self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize);
+        if let Some(_) = cand_a
+            && !self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4)
+        {
+            cand_a = None;
+        }
+        let mut cand_b = self.l1_motion_candidate_4x4(x4 as isize, y4 as isize - 1);
+        if let Some(_) = cand_b
+            && !self.same_slice_4x4(x4, y4, x4, y4.saturating_sub(1))
+        {
+            cand_b = None;
+        }
+        let mut cand_c = self.l1_motion_candidate_4x4((x4 + part_w4) as isize, y4 as isize - 1);
+        if let Some(_) = cand_c
+            && !self.same_slice_4x4(x4, y4, x4 + part_w4, y4.saturating_sub(1))
+        {
+            cand_c = None;
+        }
+        if cand_c.is_none() {
+            let mut cand_d = self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize - 1);
+            if let Some(_) = cand_d
+                && !self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4.saturating_sub(1))
+            {
+                cand_d = None;
+            }
+            cand_c = cand_d;
+        }
 
         let mut matched = [(0i32, 0i32); 3];
         let mut matched_count = 0usize;
@@ -120,21 +158,15 @@ impl H264Decoder {
         if matched_count == 1 {
             return matched[0];
         }
-        if matched_count >= 2 {
-            let a = matched[0];
-            let b = matched[1];
-            let c = if matched_count == 3 {
-                matched[2]
-            } else {
-                matched[1]
-            };
-            return (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1));
-        }
 
         // 对齐 ffmpeg pred_motion: 不可用邻居使用 (0,0), 非级联默认值.
         let a = cand_a.map(|(x, y, _)| (x, y)).unwrap_or((0, 0));
         let b = cand_b.map(|(x, y, _)| (x, y)).unwrap_or((0, 0));
         let c = cand_c.map(|(x, y, _)| (x, y)).unwrap_or((0, 0));
+        // 当匹配邻居数量 >=2 时, 仍应按原始 A/B/C 取中值, 而非仅在匹配集合内取中值.
+        if matched_count >= 2 {
+            return (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1));
+        }
         // spec: 仅 A 可用 (B/C 都不可用) 时直接返回 A.
         if cand_b.is_none() && cand_c.is_none() && cand_a.is_some() {
             return a;
@@ -160,14 +192,14 @@ impl H264Decoder {
             if let Some((mv_x, mv_y, top_ref)) =
                 self.l0_motion_candidate_4x4(x4 as isize, y4 as isize - 1)
             {
-                if top_ref == ref_idx {
+                if top_ref == ref_idx && self.same_slice_4x4(x4, y4, x4, y4.saturating_sub(1)) {
                     return (mv_x, mv_y);
                 }
             }
         } else if let Some((mv_x, mv_y, left_ref)) =
             self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
         {
-            if left_ref == ref_idx {
+            if left_ref == ref_idx && self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4) {
                 return (mv_x, mv_y);
             }
         }
@@ -192,18 +224,30 @@ impl H264Decoder {
             if let Some((mv_x, mv_y, left_ref)) =
                 self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
             {
-                if left_ref == ref_idx {
+                if left_ref == ref_idx && self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4) {
                     return (mv_x, mv_y);
                 }
             }
         } else {
-            let diag = self
-                .l0_motion_candidate_4x4((x4 + 2) as isize, y4 as isize - 1)
-                .or_else(|| self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize - 1));
-            if let Some((mv_x, mv_y, diag_ref)) = diag {
-                if diag_ref == ref_idx {
-                    return (mv_x, mv_y);
+            let mut diag =
+                self.l0_motion_candidate_4x4((x4 + 2) as isize, y4 as isize - 1);
+            if diag.is_some()
+                && !self.same_slice_4x4(x4, y4, x4 + 2, y4.saturating_sub(1))
+            {
+                diag = None;
+            }
+            if diag.is_none() {
+                diag = self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize - 1);
+                if diag.is_some()
+                    && !self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4.saturating_sub(1))
+                {
+                    diag = None;
                 }
+            }
+            if let Some((mv_x, mv_y, diag_ref)) = diag
+                && diag_ref == ref_idx
+            {
+                return (mv_x, mv_y);
             }
         }
         self.predict_mv_l0_partition(mb_x, mb_y, part * 2, 0, 2, ref_idx)
@@ -223,14 +267,14 @@ impl H264Decoder {
             if let Some((mv_x, mv_y, top_ref)) =
                 self.l1_motion_candidate_4x4(x4 as isize, y4 as isize - 1)
             {
-                if top_ref == ref_idx {
+                if top_ref == ref_idx && self.same_slice_4x4(x4, y4, x4, y4.saturating_sub(1)) {
                     return (mv_x, mv_y);
                 }
             }
         } else if let Some((mv_x, mv_y, left_ref)) =
             self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
         {
-            if left_ref == ref_idx {
+            if left_ref == ref_idx && self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4) {
                 return (mv_x, mv_y);
             }
         }
@@ -251,18 +295,30 @@ impl H264Decoder {
             if let Some((mv_x, mv_y, left_ref)) =
                 self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
             {
-                if left_ref == ref_idx {
+                if left_ref == ref_idx && self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4) {
                     return (mv_x, mv_y);
                 }
             }
         } else {
-            let diag = self
-                .l1_motion_candidate_4x4((x4 + 2) as isize, y4 as isize - 1)
-                .or_else(|| self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize - 1));
-            if let Some((mv_x, mv_y, diag_ref)) = diag {
-                if diag_ref == ref_idx {
-                    return (mv_x, mv_y);
+            let mut diag =
+                self.l1_motion_candidate_4x4((x4 + 2) as isize, y4 as isize - 1);
+            if diag.is_some()
+                && !self.same_slice_4x4(x4, y4, x4 + 2, y4.saturating_sub(1))
+            {
+                diag = None;
+            }
+            if diag.is_none() {
+                diag = self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize - 1);
+                if diag.is_some()
+                    && !self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4.saturating_sub(1))
+                {
+                    diag = None;
                 }
+            }
+            if let Some((mv_x, mv_y, diag_ref)) = diag
+                && diag_ref == ref_idx
+            {
+                return (mv_x, mv_y);
             }
         }
         self.predict_mv_l1_partition(mb_x, mb_y, part * 2, 0, 2, ref_idx)

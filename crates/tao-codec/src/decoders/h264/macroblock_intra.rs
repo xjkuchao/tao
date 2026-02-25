@@ -32,12 +32,12 @@ impl H264Decoder {
         for &(sub_x, sub_y) in &I4X4_SCAN_ORDER {
             let x4 = mb_x * 4 + sub_x;
             let y4 = mb_y * 4 + sub_y;
-            let left = if x4 > 0 {
+            let left = if self.left_neighbor_available_4x4(x4, y4) {
                 i16::from(self.get_i4x4_mode(x4 - 1, y4))
             } else {
                 -1
             };
-            let top = if y4 > 0 {
+            let top = if self.top_neighbor_available_4x4(x4, y4) {
                 i16::from(self.get_i4x4_mode(x4, y4 - 1))
             } else {
                 -1
@@ -146,7 +146,15 @@ impl H264Decoder {
             let mb_y = mb_idx / self.mb_width;
             self.clear_mb_mvd_cache(mb_x, mb_y);
 
-            let mb_type = decode_i_mb_type(cabac, ctxs, &self.mb_types, self.mb_width, mb_x, mb_y);
+            let mb_type = decode_i_mb_type(
+                cabac,
+                ctxs,
+                &self.mb_types,
+                &self.mb_slice_first_mb,
+                self.mb_width,
+                mb_x,
+                mb_y,
+            );
             self.mb_types[mb_idx] = mb_type as u8;
             if mb_type == 0 {
                 self.decode_i_4x4_mb(cabac, ctxs, mb_x, mb_y, &mut cur_qp);
@@ -1064,14 +1072,14 @@ impl H264Decoder {
 
     /// 获取 DC coded_block_flag 的上下文增量
     pub(super) fn get_dc_cbf_inc(&self, mb_x: usize, mb_y: usize, intra_defaults: bool) -> usize {
-        let left = if mb_x > 0 {
+        let left = if self.left_avail(mb_x, mb_y) {
             usize::from(self.get_luma_dc_cbf(mb_x - 1, mb_y))
         } else if intra_defaults {
             1usize
         } else {
             0usize
         };
-        let top = if mb_y > 0 {
+        let top = if self.top_avail(mb_x, mb_y) {
             usize::from(self.get_luma_dc_cbf(mb_x, mb_y - 1))
         } else if intra_defaults {
             1usize

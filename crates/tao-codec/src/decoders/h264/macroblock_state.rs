@@ -35,12 +35,32 @@ impl H264Decoder {
         self.top_avail(mb_x, mb_y)
     }
 
-    fn left_neighbor_available_4x4(&self, x4: usize, y4: usize) -> bool {
+    pub(super) fn left_neighbor_available_4x4(&self, x4: usize, y4: usize) -> bool {
         self.left_neighbor_available_units(x4, y4, 4)
     }
 
-    fn top_neighbor_available_4x4(&self, x4: usize, y4: usize) -> bool {
+    pub(super) fn top_neighbor_available_4x4(&self, x4: usize, y4: usize) -> bool {
         self.top_neighbor_available_units(x4, y4, 4)
+    }
+
+    pub(super) fn same_slice_4x4(
+        &self,
+        cur_x4: usize,
+        cur_y4: usize,
+        nbr_x4: usize,
+        nbr_y4: usize,
+    ) -> bool {
+        let cur_mb_x = cur_x4 / 4;
+        let cur_mb_y = cur_y4 / 4;
+        let nbr_mb_x = nbr_x4 / 4;
+        let nbr_mb_y = nbr_y4 / 4;
+        let Some(cur_mb_idx) = self.mb_index(cur_mb_x, cur_mb_y) else {
+            return false;
+        };
+        let Some(nbr_mb_idx) = self.mb_index(nbr_mb_x, nbr_mb_y) else {
+            return false;
+        };
+        self.mb_slice_first_mb.get(cur_mb_idx) == self.mb_slice_first_mb.get(nbr_mb_idx)
     }
 
     fn left_neighbor_available_8x8(&self, x8: usize, y8: usize) -> bool {

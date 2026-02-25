@@ -765,27 +765,25 @@ impl H264Decoder {
     ///
     /// 注意: intra 邻居视为 "存在但不使用 L0", 不触发零向量快捷返回.
     pub(super) fn predict_p_skip_mv(&self, mb_x: usize, mb_y: usize) -> (i32, i32) {
-        // spec 8.4.1.1: mbAddrA 不可用 (画面边界) -> (0,0)
-        if mb_x == 0 {
+        // spec 8.4.1.1: mbAddrA 不可用 (含 slice 边界) -> (0,0)
+        if !self.left_avail(mb_x, mb_y) {
             return (0, 0);
         }
-        // spec 8.4.1.1: mbAddrB 不可用 (画面边界) -> (0,0)
-        if mb_y == 0 {
+        // spec 8.4.1.1: mbAddrB 不可用 (含 slice 边界) -> (0,0)
+        if !self.top_avail(mb_x, mb_y) {
             return (0, 0);
         }
         let x4 = mb_x * 4;
         let y4 = mb_y * 4;
         // 使用 4x4 级别查询, 确保分区化邻居读取正确的边界块.
         // l0_motion_candidate_4x4 对 intra 邻居 (ref_idx<0) 返回 None -> 不触发 zeromv.
-        if let Some((mvx, mvy, ref_idx)) =
-            self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
+        if let Some((mvx, mvy, ref_idx)) = self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
         {
             if ref_idx == 0 && mvx == 0 && mvy == 0 {
                 return (0, 0);
             }
         }
-        if let Some((mvx, mvy, ref_idx)) =
-            self.l0_motion_candidate_4x4(x4 as isize, y4 as isize - 1)
+        if let Some((mvx, mvy, ref_idx)) = self.l0_motion_candidate_4x4(x4 as isize, y4 as isize - 1)
         {
             if ref_idx == 0 && mvx == 0 && mvy == 0 {
                 return (0, 0);
@@ -888,6 +886,7 @@ impl H264Decoder {
                     17,
                     false,
                     &self.mb_types,
+                    None,
                     self.mb_width,
                     mb_x,
                     mb_y,
@@ -1219,11 +1218,18 @@ impl H264Decoder {
         while cabac.decode_decision(&mut ctxs[54 + ctx]) == 1 {
             ref_idx += 1;
             ctx = (ctx >> 2) + 4;
-            // 对齐 FFmpeg `decode_cabac_mb_ref`: 一直读取到终止 bin(0).
-            // 不能按 `num_ref_idx` 提前截断, 否则会少消费 1bit 导致 CABAC 失步.
             if ref_idx >= 31 {
                 break;
             }
+        }
+        if ref_idx >= num_ref_idx {
+            // 越界通常意味着当前语法路径已偏离; 采用 0 号参考可减少后续误差扩散.
+            let clipped = 0;
+            warn!(
+                "H264: CABAC ref_idx 越界, decoded={}, num_ref_idx={}, 已截断为 {}",
+                ref_idx, num_ref_idx, clipped
+            );
+            return clipped;
         }
         ref_idx
     }

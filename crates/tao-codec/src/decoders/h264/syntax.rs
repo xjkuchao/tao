@@ -34,11 +34,22 @@ pub(super) fn decode_i_mb_type(
     cabac: &mut CabacDecoder,
     ctxs: &mut [CabacCtx],
     mb_types: &[u8],
+    mb_slice_first_mb: &[u32],
     mb_width: usize,
     mb_x: usize,
     mb_y: usize,
 ) -> u32 {
-    decode_intra_mb_type(cabac, ctxs, 3, true, mb_types, mb_width, mb_x, mb_y)
+    decode_intra_mb_type(
+        cabac,
+        ctxs,
+        3,
+        true,
+        mb_types,
+        Some(mb_slice_first_mb),
+        mb_width,
+        mb_x,
+        mb_y,
+    )
 }
 
 /// 通用 Intra 宏块类型解码.
@@ -49,13 +60,15 @@ pub(super) fn decode_intra_mb_type(
     ctx_base: usize,
     intra_slice: bool,
     mb_types: &[u8],
+    mb_slice_first_mb: Option<&[u32]>,
     mb_width: usize,
     mb_x: usize,
     mb_y: usize,
 ) -> u32 {
     let mut state_base = ctx_base;
     if intra_slice {
-        let ctx_inc = compute_mb_type_ctx_inc(mb_types, mb_width, mb_x, mb_y);
+        let ctx_inc =
+            compute_mb_type_ctx_inc(mb_types, mb_slice_first_mb, mb_width, mb_x, mb_y);
         let ctx_idx = state_base + ctx_inc;
         let bin0 = cabac.decode_decision(&mut ctxs[ctx_idx]);
         if bin0 == 0 {
@@ -76,17 +89,41 @@ pub(super) fn decode_intra_mb_type(
 /// 计算 mb_type 前缀的上下文增量
 pub(super) fn compute_mb_type_ctx_inc(
     mb_types: &[u8],
+    mb_slice_first_mb: Option<&[u32]>,
     mb_width: usize,
     mb_x: usize,
     mb_y: usize,
 ) -> usize {
-    let left_not_i4x4 = if mb_x > 0 {
-        mb_types[mb_y * mb_width + mb_x - 1] != 0
+    let mb_idx = mb_y * mb_width + mb_x;
+    let left_avail = if mb_x > 0 {
+        if let Some(slice_marks) = mb_slice_first_mb {
+            mb_idx < slice_marks.len()
+                && (mb_idx - 1) < slice_marks.len()
+                && slice_marks[mb_idx] == slice_marks[mb_idx - 1]
+        } else {
+            true
+        }
     } else {
         false
     };
-    let top_not_i4x4 = if mb_y > 0 {
-        mb_types[(mb_y - 1) * mb_width + mb_x] != 0
+    let left_not_i4x4 = if left_avail {
+        mb_types[mb_idx - 1] != 0
+    } else {
+        false
+    };
+    let top_avail = if mb_y > 0 {
+        if let Some(slice_marks) = mb_slice_first_mb {
+            mb_idx < slice_marks.len()
+                && (mb_idx - mb_width) < slice_marks.len()
+                && slice_marks[mb_idx] == slice_marks[mb_idx - mb_width]
+        } else {
+            true
+        }
+    } else {
+        false
+    };
+    let top_not_i4x4 = if top_avail {
+        mb_types[mb_idx - mb_width] != 0
     } else {
         false
     };
@@ -113,4 +150,39 @@ pub(super) fn decode_i_16x16_suffix_with_base(
     let pm1 = cabac.decode_decision(&mut ctxs[state_base + 3 + intra * 2]);
     let pred_mode = pm0 * 2 + pm1;
     1 + pred_mode + 4 * cbp_chroma + 12 * cbp_luma
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_mb_type_ctx_inc;
+
+    #[test]
+    fn test_compute_mb_type_ctx_inc_respects_slice_boundary() {
+        // 2x2 宏块图:
+        // [0,1]
+        // [2,3]
+        // 设定 MB0 和 MB1 属于 sliceA, MB2 和 MB3 属于 sliceB.
+        let mb_types = vec![
+            1u8, // MB0: 非 I4x4
+            1u8, // MB1: 非 I4x4
+            0u8, // MB2: I4x4
+            0u8, // MB3: I4x4
+        ];
+        let mb_slice_first_mb = vec![
+            0u32, // MB0
+            0u32, // MB1
+            2u32, // MB2
+            2u32, // MB3
+        ];
+
+        // MB2 位于新 slice 首行且在最左列: 左邻不存在, 上邻跨 slice 不可用.
+        // 因此 ctx_inc 应为 0.
+        let ctx_inc = compute_mb_type_ctx_inc(&mb_types, Some(&mb_slice_first_mb), 2, 0, 1);
+        assert_eq!(ctx_inc, 0, "MB2 左邻不可用(边界), 上邻跨 slice 不可用");
+
+        // MB3 左邻 MB2、上邻 MB1 均跨/同 slice可判定:
+        // 左邻同 slice 且 MB2=I4x4(0) => false; 上邻跨 slice => false.
+        let ctx_inc = compute_mb_type_ctx_inc(&mb_types, Some(&mb_slice_first_mb), 2, 1, 1);
+        assert_eq!(ctx_inc, 0, "MB3 不应从跨 slice 上邻继承上下文");
+    }
 }

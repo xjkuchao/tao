@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use super::super::{
-    BMotion, PredWeightL0, RefPlanes, sample_h264_chroma_qpel, sample_h264_luma_qpel,
+    BMotion, PredWeightL0, RefPlanes, sample_h264_chroma_qpel, sample_h264_luma_half_h,
+    sample_h264_luma_half_hv, sample_h264_luma_half_v, sample_h264_luma_qpel,
 };
 
 use super::helpers::*;
@@ -1065,6 +1066,47 @@ fn test_sample_h264_luma_qpel_horizontal_quarter_average() {
     let sample_q3 = sample_h264_luma_qpel(&plane, width, width, height, 3, 2, 3, 0);
     assert_eq!(sample_q1, 33, "1/4 像素应为整像素与半像素平均");
     assert_eq!(sample_q3, 38, "3/4 像素应为半像素与下一整像素平均");
+}
+
+#[test]
+fn test_sample_h264_luma_qpel_diagonal_positions_follow_h264_mapping() {
+    let width = 24usize;
+    let height = 16usize;
+    let plane = build_linear_plane(width, height, 11, 7, 13);
+    let x = 7i32;
+    let y = 5i32;
+    let h00 = sample_h264_luma_half_h(&plane, width, width, height, x, y);
+    let h01 = sample_h264_luma_half_h(&plane, width, width, height, x, y + 1);
+    let v00 = sample_h264_luma_half_v(&plane, width, width, height, x, y);
+    let v10 = sample_h264_luma_half_v(&plane, width, width, height, x + 1, y);
+    let hv00 = sample_h264_luma_half_hv(&plane, width, width, height, x, y);
+    let avg = |a: i32, b: i32| -> u8 { ((a + b + 1) >> 1).clamp(0, 255) as u8 };
+
+    assert_eq!(
+        sample_h264_luma_qpel(&plane, width, width, height, x, y, 1, 1),
+        avg(h00, v00),
+        "qpel(1,1) 应为水平半像素与垂直半像素平均"
+    );
+    assert_eq!(
+        sample_h264_luma_qpel(&plane, width, width, height, x, y, 3, 1),
+        avg(h00, v10),
+        "qpel(3,1) 应为水平半像素与右侧垂直半像素平均"
+    );
+    assert_eq!(
+        sample_h264_luma_qpel(&plane, width, width, height, x, y, 1, 3),
+        avg(h01, v00),
+        "qpel(1,3) 应为下方水平半像素与垂直半像素平均"
+    );
+    assert_eq!(
+        sample_h264_luma_qpel(&plane, width, width, height, x, y, 3, 3),
+        avg(h01, v10),
+        "qpel(3,3) 应为下方水平半像素与右侧垂直半像素平均"
+    );
+    assert_eq!(
+        sample_h264_luma_qpel(&plane, width, width, height, x, y, 1, 2),
+        avg(v00, hv00),
+        "qpel(1,2) 应为垂直半像素与中心半像素平均"
+    );
 }
 
 #[test]

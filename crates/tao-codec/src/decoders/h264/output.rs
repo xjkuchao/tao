@@ -407,16 +407,23 @@ impl H264Decoder {
         let mut empty_missing_ranks = Vec::new();
         let mut padded_ranks = Vec::new();
         let mut out = Vec::with_capacity(target);
+        let pad_pic = refs.last().copied();
         for rank in 0..target {
             if let Some(pic) = refs.get(rank).copied() {
                 out.push(Self::reference_to_planes(pic));
             } else {
                 if refs_empty {
                     empty_missing_ranks.push(rank);
+                    out.push(self.zero_reference_planes());
                 } else {
                     padded_ranks.push(rank);
+                    if let Some(pic) = pad_pic {
+                        // 对齐 FFmpeg: 当 active_ref 数量大于实际列表长度时, 复用最后一个有效参考.
+                        out.push(Self::reference_to_planes(pic));
+                    } else {
+                        out.push(self.zero_reference_planes());
+                    }
                 }
-                out.push(self.zero_reference_planes());
             }
         }
         drop(refs);
@@ -429,10 +436,9 @@ impl H264Decoder {
         }
         for &rank in &padded_ranks {
             warn!(
-                "H264: L0 参考列表不够长, rank={} refs_len={}, 使用零参考回退",
+                "H264: L0 参考列表不够长, rank={} refs_len={}, 复用最后一个有效参考补位",
                 rank, refs_len
             );
-            self.record_missing_reference_fallback("build_l0_list_padded", rank as i32, refs_len);
         }
         out
     }
@@ -451,16 +457,23 @@ impl H264Decoder {
         let mut empty_missing_ranks = Vec::new();
         let mut padded_ranks = Vec::new();
         let mut out = Vec::with_capacity(target);
+        let pad_pic = refs.last().copied();
         for rank in 0..target {
             if let Some(pic) = refs.get(rank).copied() {
                 out.push(Self::reference_to_planes(pic));
             } else {
                 if refs_empty {
                     empty_missing_ranks.push(rank);
+                    out.push(self.zero_reference_planes());
                 } else {
                     padded_ranks.push(rank);
+                    if let Some(pic) = pad_pic {
+                        // 对齐 FFmpeg: 当 active_ref 数量大于实际列表长度时, 复用最后一个有效参考.
+                        out.push(Self::reference_to_planes(pic));
+                    } else {
+                        out.push(self.zero_reference_planes());
+                    }
                 }
-                out.push(self.zero_reference_planes());
             }
         }
         drop(refs);
@@ -473,10 +486,9 @@ impl H264Decoder {
         }
         for &rank in &padded_ranks {
             warn!(
-                "H264: L1 参考列表不够长, rank={} refs_len={}, 使用零参考回退",
+                "H264: L1 参考列表不够长, rank={} refs_len={}, 复用最后一个有效参考补位",
                 rank, refs_len
             );
-            self.record_missing_reference_fallback("build_l1_list_padded", rank as i32, refs_len);
         }
         out
     }
