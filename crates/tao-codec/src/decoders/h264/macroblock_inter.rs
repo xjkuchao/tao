@@ -226,35 +226,21 @@ impl H264Decoder {
             }
             let cx4_u = cx4 as usize;
             let cy4_u = cy4 as usize;
-            let mb_x = cx4_u / 4;
-            let mb_y = cy4_u / 4;
-            let mb_idx = self.mb_index(mb_x, mb_y);
+            // 仅当邻居 4x4 在当前 slice 内且索引有效时才视为可用;
+            // 这样可区分 PART_NOT_AVAILABLE 与 list-not-used(ref=-1).
+            if !self.same_slice_4x4(x4, y4, cx4_u, cy4_u) {
+                return None;
+            }
             if list1 {
-                self.l1_motion_candidate_4x4(cx4, cy4).or_else(|| {
-                    let idx = mb_idx?;
-                    let ref_idx = self.ref_idx_l1.get(idx).copied().unwrap_or(-1);
-                    if ref_idx < 0 {
-                        return None;
-                    }
-                    Some((
-                        self.mv_l1_x.get(idx).copied().unwrap_or(0) as i32,
-                        self.mv_l1_y.get(idx).copied().unwrap_or(0) as i32,
-                        ref_idx,
-                    ))
-                })
+                if self.motion_l1_4x4_index(cx4_u, cy4_u).is_none() {
+                    return None;
+                }
+                self.l1_motion_candidate_4x4(cx4, cy4).or(Some((0, 0, -1)))
             } else {
-                self.l0_motion_candidate_4x4(cx4, cy4).or_else(|| {
-                    let idx = mb_idx?;
-                    let ref_idx = self.ref_idx_l0.get(idx).copied().unwrap_or(-1);
-                    if ref_idx < 0 {
-                        return None;
-                    }
-                    Some((
-                        self.mv_l0_x.get(idx).copied().unwrap_or(0) as i32,
-                        self.mv_l0_y.get(idx).copied().unwrap_or(0) as i32,
-                        ref_idx,
-                    ))
-                })
+                if self.motion_l0_4x4_index(cx4_u, cy4_u).is_none() {
+                    return None;
+                }
+                self.l0_motion_candidate_4x4(cx4, cy4).or(Some((0, 0, -1)))
             }
         };
 
@@ -291,6 +277,13 @@ impl H264Decoder {
         fallback_mv_x: i32,
         fallback_mv_y: i32,
     ) -> (i32, i32) {
+        let a_ref = cands[0].map(|v| v.2).unwrap_or(-2);
+        let b_ref = cands[1].map(|v| v.2).unwrap_or(-2);
+        let c_ref = cands[2].map(|v| v.2).unwrap_or(-2);
+        let a_mv = cands[0].map(|v| (v.0, v.1)).unwrap_or((0, 0));
+        let b_mv = cands[1].map(|v| (v.0, v.1)).unwrap_or((0, 0));
+        let c_mv = cands[2].map(|v| (v.0, v.1)).unwrap_or((0, 0));
+
         let mut matched = [(0i32, 0i32); 3];
         let mut matched_count = 0usize;
         for cand in cands.iter().flatten() {
@@ -303,32 +296,25 @@ impl H264Decoder {
             return matched[0];
         }
         if matched_count >= 2 {
-            let a = matched[0];
-            let b = matched[1];
-            let c = if matched_count == 3 {
-                matched[2]
-            } else {
-                matched[1]
-            };
+            // 对齐 FFmpeg pred_spatial_direct_motion:
+            // 当 match_count > 1 时, 应使用原始 A/B/C 三邻居取中值,
+            // 而非仅在匹配子集内取中值.
+            let a = cands[0].map(|v| (v.0, v.1)).unwrap_or((0, 0));
+            let b = cands[1].map(|v| (v.0, v.1)).unwrap_or((0, 0));
+            let c = cands[2].map(|v| (v.0, v.1)).unwrap_or((0, 0));
             return (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1));
         }
-
-        let mut all = [(0i32, 0i32); 3];
-        let mut all_count = 0usize;
-        for cand in cands.iter().flatten() {
-            all[all_count] = (cand.0, cand.1);
-            all_count += 1;
+        // 对齐 FFmpeg pred_motion 的非匹配分支:
+        // 当 B/C 都是 PART_NOT_AVAILABLE 且 A 可用时, 直接复用 A.
+        if b_ref == -2 && c_ref == -2 && a_ref != -2 {
+            return a_mv;
         }
-        if all_count == 0 {
+        if a_ref < 0 && b_ref < 0 && c_ref < 0 {
             return (fallback_mv_x, fallback_mv_y);
         }
-        if all_count == 1 {
-            return all[0];
-        }
-        let a = all[0];
-        let b = all[1];
-        let c = if all_count == 3 { all[2] } else { all[1] };
-        (median3(a.0, b.0, c.0), median3(a.1, b.1, c.1))
+        let mv_x = median3(a_mv.0, b_mv.0, c_mv.0);
+        let mv_y = median3(a_mv.1, b_mv.1, c_mv.1);
+        (mv_x, mv_y)
     }
 
     /// 判断共定位分区是否满足 col_zero_flag 条件 (规范 8.4.1.2.3).
@@ -340,10 +326,6 @@ impl H264Decoder {
         part_y4: usize,
         ref_l1_list: &[RefPlanes],
     ) -> bool {
-        // 默认关闭 col_zero 置零路径, 仅在显式诊断时开启.
-        if std::env::var("TAO_H264_ENABLE_COL_ZERO").as_deref() != Ok("1") {
-            return false;
-        }
         let col_planes = ref_l1_list.first();
         let col_planes = match col_planes {
             Some(p) => p,
@@ -365,17 +347,16 @@ impl H264Decoder {
         if col_is_intra {
             return false;
         }
-        if let Some((col_mv_x, col_mv_y, col_ref_l0)) =
+        if let Some((col_l0_mv_x, col_l0_mv_y, col_l0_ref_idx)) =
             self.ref_pic_l0_motion_at(col_pic, mb_x, mb_y, part_x4, part_y4)
         {
-            if col_ref_l0 == 0 {
-                return col_mv_x.abs() <= 1 && col_mv_y.abs() <= 1;
+            if col_l0_ref_idx == 0 {
+                return col_l0_mv_x.abs() <= 1 && col_l0_mv_y.abs() <= 1;
             }
-            if col_ref_l0 >= 0 {
+            if col_l0_ref_idx >= 0 {
                 return false;
             }
         }
-
         let Some((col_l1_mv_x, col_l1_mv_y, col_ref_l1)) =
             self.ref_pic_l1_motion_at(col_pic, mb_x, mb_y, part_x4, part_y4)
         else {
@@ -390,7 +371,7 @@ impl H264Decoder {
         mb_y: usize,
         part_x4: usize,
         part_y4: usize,
-        ref_l0_list: &[RefPlanes],
+        _ref_l0_list: &[RefPlanes],
         ref_l1_list: &[RefPlanes],
     ) -> Option<(i32, i32, i8, u8, &ReferencePicture)> {
         if let Some(col_planes) = ref_l1_list.first()
@@ -408,17 +389,6 @@ impl H264Decoder {
             return None;
         }
 
-        if let Some(col_planes) = ref_l0_list.first() {
-            let col_pic = self.find_reference_picture_for_planes(col_planes)?;
-            if let Some(motion) = self.ref_pic_l0_motion_at(col_pic, mb_x, mb_y, part_x4, part_y4) {
-                return Some((motion.0, motion.1, motion.2, 0, col_pic));
-            }
-            if let Some((mv_x, mv_y, col_ref_idx)) =
-                self.ref_pic_l1_motion_at(col_pic, mb_x, mb_y, part_x4, part_y4)
-            {
-                return Some((mv_x, mv_y, col_ref_idx, 1, col_pic));
-            }
-        }
         None
     }
 
@@ -459,16 +429,8 @@ impl H264Decoder {
                 return idx as i8;
             }
         }
-        if ref_l0_list.is_empty() {
-            -1
-        } else {
-            let idx = col_ref_idx.max(0) as usize;
-            if idx < ref_l0_list.len() {
-                idx as i8
-            } else {
-                0
-            }
-        }
+        // 对齐 FFmpeg fill_colmap: 未命中映射时表项默认 0.
+        if ref_l0_list.is_empty() { -1 } else { 0 }
     }
 
     fn clamp_direct_ref_idx(candidate: Option<i8>, list_len: usize) -> Option<i8> {
@@ -487,8 +449,8 @@ impl H264Decoder {
         part_x4: usize,
         part_y4: usize,
         part_w4: usize,
-        mv_x: i32,
-        mv_y: i32,
+        _mv_x: i32,
+        _mv_y: i32,
         direct_spatial_mv_pred_flag: bool,
         ref_l0_list: &[RefPlanes],
         ref_l1_list: &[RefPlanes],
@@ -514,18 +476,12 @@ impl H264Decoder {
                     ref_idx_l1 = Some(0);
                 }
             }
-            if ref_idx_l0.is_none() && !ref_l0_list.is_empty() {
-                ref_idx_l0 = Some(0);
-            }
-            if ref_idx_l1.is_none() && !ref_l1_list.is_empty() {
-                ref_idx_l1 = Some(0);
-            }
             ref_idx_l0 = Self::clamp_direct_ref_idx(ref_idx_l0, ref_l0_list.len());
             ref_idx_l1 = Self::clamp_direct_ref_idx(ref_idx_l1, ref_l1_list.len());
 
             let mut motion_l0 = ref_idx_l0.map(|ref_idx| {
                 let (mv_l0_x, mv_l0_y) =
-                    Self::spatial_direct_mv_from_neighbors(&l0_cands, ref_idx, mv_x, mv_y);
+                    Self::spatial_direct_mv_from_neighbors(&l0_cands, ref_idx, 0, 0);
                 BMotion {
                     mv_x: mv_l0_x,
                     mv_y: mv_l0_y,
@@ -534,7 +490,7 @@ impl H264Decoder {
             });
             let mut motion_l1 = ref_idx_l1.map(|ref_idx| {
                 let (mv_l1_x, mv_l1_y) =
-                    Self::spatial_direct_mv_from_neighbors(&l1_cands, ref_idx, mv_x, mv_y);
+                    Self::spatial_direct_mv_from_neighbors(&l1_cands, ref_idx, 0, 0);
                 BMotion {
                     mv_x: mv_l1_x,
                     mv_y: mv_l1_y,
@@ -571,7 +527,7 @@ impl H264Decoder {
                 ref_l1_list,
             )
             .map(|(mx, my, r, col_list, pic)| (mx, my, r, col_list, Some(pic)))
-            .unwrap_or((mv_x, mv_y, 0, 0, None));
+            .unwrap_or((0, 0, 0, 0, None));
         let (col_mv_x, col_mv_y, col_ref_idx, col_list, col_pic_opt) = temporal_col;
         let mut ref_idx_l0 = if let Some(col_pic) = col_pic_opt {
             self.map_col_to_list0_index_with_col_pic(col_ref_idx, col_list, col_pic, ref_l0_list)
@@ -588,6 +544,7 @@ impl H264Decoder {
         let l0_ref = select_ref_planes(ref_l0_list, ref_idx_l0);
         let l1_ref = select_ref_planes(ref_l1_list, ref_idx_l1);
         let dist_scale_factor = match (l0_ref, l1_ref) {
+            (Some(r0), Some(_)) if r0.is_long_term => 256,
             (Some(r0), Some(r1)) => self
                 .temporal_direct_dist_scale_factor(r0.poc, r1.poc)
                 .unwrap_or(256),
@@ -598,19 +555,10 @@ impl H264Decoder {
         let (direct_l0_mv_y, direct_l1_mv_y) =
             self.scale_temporal_direct_mv_pair_component(col_mv_y, dist_scale_factor);
 
-        let col_zero = self.col_zero_flag_for_part(mb_x, mb_y, part_x4, part_y4, ref_l1_list);
         let motion_l0 = if ref_idx_l0 >= 0 {
             Some(BMotion {
-                mv_x: if col_zero && ref_idx_l0 == 0 {
-                    0
-                } else {
-                    direct_l0_mv_x
-                },
-                mv_y: if col_zero && ref_idx_l0 == 0 {
-                    0
-                } else {
-                    direct_l0_mv_y
-                },
+                mv_x: direct_l0_mv_x,
+                mv_y: direct_l0_mv_y,
                 ref_idx: ref_idx_l0,
             })
         } else {
@@ -618,16 +566,8 @@ impl H264Decoder {
         };
         let motion_l1 = if ref_idx_l1 >= 0 {
             Some(BMotion {
-                mv_x: if col_zero && ref_idx_l1 == 0 {
-                    0
-                } else {
-                    direct_l1_mv_x
-                },
-                mv_y: if col_zero && ref_idx_l1 == 0 {
-                    0
-                } else {
-                    direct_l1_mv_y
-                },
+                mv_x: direct_l1_mv_x,
+                mv_y: direct_l1_mv_y,
                 ref_idx: ref_idx_l1,
             })
         } else {
@@ -781,13 +721,15 @@ impl H264Decoder {
         let y4 = mb_y * 4;
         // 使用 4x4 级别查询, 确保分区化邻居读取正确的边界块.
         // l0_motion_candidate_4x4 对 intra 邻居 (ref_idx<0) 返回 None -> 不触发 zeromv.
-        if let Some((mvx, mvy, ref_idx)) = self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
+        if let Some((mvx, mvy, ref_idx)) =
+            self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
         {
             if ref_idx == 0 && mvx == 0 && mvy == 0 {
                 return (0, 0);
             }
         }
-        if let Some((mvx, mvy, ref_idx)) = self.l0_motion_candidate_4x4(x4 as isize, y4 as isize - 1)
+        if let Some((mvx, mvy, ref_idx)) =
+            self.l0_motion_candidate_4x4(x4 as isize, y4 as isize - 1)
         {
             if ref_idx == 0 && mvx == 0 && mvy == 0 {
                 return (0, 0);
@@ -910,11 +852,10 @@ impl H264Decoder {
             if mb_idx < self.mb_qp.len() {
                 self.mb_qp[mb_idx] = cur_qp;
             }
-            if mb_idx + 1 < total {
-                let terminate = cabac.decode_terminate() == 1;
-                if terminate {
-                    break;
-                }
+            // 对齐 FFmpeg/OpenH264: CABAC end_of_slice_flag 在每个 MB 后都需要解码.
+            let terminate = cabac.decode_terminate() == 1;
+            if terminate {
+                break;
             }
         }
     }
@@ -1151,7 +1092,8 @@ impl H264Decoder {
         let Some(nb_mb_idx) = self.mb_index(nb_mb_x, nb_mb_y) else {
             return 0;
         };
-        if nb_mb_idx != cur_mb_idx {
+        let same_mb = nb_mb_idx == cur_mb_idx;
+        if !same_mb {
             match (
                 self.mb_slice_first_mb.get(cur_mb_idx),
                 self.mb_slice_first_mb.get(nb_mb_idx),
@@ -1160,22 +1102,24 @@ impl H264Decoder {
                 _ => {}
             }
         }
-        let mb_ty = self.mb_types.get(nb_mb_idx).copied().unwrap_or_default();
         if is_b_slice {
             if self.get_direct_4x4_flag(x4, y4) {
                 return 0;
             }
-            if mb_ty == 254 {
+        }
+        if !same_mb {
+            let mb_ty = self.mb_types.get(nb_mb_idx).copied().unwrap_or_default();
+            if is_b_slice && mb_ty == 254 {
                 return 0;
             }
-        }
-        // For both P and B slices, intra neighbors have implicit ref_idx=0
-        if mb_ty <= 25 {
-            return 0;
-        }
-        // P skip also has implicit ref_idx=0
-        if mb_ty == 255 {
-            return 0;
+            // For both P and B slices, intra neighbors have implicit ref_idx=0
+            if mb_ty <= 25 {
+                return 0;
+            }
+            // P skip also has implicit ref_idx=0
+            if mb_ty == 255 {
+                return 0;
+            }
         }
         let idx4 = y4 * stride + x4;
         let ref_idx = if list == 0 {
@@ -1205,7 +1149,7 @@ impl H264Decoder {
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_ref_idx(
-        &self,
+        &mut self,
         cabac: &mut CabacDecoder,
         ctxs: &mut [CabacCtx],
         num_ref_idx: u32,
@@ -1218,7 +1162,8 @@ impl H264Decoder {
             return 0;
         }
         let mut ref_idx = 0u32;
-        let mut ctx = self.ref_idx_ctx_inc(list, x4, y4, is_b_slice);
+        let initial_ctx = self.ref_idx_ctx_inc(list, x4, y4, is_b_slice);
+        let mut ctx = initial_ctx;
         while cabac.decode_decision(&mut ctxs[54 + ctx]) == 1 {
             ref_idx += 1;
             ctx = (ctx >> 2) + 4;
@@ -1229,17 +1174,66 @@ impl H264Decoder {
         if ref_idx >= num_ref_idx {
             // 越界通常意味着当前语法路径已偏离; 采用 0 号参考可减少后续误差扩散.
             let clipped = 0;
-            warn!(
-                "H264: CABAC ref_idx 越界, decoded={}, num_ref_idx={}, 已截断为 {}",
-                ref_idx, num_ref_idx, clipped
+            self.ref_idx_oob_count = self.ref_idx_oob_count.saturating_add(1);
+            let mb_x = x4 / 4;
+            let mb_y = y4 / 4;
+            let mb_type = self
+                .mb_index(mb_x, mb_y)
+                .and_then(|idx| self.mb_types.get(idx).copied())
+                .unwrap_or_default();
+            let stride = self.mb_width * 4;
+            let left_ref = if x4 > 0 {
+                let idx = y4.saturating_mul(stride).saturating_add(x4 - 1);
+                if list == 0 {
+                    self.ref_idx_l0_4x4.get(idx).copied().unwrap_or(-1)
+                } else {
+                    self.ref_idx_l1_4x4.get(idx).copied().unwrap_or(-1)
+                }
+            } else {
+                -1
+            };
+            let top_ref = if y4 > 0 {
+                let idx = (y4 - 1).saturating_mul(stride).saturating_add(x4);
+                if list == 0 {
+                    self.ref_idx_l0_4x4.get(idx).copied().unwrap_or(-1)
+                } else {
+                    self.ref_idx_l1_4x4.get(idx).copied().unwrap_or(-1)
+                }
+            } else {
+                -1
+            };
+            let detail = format!(
+                "H264: CABAC ref_idx 越界, frame_num={}, poc={}, slice_type={}, is_b_slice={}, mb=({}, {}), mb_type={}, list={}, x4={}, y4={}, ctx_inc={}, left_ref={}, top_ref={}, decoded={}, num_ref_idx={}, 已截断为 {}",
+                self.last_frame_num,
+                self.last_poc,
+                self.last_slice_type,
+                is_b_slice,
+                mb_x,
+                mb_y,
+                mb_type,
+                list,
+                x4,
+                y4,
+                initial_ctx,
+                left_ref,
+                top_ref,
+                ref_idx,
+                num_ref_idx,
+                clipped
             );
+            if self.fail_on_ref_idx_oob && self.ref_idx_oob_error.is_none() {
+                self.ref_idx_oob_error = Some(detail.clone());
+            }
+            if self.ref_idx_oob_count <= 16 || self.ref_idx_oob_count % 256 == 0 {
+                warn!("{detail}");
+            }
             return clipped;
         }
         ref_idx
     }
 
     pub(super) fn decode_mb_mvd_component(
-        &self,
+        &mut self,
         cabac: &mut CabacDecoder,
         ctxs: &mut [CabacCtx],
         ctx_base: usize,
@@ -1274,7 +1268,24 @@ impl H264Decoder {
                 mvd += 1 << k;
                 k += 1;
                 if k > 24 {
-                    // 码流异常时返回 0 作为保底, 避免继续扩展导致失控.
+                    self.mvd_overflow_count = self.mvd_overflow_count.saturating_add(1);
+                    let detail = format!(
+                        "H264: CABAC mvd 溢出, frame_num={}, poc={}, slice_type={}, ctx_base={}, amvd={}, mvd={}, k={}",
+                        self.last_frame_num,
+                        self.last_poc,
+                        self.last_slice_type,
+                        ctx_base,
+                        amvd,
+                        mvd,
+                        k
+                    );
+                    if self.fail_on_mvd_overflow && self.mvd_overflow_error.is_none() {
+                        self.mvd_overflow_error = Some(detail.clone());
+                    }
+                    if self.mvd_overflow_count <= 16 || self.mvd_overflow_count % 256 == 0 {
+                        warn!("{detail}");
+                    }
+                    // 与现有容错策略保持一致: 默认返回 0 防止继续失控.
                     return 0;
                 }
             }

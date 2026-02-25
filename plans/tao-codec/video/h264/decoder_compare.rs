@@ -1,8 +1,8 @@
 //! H264 解码精度对比测试.
 //!
 //! 手动执行示例:
-//! 1) TAO_H264_COMPARE_INPUT=data/1_h264.mp4 cargo test --test run_decoder h264:: -- --nocapture --ignored
-//! 2) TAO_H264_COMPARE_INPUT=data/2_h264.mp4 cargo test --test run_decoder h264:: -- --nocapture --ignored
+//! 1) TAO_H264_COMPARE_INPUT=data/1.mp4 cargo test --test run_decoder h264:: -- --nocapture --ignored
+//! 2) TAO_H264_COMPARE_INPUT=data/2.mp4 cargo test --test run_decoder h264:: -- --nocapture --ignored
 //! 3) TAO_H264_COMPARE_INPUT=https://samples.ffmpeg.org/V-codecs/h264/interlaced_crop.mp4 cargo test --test run_decoder h264:: -- --nocapture --ignored
 
 use std::io::{BufReader, Read, Write};
@@ -324,6 +324,24 @@ fn shift_diag_enabled() -> bool {
     std::env::var("TAO_H264_COMPARE_SHIFT_DIAG")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+}
+
+fn verbose_frame_diff_enabled() -> bool {
+    std::env::var("TAO_H264_COMPARE_VERBOSE_FRAMES")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn should_skip_fixed_sample(path: &str) -> bool {
+    let _ = path;
+    if let Ok(input) = std::env::var("TAO_H264_COMPARE_INPUT")
+        && !input.trim().is_empty()
+    {
+        // 当显式指定对比输入时, 只运行 test_h264_compare, 固定样本测试一律跳过,
+        // 避免同一轮重复解码导致耗时明显劣化.
+        return true;
+    }
+    false
 }
 
 fn make_ffmpeg_tmp_path(tag: &str) -> String {
@@ -803,6 +821,61 @@ fn compare_video(
     Ok((stats, reports))
 }
 
+fn compare_video_fast(
+    width: u32,
+    height: u32,
+    reference: &[Vec<u8>],
+    test: &[Vec<u8>],
+) -> Result<CompareStats, Box<dyn std::error::Error>> {
+    let mut stats = CompareStats::default();
+    let frame_count = reference.len().min(test.len());
+    let y_size = (width as usize) * (height as usize);
+    let uv_size = (width.div_ceil(2) as usize) * (height.div_ceil(2) as usize);
+    let expect_size = y_size + uv_size * 2;
+
+    for i in 0..frame_count {
+        let ref_f = &reference[i];
+        let test_f = &test[i];
+        if ref_f.len() != test_f.len() {
+            return Err(format!(
+                "第 {} 帧大小不匹配: Tao={}, FFmpeg={}",
+                i,
+                test_f.len(),
+                ref_f.len()
+            )
+            .into());
+        }
+        if ref_f.len() < expect_size {
+            return Err(format!(
+                "第 {} 帧数据过小: 实际={}, 期望>={}",
+                i,
+                ref_f.len(),
+                expect_size
+            )
+            .into());
+        }
+
+        let y_ref = &ref_f[..y_size];
+        let u_ref = &ref_f[y_size..y_size + uv_size];
+        let v_ref = &ref_f[y_size + uv_size..y_size + uv_size * 2];
+
+        let y_test = &test_f[..y_size];
+        let u_test = &test_f[y_size..y_size + uv_size];
+        let v_test = &test_f[y_size + uv_size..y_size + uv_size * 2];
+
+        stats.y.update(y_ref, y_test);
+        stats.u.update(u_ref, u_test);
+        stats.v.update(v_ref, v_test);
+        stats.frame_count += 1;
+        if stats.first_mismatch_frame.is_none()
+            && (!(y_ref == y_test) || !(u_ref == u_test) || !(v_ref == v_test))
+        {
+            stats.first_mismatch_frame = Some(i);
+        }
+    }
+    Ok(stats)
+}
+
 fn evaluate_shifted_precision(
     width: u32,
     height: u32,
@@ -1124,7 +1197,15 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let t_compare = Instant::now();
-    let (stats, per_frame_reports) = compare_video(tao_w, tao_h, &ff_frames, &tao_frames)?;
+    let need_per_frame_reports = verbose_frame_diff_enabled() || report_enabled();
+    let (stats, per_frame_reports) = if need_per_frame_reports {
+        compare_video(tao_w, tao_h, &ff_frames, &tao_frames)?
+    } else {
+        (
+            compare_video_fast(tao_w, tao_h, &ff_frames, &tao_frames)?,
+            Vec::new(),
+        )
+    };
     if timing_enabled {
         println!(
             "[{}] 计时: 像素对比={}ms",
@@ -1137,20 +1218,22 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         print_shift_diagnostics(tao_w, tao_h, &ff_frames, &tao_frames);
     }
 
-    // 输出不一致帧摘要 (吸收 ANALYZE_FRAME_STATS/ANALYZE_FIRST_MISMATCH_FRAME 核心功能)
-    for r in &per_frame_reports {
-        if r.y_precision < 100.0 || r.u_precision < 100.0 || r.v_precision < 100.0 {
-            println!(
-                "[{}] 帧{}: Y精度={:.4}% U精度={:.4}% V精度={:.4}% max_err=Y:{}/U:{}/V:{}",
-                path,
-                r.frame_idx,
-                r.y_precision,
-                r.u_precision,
-                r.v_precision,
-                r.y_max_err,
-                r.u_max_err,
-                r.v_max_err,
-            );
+    // 逐帧明细默认关闭, 避免 1080p/长序列对比时大量日志 I/O 拖慢整体速度.
+    if verbose_frame_diff_enabled() {
+        for r in &per_frame_reports {
+            if r.y_precision < 100.0 || r.u_precision < 100.0 || r.v_precision < 100.0 {
+                println!(
+                    "[{}] 帧{}: Y精度={:.4}% U精度={:.4}% V精度={:.4}% max_err=Y:{}/U:{}/V:{}",
+                    path,
+                    r.frame_idx,
+                    r.y_precision,
+                    r.u_precision,
+                    r.v_precision,
+                    r.y_max_err,
+                    r.u_max_err,
+                    r.v_max_err,
+                );
+            }
         }
     }
 
@@ -1254,7 +1337,10 @@ fn test_h264_compare() {
 #[test]
 #[ignore]
 fn test_h264_compare_sample_1() {
-    let path = "data/1_h264.mp4";
+    let path = "data/1.mp4";
+    if should_skip_fixed_sample(path) {
+        return;
+    }
     assert!(Path::new(path).exists(), "样本不存在: {}", path);
     run_compare(path).expect("样本1 H264 对比失败");
 }
@@ -1262,7 +1348,10 @@ fn test_h264_compare_sample_1() {
 #[test]
 #[ignore]
 fn test_h264_compare_sample_2() {
-    let path = "data/2_h264.mp4";
+    let path = "data/2.mp4";
+    if should_skip_fixed_sample(path) {
+        return;
+    }
     assert!(Path::new(path).exists(), "样本不存在: {}", path);
     run_compare(path).expect("样本2 H264 对比失败");
 }

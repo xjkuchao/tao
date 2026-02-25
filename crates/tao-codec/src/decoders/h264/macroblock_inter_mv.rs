@@ -8,12 +8,6 @@ enum MotionNeighbor {
 }
 
 impl H264Decoder {
-    pub(super) fn weighted_pred_disabled_by_env() -> bool {
-        std::env::var("TAO_H264_DISABLE_WEIGHTED_PRED")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    }
-
     pub(super) fn l0_motion_candidate_4x4(&self, x4: isize, y4: isize) -> Option<(i32, i32, i8)> {
         if x4 < 0 || y4 < 0 {
             return None;
@@ -57,20 +51,8 @@ impl H264Decoder {
     ) -> (i32, i32) {
         let x4 = mb_x * 4 + part_x4;
         let y4 = mb_y * 4 + part_y4;
-        let a = self.l0_motion_neighbor_state(
-            x4,
-            y4,
-            x4 as isize - 1,
-            y4 as isize,
-            ref_idx,
-        );
-        let b = self.l0_motion_neighbor_state(
-            x4,
-            y4,
-            x4 as isize,
-            y4 as isize - 1,
-            ref_idx,
-        );
+        let a = self.l0_motion_neighbor_state(x4, y4, x4 as isize - 1, y4 as isize, ref_idx);
+        let b = self.l0_motion_neighbor_state(x4, y4, x4 as isize, y4 as isize - 1, ref_idx);
         let mut c = self.l0_motion_neighbor_state(
             x4,
             y4,
@@ -79,13 +61,7 @@ impl H264Decoder {
             ref_idx,
         );
         if matches!(c, MotionNeighbor::PartNotAvailable) {
-            c = self.l0_motion_neighbor_state(
-                x4,
-                y4,
-                x4 as isize - 1,
-                y4 as isize - 1,
-                ref_idx,
-            );
+            c = self.l0_motion_neighbor_state(x4, y4, x4 as isize - 1, y4 as isize - 1, ref_idx);
         }
         Self::predict_motion_from_neighbors(a, b, c, ref_idx)
     }
@@ -106,20 +82,8 @@ impl H264Decoder {
     ) -> (i32, i32) {
         let x4 = mb_x * 4 + part_x4;
         let y4 = mb_y * 4 + part_y4;
-        let a = self.l1_motion_neighbor_state(
-            x4,
-            y4,
-            x4 as isize - 1,
-            y4 as isize,
-            ref_idx,
-        );
-        let b = self.l1_motion_neighbor_state(
-            x4,
-            y4,
-            x4 as isize,
-            y4 as isize - 1,
-            ref_idx,
-        );
+        let a = self.l1_motion_neighbor_state(x4, y4, x4 as isize - 1, y4 as isize, ref_idx);
+        let b = self.l1_motion_neighbor_state(x4, y4, x4 as isize, y4 as isize - 1, ref_idx);
         let mut c = self.l1_motion_neighbor_state(
             x4,
             y4,
@@ -128,13 +92,7 @@ impl H264Decoder {
             ref_idx,
         );
         if matches!(c, MotionNeighbor::PartNotAvailable) {
-            c = self.l1_motion_neighbor_state(
-                x4,
-                y4,
-                x4 as isize - 1,
-                y4 as isize - 1,
-                ref_idx,
-            );
+            c = self.l1_motion_neighbor_state(x4, y4, x4 as isize - 1, y4 as isize - 1, ref_idx);
         }
         Self::predict_motion_from_neighbors(a, b, c, ref_idx)
     }
@@ -310,11 +268,8 @@ impl H264Decoder {
                 }
             }
         } else {
-            let mut diag =
-                self.l0_motion_candidate_4x4((x4 + 2) as isize, y4 as isize - 1);
-            if diag.is_some()
-                && !self.same_slice_4x4(x4, y4, x4 + 2, y4.saturating_sub(1))
-            {
+            let mut diag = self.l0_motion_candidate_4x4((x4 + 2) as isize, y4 as isize - 1);
+            if diag.is_some() && !self.same_slice_4x4(x4, y4, x4 + 2, y4.saturating_sub(1)) {
                 diag = None;
             }
             if diag.is_none() {
@@ -381,11 +336,8 @@ impl H264Decoder {
                 }
             }
         } else {
-            let mut diag =
-                self.l1_motion_candidate_4x4((x4 + 2) as isize, y4 as isize - 1);
-            if diag.is_some()
-                && !self.same_slice_4x4(x4, y4, x4 + 2, y4.saturating_sub(1))
-            {
+            let mut diag = self.l1_motion_candidate_4x4((x4 + 2) as isize, y4 as isize - 1);
+            if diag.is_some() && !self.same_slice_4x4(x4, y4, x4 + 2, y4.saturating_sub(1)) {
                 diag = None;
             }
             if diag.is_none() {
@@ -600,7 +552,7 @@ impl H264Decoder {
             h,
             mv_x_qpel,
             mv_y_qpel,
-            if Self::weighted_pred_disabled_by_env() {
+            if self.weighted_pred_disabled() {
                 None
             } else {
                 p_l0_weight(l0_weights, ref_idx)

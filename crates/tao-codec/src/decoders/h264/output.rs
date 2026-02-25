@@ -258,12 +258,12 @@ impl H264Decoder {
             let mut after: Vec<&ReferencePicture> = short_refs
                 .iter()
                 .copied()
-                .filter(|pic| pic.poc > cur_poc)
+                .filter(|pic| pic.poc >= cur_poc)
                 .collect();
             let mut before: Vec<&ReferencePicture> = short_refs
                 .iter()
                 .copied()
-                .filter(|pic| pic.poc <= cur_poc)
+                .filter(|pic| pic.poc < cur_poc)
                 .collect();
             after.sort_by_key(|pic| pic.poc);
             before.sort_by_key(|pic| std::cmp::Reverse(pic.poc));
@@ -815,7 +815,7 @@ impl H264Decoder {
         let h = self.height as usize;
         self.conceal_frame_level_errors();
 
-        if self.last_disable_deblocking_filter_idc != 1 {
+        if self.last_disable_deblocking_filter_idc != 1 && !self.skip_deblock_by_env() {
             let (chroma_qp_index_offset, second_chroma_qp_index_offset) = self
                 .pps
                 .as_ref()

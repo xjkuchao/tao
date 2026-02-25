@@ -168,11 +168,10 @@ impl H264Decoder {
             if mb_idx < self.mb_qp.len() {
                 self.mb_qp[mb_idx] = cur_qp;
             }
-            if mb_idx + 1 < total {
-                let term = cabac.decode_terminate();
-                if term == 1 {
-                    break;
-                }
+            // 对齐 FFmpeg/OpenH264: CABAC end_of_slice_flag 在每个 MB 后都需要解码.
+            let term = cabac.decode_terminate();
+            if term == 1 {
+                break;
             }
         }
     }
