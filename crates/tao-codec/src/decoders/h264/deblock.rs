@@ -221,6 +221,7 @@ fn apply_adaptive_deblock_plane(
         return;
     }
     let strong_luma = mb_step == 16 && chroma_qp_remap_offset.is_none();
+    let is_chroma_plane = chroma_qp_remap_offset.is_some();
     let mb_cols = width.div_ceil(mb_step);
     let mb_rows = height.div_ceil(mb_step);
 
@@ -262,7 +263,12 @@ fn apply_adaptive_deblock_plane(
                     {
                         continue;
                     }
-                    let bs = boundary_strength_vertical(x, y, mb_step, mb_ctx);
+                    let bs = if is_chroma_plane {
+                        // 色度去块的 bs 仍以亮度 4x4 邻接关系为准, 这里映射到亮度网格计算.
+                        boundary_strength_vertical(x * 2, y * 2, 16, mb_ctx)
+                    } else {
+                        boundary_strength_vertical(x, y, mb_step, mb_ctx)
+                    };
                     let (ai, a, b) = edge_thresholds(
                         mb_ctx,
                         x,
@@ -310,7 +316,12 @@ fn apply_adaptive_deblock_plane(
                     {
                         continue;
                     }
-                    let bs = boundary_strength_horizontal(x, y, mb_step, mb_ctx);
+                    let bs = if is_chroma_plane {
+                        // 色度去块的 bs 仍以亮度 4x4 邻接关系为准, 这里映射到亮度网格计算.
+                        boundary_strength_horizontal(x * 2, y * 2, 16, mb_ctx)
+                    } else {
+                        boundary_strength_horizontal(x, y, mb_step, mb_ctx)
+                    };
                     let (ai, a, b) = edge_thresholds(
                         mb_ctx,
                         x,
