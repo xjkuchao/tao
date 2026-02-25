@@ -1,6 +1,12 @@
 use super::*;
 
 impl H264Decoder {
+    pub(super) fn weighted_pred_disabled_by_env() -> bool {
+        std::env::var("TAO_H264_DISABLE_WEIGHTED_PRED")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    }
+
     pub(super) fn l0_motion_candidate_4x4(&self, x4: isize, y4: isize) -> Option<(i32, i32, i8)> {
         if x4 < 0 || y4 < 0 {
             return None;
@@ -519,7 +525,11 @@ impl H264Decoder {
             h,
             mv_x_qpel,
             mv_y_qpel,
-            p_l0_weight(l0_weights, ref_idx),
+            if Self::weighted_pred_disabled_by_env() {
+                None
+            } else {
+                p_l0_weight(l0_weights, ref_idx)
+            },
             luma_log2_weight_denom,
             chroma_log2_weight_denom,
         );

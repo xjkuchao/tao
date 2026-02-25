@@ -74,6 +74,11 @@ impl H264Decoder {
                     .as_ref()
                     .map(|p| p.weighted_bipred_idc)
                     .unwrap_or(0);
+                let weighted_bipred_idc = if Self::weighted_pred_disabled_by_env() {
+                    0
+                } else {
+                    weighted_bipred_idc
+                };
                 if weighted_bipred_idc == 2 {
                     let (w0, w1) = self.implicit_bi_weights(
                         ref_l0.poc,
@@ -189,6 +194,11 @@ impl H264Decoder {
                     .as_ref()
                     .map(|p| p.weighted_bipred_idc)
                     .unwrap_or(0);
+                let weighted_bipred_idc = if Self::weighted_pred_disabled_by_env() {
+                    0
+                } else {
+                    weighted_bipred_idc
+                };
                 let pred_weight = if weighted_bipred_idc == 1 {
                     p_l0_weight(l0_weights, m0.ref_idx.max(0) as u32)
                 } else {
@@ -228,6 +238,11 @@ impl H264Decoder {
                     .as_ref()
                     .map(|p| p.weighted_bipred_idc)
                     .unwrap_or(0);
+                let weighted_bipred_idc = if Self::weighted_pred_disabled_by_env() {
+                    0
+                } else {
+                    weighted_bipred_idc
+                };
                 let pred_weight = if weighted_bipred_idc == 1 {
                     p_l1_weight(l1_weights, m1.ref_idx.max(0) as u32)
                 } else {

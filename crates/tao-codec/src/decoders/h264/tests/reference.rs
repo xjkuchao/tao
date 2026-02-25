@@ -538,3 +538,24 @@ fn test_store_reference_with_marking_b_slice_ref_nal_is_stored() {
     assert_eq!(current.frame_num, 7, "参考 B 图像 frame_num 入队错误");
     assert_eq!(current.poc, 14, "参考 B 图像 POC 入队错误");
 }
+
+#[test]
+fn test_b_default_ref_list_l1_swap_when_same_as_l0() {
+    let mut dec = build_test_decoder();
+    dec.last_slice_type = 1; // B slice
+    dec.last_frame_num = 10;
+    dec.last_poc = 10;
+
+    // 让 L0/L1 默认顺序一致: 全部参考都在当前 POC 之前.
+    push_custom_reference(&mut dec, 8, 8, 8, None);
+    push_custom_reference(&mut dec, 9, 9, 9, None);
+
+    let l0 = dec.build_reference_list_l0_with_mod(2, &[], 10);
+    let mut l1 = dec.build_reference_list_l1_with_mod(2, &[], 10);
+    assert_eq!(l0[0].poc, l1[0].poc, "交换前 L0/L1 rank0 应一致");
+    assert_eq!(l0[1].poc, l1[1].poc, "交换前 L0/L1 rank1 应一致");
+
+    dec.maybe_swap_b_default_ref_list_l1(&l0, &mut l1, &[], &[], 2);
+    assert_eq!(l1[0].poc, l0[1].poc, "交换后 L1 rank0 应切换为原 rank1");
+    assert_eq!(l1[1].poc, l0[0].poc, "交换后 L1 rank1 应切换为原 rank0");
+}

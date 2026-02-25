@@ -566,8 +566,8 @@ fn test_activate_sps_updates_reorder_depth_from_sps_max_ref_frames() {
     dec.activate_sps(3);
 
     assert_eq!(
-        dec.reorder_depth, 0,
-        "未配置覆盖时, reorder_depth 应按 max_num_ref_frames-1 自适应"
+        dec.reorder_depth, 1,
+        "未配置 max_num_reorder_frames 时, refs=1 仍应保留最小重排深度 1"
     );
 }
 

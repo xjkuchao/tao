@@ -192,10 +192,17 @@ impl H264Decoder {
             header.frame_num,
         );
         self.last_ref_l0_poc = ref_l0_list.iter().map(|rp| rp.poc).collect();
-        let ref_l1_list = self.build_reference_list_l1_with_mod(
+        let mut ref_l1_list = self.build_reference_list_l1_with_mod(
             header.num_ref_idx_l1,
             &header.ref_pic_list_mod_l1,
             header.frame_num,
+        );
+        self.maybe_swap_b_default_ref_list_l1(
+            &ref_l0_list,
+            &mut ref_l1_list,
+            &header.ref_pic_list_mod_l0,
+            &header.ref_pic_list_mod_l1,
+            header.num_ref_idx_l1,
         );
         self.last_ref_l1_poc = ref_l1_list.iter().map(|rp| rp.poc).collect();
         self.decode_b_slice_mbs(
@@ -302,7 +309,7 @@ impl H264Decoder {
             header.frame_num,
         );
         self.last_ref_l0_poc = ref_l0_list.iter().map(|rp| rp.poc).collect();
-        let ref_l1_list = if is_b {
+        let mut ref_l1_list = if is_b {
             self.build_reference_list_l1_with_mod(
                 header.num_ref_idx_l1,
                 &header.ref_pic_list_mod_l1,
@@ -311,6 +318,15 @@ impl H264Decoder {
         } else {
             Vec::new()
         };
+        if is_b {
+            self.maybe_swap_b_default_ref_list_l1(
+                &ref_l0_list,
+                &mut ref_l1_list,
+                &header.ref_pic_list_mod_l0,
+                &header.ref_pic_list_mod_l1,
+                header.num_ref_idx_l1,
+            );
+        }
         self.last_ref_l1_poc = ref_l1_list.iter().map(|rp| rp.poc).collect();
         let mut skip_run_left = 0u32;
         for mb_idx in first..total_mbs {

@@ -493,6 +493,35 @@ impl H264Decoder {
         out
     }
 
+    pub(super) fn maybe_swap_b_default_ref_list_l1(
+        &self,
+        l0: &[RefPlanes],
+        l1: &mut [RefPlanes],
+        l0_mods: &[RefPicListMod],
+        l1_mods: &[RefPicListMod],
+        num_ref_idx_l1: u32,
+    ) {
+        if self.last_slice_type != 1
+            || num_ref_idx_l1 <= 1
+            || l0_mods.is_empty() == false
+            || l1_mods.is_empty() == false
+            || l0.len() != l1.len()
+            || l1.len() < 2
+        {
+            return;
+        }
+        let same_default_order = l0.iter().zip(l1.iter()).all(|(a, b)| {
+            a.frame_num == b.frame_num
+                && a.poc == b.poc
+                && a.is_long_term == b.is_long_term
+                && a.long_term_frame_idx == b.long_term_frame_idx
+        });
+        if same_default_order {
+            // 规范一致性: B slice 默认 L0/L1 完全相同且 L1 激活数>1 时, 需交换 L1 前两项.
+            l1.swap(0, 1);
+        }
+    }
+
     pub(super) fn remove_short_term_by_pic_num(&mut self, pic_num: u32) -> bool {
         let pos = self.reference_frames.iter().rposition(|pic| {
             pic.long_term_frame_idx.is_none()

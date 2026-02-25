@@ -835,9 +835,9 @@ impl H264Decoder {
                     .min(cur.max_num_ref_frames.min(16) as usize)
             } else {
                 // 规范未显式信令 max_num_reorder_frames 时, 用 level 上限
-                // 同时按 max_num_ref_frames-1 收敛: 重排深度不能超过参考帧数-1.
+                // 并按 max_num_ref_frames 收敛: refs=1 仍可能存在 B 帧重排需求, 不能硬降到 0.
                 let level_max = Self::derive_level_max_dpb_frames(cur);
-                let ref_cap = (cur.max_num_ref_frames.min(16) as usize).saturating_sub(1);
+                let ref_cap = (cur.max_num_ref_frames.min(16) as usize).max(1);
                 level_max.saturating_sub(1).min(16).min(ref_cap)
             }
         })

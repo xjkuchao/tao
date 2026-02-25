@@ -320,6 +320,12 @@ fn fail_on_ref_fallback_enabled() -> bool {
         .unwrap_or(false)
 }
 
+fn shift_diag_enabled() -> bool {
+    std::env::var("TAO_H264_COMPARE_SHIFT_DIAG")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 fn make_ffmpeg_tmp_path(tag: &str) -> String {
     let pid = std::process::id();
     let seq = FF_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -797,6 +803,63 @@ fn compare_video(
     Ok((stats, reports))
 }
 
+fn evaluate_shifted_precision(
+    width: u32,
+    height: u32,
+    reference: &[Vec<u8>],
+    test: &[Vec<u8>],
+    shift: isize,
+) -> Option<(usize, f64)> {
+    let mut stats = CompareStats::default();
+    let mut matched = 0usize;
+    for (idx, test_frame) in test.iter().enumerate() {
+        let ref_idx = (idx as isize).checked_add(shift)?;
+        if ref_idx < 0 {
+            continue;
+        }
+        let ref_idx = ref_idx as usize;
+        let Some(ref_frame) = reference.get(ref_idx) else {
+            continue;
+        };
+        let _ = compare_frame(&mut stats, idx, ref_frame, test_frame, width, height).ok()?;
+        matched += 1;
+    }
+    if matched == 0 {
+        return None;
+    }
+    Some((matched, stats.global_precision_pct()))
+}
+
+fn print_shift_diagnostics(width: u32, height: u32, reference: &[Vec<u8>], test: &[Vec<u8>]) {
+    let mut best: Option<(isize, usize, f64)> = None;
+    for shift in -3isize..=3isize {
+        if shift == 0 {
+            continue;
+        }
+        let Some((matched, precision)) =
+            evaluate_shifted_precision(width, height, reference, test, shift)
+        else {
+            continue;
+        };
+        println!(
+            "[shift诊断] shift={:+}, matched_frames={}, precision={:.6}%",
+            shift, matched, precision
+        );
+        match best {
+            Some((_, _, best_precision)) if precision <= best_precision => {}
+            _ => {
+                best = Some((shift, matched, precision));
+            }
+        }
+    }
+    if let Some((shift, matched, precision)) = best {
+        println!(
+            "[shift诊断] 最佳shift={:+}, matched_frames={}, precision={:.6}%",
+            shift, matched, precision
+        );
+    }
+}
+
 fn resolve_input() -> Result<String, Box<dyn std::error::Error>> {
     let mut after_dd = std::env::args().skip_while(|v| v != "--").skip(1);
     if let Some(arg) = after_dd.next() {
@@ -1070,6 +1133,9 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     print_compare_stats(path, tao_frames.len(), ff_frames.len(), &stats);
+    if shift_diag_enabled() {
+        print_shift_diagnostics(tao_w, tao_h, &ff_frames, &tao_frames);
+    }
 
     // 输出不一致帧摘要 (吸收 ANALYZE_FRAME_STATS/ANALYZE_FIRST_MISMATCH_FRAME 核心功能)
     for r in &per_frame_reports {
