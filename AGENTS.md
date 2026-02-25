@@ -374,5 +374,5 @@ tao/
 
 ### 已知问题
 
-- `tao-codec` 中存在 2 个预存 H264 B-frame 测试失败和少量 clippy/fmt 告警, 属于上游代码问题, 非环境问题。
+- `tao-codec` 中存在 10 个预存 H264 B-frame 测试失败(均在 `decoders::h264::tests::decode_b` 和 `decoders::h264::tests::prediction`)和少量 clippy/fmt 告警, 属于上游代码问题, 非环境问题。
 - `tao-probe` 的 `--help` 输出中会附带系统 ffprobe 的兼容性输出, 这是正常行为。
