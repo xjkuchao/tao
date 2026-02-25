@@ -1016,6 +1016,15 @@ impl H264Decoder {
                 let i_mb_type = mb_type - 5;
                 self.decode_cavlc_i_mb(&mut br, mb_x, mb_y, i_mb_type, &mut cur_qp);
             } else {
+                let saved_first_mb = self.mb_slice_first_mb[mb_idx];
+                let left_unknown = mb_x > 0 && self.mb_slice_first_mb[mb_idx - 1] == u32::MAX;
+                let top_unknown =
+                    mb_y > 0 && self.mb_slice_first_mb[mb_idx - self.mb_width] == u32::MAX;
+                let relax_unknown_neighbors = left_unknown || top_unknown;
+                if relax_unknown_neighbors {
+                    // 仅在局部/断点解码导致邻居 slice 标记缺失时放宽同 slice 判断.
+                    self.mb_slice_first_mb[mb_idx] = u32::MAX;
+                }
                 self.mb_types[mb_idx] = 200u8.saturating_add((mb_type as u8).min(3));
                 let base_x = mb_x * 16;
                 let base_y = mb_y * 16;
@@ -1030,6 +1039,7 @@ impl H264Decoder {
                             ref_idx_l0 = read_ue(&mut br).unwrap_or(0);
                         }
                         let ref_idx_i8 = ref_idx_l0.min(i8::MAX as u32) as i8;
+                        self.set_l0_motion_block_4x4(base_x, base_y, 16, 16, 0, 0, ref_idx_i8);
                         let (pred_mv_x, pred_mv_y) =
                             self.predict_mv_l0_partition(mb_x, mb_y, 0, 0, 4, ref_idx_i8);
                         let mvd_x = read_se(&mut br).unwrap_or(0);
@@ -1049,6 +1059,9 @@ impl H264Decoder {
                             header.luma_log2_weight_denom,
                             header.chroma_log2_weight_denom,
                         );
+                        self.set_l0_motion_block_4x4(
+                            base_x, base_y, 16, 16, mv_x, mv_y, ref_idx_i8,
+                        );
                         final_mv_x = mv_x;
                         final_mv_y = mv_y;
                         final_ref_idx = ref_idx_l0;
@@ -1067,6 +1080,15 @@ impl H264Decoder {
                         let mvd_top_y = read_se(&mut br).unwrap_or(0);
                         let mv_top_x = pred_mv_x + mvd_top_x;
                         let mv_top_y = pred_mv_y + mvd_top_y;
+                        self.set_l0_motion_block_4x4(
+                            base_x,
+                            base_y,
+                            16,
+                            8,
+                            mv_top_x,
+                            mv_top_y,
+                            top_ref_idx_i8,
+                        );
                         let bottom_ref_idx_i8 = ref_idx_bottom.min(i8::MAX as u32) as i8;
                         let (pred_bottom_x, pred_bottom_y) = if ref_idx_bottom == ref_idx_top {
                             (mv_top_x, mv_top_y)
@@ -1103,6 +1125,15 @@ impl H264Decoder {
                             header.luma_log2_weight_denom,
                             header.chroma_log2_weight_denom,
                         );
+                        self.set_l0_motion_block_4x4(
+                            base_x,
+                            base_y + 8,
+                            16,
+                            8,
+                            mv_bottom_x,
+                            mv_bottom_y,
+                            bottom_ref_idx_i8,
+                        );
                         final_mv_x = mv_bottom_x;
                         final_mv_y = mv_bottom_y;
                         final_ref_idx = ref_idx_bottom;
@@ -1121,6 +1152,15 @@ impl H264Decoder {
                         let mvd_left_y = read_se(&mut br).unwrap_or(0);
                         let mv_left_x = pred_mv_x + mvd_left_x;
                         let mv_left_y = pred_mv_y + mvd_left_y;
+                        self.set_l0_motion_block_4x4(
+                            base_x,
+                            base_y,
+                            8,
+                            16,
+                            mv_left_x,
+                            mv_left_y,
+                            left_ref_idx_i8,
+                        );
                         let right_ref_idx_i8 = ref_idx_right.min(i8::MAX as u32) as i8;
                         let (pred_right_x, pred_right_y) = if ref_idx_right == ref_idx_left {
                             (mv_left_x, mv_left_y)
@@ -1156,6 +1196,15 @@ impl H264Decoder {
                             &header.l0_weights,
                             header.luma_log2_weight_denom,
                             header.chroma_log2_weight_denom,
+                        );
+                        self.set_l0_motion_block_4x4(
+                            base_x + 8,
+                            base_y,
+                            8,
+                            16,
+                            mv_right_x,
+                            mv_right_y,
+                            right_ref_idx_i8,
                         );
                         final_mv_x = mv_right_x;
                         final_mv_y = mv_right_y;
@@ -1486,6 +1535,7 @@ impl H264Decoder {
                     false,
                     no_sub_mb_part_size_less_than_8x8_flag,
                 );
+                self.mb_slice_first_mb[mb_idx] = saved_first_mb;
             }
             if mb_idx < self.mb_qp.len() {
                 self.mb_qp[mb_idx] = cur_qp;

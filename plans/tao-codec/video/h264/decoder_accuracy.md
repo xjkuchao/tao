@@ -78,6 +78,9 @@
 ### 2.6 对比执行方式
 
 ```bash
+# 自动轮转执行(目标 data/2.mp4, 守护 data/1.mp4, 提升即提交)
+plans/tao-codec/video/h264/run_accuracy_autoloop.sh
+
 # 运行全部样本批量对比
 cargo test --test run_decoder h264::test_h264_accuracy_all -- --nocapture --ignored
 
@@ -96,6 +99,20 @@ TAO_H264_COMPARE_REPORT=1 \
 TAO_H264_COMPARE_INPUT=data/h264_samples/c1_cavlc_baseline_720p.mp4 \
   cargo test --test run_decoder h264::test_h264_compare -- --nocapture --ignored
 ```
+
+### 2.7 自动轮转相关环境变量
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `TAO_AUTO_TARGET_SAMPLE` | `data/2.mp4` | 自动轮转目标样本 |
+| `TAO_AUTO_KEEP_SAMPLE` | `data/1.mp4` | 自动轮转守护样本 |
+| `TAO_AUTO_TARGET_REQUIRED` | `100.0` | 目标样本精度阈值(%) |
+| `TAO_AUTO_KEEP_REQUIRED` | `100.0` | 守护样本精度阈值(%) |
+| `TAO_AUTO_MAX_ROUNDS` | `50` | 最大轮次, 防止无限循环 |
+| `TAO_AUTO_STABLE_ROUNDS` | `3` | 双样本连续达标后停止的稳定轮次数 |
+| `TAO_AUTO_SKIP_STRICT` | `0` | `1` 时跳过严格 5 项验证 |
+| `TAO_AUTO_COMMIT_PATHS` | `crates/tao-codec/src/decoders/h264 plans/tao-codec/video/h264 tests/run_decoder.rs` | 自动提交的白名单路径 |
+| `TAO_AUTO_COMMIT_TYPE` | `fix` | 自动提交信息前缀(`fix/refactor/...`) |
 
 ## 3. 测试样本
 
@@ -207,6 +224,35 @@ ffmpeg -y -i input.mp4 -pix_fmt yuv420p -vframes 10 -f rawvideo ref.yuv
 - G2: 67 帧中门禁 (覆盖 GOP 结构)
 - G3: 299 帧全片验收 (最终精度)
 - 每次有明显提升后执行严格 5 项验证与提交流程.
+
+### 4.4 自动持续轮转与提交门禁
+
+执行入口:
+
+```bash
+plans/tao-codec/video/h264/run_accuracy_autoloop.sh
+```
+
+每轮固定顺序:
+
+1. 运行目标样本 `data/2.mp4` 的 G0/G1/G2/G3 评测.
+2. 运行守护样本 `data/1.mp4` 的 G0/G1/G2/G3 评测.
+3. 仅当满足以下全部条件时自动提交:
+    - `data/2.mp4` 本轮有可量化提升(按 `P299 > first_mismatch > P67 > P10 > max_err` 判定).
+    - 目标轮严格验证通过(或显式配置跳过严格验证).
+    - `data/1.mp4` 在守护阈值下达标(默认 100%).
+4. 若任一条件不满足, 本轮不提交并进入下一轮.
+
+停止条件:
+
+- `data/2.mp4` 与 `data/1.mp4` 同时达到阈值并连续稳定 N 轮(`TAO_AUTO_STABLE_ROUNDS`).
+- 或达到最大轮次(`TAO_AUTO_MAX_ROUNDS`).
+
+日志产物:
+
+- 单轮日志: `data/h264_round_logs/<round>_f{3,10,67,299}.log`
+- 单样本轮次汇总: `plans/tao-codec/video/h264/round_journal.md`
+- 自动轮转双样本汇总: `data/h264_round_logs/autoloop_journal.md`
 
 ## 5. 精度基线记录
 

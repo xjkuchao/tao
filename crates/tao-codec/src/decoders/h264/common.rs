@@ -647,6 +647,10 @@ pub(super) fn chroma_qp_from_luma_with_offset(qp: i32, offset: i32) -> i32 {
 
 /// 从对齐缓冲区拷贝到紧凑平面
 pub(super) fn copy_plane(src: &[u8], src_stride: usize, w: usize, h: usize) -> Vec<u8> {
+    let total = w.saturating_mul(h);
+    if src_stride == w && src.len() >= total {
+        return src[..total].to_vec();
+    }
     let mut dst = vec![0u8; w * h];
     for y in 0..h {
         let src_off = y * src_stride;
