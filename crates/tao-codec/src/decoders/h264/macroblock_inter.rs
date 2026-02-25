@@ -340,6 +340,10 @@ impl H264Decoder {
         part_y4: usize,
         ref_l1_list: &[RefPlanes],
     ) -> bool {
+        // 默认关闭 col_zero 置零路径, 仅在显式诊断时开启.
+        if std::env::var("TAO_H264_ENABLE_COL_ZERO").as_deref() != Ok("1") {
+            return false;
+        }
         let col_planes = ref_l1_list.first();
         let col_planes = match col_planes {
             Some(p) => p,
