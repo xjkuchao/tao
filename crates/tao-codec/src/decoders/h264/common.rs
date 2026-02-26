@@ -4,6 +4,23 @@ use super::*;
 // 工具函数
 // ============================================================
 
+// #region agent log
+pub(super) fn debug_log_entry(location: &str, message: &str, data: &str, hypothesis: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/opt/cursor/logs/debug.log")
+    {
+        let _ = writeln!(
+            f,
+            "{{\"location\":\"{}\",\"message\":\"{}\",\"data\":{},\"hypothesisId\":\"{}\"}}",
+            location, message, data, hypothesis
+        );
+    }
+}
+// #endregion
+
 pub(super) fn median3(a: i32, b: i32, c: i32) -> i32 {
     let mut vals = [a, b, c];
     vals.sort_unstable();

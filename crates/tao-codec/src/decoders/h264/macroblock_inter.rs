@@ -463,6 +463,22 @@ impl H264Decoder {
 
             let mut ref_idx_l0 = Self::spatial_direct_ref_idx_from_neighbors(&l0_cands);
             let mut ref_idx_l1 = Self::spatial_direct_ref_idx_from_neighbors(&l1_cands);
+            // #region agent log
+            {
+                if self.last_slice_type == 1 && ((mb_x == 30 && mb_y == 66) || (mb_x == 109 && mb_y == 9) || (mb_x == 0 && mb_y == 0)) {
+                    let fmt_cand = |c: &Option<(i32, i32, i8)>| match c {
+                        Some((mx, my, ri)) => format!("[{},{},{}]", mx, my, ri),
+                        None => "null".to_string(),
+                    };
+                    debug_log_entry(
+                        "macroblock_inter.rs:spatial_direct",
+                        "spatial direct neighbor candidates",
+                        &format!("{{\"poc\":{},\"mb_x\":{},\"mb_y\":{},\"part_x4\":{},\"part_y4\":{},\"l0_cands\":[{},{},{}],\"l1_cands\":[{},{},{}],\"ref_idx_l0\":{},\"ref_idx_l1\":{}}}", self.last_poc, mb_x, mb_y, part_x4, part_y4, fmt_cand(&l0_cands[0]), fmt_cand(&l0_cands[1]), fmt_cand(&l0_cands[2]), fmt_cand(&l1_cands[0]), fmt_cand(&l1_cands[1]), fmt_cand(&l1_cands[2]), ref_idx_l0.map(|v| v as i32).unwrap_or(-99), ref_idx_l1.map(|v| v as i32).unwrap_or(-99)),
+                        "C"
+                    );
+                }
+            }
+            // #endregion
             // H.264 spec 8.4.1.2.2: 当所有空间邻居都不可用时,
             // 设 refIdxL0=0, refIdxL1=0, MV 将由后续 spatial_direct_mv_from_neighbors
             // 返回 fallback (0,0). 不应回退到 temporal direct.
@@ -511,6 +527,20 @@ impl H264Decoder {
                 motion.mv_x = 0;
                 motion.mv_y = 0;
             }
+            // #region agent log
+            {
+                if self.last_slice_type == 1 && ((mb_x == 30 && mb_y == 66) || (mb_x == 109 && mb_y == 9) || (mb_x == 0 && mb_y == 0)) {
+                    let l0_str = motion_l0.as_ref().map(|m| format!("{{\"mv_x\":{},\"mv_y\":{},\"ref_idx\":{}}}", m.mv_x, m.mv_y, m.ref_idx)).unwrap_or("null".to_string());
+                    let l1_str = motion_l1.as_ref().map(|m| format!("{{\"mv_x\":{},\"mv_y\":{},\"ref_idx\":{}}}", m.mv_x, m.mv_y, m.ref_idx)).unwrap_or("null".to_string());
+                    debug_log_entry(
+                        "macroblock_inter.rs:spatial_direct_final",
+                        "spatial direct final motion",
+                        &format!("{{\"poc\":{},\"mb_x\":{},\"mb_y\":{},\"col_zero\":{},\"motion_l0\":{},\"motion_l1\":{}}}", self.last_poc, mb_x, mb_y, col_zero, l0_str, l1_str),
+                        "CE"
+                    );
+                }
+            }
+            // #endregion
             return (motion_l0, motion_l1);
         }
 

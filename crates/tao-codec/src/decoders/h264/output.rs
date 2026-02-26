@@ -642,6 +642,27 @@ impl H264Decoder {
         if self.last_nal_ref_idc == 0 {
             return;
         }
+        // #region agent log
+        {
+            for (check_mb_x, check_mb_y) in [(30usize, 66usize), (109usize, 9usize)] {
+                let px_x = check_mb_x * 16;
+                let px_y = check_mb_y * 16;
+                let mut pixels = Vec::new();
+                for dy in 0..4usize {
+                    for dx in 0..4usize {
+                        let idx = (px_y + dy) * self.stride_y + (px_x + dx);
+                        pixels.push(self.ref_y.get(idx).copied().unwrap_or(0));
+                    }
+                }
+                common::debug_log_entry(
+                    "output.rs:push_current_reference",
+                    "reference stored pixels",
+                    &format!("{{\"poc\":{},\"frame_num\":{},\"slice_type\":{},\"mb_x\":{},\"mb_y\":{},\"pixels\":{:?}}}", self.last_poc, self.last_frame_num, self.last_slice_type, check_mb_x, check_mb_y, pixels),
+                    "A"
+                );
+            }
+        }
+        // #endregion
         self.reference_frames.push_back(ReferencePicture {
             y: Arc::new(self.ref_y.clone()),
             u: Arc::new(self.ref_u.clone()),

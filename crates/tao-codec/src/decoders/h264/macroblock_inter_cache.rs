@@ -45,6 +45,32 @@ impl H264Decoder {
         w: usize,
         h: usize,
     ) -> (i32, i32, i8) {
+        // #region agent log
+        {
+            let mb_x = dst_x / 16;
+            let mb_y = dst_y / 16;
+            let dominated_poc = self.last_poc;
+            let dominated_slice = self.last_slice_type;
+            if dominated_slice == 1 && ((mb_x == 30 && mb_y == 66) || (mb_x == 109 && mb_y == 9) || (mb_x == 0 && mb_y == 0)) {
+                let mode_str = match (&motion_l0, &motion_l1) {
+                    (Some(_), Some(_)) => "Bi",
+                    (Some(_), None) => "L0",
+                    (None, Some(_)) => "L1",
+                    (None, None) => "None",
+                };
+                let l0_mv = motion_l0.map(|m| format!("({},{})", m.mv_x, m.mv_y)).unwrap_or("null".to_string());
+                let l0_ref = motion_l0.map(|m| m.ref_idx as i32).unwrap_or(-1);
+                let l1_mv = motion_l1.map(|m| format!("({},{})", m.mv_x, m.mv_y)).unwrap_or("null".to_string());
+                let l1_ref = motion_l1.map(|m| m.ref_idx as i32).unwrap_or(-1);
+                debug_log_entry(
+                    "macroblock_inter_cache.rs:apply_b_prediction_block",
+                    "B-frame prediction block",
+                    &format!("{{\"poc\":{},\"mb_x\":{},\"mb_y\":{},\"mode\":\"{}\",\"l0_mv\":\"{}\",\"l0_ref\":{},\"l1_mv\":\"{}\",\"l1_ref\":{},\"w\":{},\"h\":{}}}", dominated_poc, mb_x, mb_y, mode_str, l0_mv, l0_ref, l1_mv, l1_ref, w, h),
+                    "A"
+                );
+            }
+        }
+        // #endregion
         match (motion_l0, motion_l1) {
             (Some(m0), Some(m1)) => {
                 let fallback_l0 = self.zero_reference_planes();
@@ -86,6 +112,20 @@ impl H264Decoder {
                         ref_l0.is_long_term,
                         ref_l1.is_long_term,
                     );
+                    // #region agent log
+                    {
+                        let mb_x = dst_x / 16;
+                        let mb_y = dst_y / 16;
+                        if self.last_slice_type == 1 && ((mb_x == 30 && mb_y == 66) || (mb_x == 109 && mb_y == 9) || (mb_x == 0 && mb_y == 0)) {
+                            debug_log_entry(
+                                "macroblock_inter_cache.rs:bi_weights",
+                                "implicit bi-prediction weights",
+                                &format!("{{\"poc\":{},\"mb_x\":{},\"mb_y\":{},\"w0\":{},\"w1\":{},\"l0_poc\":{},\"l1_poc\":{},\"l0_long\":{},\"l1_long\":{}}}", self.last_poc, mb_x, mb_y, w0, w1, ref_l0.poc, ref_l1.poc, ref_l0.is_long_term, ref_l1.is_long_term),
+                                "B"
+                            );
+                        }
+                    }
+                    // #endregion
                     self.apply_bi_weighted_block(
                         ref_l0.y.as_slice(),
                         ref_l0.u.as_slice(),

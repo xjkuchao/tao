@@ -724,6 +724,14 @@ impl H264Decoder {
         let l1_fx = mod_floor(mv1_x_qpel, 4) as u8;
         let l1_fy = mod_floor(mv1_y_qpel, 4) as u8;
 
+        // #region agent log
+        let dbg_log_pixels = self.last_slice_type == 1 && {
+            let mb_x = dst_x / 16;
+            let mb_y = dst_y / 16;
+            (mb_x == 30 && mb_y == 66) || (mb_x == 109 && mb_y == 9)
+        };
+        let mut dbg_px_samples: Vec<String> = Vec::new();
+        // #endregion
         for y in 0..h {
             for x in 0..w {
                 let px0 = sample_h264_luma_qpel(
@@ -750,9 +758,26 @@ impl H264Decoder {
                 if dst_idx < self.ref_y.len() {
                     let v = ((w0 * px0 + w1 * px1 + 32) >> 6).clamp(0, 255) as u8;
                     self.ref_y[dst_idx] = v;
+                    // #region agent log
+                    if dbg_log_pixels && y < 2 && x < 4 {
+                        dbg_px_samples.push(format!("[{},{},{},{},{}]", x, y, px0, px1, v));
+                    }
+                    // #endregion
                 }
             }
         }
+        // #region agent log
+        if dbg_log_pixels && !dbg_px_samples.is_empty() {
+            let mb_x = dst_x / 16;
+            let mb_y = dst_y / 16;
+            debug_log_entry(
+                "macroblock_inter_mv.rs:bi_weighted_pixels",
+                "bi-weighted pixel samples",
+                &format!("{{\"poc\":{},\"mb_x\":{},\"mb_y\":{},\"w0\":{},\"w1\":{},\"l0_frac\":[{},{}],\"l1_frac\":[{},{}],\"samples\":[{}]}}", self.last_poc, mb_x, mb_y, w0, w1, l0_fx, l0_fy, l1_fx, l1_fy, dbg_px_samples.join(",")),
+                "D"
+            );
+        }
+        // #endregion
 
         let cw = w.div_ceil(2);
         let ch = h.div_ceil(2);

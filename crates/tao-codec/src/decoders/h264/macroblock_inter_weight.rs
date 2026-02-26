@@ -601,6 +601,46 @@ impl H264Decoder {
         ref_l0_list: &[RefPlanes],
         ref_l1_list: &[RefPlanes],
     ) {
+        // #region agent log
+        {
+            let l0_pocs: Vec<i32> = ref_l0_list.iter().map(|r| r.poc).collect();
+            let l1_pocs: Vec<i32> = ref_l1_list.iter().map(|r| r.poc).collect();
+            debug_log_entry(
+                "macroblock_inter_weight.rs:decode_b_slice_mbs",
+                "B-slice entry",
+                &format!("{{\"poc\":{},\"first\":{},\"total\":{},\"spatial\":{},\"l0_pocs\":{:?},\"l1_pocs\":{:?},\"bipred_idc\":{},\"luma_denom\":{},\"chroma_denom\":{}}}", self.last_poc, first, total, direct_spatial_mv_pred_flag, l0_pocs, l1_pocs, self.pps.as_ref().map(|p| p.weighted_bipred_idc).unwrap_or(0), luma_log2_weight_denom, chroma_log2_weight_denom),
+                "AB"
+            );
+            for (check_mb_x, check_mb_y) in [(30usize, 66usize), (109usize, 9usize)] {
+                let px_x = check_mb_x * 16;
+                let px_y = check_mb_y * 16;
+                let mut l0_sample = Vec::new();
+                let mut l1_sample = Vec::new();
+                if let Some(r) = ref_l0_list.first() {
+                    for dy in 0..4usize {
+                        for dx in 0..4usize {
+                            let idx = (px_y + dy) * self.stride_y + (px_x + dx);
+                            l0_sample.push(r.y.get(idx).copied().unwrap_or(0));
+                        }
+                    }
+                }
+                if let Some(r) = ref_l1_list.first() {
+                    for dy in 0..4usize {
+                        for dx in 0..4usize {
+                            let idx = (px_y + dy) * self.stride_y + (px_x + dx);
+                            l1_sample.push(r.y.get(idx).copied().unwrap_or(0));
+                        }
+                    }
+                }
+                debug_log_entry(
+                    "macroblock_inter_weight.rs:ref_pixels",
+                    "reference frame pixels at error MB",
+                    &format!("{{\"poc\":{},\"mb_x\":{},\"mb_y\":{},\"l0_poc\":{},\"l1_poc\":{},\"l0_pixels\":{:?},\"l1_pixels\":{:?}}}", self.last_poc, check_mb_x, check_mb_y, ref_l0_list.first().map(|r| r.poc).unwrap_or(-1), ref_l1_list.first().map(|r| r.poc).unwrap_or(-1), l0_sample, l1_sample),
+                    "A"
+                );
+            }
+        }
+        // #endregion
         self.prev_qp_delta_nz = false;
         let mut cur_qp = slice_qp;
         for mb_idx in first..total {
