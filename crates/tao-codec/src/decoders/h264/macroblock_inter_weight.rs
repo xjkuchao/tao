@@ -11,8 +11,7 @@ impl H264Decoder {
         log2_denom: u8,
     ) -> u8 {
         let shift = i32::from(log2_denom) + 1;
-        let offset_raw = (o0 + o1 + 1) >> 1;
-        let offset = ((offset_raw + 1) | 1) << i32::from(log2_denom);
+        let offset = ((o0 + o1 + 1) | 1) << i32::from(log2_denom);
         ((w0 * p0 + w1 * p1 + offset) >> shift).clamp(0, 255) as u8
     }
 
