@@ -411,18 +411,16 @@ impl H264Decoder {
         for rank in 0..target {
             if let Some(pic) = refs.get(rank).copied() {
                 out.push(Self::reference_to_planes(pic));
+            } else if refs_empty {
+                empty_missing_ranks.push(rank);
+                out.push(self.zero_reference_planes());
             } else {
-                if refs_empty {
-                    empty_missing_ranks.push(rank);
-                    out.push(self.zero_reference_planes());
+                padded_ranks.push(rank);
+                if let Some(pic) = pad_pic {
+                    // 对齐 FFmpeg: 当 active_ref 数量大于实际列表长度时, 复用最后一个有效参考.
+                    out.push(Self::reference_to_planes(pic));
                 } else {
-                    padded_ranks.push(rank);
-                    if let Some(pic) = pad_pic {
-                        // 对齐 FFmpeg: 当 active_ref 数量大于实际列表长度时, 复用最后一个有效参考.
-                        out.push(Self::reference_to_planes(pic));
-                    } else {
-                        out.push(self.zero_reference_planes());
-                    }
+                    out.push(self.zero_reference_planes());
                 }
             }
         }
@@ -461,18 +459,16 @@ impl H264Decoder {
         for rank in 0..target {
             if let Some(pic) = refs.get(rank).copied() {
                 out.push(Self::reference_to_planes(pic));
+            } else if refs_empty {
+                empty_missing_ranks.push(rank);
+                out.push(self.zero_reference_planes());
             } else {
-                if refs_empty {
-                    empty_missing_ranks.push(rank);
-                    out.push(self.zero_reference_planes());
+                padded_ranks.push(rank);
+                if let Some(pic) = pad_pic {
+                    // 对齐 FFmpeg: 当 active_ref 数量大于实际列表长度时, 复用最后一个有效参考.
+                    out.push(Self::reference_to_planes(pic));
                 } else {
-                    padded_ranks.push(rank);
-                    if let Some(pic) = pad_pic {
-                        // 对齐 FFmpeg: 当 active_ref 数量大于实际列表长度时, 复用最后一个有效参考.
-                        out.push(Self::reference_to_planes(pic));
-                    } else {
-                        out.push(self.zero_reference_planes());
-                    }
+                    out.push(self.zero_reference_planes());
                 }
             }
         }
@@ -503,8 +499,8 @@ impl H264Decoder {
     ) {
         if self.last_slice_type != 1
             || num_ref_idx_l1 <= 1
-            || l0_mods.is_empty() == false
-            || l1_mods.is_empty() == false
+            || !l0_mods.is_empty()
+            || !l1_mods.is_empty()
             || l0.len() != l1.len()
             || l1.len() < 2
         {

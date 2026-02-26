@@ -232,14 +232,10 @@ impl H264Decoder {
                 return None;
             }
             if list1 {
-                if self.motion_l1_4x4_index(cx4_u, cy4_u).is_none() {
-                    return None;
-                }
+                self.motion_l1_4x4_index(cx4_u, cy4_u)?;
                 self.l1_motion_candidate_4x4(cx4, cy4).or(Some((0, 0, -1)))
             } else {
-                if self.motion_l0_4x4_index(cx4_u, cy4_u).is_none() {
-                    return None;
-                }
+                self.motion_l0_4x4_index(cx4_u, cy4_u)?;
                 self.l0_motion_candidate_4x4(cx4, cy4).or(Some((0, 0, -1)))
             }
         };
@@ -1104,10 +1100,8 @@ impl H264Decoder {
                 _ => {}
             }
         }
-        if is_b_slice {
-            if self.get_direct_4x4_flag(x4, y4) {
-                return 0;
-            }
+        if is_b_slice && self.get_direct_4x4_flag(x4, y4) {
+            return 0;
         }
         if !same_mb {
             let mb_ty = self.mb_types.get(nb_mb_idx).copied().unwrap_or_default();

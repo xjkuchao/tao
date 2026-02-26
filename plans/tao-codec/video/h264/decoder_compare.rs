@@ -868,7 +868,7 @@ fn compare_video_fast(
         stats.v.update(v_ref, v_test);
         stats.frame_count += 1;
         if stats.first_mismatch_frame.is_none()
-            && (!(y_ref == y_test) || !(u_ref == u_test) || !(v_ref == v_test))
+            && (y_ref != y_test || u_ref != u_test || v_ref != v_test)
         {
             stats.first_mismatch_frame = Some(i);
         }
