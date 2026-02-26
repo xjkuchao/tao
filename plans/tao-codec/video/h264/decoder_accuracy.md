@@ -1,7 +1,5 @@
 # H264 解码器 -- 精度收敛计划
 
-> 前置条件: `decoder_dev.md` P1-P6.6 **全部完成**后才允许进入本计划.
->
 > 关联文档:
 >
 > - 功能开发: `decoder_dev.md`
@@ -65,15 +63,15 @@
 
 ### 2.5 环境变量完整列表
 
-| 变量                                     | 默认值 | 说明                          |
-| ---------------------------------------- | ------ | ----------------------------- |
-| `TAO_H264_COMPARE_INPUT`                 | (必须) | 输入文件路径或 URL            |
-| `TAO_H264_COMPARE_FRAMES`                | `120`  | 对比帧数上限                  |
-| `TAO_H264_COMPARE_REQUIRED_PRECISION`    | `100.0`| 精度阈值(%), 低于此值测试失败 |
-| `TAO_H264_COMPARE_REPORT`                | `0`    | `1` 时输出逐帧 JSON 报告     |
-| `TAO_H264_COMPARE_MB_DIAG`               | `0`    | `1` 时启用宏块级诊断输出      |
-| `TAO_H264_COMPARE_TIMING`                | `0`    | `1` 时输出解码耗时统计        |
-| `TAO_H264_COMPARE_FAIL_ON_REF_FALLBACK`  | `0`    | `1` 时参考帧回退即失败        |
+| 变量                                    | 默认值  | 说明                          |
+| --------------------------------------- | ------- | ----------------------------- |
+| `TAO_H264_COMPARE_INPUT`                | (必须)  | 输入文件路径或 URL            |
+| `TAO_H264_COMPARE_FRAMES`               | `120`   | 对比帧数上限                  |
+| `TAO_H264_COMPARE_REQUIRED_PRECISION`   | `100.0` | 精度阈值(%), 低于此值测试失败 |
+| `TAO_H264_COMPARE_REPORT`               | `0`     | `1` 时输出逐帧 JSON 报告      |
+| `TAO_H264_COMPARE_MB_DIAG`              | `0`     | `1` 时启用宏块级诊断输出      |
+| `TAO_H264_COMPARE_TIMING`               | `0`     | `1` 时输出解码耗时统计        |
+| `TAO_H264_COMPARE_FAIL_ON_REF_FALLBACK` | `0`     | `1` 时参考帧回退即失败        |
 
 ### 2.6 对比执行方式
 
@@ -102,17 +100,17 @@ TAO_H264_COMPARE_INPUT=data/h264_samples/c1_cavlc_baseline_720p.mp4 \
 
 ### 2.7 自动轮转相关环境变量
 
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `TAO_AUTO_TARGET_SAMPLE` | `data/2.mp4` | 自动轮转目标样本 |
-| `TAO_AUTO_KEEP_SAMPLE` | `data/1.mp4` | 自动轮转守护样本 |
-| `TAO_AUTO_TARGET_REQUIRED` | `100.0` | 目标样本精度阈值(%) |
-| `TAO_AUTO_KEEP_REQUIRED` | `100.0` | 守护样本精度阈值(%) |
-| `TAO_AUTO_MAX_ROUNDS` | `50` | 最大轮次, 防止无限循环 |
-| `TAO_AUTO_STABLE_ROUNDS` | `3` | 双样本连续达标后停止的稳定轮次数 |
-| `TAO_AUTO_SKIP_STRICT` | `0` | `1` 时跳过严格 5 项验证 |
-| `TAO_AUTO_COMMIT_PATHS` | `crates/tao-codec/src/decoders/h264 plans/tao-codec/video/h264 tests/run_decoder.rs` | 自动提交的白名单路径 |
-| `TAO_AUTO_COMMIT_TYPE` | `fix` | 自动提交信息前缀(`fix/refactor/...`) |
+| 变量                       | 默认值                                                                               | 说明                                 |
+| -------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------ |
+| `TAO_AUTO_TARGET_SAMPLE`   | `data/2.mp4`                                                                         | 自动轮转目标样本                     |
+| `TAO_AUTO_KEEP_SAMPLE`     | `data/1.mp4`                                                                         | 自动轮转守护样本                     |
+| `TAO_AUTO_TARGET_REQUIRED` | `100.0`                                                                              | 目标样本精度阈值(%)                  |
+| `TAO_AUTO_KEEP_REQUIRED`   | `100.0`                                                                              | 守护样本精度阈值(%)                  |
+| `TAO_AUTO_MAX_ROUNDS`      | `50`                                                                                 | 最大轮次, 防止无限循环               |
+| `TAO_AUTO_STABLE_ROUNDS`   | `3`                                                                                  | 双样本连续达标后停止的稳定轮次数     |
+| `TAO_AUTO_SKIP_STRICT`     | `0`                                                                                  | `1` 时跳过严格 5 项验证              |
+| `TAO_AUTO_COMMIT_PATHS`    | `crates/tao-codec/src/decoders/h264 plans/tao-codec/video/h264 tests/run_decoder.rs` | 自动提交的白名单路径                 |
+| `TAO_AUTO_COMMIT_TYPE`     | `fix`                                                                                | 自动提交信息前缀(`fix/refactor/...`) |
 
 ## 3. 测试样本
 
@@ -123,6 +121,7 @@ TAO_H264_COMPARE_INPUT=data/h264_samples/c1_cavlc_baseline_720p.mp4 \
 **重要** 样本优先级调整:
 
 - P0 首要样本: `data/1.mp4`(最高优先级, 必须先达到阶段 A 精度门槛, 再推进全样本收敛).
+- P1 次要样本: `data/2.mp4`(最高优先级, 在确保P0 样本进度100%条件下, 推进本样本收敛).
 - 回归样本集: `C1-C3`, `E1-E9`, `X1-X4` 保持现有覆盖与门禁, 作为首要样本达标后的批量回归集合.
 
 ### 3.1 核心样本
@@ -225,216 +224,39 @@ ffmpeg -y -i input.mp4 -pix_fmt yuv420p -vframes 10 -f rawvideo ref.yuv
 - G3: 299 帧全片验收 (最终精度)
 - 每次有明显提升后执行严格 5 项验证与提交流程.
 
-### 4.4 自动持续轮转与提交门禁
-
-执行入口:
-
-```bash
-plans/tao-codec/video/h264/run_accuracy_autoloop.sh
-```
-
-每轮固定顺序:
-
-1. 运行目标样本 `data/2.mp4` 的 G0/G1/G2/G3 评测.
-2. 运行守护样本 `data/1.mp4` 的 G0/G1/G2/G3 评测.
-3. 仅当满足以下全部条件时自动提交:
-    - `data/2.mp4` 本轮有可量化提升(按 `P299 > first_mismatch > P67 > P10 > max_err` 判定).
-    - 目标轮严格验证通过(或显式配置跳过严格验证).
-    - `data/1.mp4` 在守护阈值下达标(默认 100%).
-4. 若任一条件不满足, 本轮不提交并进入下一轮.
-
-停止条件:
-
-- `data/2.mp4` 与 `data/1.mp4` 同时达到阈值并连续稳定 N 轮(`TAO_AUTO_STABLE_ROUNDS`).
-- 或达到最大轮次(`TAO_AUTO_MAX_ROUNDS`).
-
-日志产物:
-
-- 单轮日志: `data/h264_round_logs/<round>_f{3,10,67,299}.log`
-- 单样本轮次汇总: `plans/tao-codec/video/h264/round_journal.md`
-- 自动轮转双样本汇总: `data/h264_round_logs/autoloop_journal.md`
-
-## 5. 精度基线记录
-
-### 5.1 首要样本基线重算(10 帧, 2026-02-25)
-
-> 执行命令:
-> `TAO_H264_COMPARE_INPUT=data/1.mp4 TAO_H264_COMPARE_FRAMES=10 cargo test --test run_decoder h264::test_h264_compare -- --nocapture --ignored`
-
-| 样本       | 分辨率    | Profile | 熵编码 | 精度       | Y-PSNR   | U-PSNR   | V-PSNR   | max_err | 首个不一致帧 | 状态   |
-| ---------- | --------- | ------- | ------ | ---------- | -------- | -------- | -------- | ------- | ------------ | ------ |
-| `data/1.mp4` | 1920x1080 | High    | CABAC  | **9.019579%** | 12.6388dB | 24.6379dB | 23.2619dB | 255     | 0            | 待修复 |
-
-### 5.2 当前全样本基线重算(10 帧, 2026-02-25)
-
-> 执行命令:
-> `TAO_H264_COMPARE_FRAMES=10 cargo test --test run_decoder h264::test_h264_accuracy_all -- --nocapture --ignored`
-
-| 样本 | 分辨率    | Profile              | 熵编码 | 精度         | Y-PSNR      | max_err | 状态             |
-| ---- | --------- | -------------------- | ------ | ------------ | ----------- | ------- | ---------------- |
-| C1   | 1280x720  | Constrained Baseline | CAVLC  | 10.019567%   | 16.4540dB   | 249     | 待修复           |
-| C2   | 1920x1080 | Main                 | CABAC  | **99.998691%** | **78.0267dB** | 20      | **近 bit-exact** |
-| C3   | 704x480   | High                 | CABAC  | 88.532197%   | 18.6053dB   | 237     | 待修复           |
-| E1   | 352x200   | Baseline             | CAVLC  | 22.701420%   | 26.5907dB   | 248     | 待修复           |
-| E2   | 1280x720  | Main                 | CABAC  | 48.264818%   | 15.1537dB   | 237     | 待修复           |
-| E3   | 640x352   | Main                 | CABAC  | **99.984168%** | **63.5354dB** | 51      | **近 bit-exact** |
-| E4   | 480x204   | Main                 | CABAC  | 18.908633%   | 15.2386dB   | 245     | 待修复           |
-| E5   | 1920x1088 | Main                 | CABAC  | 39.972762%   | 27.4135dB   | 182     | 待修复           |
-| E6   | 1920x1080 | High                 | CABAC  | 27.440114%   | 8.2483dB    | 239     | 待修复           |
-| E7   | 1920x1080 | High                 | CAVLC  | 14.946132%   | 13.5658dB   | 247     | 待修复           |
-| E8   | 352x288   | High                 | CABAC  | 19.565709%   | 18.9940dB   | 226     | 待修复           |
-| E9   | 352x200   | Baseline             | CAVLC  | 18.495265%   | 21.6717dB   | 176     | 待修复           |
-| X1   | 352x288   | High                 | CABAC  | **100.000000%** | **infdB**    | 0       | **bit-exact**    |
-| X2   | 352x288   | High                 | CABAC  | 85.957623%   | 26.0769dB   | 244     | 待修复           |
-| X3   | 352x288   | High                 | CABAC  | 80.550492%   | 22.2407dB   | 247     | 待修复           |
-| X4   | 352x288   | High                 | CABAC  | 8.437500%    | 10.9704dB   | 239     | 待修复           |
-
-- 通过: 16/16, 失败: 0/16 (阈值 1.00%).
-- 近 bit-exact 样本: C2, E3.
-- bit-exact 样本: X1.
-
-## 6. 已完成的关键修复(归档)
-
-### 6.1 基础设施修复
-
-1. 清除残留 `eprintln!` 调试输出
-2. 修复 MOV 解封装器 `hdlr` box 覆盖问题 (C2, E2, E4)
-3. 新增 H264 AnnexB Elementary Stream 解封装器 (E5, E6, E8, X1-X4)
-4. 修复 H264EsProbe 探测优先级, 防止 MP3 误检 (E8)
-5. 修复 H264 解码器延迟初始化, 支持无 extra_data 的裸流 (E5, E6, X2-X4)
-6. 修复 AVCC/AnnexB NAL 分割冲突, length_size=0 用于裸流 (E5, E6, X2-X4)
-
-### 6.2 帧内路径修复
-
-1. **Slice 边界帧内预测邻居可用性**: 根因修复, 新 slice 首 MB 不使用前一 slice 的邻居做预测. 新增 `left_avail()` / `top_avail()` 方法, 基于 `mb_slice_first_mb` 判断同 slice.
-   - 影响: C2 从 ~20% 提升到 99.999% (首帧 bit-exact)
-2. **IDCT 4x4/8x8 pass 顺序修复**: 错误的"列->行->列"改为正确的"行->列"两 pass.
-3. **I_8x8 block (1,1) has_topright 修复**: `(1, 1) => mb_right_avail` 改为 `(1, 1) => false`.
-
-### 6.3 残差/量化修复
-
-1. **色度 DC 反量化**: 添加舍入偏移 `(1 << (qp_per - 1))`
-2. **去块滤波器全面修复**:
-   - 使用 per-edge QP 替代 slice_qp (mb_qp 数组追踪)
-   - 弱滤波添加 p1/q1 修正
-   - 色度 boundary_step 2->4
-   - 强滤波添加 p2/q2 更新
-
-### 6.4 帧间路径修复
-
-1. **P_Skip MV 推导 AND->OR 逻辑错误**: 任一邻居不可用 OR 满足零条件即返回 (0,0)
-2. **MV 中值预测候选级联 unwrap_or 错误**: 不可用候选统一 -> `(0,0)`, 仅 A 可用时直接返回 A
-3. **Spatial Direct 无邻居错误回退**: 无空间邻居时设 ref=0, mv=(0,0), 不递归 temporal
-4. **MapColToList0 重建 DPB 而非 POC 匹配**: `ReferencePicture` 新增 `ref_l0_poc: Vec<i32>`, 用 POC 匹配
-5. **B slice 16x8/8x16 L1 方向性 MV 预测**: 新增 `predict_mv_l1_16x8` / `predict_mv_l1_8x16`
-
-### 6.5 CAVLC 路径修复
-
-1. **CAVLC nC 上下文 slice 边界感知**: `calc_luma_nc` / `calc_chroma_u_nc` / `calc_chroma_v_nc` 在 MB 边界检查 slice 归属
-2. **CAVLC I_8x8 语法补齐**: 补齐 `transform_size_8x8_flag` 与 `intra8x8_pred_mode` 解析, 并新增 I_8x8 交织预测+残差路径.
-   - 影响: E7 从 0.47% 提升到 6.76%
-3. **CAVLC 容错收敛 (coeff_token + total_zeros)**: `coeff_token` 邻近 VLC 表回退, `total_zeros` 越界抑制.
-   - 影响: E2 `44.68% -> 44.99%`, E4 `19.34% -> 19.58%`, E7 `6.75% -> 6.77%`
-
-### 6.6 容器格式修复
-
-1. **MP4 `edts/elst` 时间线对齐**: MP4 demuxer 新增 `elst` 解析, packet `pts` 按 `media_time` 归一化.
-   - `decoder_compare.rs` 默认过滤 `pts<0` 帧.
-   - 影响: C1 `10.32% -> 10.56%`, E4 `8.41% -> 19.34%`
-
-### 6.7 CABAC 引擎修复
-
-1. **CABAC 字节对齐位解析**: 修复字节对齐位解析 bug.
-2. **P/B 帧 CABAC 解析脱轨(根因)**: P/B 帧的 CABAC 上下文演进在 `end_of_slice_flag` 处脱轨, 导致 slice 提前终止(如 frame1 仅解码 188/8160 MB). 此为影响所有 P/B 帧精度的核心根因.
-
 ## 10. 特征覆盖矩阵
 
-| 特征              | 核心样本 | 扩展样本   | 自制样本    |
-| ----------------- | -------- | ---------- | ----------- |
-| CAVLC 熵编码      | C1       | E1, E9     | -           |
-| CABAC 熵编码      | C2, C3   | E2-E8      | X1-X4       |
-| Baseline Profile  | C1       | E1, E9     | -           |
-| Main Profile      | C2       | E2-E5      | -           |
-| High Profile      | C3       | E6-E8      | X1-X4       |
-| B 帧              | C2, C3   | E2-E7      | X2          |
-| 8x8 变换          | C3       | E6, E7     | X1-X4       |
-| 1080p             | C2       | E5, E6, E7 | -           |
-| 720p              | C1       | E2         | -           |
-| IPCM              | -        | E8         | -           |
-| I-only            | -        | -          | X1          |
-| P-only 无 B 帧    | -        | -          | X3          |
-| 多 slice 同帧     | -        | -          | X4          |
-| MMCO 长期参考     | -        | -          | 待生成      |
-| gaps_in_frame_num | -        | -          | 待生成      |
-| 隐式加权预测      | -        | -          | 待生成      |
-| 裸流 AnnexB       | -        | E5, E6, E8 | X1-X4       |
-
-## 11. 验收标准
-
-### P0 首要样本(`data/1.mp4`)
-
-- [ ] 阶段 A(P0): `data/1.mp4` 在 G3(299 帧)满足 `Y/U/V-PSNR >= 50dB`, `像素精度 >= 99%`, `最大误差 <= 2`.
-- [ ] 阶段 B(P0): `data/1.mp4` 在 G3(299 帧)满足 `像素精度 = 100%`, `Y/U/V-PSNR = inf`, `最大误差 = 0`.
-- [ ] 帧数一致性(P0): `data/1.mp4` Tao 与 FFmpeg 输出帧数完全相同.
-- [ ] 稳定性(P0): 连续 3 次独立运行结果一致, 不出现随机波动或偶发退化.
-
-### 阶段 A
-
-- [ ] 前置条件: 必须先通过 P0 阶段 A, 才进入核心+扩展样本阶段 A 验收.
-- [ ] 核心 3 样本(C1-C3): Y/U/V-PSNR >= 50dB, 像素精度 >= 99%, 最大误差 <= 2.
-- [ ] 扩展 9 样本(E1-E9): 全部达到相同指标.
-- [ ] 帧数一致性: 全部样本 Tao 与 FFmpeg 输出帧数完全相同.
-
-### 阶段 B
-
-- [ ] 前置条件: 必须先通过 P0 阶段 B, 才进入核心+扩展样本 bit-exact 验收.
-- [ ] 核心+扩展全部样本: 像素精度 = 100%, 最大误差 = 0.
-- [ ] `decoder_compare.rs` 默认精度 100% 通过.
-
-### 通用
-
-- [ ] 验收顺序固定: `P0(data/1.mp4) -> 核心样本(C1-C3) -> 扩展样本(E1-E9) -> 自制回归(X1-X4)`.
-- [ ] 门禁帧数要求: `G0=3`(快速), `G1=10`(短门禁), `G2=67`(中门禁), `G3=299`(最终验收), 正式通过必须以 G3 结果为准.
-- [ ] 精度回归 CI 门禁通过(至少 3 个本地样本).
-- [ ] 输出最终精度报告(各样本各帧 Y/U/V 统计).
-- [x] 自制样本覆盖特征矩阵中"需自制"项(至少 3 项): X1(I-only), X3(P-only), X4(多 slice).
-
-## 12. 进度
-
-- [x] 对比基础设施搭建(JSON 报告 + 样本路径映射 + 批量对比)
-- [x] 样本本地化: C1-C3, E1-E9 已下载到 `data/h264_samples/`
-- [x] 自制定向样本覆盖: X1(I-only), X2(B 帧), X3(P-only), X4(多 slice)
-- [x] 精度回归测试: C1-C3, E1-E9, X1-X4 共 16 个独立测试 + 批量汇总
-- [x] 去块滤波器修复: per-edge QP, 弱/强滤波像素修正, 色度 boundary_step
-- [x] 色度 DC 反量化舍入偏移修复
-- [x] Slice 边界帧内预测邻居可用性修复 (C2 100% bit-exact 首帧)
-- [x] CAVLC nC 上下文 slice 边界感知修复
-- [x] E7 诊断与修复 (CAVLC + yuvj420p, 0.47% -> 6.76%, 已通过 1% 门槛)
-- [x] MP4 `edts/elst` 时间线对齐 + 对比工具负 PTS 过滤 (C1/E4 收敛)
-- [x] CAVLC 容错收敛 (coeff_token 邻表回退 + total_zeros 越界抑制)
-- [x] CABAC P/B 帧解析脱轨根因修复 (slice 提前终止)
-- [x] 42 轮实验完成, 建立否决清单
-- [ ] CABAC P/B 帧语法路径完善 (C3, E2, E5, E6, E8)
-- [ ] CAVLC P/B 帧运动补偿完善 (C1, E1, E9)
-- [ ] CABAC I_8x8 预测模式不同步修复 (X1)
-- [ ] CAVLC I_8x8 路径精度提升 (E7)
-- [ ] 核心 3 样本阶段 A 达标
-- [ ] 扩展样本阶段 A 达标
-- [ ] 核心+扩展全部样本阶段 B 达标(bit-exact)
-- [ ] CI 精度门禁集成
-- [ ] 最终精度报告
+| 特征              | 核心样本 | 扩展样本   | 自制样本 |
+| ----------------- | -------- | ---------- | -------- |
+| CAVLC 熵编码      | C1       | E1, E9     | -        |
+| CABAC 熵编码      | C2, C3   | E2-E8      | X1-X4    |
+| Baseline Profile  | C1       | E1, E9     | -        |
+| Main Profile      | C2       | E2-E5      | -        |
+| High Profile      | C3       | E6-E8      | X1-X4    |
+| B 帧              | C2, C3   | E2-E7      | X2       |
+| 8x8 变换          | C3       | E6, E7     | X1-X4    |
+| 1080p             | C2       | E5, E6, E7 | -        |
+| 720p              | C1       | E2         | -        |
+| IPCM              | -        | E8         | -        |
+| I-only            | -        | -          | X1       |
+| P-only 无 B 帧    | -        | -          | X3       |
+| 多 slice 同帧     | -        | -          | X4       |
+| MMCO 长期参考     | -        | -          | 待生成   |
+| gaps_in_frame_num | -        | -          | 待生成   |
+| 隐式加权预测      | -        | -          | 待生成   |
+| 裸流 AnnexB       | -        | E5, E6, E8 | X1-X4    |
 
 ## 13. 关键代码位置参考
 
-| 组件              | Tao 文件                                | FFmpeg 参考文件                                |
-| ----------------- | --------------------------------------- | ---------------------------------------------- |
-| I_4x4/I_8x8 预测 | `decoders/h264/intra.rs`                | `libavcodec/h264pred_template.c`               |
-| 模式可用性重映射  | `decoders/h264/macroblock_intra.rs`     | `libavcodec/h264_parse.c:130-210`              |
-| P_Skip MV         | `decoders/h264/macroblock_inter.rs`     | `libavcodec/h264_mvpred.h:388-485`             |
-| MV 中值预测       | `decoders/h264/macroblock_inter_mv.rs`  | `libavcodec/h264_mvpred.h:226-277`             |
-| B Direct spatial  | `decoders/h264/macroblock_inter.rs`     | `libavcodec/h264_direct.c:140-600`             |
-| MapColToList0     | `decoders/h264/macroblock_inter.rs`     | `libavcodec/h264_direct.c:82-137`              |
-| CABAC 引擎        | `decoders/h264/cabac.rs`                | `libavcodec/cabac.h`, `cabac_functions.h`      |
-| CAVLC 残差解码    | `decoders/h264/cavlc_mb.rs`             | `libavcodec/h264_cavlc.c`                      |
-| 残差/反量化/IDCT  | `decoders/h264/residual.rs`             | `libavcodec/h264_idct_template.c`              |
-| 参考帧/DPB/输出   | `decoders/h264/output.rs`               | `libavcodec/h264_refs.c`, `h264_picture.c`     |
+| 组件             | Tao 文件                               | FFmpeg 参考文件                            |
+| ---------------- | -------------------------------------- | ------------------------------------------ |
+| I_4x4/I_8x8 预测 | `decoders/h264/intra.rs`               | `libavcodec/h264pred_template.c`           |
+| 模式可用性重映射 | `decoders/h264/macroblock_intra.rs`    | `libavcodec/h264_parse.c:130-210`          |
+| P_Skip MV        | `decoders/h264/macroblock_inter.rs`    | `libavcodec/h264_mvpred.h:388-485`         |
+| MV 中值预测      | `decoders/h264/macroblock_inter_mv.rs` | `libavcodec/h264_mvpred.h:226-277`         |
+| B Direct spatial | `decoders/h264/macroblock_inter.rs`    | `libavcodec/h264_direct.c:140-600`         |
+| MapColToList0    | `decoders/h264/macroblock_inter.rs`    | `libavcodec/h264_direct.c:82-137`          |
+| CABAC 引擎       | `decoders/h264/cabac.rs`               | `libavcodec/cabac.h`, `cabac_functions.h`  |
+| CAVLC 残差解码   | `decoders/h264/cavlc_mb.rs`            | `libavcodec/h264_cavlc.c`                  |
+| 残差/反量化/IDCT | `decoders/h264/residual.rs`            | `libavcodec/h264_idct_template.c`          |
+| 参考帧/DPB/输出  | `decoders/h264/output.rs`              | `libavcodec/h264_refs.c`, `h264_picture.c` |
