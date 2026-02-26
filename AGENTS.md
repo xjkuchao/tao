@@ -345,3 +345,34 @@ tao/
 5. 开发效率
 
 若无法自动判定, 在变更说明中记录取舍依据。
+
+## Cursor Cloud specific instructions
+
+### 环境前置条件
+
+- Rust 工具链要求 **stable >= 1.85** (edition 2024). 环境启动脚本会自动安装。
+- `tao-play` (SDL2 播放器) 的 bundled 编译需要系统安装 `cmake`, `libstdc++-13-dev`, `libxext-dev`, `libx11-dev`, `libasound2-dev`. 启动脚本会自动安装这些依赖。
+- 需要确保 `/usr/lib/x86_64-linux-gnu/libstdc++.so` 符号链接存在, 否则 SDL2 bundled 构建在 clang 链接阶段会因找不到 `-lstdc++` 而失败。
+
+### 服务概览
+
+本项目无外部服务依赖(无数据库/消息队列/Docker), 是纯 Rust Cargo workspace.
+
+| 二进制 | 包名 | 运行命令 | 说明 |
+|--------|------|----------|------|
+| `tao` | `tao-cli` | `cargo run --bin tao -p tao-cli -- [ARGS]` | 多媒体转码 CLI |
+| `tao-probe` | `tao-probe` | `cargo run --bin tao-probe -p tao-probe -- [ARGS]` | 媒体信息探测工具 |
+| `tao-play` | `tao-play` | `cargo run --bin tao-play -p tao-play -- [ARGS]` | SDL2 媒体播放器(需要显示服务器) |
+
+### 检查命令
+
+参见 `AGENTS.md` 第 17 节提交流程规范. 标准检查命令:
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- `cargo test --workspace --all-targets --all-features --no-fail-fast`
+- `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps`
+
+### 已知问题
+
+- `tao-codec` 中存在 10 个预存 H264 B-frame 测试失败(均在 `decoders::h264::tests::decode_b` 和 `decoders::h264::tests::prediction`)和少量 clippy/fmt 告警, 属于上游代码问题, 非环境问题。
+- `tao-probe` 的 `--help` 输出中会附带系统 ffprobe 的兼容性输出, 这是正常行为。
