@@ -358,15 +358,16 @@ tao/
 
 本项目无外部服务依赖(无数据库/消息队列/Docker), 是纯 Rust Cargo workspace.
 
-| 二进制 | 包名 | 运行命令 | 说明 |
-|--------|------|----------|------|
-| `tao` | `tao-cli` | `cargo run --bin tao -p tao-cli -- [ARGS]` | 多媒体转码 CLI |
-| `tao-probe` | `tao-probe` | `cargo run --bin tao-probe -p tao-probe -- [ARGS]` | 媒体信息探测工具 |
-| `tao-play` | `tao-play` | `cargo run --bin tao-play -p tao-play -- [ARGS]` | SDL2 媒体播放器(需要显示服务器) |
+| 二进制      | 包名        | 运行命令                                           | 说明                            |
+| ----------- | ----------- | -------------------------------------------------- | ------------------------------- |
+| `tao-cli`   | `tao-cli`   | `cargo run --bin tao-cli -p tao-cli -- [ARGS]`     | 多媒体转码 CLI                  |
+| `tao-probe` | `tao-probe` | `cargo run --bin tao-probe -p tao-probe -- [ARGS]` | 媒体信息探测工具                |
+| `tao-play`  | `tao-play`  | `cargo run --bin tao-play -p tao-play -- [ARGS]`   | SDL2 媒体播放器(需要显示服务器) |
 
 ### 检查命令
 
 参见 `AGENTS.md` 第 17 节提交流程规范. 标准检查命令:
+
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - `cargo test --workspace --all-targets --all-features --no-fail-fast`
@@ -374,5 +375,4 @@ tao/
 
 ### 已知问题
 
-- `tao-codec` 中存在 10 个预存 H264 B-frame 测试失败(均在 `decoders::h264::tests::decode_b` 和 `decoders::h264::tests::prediction`)和少量 clippy/fmt 告警, 属于上游代码问题, 非环境问题。
 - `tao-probe` 的 `--help` 输出中会附带系统 ffprobe 的兼容性输出, 这是正常行为。

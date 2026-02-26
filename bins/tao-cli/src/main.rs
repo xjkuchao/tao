@@ -23,7 +23,7 @@ use processor::{
 use transcode::transcode_to_raw_yuv;
 
 #[derive(Parser, Debug)]
-#[command(name = "tao", version, about = "纯 Rust 多媒体转码工具")]
+#[command(name = "tao-cli", version, about = "纯 Rust 多媒体转码工具")]
 struct Cli {
     /// 输入文件路径
     #[arg(short, long)]
