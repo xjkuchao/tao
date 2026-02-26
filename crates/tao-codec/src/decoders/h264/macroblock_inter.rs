@@ -345,7 +345,9 @@ impl H264Decoder {
         let col_mb_type = col_pic.mb_types.get(mb_idx).copied().unwrap_or(0);
         let col_is_intra = col_mb_type <= 25;
         if col_is_intra {
-            return false;
+            // H.264 spec 8.4.1.2.3: intra 共定位宏块等价于 refIdxCol=0, mvCol=(0,0),
+            // 满足 colZeroFlag 条件.
+            return true;
         }
         if let Some((col_l0_mv_x, col_l0_mv_y, col_l0_ref_idx)) =
             self.ref_pic_l0_motion_at(col_pic, mb_x, mb_y, part_x4, part_y4)
@@ -434,11 +436,11 @@ impl H264Decoder {
     }
 
     fn clamp_direct_ref_idx(candidate: Option<i8>, list_len: usize) -> Option<i8> {
+        let idx = candidate?;
         if list_len == 0 {
             return None;
         }
-        let idx = candidate.unwrap_or(0).max(0) as usize;
-        Some(idx.min(list_len - 1) as i8)
+        Some((idx.max(0) as usize).min(list_len - 1) as i8)
     }
 
     #[allow(clippy::too_many_arguments)]
