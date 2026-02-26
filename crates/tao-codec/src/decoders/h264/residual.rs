@@ -246,10 +246,8 @@ fn decode_abs_level(
 /// 返回值等价于 FFmpeg 中的 `coeff_abs` 初值, 上层需再加 14.
 fn decode_abs_suffix_bypass(cabac: &mut CabacDecoder) -> u32 {
     let mut j = 0u32;
-    // 对齐 FFmpeg:
-    // while (get_cabac_bypass() && j < 16+7) j++;
-    // 注意 bypass 读取在前, 到达上界时仍会多读取 1bit.
-    while cabac.decode_bypass() == 1 && j < 23 {
+    // 对齐 FFmpeg: while (j < 16+7 && get_cabac_bypass()) j++;
+    while j < 23 && cabac.decode_bypass() == 1 {
         j += 1;
     }
 

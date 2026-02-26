@@ -387,12 +387,11 @@ fn edge_thresholds(
     let Some(&qp_q) = qps.get(idx_q) else {
         return (default_alpha_idx, default_alpha, default_beta);
     };
+    let qp_avg = (qp_p + qp_q + 1) >> 1;
     let edge_qp = if let Some(offset) = chroma_qp_remap_offset {
-        let qpc_p = chroma_qp_from_luma_with_offset(qp_p, offset);
-        let qpc_q = chroma_qp_from_luma_with_offset(qp_q, offset);
-        (qpc_p + qpc_q + 1) >> 1
+        chroma_qp_from_luma_with_offset(qp_avg, offset)
     } else {
-        (qp_p + qp_q + 1) >> 1
+        qp_avg
     };
     let ai = alpha_index(edge_qp, ctx.alpha_offset_div2);
     let a = alpha_threshold(edge_qp, ctx.alpha_offset_div2);
@@ -866,18 +865,22 @@ fn motion_sample_at(
 }
 
 fn list_motion_mismatch(a: Option<MotionSample>, b: Option<MotionSample>) -> Option<bool> {
-    let (Some(a), Some(b)) = (a, b) else {
-        return None;
-    };
-    if a.ref_idx != b.ref_idx {
-        return Some(true);
+    match (a, b) {
+        (None, None) => None,
+        // 一侧有运动数据另一侧无: 参考图像数量不对称, 视为不匹配.
+        (Some(_), None) | (None, Some(_)) => Some(true),
+        (Some(a), Some(b)) => {
+            if a.ref_idx != b.ref_idx {
+                return Some(true);
+            }
+            if a.ref_idx < 0 {
+                return Some(false);
+            }
+            let mv_dx = (i32::from(a.mv_x) - i32::from(b.mv_x)).abs();
+            let mv_dy = (i32::from(a.mv_y) - i32::from(b.mv_y)).abs();
+            Some(mv_dx >= 4 || mv_dy >= 4)
+        }
     }
-    if a.ref_idx < 0 {
-        return Some(false);
-    }
-    let mv_dx = (i32::from(a.mv_x) - i32::from(b.mv_x)).abs();
-    let mv_dy = (i32::from(a.mv_y) - i32::from(b.mv_y)).abs();
-    Some(mv_dx >= 4 || mv_dy >= 4)
 }
 
 fn combine_motion_list_mismatch(
