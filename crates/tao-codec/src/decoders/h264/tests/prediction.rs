@@ -568,7 +568,6 @@ fn test_predict_p_skip_mv_uses_partition_predict_when_neighbors_not_both_zero() 
 }
 
 #[test]
-#[ignore = "RefPlanes 为私有结构体, 测试无法构造非空 ref list; build_b_direct_motion 对空列表返回 None"]
 fn test_build_b_direct_motion_spatial_returns_zero_when_left_top_neighbors_are_zero() {
     let mut dec = build_test_decoder();
     dec.width = 32;
@@ -586,7 +585,10 @@ fn test_build_b_direct_motion_spatial_returns_zero_when_left_top_neighbors_are_z
         dec.ref_idx_l1[idx] = 0;
     }
 
-    let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true, &[], &[]);
+    let ref_l0_list = vec![build_constant_ref_planes(&dec, 32, 64, 96)];
+    let ref_l1_list = vec![build_constant_ref_planes(&dec, 48, 80, 112)];
+    let (motion_l0, motion_l1) =
+        dec.build_b_direct_motion(1, 1, 12, -8, true, &ref_l0_list, &ref_l1_list);
     let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
     let motion_l1 = motion_l1.expect("spatial direct 应提供 L1 运动信息");
     assert_eq!(motion_l0.mv_x, 0, "零向量条件满足时 L0 MV(x) 应归零");
@@ -596,7 +598,6 @@ fn test_build_b_direct_motion_spatial_returns_zero_when_left_top_neighbors_are_z
 }
 
 #[test]
-#[ignore = "RefPlanes 为私有结构体, 测试无法构造非空 ref list; build_b_direct_motion 对空列表返回 None"]
 fn test_build_b_direct_motion_spatial_zero_condition_uses_top_and_diagonal_neighbors() {
     let mut dec = build_test_decoder();
     dec.width = 32;
@@ -615,7 +616,10 @@ fn test_build_b_direct_motion_spatial_zero_condition_uses_top_and_diagonal_neigh
         dec.ref_idx_l1[idx] = 0;
     }
 
-    let (motion_l0, motion_l1) = dec.build_b_direct_motion(0, 1, 12, -8, true, &[], &[]);
+    let ref_l0_list = vec![build_constant_ref_planes(&dec, 32, 64, 96)];
+    let ref_l1_list = vec![build_constant_ref_planes(&dec, 48, 80, 112)];
+    let (motion_l0, motion_l1) =
+        dec.build_b_direct_motion(0, 1, 12, -8, true, &ref_l0_list, &ref_l1_list);
     let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
     let motion_l1 = motion_l1.expect("spatial direct 应提供 L1 运动信息");
     assert_eq!(motion_l0.mv_x, 0, "上邻与对角邻均零向量时 L0 MV(x) 应归零");
@@ -625,7 +629,6 @@ fn test_build_b_direct_motion_spatial_zero_condition_uses_top_and_diagonal_neigh
 }
 
 #[test]
-#[ignore = "RefPlanes 为私有结构体, 测试无法构造非空 ref list; build_b_direct_motion 对空列表返回 None"]
 fn test_build_b_direct_motion_spatial_l1_fallback_keeps_input_when_neighbors_absent() {
     let mut dec = build_test_decoder();
     dec.width = 32;
@@ -643,7 +646,8 @@ fn test_build_b_direct_motion_spatial_l1_fallback_keeps_input_when_neighbors_abs
     dec.ref_idx_l0[top_mb] = 0;
     dec.ref_idx_l1[top_mb] = -1;
 
-    let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true, &[], &[]);
+    let ref_l0_list = vec![build_constant_ref_planes(&dec, 32, 64, 96)];
+    let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true, &ref_l0_list, &[]);
     let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
     assert_eq!(
         motion_l0.mv_x, 0,
@@ -660,7 +664,6 @@ fn test_build_b_direct_motion_spatial_l1_fallback_keeps_input_when_neighbors_abs
 }
 
 #[test]
-#[ignore = "RefPlanes 为私有结构体, 测试无法构造非空 ref list; build_b_direct_motion 对空列表返回 None"]
 fn test_build_b_direct_motion_spatial_uses_independent_l1_neighbor_mv() {
     let mut dec = build_test_decoder();
     dec.width = 32;
@@ -684,7 +687,10 @@ fn test_build_b_direct_motion_spatial_uses_independent_l1_neighbor_mv() {
     dec.mv_l1_y[top_mb] = 0;
     dec.ref_idx_l1[top_mb] = 0;
 
-    let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true, &[], &[]);
+    let ref_l0_list = vec![build_constant_ref_planes(&dec, 32, 64, 96)];
+    let ref_l1_list = vec![build_constant_ref_planes(&dec, 48, 80, 112)];
+    let (motion_l0, motion_l1) =
+        dec.build_b_direct_motion(1, 1, 12, -8, true, &ref_l0_list, &ref_l1_list);
     let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
     let motion_l1 = motion_l1.expect("spatial direct 应提供 L1 运动信息");
     assert_eq!(motion_l0.mv_x, 0, "L0 应独立使用 list0 邻居预测 MV(x)");
@@ -694,7 +700,6 @@ fn test_build_b_direct_motion_spatial_uses_independent_l1_neighbor_mv() {
 }
 
 #[test]
-#[ignore = "RefPlanes 为私有结构体, 测试无法构造非空 ref list; build_b_direct_motion 对空列表返回 None"]
 fn test_build_b_direct_motion_spatial_uses_independent_l0_neighbor_mv() {
     let mut dec = build_test_decoder();
     dec.width = 32;
@@ -713,7 +718,8 @@ fn test_build_b_direct_motion_spatial_uses_independent_l0_neighbor_mv() {
     dec.ref_idx_l1[left_mb] = -1;
     dec.ref_idx_l1[top_mb] = -1;
 
-    let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true, &[], &[]);
+    let ref_l0_list = vec![build_constant_ref_planes(&dec, 32, 64, 96)];
+    let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true, &ref_l0_list, &[]);
     let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
     assert_eq!(motion_l0.mv_x, 20, "L0 应独立使用 list0 邻居预测 MV(x)");
     assert_eq!(motion_l0.mv_y, 0, "L0 应独立使用 list0 邻居预测 MV(y)");
@@ -864,6 +870,44 @@ fn test_build_b_direct_motion_temporal_map_col_uses_ref_l1_poc() {
     assert_eq!(
         motion_l0.ref_idx, 1,
         "map_col 应使用 ref_l1_poc(8) 映射到当前 list0 索引 1, 不能误用 ref_l0_poc(2)"
+    );
+}
+
+#[test]
+fn test_build_b_direct_motion_temporal_colocated_lookup_prefers_poc_over_frame_num() {
+    let mut dec = build_test_decoder();
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+
+    // 先插入目标共定位参考帧(frame_num=9, poc=8), 其 list0 MV 设为 +20(qpel).
+    push_custom_reference_with_l0_motion(&mut dec, 9, 8, 40, None, (20, 0, 0));
+    {
+        let col_pic = dec.reference_frames.back_mut().expect("应存在共定位参考帧");
+        col_pic.ref_l0_poc = vec![2];
+    }
+    // 再插入一个同 frame_num 但不同 poc 的干扰参考帧.
+    // 若仅按 frame_num 查找, 会误命中该帧并得到错误 MV.
+    push_custom_reference_with_l0_motion(&mut dec, 9, 100, 90, None, (4, 0, 0));
+    {
+        let col_pic = dec.reference_frames.back_mut().expect("应存在干扰参考帧");
+        col_pic.ref_l0_poc = vec![2];
+    }
+
+    let mut ref_l0_0 = build_constant_ref_planes(&dec, 10, 20, 30);
+    ref_l0_0.frame_num = 1;
+    ref_l0_0.poc = 2;
+    let mut ref_l1_0 = build_constant_ref_planes(&dec, 11, 21, 31);
+    ref_l1_0.frame_num = 9;
+    ref_l1_0.poc = 8;
+
+    let ref_l0_list = vec![ref_l0_0];
+    let ref_l1_list = vec![ref_l1_0];
+
+    let (motion_l0, _) = dec.build_b_direct_motion(0, 0, 0, 0, false, &ref_l0_list, &ref_l1_list);
+    let motion_l0 = motion_l0.expect("temporal direct 应提供 L0 运动信息");
+    assert_eq!(
+        motion_l0.mv_x, 10,
+        "共定位参考查找应优先按 POC 精确匹配, 不能被同 frame_num 干扰参考误导"
     );
 }
 

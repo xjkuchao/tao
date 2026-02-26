@@ -260,6 +260,36 @@ cargo test --release --test run_decoder h264::test_h264_accuracy_all -- --nocapt
 - 已回退 (需联动): 修复回退, 标记需配合其他修复点联动。
 - 跳过 (上游阻塞): 因上游子功能未修复而暂跳。
 
+## 本轮推进记录 (2026-02-26)
+
+### 已推进子功能点
+
+- `2-1 MV 中值预测`:
+  - 恢复 `test_decode_cavlc_slice_data_p_non_skip_inter_16x16_prefers_single_ref_match_mvp` 执行 (移除 `#[ignore]`)。
+  - 结果: 已确认当前实现满足 "单一邻居 ref 匹配优先复用该邻居 MV" 规则。
+- `2-4/2-6 B_Direct spatial + col_zero_flag`:
+  - 在 `build_b_direct_motion_for_part` 的 spatial 分支补齐 `col_zero_flag + ref_idx==(0,0)` 的强制零 MV 逻辑。
+  - 对应回归: spatial direct 系列 5 个测试全部改为可执行并通过。
+- `2-5 temporal direct 共定位映射稳健性`:
+  - `find_reference_picture_for_planes` 短期参考查找改为优先按 `(poc, frame_num)` 精确匹配, 再回退。
+  - 新增回归: `test_build_b_direct_motion_temporal_colocated_lookup_prefers_poc_over_frame_num`。
+
+### 本轮验证结果
+
+- 单测:
+  - `cargo test -p tao-codec decoders::h264::tests -- --nocapture` 通过。
+  - H264 子测试总计: `178 passed, 0 failed, 0 ignored`。
+- 精度快速对比:
+  - `data/2.mp4` 3 帧: `78.333151%` (上一轮约 `78.305566%`)。
+  - `data/2.mp4` 10 帧: `56.165069%` (上一轮约 `56.017670%`)。
+  - `data/1.mp4` 对比用例保持通过。
+
+### 未完成与下一轮优先级
+
+- `模块 0 Phase A`: 继续核对 CABAC B-slice `mb_type/sub_mb_type` 路径与 FFmpeg 对齐情况。
+- `模块 2`: 继续细化 `2-4/2-5/2-8` (direct 16x16 与 direct 8x8) 在真实流中的联动误差。
+- `模块 1`: 继续验证 B 帧场景下 L0/L1 默认列表与重排细节 (尤其多帧链路)。
+
 ## 重新拆分策略
 
 当所有 ~50 个子功能点循环一遍后, 如精度仍未达标:

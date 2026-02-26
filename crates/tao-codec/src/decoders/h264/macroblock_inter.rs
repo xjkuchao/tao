@@ -127,13 +127,30 @@ impl H264Decoder {
             {
                 return Some(found);
             }
-        } else if let Some(found) = self
-            .reference_frames
-            .iter()
-            .rev()
-            .find(|pic| pic.long_term_frame_idx.is_none() && pic.frame_num == planes.frame_num)
-        {
-            return Some(found);
+        } else {
+            // 短期参考帧在 B 帧场景下可能存在 frame_num 重复, 必须优先按 (poc, frame_num) 精确匹配.
+            if let Some(found) = self.reference_frames.iter().rev().find(|pic| {
+                pic.long_term_frame_idx.is_none()
+                    && pic.poc == planes.poc
+                    && pic.frame_num == planes.frame_num
+            }) {
+                return Some(found);
+            }
+            if let Some(found) = self
+                .reference_frames
+                .iter()
+                .rev()
+                .find(|pic| pic.long_term_frame_idx.is_none() && pic.poc == planes.poc)
+            {
+                return Some(found);
+            }
+            if let Some(found) =
+                self.reference_frames.iter().rev().find(|pic| {
+                    pic.long_term_frame_idx.is_none() && pic.frame_num == planes.frame_num
+                })
+            {
+                return Some(found);
+            }
         }
         self.reference_frames.iter().rev().find(|pic| {
             pic.poc == planes.poc && (pic.long_term_frame_idx.is_some() == planes.is_long_term)
@@ -517,13 +534,17 @@ impl H264Decoder {
             }
             ref_idx_l0 = Self::clamp_direct_ref_idx(ref_idx_l0, ref_l0_list.len());
             ref_idx_l1 = Self::clamp_direct_ref_idx(ref_idx_l1, ref_l1_list.len());
+            // H.264 8.4.1.2.2: spatial direct 也需要命中 col_zero_flag 时强制零向量,
+            // 否则会在 B 帧链路中引入系统性漂移.
+            let col_zero = self.col_zero_flag_for_part(mb_x, mb_y, part_x4, part_y4, ref_l1_list);
+            let force_zero_mv = col_zero && ref_idx_l0 == Some(0) && ref_idx_l1 == Some(0);
 
             let motion_l0 = ref_idx_l0.map(|ref_idx| {
                 let (mv_l0_x, mv_l0_y) =
                     Self::spatial_direct_mv_from_neighbors(&l0_cands, ref_idx, 0, 0);
                 BMotion {
-                    mv_x: mv_l0_x,
-                    mv_y: mv_l0_y,
+                    mv_x: if force_zero_mv { 0 } else { mv_l0_x },
+                    mv_y: if force_zero_mv { 0 } else { mv_l0_y },
                     ref_idx,
                 }
             });
@@ -531,8 +552,8 @@ impl H264Decoder {
                 let (mv_l1_x, mv_l1_y) =
                     Self::spatial_direct_mv_from_neighbors(&l1_cands, ref_idx, 0, 0);
                 BMotion {
-                    mv_x: mv_l1_x,
-                    mv_y: mv_l1_y,
+                    mv_x: if force_zero_mv { 0 } else { mv_l1_x },
+                    mv_y: if force_zero_mv { 0 } else { mv_l1_y },
                     ref_idx,
                 }
             });
