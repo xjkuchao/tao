@@ -25,10 +25,13 @@
 - X1 (I-only) 100% bit-exact → 帧内预测路径已正确
 - C2/E3 (Main CABAC) 近 bit-exact → Main profile CABAC 基本正确
 - data/2.mp4 (Main CABAC + B帧) Frame 0 bit-exact, Frame 1 (P) 99.56%, B帧大幅偏差
-  - P帧误差极度局部化 (max_err=30, 仅 0.44% 像素受影响)
-  - B帧误差主要由 P帧误差级联放大导致
-  - data/2.mp4 使用 weighted_bipred_idc=2 (隐式加权) + weighted_pred_flag=1
-  - 禁用加权预测无效果 (默认权重为恒等变换)
+  - **确认**: P帧误差在 pre-deblock 重建阶段即已存在(非去块问题)
+  - **确认**: Frame 0 (I) 无去块时 Tao 与 FFmpeg 0 diff → 参考帧完全一致
+  - **确认**: Frame 1 (P) 无去块时仍有 8698 像素差异 (max_err=30) → 解码语法差异
+  - **首个误差 MB**: MB(109,9) = P_L0_L0_8x16 (p_mb_type=2), pixel (1752,149), max_err=1
+  - 误差从 MB(109,9) 开始逐渐放大 (CABAC 上下文漂移), 到 MB(30,66) 时 max_err=30
+  - 已排除: 加权预测, qpel 插值, 去块 QP, CBP 上下文, CABAC 初始化表, 参考帧裁剪
+  - **待排查**: P_L0_L0_8x16 路径的 CABAC 语法解码是否有微小偏差
 - 所有 CAVLC 样本精度极低 → CAVLC 路径有独立的系统性问题
 
 ## 功能模块大块划分 (8 大模块)

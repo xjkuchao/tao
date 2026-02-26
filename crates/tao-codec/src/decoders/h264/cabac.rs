@@ -138,6 +138,7 @@ impl<'a> CabacDecoder<'a> {
     pub fn restart_engine(&mut self) {
         self.init_decoder_from(self.raw_pos);
     }
+
 }
 
 /// 初始化 CABAC 上下文模型数组 (I-slice)
