@@ -854,15 +854,16 @@ impl H264Decoder {
 
     fn derive_reorder_depth_from_sps(sps: Option<&Sps>) -> usize {
         sps.map(|cur| {
+            let level_max = Self::derive_level_max_dpb_frames(cur);
+            let level_reorder_cap = level_max.saturating_sub(1).min(16);
             if let Some(max_num_reorder_frames) = cur.max_num_reorder_frames {
                 (max_num_reorder_frames.min(16) as usize)
-                    .min(cur.max_num_ref_frames.min(16) as usize)
+                    .min(level_reorder_cap)
+                    .max(1)
             } else {
                 // 规范未显式信令 max_num_reorder_frames 时, 用 level 上限
-                // 并按 max_num_ref_frames 收敛: refs=1 仍可能存在 B 帧重排需求, 不能硬降到 0.
-                let level_max = Self::derive_level_max_dpb_frames(cur);
-                let ref_cap = (cur.max_num_ref_frames.min(16) as usize).max(1);
-                level_max.saturating_sub(1).min(16).min(ref_cap)
+                // 约束重排深度. refs=1 也可能存在参考 B 帧链路, 不能按 ref 数量硬裁剪.
+                level_reorder_cap.max(1)
             }
         })
         .unwrap_or(2)

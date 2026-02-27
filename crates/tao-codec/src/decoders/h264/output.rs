@@ -5,6 +5,20 @@ use super::*;
 // ============================================================
 
 impl H264Decoder {
+    fn derive_dpb_output_capacity(&self) -> usize {
+        let Some(sps) = self.sps.as_ref() else {
+            return self.max_reference_frames.max(1);
+        };
+
+        let level_cap = Self::derive_level_max_dpb_frames(sps);
+        let signaled_cap = sps
+            .max_dec_frame_buffering
+            .map(|v| (v.clamp(1, 16) as usize).min(level_cap))
+            .unwrap_or(level_cap);
+
+        signaled_cap.max(self.max_reference_frames).max(1)
+    }
+
     pub(super) fn record_missing_reference_fallback(
         &mut self,
         scene: &str,
@@ -790,7 +804,7 @@ impl H264Decoder {
             self.output_queue.push_back(Frame::Video(out.frame));
         }
 
-        let dpb_capacity = self.max_reference_frames.max(1);
+        let dpb_capacity = self.derive_dpb_output_capacity();
         while !self.reorder_buffer.is_empty()
             && self
                 .reference_frames

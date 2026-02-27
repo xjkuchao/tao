@@ -72,8 +72,7 @@ fn test_decode_cavlc_slice_data_b_skip_run_temporal_direct_uses_colocated_mv() {
 }
 
 #[test]
-fn test_decode_cavlc_slice_data_b_skip_run_temporal_direct_list1_col_zero_consistent_output_and_mv()
-{
+fn test_decode_cavlc_slice_data_b_skip_run_temporal_direct_list1_fallback_keeps_scaled_mv() {
     let mut dec = build_test_decoder();
     dec.last_slice_type = 1;
     dec.last_poc = 16;
@@ -110,21 +109,15 @@ fn test_decode_cavlc_slice_data_b_skip_run_temporal_direct_list1_col_zero_consis
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(
-        dec.ref_y[0], 50,
-        "col_zero(list1 回退分支)命中后应按零 MV 融合采样, 输出像素应与零位移一致"
+        dec.ref_y[0], 90,
+        "temporal direct 应保留缩放后的 MV 参与双向融合"
     );
-    assert_eq!(dec.mv_l0_x[0], 0, "col_zero 命中后记录的 L0 MV(x) 应为 0");
-    assert_eq!(dec.mv_l0_y[0], 0, "col_zero 命中后记录的 L0 MV(y) 应为 0");
-    assert_eq!(
-        dec.ref_idx_l0[0], 0,
-        "col_zero 命中后记录的 L0 ref_idx 应为 0"
-    );
-    assert_eq!(dec.mv_l1_x[0], 0, "col_zero 命中后记录的 L1 MV(x) 应为 0");
-    assert_eq!(dec.mv_l1_y[0], 0, "col_zero 命中后记录的 L1 MV(y) 应为 0");
-    assert_eq!(
-        dec.ref_idx_l1[0], 0,
-        "col_zero 命中后记录的 L1 ref_idx 应为 0"
-    );
+    assert_eq!(dec.mv_l0_x[0], 1, "list1 回退分支应记录缩放后的 L0 MV(x)");
+    assert_eq!(dec.mv_l0_y[0], 0, "list1 回退分支应记录缩放后的 L0 MV(y)");
+    assert_eq!(dec.ref_idx_l0[0], 0, "L0 参考索引应保持为 0");
+    assert_eq!(dec.mv_l1_x[0], 0, "L1 MV(x) 应保持与共定位差分结果一致");
+    assert_eq!(dec.mv_l1_y[0], 0, "L1 MV(y) 应保持与共定位差分结果一致");
+    assert_eq!(dec.ref_idx_l1[0], 0, "L1 参考索引应保持为 0");
 }
 
 #[test]

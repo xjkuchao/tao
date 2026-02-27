@@ -661,15 +661,10 @@ impl H264Decoder {
             self.scale_temporal_direct_mv_pair_component(col_mv_x, dist_scale_factor);
         let (direct_l0_mv_y, direct_l1_mv_y) =
             self.scale_temporal_direct_mv_pair_component(col_mv_y, dist_scale_factor);
-        // 对齐 FFmpeg/OpenH264 temporal direct:
-        // col_zero_flag 命中时, 对 ref_idx==0 的 list 独立置零.
-        let col_zero = self.col_zero_flag_for_part(mb_x, mb_y, part_x4, part_y4, ref_l1_list);
-        let force_zero_l0 = col_zero && ref_idx_l0 == 0;
-        let force_zero_l1 = col_zero && ref_idx_l1 == 0;
         let motion_l0 = if ref_idx_l0 >= 0 {
             Some(BMotion {
-                mv_x: if force_zero_l0 { 0 } else { direct_l0_mv_x },
-                mv_y: if force_zero_l0 { 0 } else { direct_l0_mv_y },
+                mv_x: direct_l0_mv_x,
+                mv_y: direct_l0_mv_y,
                 ref_idx: ref_idx_l0,
             })
         } else {
@@ -677,8 +672,8 @@ impl H264Decoder {
         };
         let motion_l1 = if ref_idx_l1 >= 0 {
             Some(BMotion {
-                mv_x: if force_zero_l1 { 0 } else { direct_l1_mv_x },
-                mv_y: if force_zero_l1 { 0 } else { direct_l1_mv_y },
+                mv_x: direct_l1_mv_x,
+                mv_y: direct_l1_mv_y,
                 ref_idx: ref_idx_l1,
             })
         } else {
