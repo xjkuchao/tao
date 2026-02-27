@@ -76,9 +76,6 @@
 ### 2.6 对比执行方式
 
 ```bash
-# 自动轮转执行(目标 data/2.mp4, 守护 data/1.mp4, 提升即提交)
-plans/tao-codec/video/h264/run_accuracy_autoloop.sh
-
 # 运行全部样本批量对比
 cargo test --test run_decoder h264::test_h264_accuracy_all -- --nocapture --ignored
 
