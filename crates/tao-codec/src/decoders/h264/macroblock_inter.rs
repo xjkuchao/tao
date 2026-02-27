@@ -558,7 +558,7 @@ impl H264Decoder {
         mb_y: usize,
         part_x4: usize,
         part_y4: usize,
-        part_w4: usize,
+        _part_w4: usize,
         mv_x: i32,
         mv_y: i32,
         direct_spatial_mv_pred_flag: bool,
@@ -568,10 +568,15 @@ impl H264Decoder {
         let use_spatial = direct_spatial_mv_pred_flag;
 
         if use_spatial {
-            let x4 = mb_x * 4 + part_x4;
-            let y4 = mb_y * 4 + part_y4;
-            let l0_cands = self.spatial_direct_neighbor_candidates_for_list(x4, y4, part_w4, false);
-            let l1_cands = self.spatial_direct_neighbor_candidates_for_list(x4, y4, part_w4, true);
+            // 对齐 FFmpeg/OpenH264 的 spatial direct:
+            // A/B/C 邻居派生使用宏块基点(scan8[0])语义, 而非按 direct 子分区重复重算.
+            // 子分区差异仅体现在后续 col_zero_flag 判断.
+            let mb_base_x4 = mb_x * 4;
+            let mb_base_y4 = mb_y * 4;
+            let l0_cands =
+                self.spatial_direct_neighbor_candidates_for_list(mb_base_x4, mb_base_y4, 4, false);
+            let l1_cands =
+                self.spatial_direct_neighbor_candidates_for_list(mb_base_x4, mb_base_y4, 4, true);
 
             let mut ref_idx_l0 = Self::spatial_direct_ref_idx_from_neighbors(&l0_cands);
             let mut ref_idx_l1 = Self::spatial_direct_ref_idx_from_neighbors(&l1_cands);
