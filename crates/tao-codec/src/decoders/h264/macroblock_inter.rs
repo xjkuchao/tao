@@ -1029,31 +1029,25 @@ impl H264Decoder {
             let idx = 1 + cabac.decode_decision(&mut ctxs[32]) as u8;
             return BMbType::Inter(idx);
         }
-        // 对齐 FFmpeg decode_cabac_b_mb_type 的决策树:
-        // 先走 ctx31==0 的早返回分支, 避免误读额外 CABAC 比特导致语法脱轨.
-        if cabac.decode_decision(&mut ctxs[31]) == 0 {
-            if cabac.decode_decision(&mut ctxs[32]) == 0 {
-                return BMbType::Inter(3);
-            }
-            if cabac.decode_decision(&mut ctxs[32]) == 0 {
-                return BMbType::Inter(4);
-            }
-            return BMbType::Inter(5 + cabac.decode_decision(&mut ctxs[32]) as u8);
-        }
-
-        let mut bits = (cabac.decode_decision(&mut ctxs[32]) as u8) << 3;
+        // 对齐 FFmpeg/OpenH264:
+        // bits = b31<<3 | b32a<<2 | b32b<<1 | b32c
+        // bits<8 -> +3; bits==13 -> Intra; bits==14 -> 11; bits==15 -> 22; 其余进入扩展分支.
+        let mut bits = (cabac.decode_decision(&mut ctxs[31]) as u8) << 3;
         bits |= (cabac.decode_decision(&mut ctxs[32]) as u8) << 2;
         bits |= (cabac.decode_decision(&mut ctxs[32]) as u8) << 1;
         bits |= cabac.decode_decision(&mut ctxs[32]) as u8;
 
         if bits < 8 {
-            return BMbType::Inter(bits + 7);
+            return BMbType::Inter(bits + 3);
         }
         if bits == 13 {
-            return BMbType::Inter(22);
-        }
-        if bits == 14 || bits == 15 {
             return BMbType::Intra;
+        }
+        if bits == 14 {
+            return BMbType::Inter(11);
+        }
+        if bits == 15 {
+            return BMbType::Inter(22);
         }
 
         bits = (bits << 1) | cabac.decode_decision(&mut ctxs[32]) as u8;
@@ -1072,18 +1066,17 @@ impl H264Decoder {
         if cabac.decode_decision(&mut ctxs[37]) == 0 {
             return 1 + cabac.decode_decision(&mut ctxs[39]) as u8;
         }
-        // 对齐 FFmpeg decode_cabac_b_mb_sub_type:
-        // ctx38==0 时只消费 1 个 ctx39 比特并返回 [3,4], 不能额外读取比特.
-        if cabac.decode_decision(&mut ctxs[38]) == 0 {
-            return 3 + cabac.decode_decision(&mut ctxs[39]) as u8;
+        // 对齐 FFmpeg/OpenH264 ParseBSubMBTypeCabac 的完整决策树.
+        let mut ty = 3u8;
+        if cabac.decode_decision(&mut ctxs[38]) == 1 {
+            if cabac.decode_decision(&mut ctxs[39]) == 1 {
+                return 11 + cabac.decode_decision(&mut ctxs[39]) as u8;
+            }
+            ty += 4;
         }
-        if cabac.decode_decision(&mut ctxs[39]) == 0 {
-            return 5 + cabac.decode_decision(&mut ctxs[39]) as u8;
-        }
-        if cabac.decode_decision(&mut ctxs[39]) == 0 {
-            return 7 + cabac.decode_decision(&mut ctxs[39]) as u8;
-        }
-        11 + cabac.decode_decision(&mut ctxs[39]) as u8
+        ty += (cabac.decode_decision(&mut ctxs[39]) as u8) << 1;
+        ty += cabac.decode_decision(&mut ctxs[39]) as u8;
+        ty
     }
 
     pub(super) fn b_mb_partition_info(mb_type_idx: u8) -> Option<(u8, BPredDir, BPredDir)> {
