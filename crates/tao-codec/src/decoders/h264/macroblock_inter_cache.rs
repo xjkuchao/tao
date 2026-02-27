@@ -504,8 +504,9 @@ impl H264Decoder {
                         let x4 = mb_x * 4 + (sx + off_x) / 4;
                         let y4 = mb_y * 4 + (sy + off_y) / 4;
                         let (amvd_x, amvd_y) = self.compute_cabac_amvd(x4, y4, 1);
-                        let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
-                        let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
+                        // 对齐 FFmpeg decode_cabac_mb_mvd: list1 需要在 list0 基址上 +4.
+                        let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 44, amvd_x);
+                        let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 51, amvd_y);
                         self.set_mvd_block_4x4(
                             mb_x * 16 + sx + off_x,
                             mb_y * 16 + sy + off_y,
@@ -783,8 +784,9 @@ impl H264Decoder {
                                 ),
                             };
                             let (amvd_x, amvd_y) = self.compute_cabac_amvd(x4, y4, 1);
-                            let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
-                            let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
+                            // 对齐 FFmpeg decode_cabac_mb_mvd: list1 需要在 list0 基址上 +4.
+                            let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 44, amvd_x);
+                            let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 51, amvd_y);
                             self.set_mvd_block_4x4(
                                 mb_x * 16 + part_off_x[part],
                                 mb_y * 16 + part_off_y[part],
