@@ -469,8 +469,11 @@ impl H264Decoder {
         if list_len == 0 {
             return None;
         }
-        let idx = candidate.unwrap_or(0).max(0) as usize;
-        Some(idx.min(list_len - 1) as i8)
+        let raw = candidate?;
+        if raw < 0 {
+            return None;
+        }
+        Some((raw as usize).min(list_len - 1) as i8)
     }
 
     #[allow(clippy::too_many_arguments)]
