@@ -299,9 +299,6 @@ impl H264Decoder {
         self.set_direct_block_4x4(mb_x * 16, mb_y * 16, 16, 16, false);
 
         let (pred_mv_x, pred_mv_y) = self.predict_mv_l0_16x16(mb_x, mb_y);
-        let mut final_mv_x = pred_mv_x;
-        let mut final_mv_y = pred_mv_y;
-        let mut final_ref_idx = 0i8;
         let mut no_sub_mb_part_size_less_than_8x8_flag = true;
 
         match mb_type_idx {
@@ -331,9 +328,7 @@ impl H264Decoder {
                     16,
                     16,
                 );
-                final_mv_x = mv_x;
-                final_mv_y = mv_y;
-                final_ref_idx = ref_idx;
+                let _ = (mv_x, mv_y, ref_idx);
             }
             Some(22) => {
                 self.mb_types[mb_idx] = 222;
@@ -591,9 +586,7 @@ impl H264Decoder {
                             ref_l0_list,
                             ref_l1_list,
                         );
-                        final_mv_x = mv_x;
-                        final_mv_y = mv_y;
-                        final_ref_idx = ref_idx;
+                        let _ = (mv_x, mv_y, ref_idx);
                         continue;
                     }
 
@@ -623,9 +616,7 @@ impl H264Decoder {
                             sub_part_w[sub],
                             sub_part_h[sub],
                         );
-                        final_mv_x = mv_x;
-                        final_mv_y = mv_y;
-                        final_ref_idx = ref_idx;
+                        let _ = (mv_x, mv_y, ref_idx);
                     }
                 }
             }
@@ -857,17 +848,11 @@ impl H264Decoder {
                             part_w[part],
                             part_h[part],
                         );
-                        final_mv_x = mv_x;
-                        final_mv_y = mv_y;
-                        final_ref_idx = ref_idx;
+                        let _ = (mv_x, mv_y, ref_idx);
                     }
                 }
             }
         }
-
-        self.mv_l0_x[mb_idx] = final_mv_x.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-        self.mv_l0_y[mb_idx] = final_mv_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-        self.ref_idx_l0[mb_idx] = final_ref_idx;
 
         let (luma_cbp, chroma_cbp) =
             self.decode_coded_block_pattern(cabac, ctxs, mb_x, mb_y, false);
