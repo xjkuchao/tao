@@ -15,7 +15,7 @@ use tao_codec::CodecId;
 use tao_codec::codec_parameters::{AudioCodecParams, CodecParameters, CodecParamsType};
 use tao_codec::frame::Frame;
 use tao_core::{MediaType, PixelFormat, SampleFormat, TaoError};
-use tao_format::demuxer::SeekFlags;
+use tao_format::demuxer::{DemuxerChapter, SeekFlags};
 use tao_format::io::IoContext;
 use tao_format::registry::FormatRegistry;
 use tao_format::stream::{Stream, StreamParams};
@@ -59,6 +59,8 @@ pub enum PlayerCommand {
     /// 单步播放: 如果暂停则恢复, GUI 侧设置 step 标志显示一帧后重新暂停
     StepFrame,
     Seek(f64),
+    PrevTrack,
+    NextTrack,
     VolumeUp,
     VolumeDown,
     ToggleMute,
@@ -75,6 +77,8 @@ pub enum PlayerStatus {
     Muted(bool),
     /// Seek 完成, GUI 应清空帧队列并重置 frame_timer
     Seeked,
+    /// 当前章节信息: (章节索引, 标题)
+    CurrentChapter(Option<(usize, String)>),
     End,
     Error(String),
 }
@@ -330,6 +334,11 @@ impl Player {
             .unwrap_or(0.1);
         let max_seekable_sec = (total_duration_sec - seek_end_margin).max(0.0);
 
+        // 章节管理
+        let chapters = chapters.to_vec();
+        let mut _current_chapter_idx: Option<usize> = None;
+        let mut last_notified_chapter_idx: Option<usize> = None;
+
         if let Some(a) = &audio_sender {
             a.set_volume(current_volume as f32 / 100.0);
             a.set_muted(muted);
@@ -356,16 +365,156 @@ impl Player {
                             status_tx.send(PlayerStatus::Paused(false)).ok();
                         }
                     }
+                    PlayerCommand::PrevTrack => {
+                        if chapters.is_empty() {
+                            info!("[切歌] 没有章节信息");
+                        } else {
+                            let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
+                            let current_idx = find_chapter_index(&chapters, current_sec);
+                            
+                            let target_sec = if let Some(idx) = current_idx {
+                                let chapter_start = chapters[idx].start_time.unwrap_or(0.0);
+                                // 如果当前章节已播放超过 3 秒, 跳回章节开头
+                                if current_sec - chapter_start > 3.0 {
+                                    chapter_start
+                                } else if idx > 0 {
+                                    // 否则跳到上一章节开头
+                                    chapters[idx - 1].start_time.unwrap_or(0.0)
+                                } else {
+                                    // 已是第一章, 跳到第一章开头
+                                    chapter_start
+                                }
+                            } else if current_sec > 3.0 {
+                                // 不在任何章节中, 如果已播放超过 3 秒就跳到开头
+                                0.0
+                            } else if !chapters.is_empty() {
+                                // 否则跳到最后一章
+                                chapters.last().and_then(|c| c.start_time).unwrap_or(0.0)
+                            } else {
+                                0.0
+                            };
+                            
+                            let _offset = target_sec - current_sec;
+                            info!("[切歌] 上一首: 当前={:.2}s, 目标={:.2}s", current_sec, target_sec);
+                            
+                            // 复用 Seek 逻辑
+                            seek_eof_retried = false;
+                            seek_skip_until = None;
+                            let seek_stream = video_stream.or(audio_stream);
+                            if let Some(stream) = seek_stream {
+                                let tb = &stream.time_base;
+                                if tb.num > 0 && tb.den > 0 {
+                                    let ts = (target_sec * tb.den as f64 / tb.num as f64) as i64;
+                                    if let Ok(()) = demuxer.seek(&mut io, stream.index, ts, SeekFlags::default()) {
+                                        if let Some(d) = &mut video_decoder { d.flush(); }
+                                        if let Some(d) = &mut audio_decoder { d.flush(); }
+                                        if let Some(a) = &audio_sender { a.flush(); }
+                                        let target_us = (target_sec * 1_000_000.0) as i64;
+                                        clock.seek_reset(target_us);
+                                        audio_cum_samples = (target_sec * audio_sample_rate as f64) as u64;
+                                        eof = false;
+                                        audio_eof_wait_start = None;
+                                        seek_flush_pending = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    PlayerCommand::NextTrack => {
+                        if chapters.is_empty() {
+                            info!("[切歌] 没有章节信息");
+                        } else {
+                            let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
+                            let current_idx = find_chapter_index(&chapters, current_sec);
+                            
+                            let target_sec = if let Some(idx) = current_idx {
+                                if idx + 1 < chapters.len() {
+                                    // 跳到下一章开头
+                                    chapters[idx + 1].start_time.unwrap_or(0.0)
+                                } else {
+                                    // 已是最后一章, 跳到最后一章开头
+                                    chapters[idx].start_time.unwrap_or(0.0)
+                                }
+                            } else if !chapters.is_empty() {
+                                // 不在任何章节中, 跳到第一章
+                                chapters[0].start_time.unwrap_or(0.0)
+                            } else {
+                                0.0
+                            };
+                            
+                            info!("[切歌] 下一首: 当前={:.2}s, 目标={:.2}s", current_sec, target_sec);
+                            
+                            // 复用 Seek 逻辑
+                            seek_eof_retried = false;
+                            seek_skip_until = None;
+                            let seek_stream = video_stream.or(audio_stream);
+                            if let Some(stream) = seek_stream {
+                                let tb = &stream.time_base;
+                                if tb.num > 0 && tb.den > 0 {
+                                    let ts = (target_sec * tb.den as f64 / tb.num as f64) as i64;
+                                    if let Ok(()) = demuxer.seek(&mut io, stream.index, ts, SeekFlags::default()) {
+                                        if let Some(d) = &mut video_decoder { d.flush(); }
+                                        if let Some(d) = &mut audio_decoder { d.flush(); }
+                                        if let Some(a) = &audio_sender { a.flush(); }
+                                        let target_us = (target_sec * 1_000_000.0) as i64;
+                                        clock.seek_reset(target_us);
+                                        audio_cum_samples = (target_sec * audio_sample_rate as f64) as u64;
+                                        eof = false;
+                                        audio_eof_wait_start = None;
+                                        seek_flush_pending = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     PlayerCommand::Seek(offset) => {
                         seek_eof_retried = false;
                         seek_skip_until = None;
                         let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
                         let is_paused = clock.is_paused();
-                        let target_sec = if total_duration_sec > 0.0 {
+                        
+                        // 计算原始目标时间
+                        let mut target_sec = if total_duration_sec > 0.0 {
                             (current_sec + offset).clamp(0.0, max_seekable_sec)
                         } else {
                             (current_sec + offset).max(0.0)
                         };
+                        
+                        // 智能章节跳转: 如果启用了章节且正在跨章节 seek
+                        if !chapters.is_empty() && offset != 0.0 {
+                            let current_idx = find_chapter_index(&chapters, current_sec);
+                            let target_idx = find_chapter_index(&chapters, target_sec);
+                            
+                            if offset > 0.0 {
+                                // 前进: 如果跨章节, 跳到下一章开头
+                                if let (Some(cur), Some(tgt)) = (current_idx, target_idx) {
+                                    if tgt > cur {
+                                        if let Some(start) = chapters[tgt].start_time {
+                                            info!("[Seek] 前进跨章节: 从章节{} 跳到章节{} 开头 ({:.2}s)", 
+                                                  cur + 1, tgt + 1, start);
+                                            target_sec = start;
+                                        }
+                                    }
+                                }
+                            } else if offset < 0.0 {
+                                // 后退: 智能章节回退
+                                if let Some(cur_idx) = current_idx {
+                                    if let Some(chapter_start) = chapters[cur_idx].start_time {
+                                        // 如果当前章节已播放超过 3 秒且后退会超过章节开头
+                                        if current_sec - chapter_start > 3.0 && target_sec < chapter_start {
+                                            info!("[Seek] 后退超过3秒: 跳到当前章节开头 ({:.2}s)", chapter_start);
+                                            target_sec = chapter_start;
+                                        } else if current_sec - chapter_start <= 3.0 && target_sec < chapter_start && cur_idx > 0 {
+                                            // 如果当前章节播放不超过 3 秒且后退会超过章节开头, 跳到上一章开头
+                                            if let Some(prev_start) = chapters[cur_idx - 1].start_time {
+                                                info!("[Seek] 后退未满3秒: 跳到上一章节开头 ({:.2}s)", prev_start);
+                                                target_sec = prev_start;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
 
                         info!(
                             "[Seek] offset={:+.1}s, 时钟={:.3}s, 目标={:.3}s, 总时长={:.1}s, 暂停={}",
@@ -458,6 +607,24 @@ impl Player {
                 status_tx
                     .send(PlayerStatus::Time(current_sec, total_duration_sec))
                     .ok();
+                
+                // 更新当前章节
+                let current_chapter_idx = find_chapter_index(&chapters, current_sec);
+                
+                // 仅在章节变化时通知
+                if current_chapter_idx != last_notified_chapter_idx {
+                    last_notified_chapter_idx = current_chapter_idx;
+                    let chapter_info = current_chapter_idx.map(|idx| {
+                        let title = chapters[idx]
+                            .metadata
+                            .iter()
+                            .find(|(k, _)| k == "title")
+                            .map(|(_, v)| v.clone())
+                            .unwrap_or_else(|| format!("章節 {}", idx + 1));
+                        (idx, title)
+                    });
+                    status_tx.send(PlayerStatus::CurrentChapter(chapter_info)).ok();
+                }
             }
 
             let is_paused = clock.is_paused();
@@ -989,4 +1156,22 @@ fn build_codec_params(stream: &Stream) -> CodecParameters {
             params: CodecParamsType::None,
         },
     }
+}
+
+/// 根据当前播放时间查找所在的章节索引
+fn find_chapter_index(chapters: &[DemuxerChapter], current_sec: f64) -> Option<usize> {
+    if chapters.is_empty() {
+        return None;
+    }
+    
+    for (idx, chapter) in chapters.iter().enumerate() {
+        let start = chapter.start_time.unwrap_or(0.0);
+        let end = chapter.end_time.unwrap_or(f64::MAX);
+        
+        if current_sec >= start && current_sec < end {
+            return Some(idx);
+        }
+    }
+    
+    None
 }

@@ -2,7 +2,6 @@
 //!
 //! 验证 CUE sheet 解析和章节信息提取功能.
 
-use tao_format::demuxer::Demuxer;
 use tao_format::format_id::FormatId;
 use tao_format::io::IoContext;
 use tao_format::registry::FormatRegistry;

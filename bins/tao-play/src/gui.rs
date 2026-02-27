@@ -74,6 +74,8 @@ struct VideoDisplayState<'a> {
     muted: bool,
     /// 是否显示屏幕文字 (当前: 时间 HUD)
     show_hud_text: bool,
+    /// 当前章节信息: (章节索引, 标题)
+    current_chapter: Option<(usize, String)>,
 }
 
 impl<'a> VideoDisplayState<'a> {
@@ -95,6 +97,7 @@ impl<'a> VideoDisplayState<'a> {
             volume_level: initial_volume.clamp(0.0, 1.0),
             muted: false,
             show_hud_text: true,
+            current_chapter: None,
         }
     }
 }
@@ -308,6 +311,7 @@ fn render_current_texture(state: &VideoDisplayState, canvas: &mut Canvas<Window>
             state.total_time_sec,
             state.volume_level,
             state.muted,
+            &state.current_chapter,
         );
     }
     canvas.present();
@@ -393,9 +397,21 @@ fn draw_time_overlay(
     total_sec: f64,
     volume: f32,
     muted: bool,
+    current_chapter: &Option<(usize, String)>,
 ) {
-    let line1 = format_progress_text(current_sec, total_sec);
-    let line2 = format_volume_text(volume, muted);
+    let mut lines = Vec::new();
+    
+    // 第一行: 时间进度
+    lines.push(format_progress_text(current_sec, total_sec));
+    
+    // 第二行: 音量
+    lines.push(format_volume_text(volume, muted));
+    
+    // 第三行: 当前章节 (如果有)
+    if let Some((idx, title)) = current_chapter {
+        lines.push(format!("Track {}: {}", idx + 1, title));
+    }
+    
     let scale: i32 = 3;
     let glyph_w: i32 = 3 * scale;
     let glyph_h: i32 = 5 * scale;
@@ -405,14 +421,16 @@ fn draw_time_overlay(
     let x0: i32 = 10;
     let y0: i32 = 10;
 
-    let line1_w = (glyph_w + spacing) * line1.chars().count() as i32 - spacing;
-    let line2_w = (glyph_w + spacing) * line2.chars().count() as i32 - spacing;
-    let text_w = line1_w.max(line2_w);
-    let text_h = glyph_h * 2 + line_gap;
+    let max_line_w = lines
+        .iter()
+        .map(|line| (glyph_w + spacing) * line.chars().count() as i32 - spacing)
+        .max()
+        .unwrap_or(0);
+    let text_h = glyph_h * lines.len() as i32 + line_gap * (lines.len() as i32 - 1);
     let bg = Rect::new(
         x0 - padding,
         y0 - padding,
-        (text_w + padding * 2) as u32,
+        (max_line_w + padding * 2) as u32,
         (text_h + padding * 2) as u32,
     );
 
@@ -420,7 +438,7 @@ fn draw_time_overlay(
     let _ = canvas.fill_rect(bg);
 
     canvas.set_draw_color(Color::RGB(235, 235, 235));
-    for (line_idx, line) in [line1, line2].iter().enumerate() {
+    for (line_idx, line) in lines.iter().enumerate() {
         let base_y = y0 + line_idx as i32 * (glyph_h + line_gap);
         for (idx, ch) in line.chars().enumerate() {
             if let Some(rows) = glyph_rows(ch) {
@@ -622,6 +640,14 @@ pub fn run_event_loop(
                     Keycode::M => {
                         let _ = command_tx.send(PlayerCommand::ToggleMute);
                     }
+                    Keycode::LeftBracket => {
+                        log::info!("[按键] [ (上一首)");
+                        let _ = command_tx.send(PlayerCommand::PrevTrack);
+                    }
+                    Keycode::RightBracket => {
+                        log::info!("[按键] ] (下一首)");
+                        let _ = command_tx.send(PlayerCommand::NextTrack);
+                    }
                     _ => {}
                 },
                 Event::Window { win_event, .. } => {
@@ -684,6 +710,10 @@ pub fn run_event_loop(
                         "[GUI] Seek 状态: 清空帧队列 (原{}帧), 等待新帧",
                         old_queue_len
                     );
+                }
+                PlayerStatus::CurrentChapter(chapter_info) => {
+                    state.current_chapter = chapter_info;
+                    state.force_refresh = true;
                 }
                 _ => {}
             }
