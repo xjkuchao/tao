@@ -1221,8 +1221,8 @@ impl H264Decoder {
             }
         }
         if ref_idx >= num_ref_idx {
-            // 越界通常意味着当前语法路径已偏离; 采用 0 号参考可减少后续误差扩散.
-            let clipped = 0;
+            // 越界通常意味着当前语法路径已偏离; 夹到最大合法参考可减轻后续上下文偏移扩散.
+            let clipped = num_ref_idx.saturating_sub(1);
             self.ref_idx_oob_count = self.ref_idx_oob_count.saturating_add(1);
             let mb_x = x4 / 4;
             let mb_y = y4 / 4;
