@@ -1213,7 +1213,7 @@ impl H264Decoder {
         while cabac.decode_decision(&mut ctxs[54 + ctx]) == 1 {
             ref_idx += 1;
             ctx = (ctx >> 2) + 4;
-            if ref_idx >= 31 {
+            if ref_idx >= 32 {
                 break;
             }
         }
