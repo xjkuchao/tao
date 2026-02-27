@@ -1064,16 +1064,18 @@ impl H264Decoder {
         if cabac.decode_decision(&mut ctxs[37]) == 0 {
             return 1 + cabac.decode_decision(&mut ctxs[39]) as u8;
         }
-        let mut ty = 3u8;
-        if cabac.decode_decision(&mut ctxs[38]) == 1 {
-            if cabac.decode_decision(&mut ctxs[39]) == 1 {
-                return 11 + cabac.decode_decision(&mut ctxs[39]) as u8;
-            }
-            ty += 4;
+        // 对齐 FFmpeg decode_cabac_b_mb_sub_type:
+        // ctx38==0 时只消费 1 个 ctx39 比特并返回 [3,4], 不能额外读取比特.
+        if cabac.decode_decision(&mut ctxs[38]) == 0 {
+            return 3 + cabac.decode_decision(&mut ctxs[39]) as u8;
         }
-        ty += (cabac.decode_decision(&mut ctxs[39]) as u8) << 1;
-        ty += cabac.decode_decision(&mut ctxs[39]) as u8;
-        ty
+        if cabac.decode_decision(&mut ctxs[39]) == 0 {
+            return 5 + cabac.decode_decision(&mut ctxs[39]) as u8;
+        }
+        if cabac.decode_decision(&mut ctxs[39]) == 0 {
+            return 7 + cabac.decode_decision(&mut ctxs[39]) as u8;
+        }
+        11 + cabac.decode_decision(&mut ctxs[39]) as u8
     }
 
     pub(super) fn b_mb_partition_info(mb_type_idx: u8) -> Option<(u8, BPredDir, BPredDir)> {
