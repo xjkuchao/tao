@@ -1188,14 +1188,21 @@ impl H264Decoder {
         if num_ref_idx <= 1 {
             return 0;
         }
-        let initial_ctx = self.ref_idx_ctx_inc(list, x4, y4, is_b_slice);
-        let mut ref_idx = 0u32;
-        let mut ctx = initial_ctx;
-        while cabac.decode_decision(&mut ctxs[54 + ctx]) == 1 {
-            ref_idx += 1;
-            ctx = (ctx >> 2) + 4;
-            if ref_idx >= 32 {
-                break;
+        // 对齐 FFmpeg decode_cabac_mb_ref:
+        // 1) 首位使用 54 + ctxInc
+        // 2) 第二位固定使用 58
+        // 3) 后续位固定使用 59
+        let ctx_inc = self.ref_idx_ctx_inc(list, x4, y4, is_b_slice);
+        if cabac.decode_decision(&mut ctxs[54 + ctx_inc]) == 0 {
+            return 0;
+        }
+
+        let mut ref_idx = 1u32;
+        if cabac.decode_decision(&mut ctxs[58]) == 1 {
+            ref_idx = 2;
+            let max_ref = num_ref_idx.saturating_sub(1);
+            while ref_idx < max_ref && cabac.decode_decision(&mut ctxs[59]) == 1 {
+                ref_idx += 1;
             }
         }
         if ref_idx >= num_ref_idx {
@@ -1241,7 +1248,7 @@ impl H264Decoder {
                 list,
                 x4,
                 y4,
-                initial_ctx,
+                ctx_inc,
                 left_ref,
                 top_ref,
                 ref_idx,
