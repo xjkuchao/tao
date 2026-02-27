@@ -575,7 +575,7 @@ impl H264Decoder {
             )
             .map(|(mx, my, r, col_list, pic)| (mx, my, r, col_list, Some(pic), false))
             .unwrap_or((mv_x, mv_y, 0, 0, None, true));
-        let (col_mv_x, col_mv_y, col_ref_idx, col_list, col_pic_opt, use_pred_mv_fallback) =
+        let (col_mv_x, col_mv_y, col_ref_idx, col_list, col_pic_opt, _use_pred_mv_fallback) =
             temporal_col;
         let mut ref_idx_l0 = if let Some(col_pic) = col_pic_opt {
             self.map_col_to_list0_index_with_col_pic(col_ref_idx, col_list, col_pic, ref_l0_list)
@@ -602,13 +602,10 @@ impl H264Decoder {
             self.scale_temporal_direct_mv_pair_component(col_mv_x, dist_scale_factor);
         let (direct_l0_mv_y, direct_l1_mv_y) =
             self.scale_temporal_direct_mv_pair_component(col_mv_y, dist_scale_factor);
-        let col_zero = self.col_zero_flag_for_part(mb_x, mb_y, part_x4, part_y4, ref_l1_list);
-        let force_zero_mv = !use_pred_mv_fallback && col_zero && ref_idx_l0 == 0;
-
         let motion_l0 = if ref_idx_l0 >= 0 {
             Some(BMotion {
-                mv_x: if force_zero_mv { 0 } else { direct_l0_mv_x },
-                mv_y: if force_zero_mv { 0 } else { direct_l0_mv_y },
+                mv_x: direct_l0_mv_x,
+                mv_y: direct_l0_mv_y,
                 ref_idx: ref_idx_l0,
             })
         } else {
@@ -616,8 +613,8 @@ impl H264Decoder {
         };
         let motion_l1 = if ref_idx_l1 >= 0 {
             Some(BMotion {
-                mv_x: if force_zero_mv { 0 } else { direct_l1_mv_x },
-                mv_y: if force_zero_mv { 0 } else { direct_l1_mv_y },
+                mv_x: direct_l1_mv_x,
+                mv_y: direct_l1_mv_y,
                 ref_idx: ref_idx_l1,
             })
         } else {

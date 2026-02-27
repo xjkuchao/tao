@@ -912,7 +912,7 @@ fn test_build_b_direct_motion_temporal_colocated_lookup_prefers_poc_over_frame_n
 }
 
 #[test]
-fn test_build_b_direct_motion_temporal_col_zero_uses_list1_fallback_branch() {
+fn test_build_b_direct_motion_temporal_list1_fallback_uses_scaled_mv() {
     let mut dec = build_test_decoder();
     dec.last_slice_type = 1;
     dec.last_poc = 16;
@@ -943,20 +943,20 @@ fn test_build_b_direct_motion_temporal_col_zero_uses_list1_fallback_branch() {
     assert_eq!(motion_l0.ref_idx, 0, "L0 索引应映射到当前 list0[0]");
     assert_eq!(motion_l1.ref_idx, 0, "L1 索引应固定为 0");
     assert_eq!(
-        motion_l0.mv_x, 0,
-        "col_zero list1 回退分支命中后 L0 MV(x) 应清零"
+        motion_l0.mv_x, 1,
+        "temporal direct 在 list1 回退分支应使用缩放后的 L0 MV(x)"
     );
     assert_eq!(
-        motion_l0.mv_y, 0,
-        "col_zero list1 回退分支命中后 L0 MV(y) 应清零"
+        motion_l0.mv_y, -1,
+        "temporal direct 在 list1 回退分支应使用缩放后的 L0 MV(y)"
     );
     assert_eq!(
         motion_l1.mv_x, 0,
-        "col_zero list1 回退分支命中后 L1 MV(x) 应清零"
+        "temporal direct 的 L1 MV(x) 应由 L0 缩放结果与共定位 MV 差分得到"
     );
     assert_eq!(
         motion_l1.mv_y, 0,
-        "col_zero list1 回退分支命中后 L1 MV(y) 应清零"
+        "temporal direct 的 L1 MV(y) 应由 L0 缩放结果与共定位 MV 差分得到"
     );
 }
 
