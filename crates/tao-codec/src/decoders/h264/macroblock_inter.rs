@@ -1029,27 +1029,35 @@ impl H264Decoder {
             let idx = 1 + cabac.decode_decision(&mut ctxs[32]) as u8;
             return BMbType::Inter(idx);
         }
+        // 对齐 FFmpeg decode_cabac_b_mb_type 的决策树:
+        // 先走 ctx31==0 的早返回分支, 避免误读额外 CABAC 比特导致语法脱轨.
+        if cabac.decode_decision(&mut ctxs[31]) == 0 {
+            if cabac.decode_decision(&mut ctxs[32]) == 0 {
+                return BMbType::Inter(3);
+            }
+            if cabac.decode_decision(&mut ctxs[32]) == 0 {
+                return BMbType::Inter(4);
+            }
+            return BMbType::Inter(5 + cabac.decode_decision(&mut ctxs[32]) as u8);
+        }
 
-        let mut bits = (cabac.decode_decision(&mut ctxs[31]) as u8) << 3;
+        let mut bits = (cabac.decode_decision(&mut ctxs[32]) as u8) << 3;
         bits |= (cabac.decode_decision(&mut ctxs[32]) as u8) << 2;
         bits |= (cabac.decode_decision(&mut ctxs[32]) as u8) << 1;
         bits |= cabac.decode_decision(&mut ctxs[32]) as u8;
 
         if bits < 8 {
-            return BMbType::Inter(bits + 3);
+            return BMbType::Inter(bits + 7);
         }
         if bits == 13 {
-            return BMbType::Intra;
-        }
-        if bits == 14 {
-            return BMbType::Inter(11);
-        }
-        if bits == 15 {
             return BMbType::Inter(22);
+        }
+        if bits == 14 || bits == 15 {
+            return BMbType::Intra;
         }
 
         bits = (bits << 1) | cabac.decode_decision(&mut ctxs[32]) as u8;
-        BMbType::Inter(bits - 4)
+        BMbType::Inter(bits.saturating_sub(4))
     }
 
     /// 解码 B_8x8 的 sub_mb_type.
@@ -1209,8 +1217,8 @@ impl H264Decoder {
         if num_ref_idx <= 1 {
             return 0;
         }
-        let mut ref_idx = 0u32;
         let initial_ctx = self.ref_idx_ctx_inc(list, x4, y4, is_b_slice);
+        let mut ref_idx = 0u32;
         let mut ctx = initial_ctx;
         while cabac.decode_decision(&mut ctxs[54 + ctx]) == 1 {
             ref_idx += 1;
