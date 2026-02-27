@@ -126,10 +126,10 @@ fn test_push_video_for_output_releases_lowest_poc_when_dpb_full() {
     dec.max_reference_frames = 1;
     dec.reorder_depth = 8;
 
-    dec.push_video_for_output(build_test_video_frame_with_pts(20), 20);
+    dec.push_video_for_output(build_test_video_frame_with_pts(20), 20, false);
     assert!(dec.output_queue.is_empty(), "DPB 未满时不应提前输出重排帧");
 
-    dec.push_video_for_output(build_test_video_frame_with_pts(10), 10);
+    dec.push_video_for_output(build_test_video_frame_with_pts(10), 10, false);
     let out = match dec.output_queue.pop_front() {
         Some(Frame::Video(vf)) => vf,
         _ => panic!("DPB 满时应输出视频帧"),
@@ -153,16 +153,16 @@ fn test_push_video_for_output_prefers_sps_dpb_capacity_over_ref_count() {
     dec.reorder_depth = 8;
 
     push_dummy_reference(&mut dec, 0);
-    dec.push_video_for_output(build_test_video_frame_with_pts(30), 30);
-    dec.push_video_for_output(build_test_video_frame_with_pts(10), 10);
-    dec.push_video_for_output(build_test_video_frame_with_pts(20), 20);
+    dec.push_video_for_output(build_test_video_frame_with_pts(30), 30, false);
+    dec.push_video_for_output(build_test_video_frame_with_pts(10), 10, false);
+    dec.push_video_for_output(build_test_video_frame_with_pts(20), 20, false);
     assert!(
         dec.output_queue.is_empty(),
         "SPS 允许 DPB=4 且 refs=1 时, 前 3 帧不应被参考帧容量提前挤出"
     );
     assert_eq!(dec.reorder_buffer.len(), 3, "应保留 3 帧等待重排输出");
 
-    dec.push_video_for_output(build_test_video_frame_with_pts(40), 40);
+    dec.push_video_for_output(build_test_video_frame_with_pts(40), 40, false);
     let out = match dec.output_queue.pop_front() {
         Some(Frame::Video(vf)) => vf,
         _ => panic!("超出 SPS DPB 容量时应输出重排帧"),
@@ -181,9 +181,9 @@ fn test_drain_reorder_buffer_outputs_frames_by_poc_ascending() {
     dec.max_reference_frames = 16;
     dec.reorder_depth = 16;
 
-    dec.push_video_for_output(build_test_video_frame_with_pts(30), 30);
-    dec.push_video_for_output(build_test_video_frame_with_pts(10), 10);
-    dec.push_video_for_output(build_test_video_frame_with_pts(20), 20);
+    dec.push_video_for_output(build_test_video_frame_with_pts(30), 30, false);
+    dec.push_video_for_output(build_test_video_frame_with_pts(10), 10, false);
+    dec.push_video_for_output(build_test_video_frame_with_pts(20), 20, false);
 
     assert!(
         dec.output_queue.is_empty(),

@@ -786,11 +786,12 @@ impl H264Decoder {
         self.enforce_reference_capacity();
     }
 
-    pub(super) fn push_video_for_output(&mut self, vf: VideoFrame, poc: i32) {
+    pub(super) fn push_video_for_output(&mut self, vf: VideoFrame, poc: i32, is_reference: bool) {
         let entry = ReorderFrameEntry {
             frame: vf,
             poc,
             decode_order: self.decode_order_counter,
+            is_reference,
         };
         self.decode_order_counter = self.decode_order_counter.wrapping_add(1);
         let insert_pos = self.reorder_buffer.partition_point(|cur| {
@@ -805,14 +806,18 @@ impl H264Decoder {
         }
 
         let dpb_capacity = self.derive_dpb_output_capacity();
+        let mut pending_non_ref = self
+            .reorder_buffer
+            .iter()
+            .filter(|entry| !entry.is_reference)
+            .count();
         while !self.reorder_buffer.is_empty()
-            && self
-                .reference_frames
-                .len()
-                .saturating_add(self.reorder_buffer.len())
-                > dpb_capacity
+            && self.reference_frames.len().saturating_add(pending_non_ref) > dpb_capacity
         {
             let out = self.reorder_buffer.remove(0);
+            if !out.is_reference {
+                pending_non_ref = pending_non_ref.saturating_sub(1);
+            }
             self.output_queue.push_back(Frame::Video(out.frame));
         }
     }
@@ -910,6 +915,6 @@ impl H264Decoder {
         };
         let frame_poc = self.last_poc;
         self.store_reference_with_marking();
-        self.push_video_for_output(vf, frame_poc);
+        self.push_video_for_output(vf, frame_poc, self.last_nal_ref_idc != 0);
     }
 }

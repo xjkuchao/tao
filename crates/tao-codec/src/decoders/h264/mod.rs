@@ -243,6 +243,7 @@ struct ReorderFrameEntry {
     frame: VideoFrame,
     poc: i32,
     decode_order: u64,
+    is_reference: bool,
 }
 
 #[derive(Clone, Copy)]
