@@ -442,10 +442,8 @@ impl H264Decoder {
                     }
                 }
 
-                let mut mvd_l0_x = [[0i32; 4]; 4];
-                let mut mvd_l0_y = [[0i32; 4]; 4];
-                let mut mvd_l1_x = [[0i32; 4]; 4];
-                let mut mvd_l1_y = [[0i32; 4]; 4];
+                let mut motion_l0_parts: [[Option<BMotion>; 4]; 4] = [[None; 4]; 4];
+                let mut motion_l1_parts: [[Option<BMotion>; 4]; 4] = [[None; 4]; 4];
 
                 let part_offset =
                     |part_w: usize, part_h: usize, part_count: usize, part: usize| match (
@@ -475,17 +473,43 @@ impl H264Decoder {
                         let (amvd_x, amvd_y) = self.compute_cabac_amvd(x4, y4, 0);
                         let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
                         let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
+                        let part_x4 = (sx + off_x) / 4;
+                        let part_y4 = (sy + off_y) / 4;
+                        let part_w4 = (sub_part_w[sub] / 4).max(1);
+                        let (pred_x, pred_y) = self.predict_mv_l0_partition(
+                            mb_x,
+                            mb_y,
+                            part_x4,
+                            part_y4,
+                            part_w4,
+                            ref_idx_l0[sub],
+                        );
+                        let motion = BMotion {
+                            mv_x: pred_x + mvd_x,
+                            mv_y: pred_y + mvd_y,
+                            ref_idx: ref_idx_l0[sub],
+                        };
+                        let bpx_x = mb_x * 16 + sx + off_x;
+                        let bpx_y = mb_y * 16 + sy + off_y;
                         self.set_mvd_block_4x4(
-                            mb_x * 16 + sx + off_x,
-                            mb_y * 16 + sy + off_y,
+                            bpx_x,
+                            bpx_y,
                             sub_part_w[sub],
                             sub_part_h[sub],
                             mvd_x,
                             mvd_y,
                             0,
                         );
-                        mvd_l0_x[sub][part] = mvd_x;
-                        mvd_l0_y[sub][part] = mvd_y;
+                        self.set_l0_motion_block_4x4(
+                            bpx_x,
+                            bpx_y,
+                            sub_part_w[sub],
+                            sub_part_h[sub],
+                            motion.mv_x,
+                            motion.mv_y,
+                            motion.ref_idx,
+                        );
+                        motion_l0_parts[sub][part] = Some(motion);
                     }
                 }
                 for sub in 0..4usize {
@@ -507,17 +531,43 @@ impl H264Decoder {
                         // 对齐 FFmpeg/OpenH264: mvd CABAC 上下文按分量区分(40/47), 与 list 无关.
                         let mvd_x = self.decode_mb_mvd_component(cabac, ctxs, 40, amvd_x);
                         let mvd_y = self.decode_mb_mvd_component(cabac, ctxs, 47, amvd_y);
+                        let part_x4 = (sx + off_x) / 4;
+                        let part_y4 = (sy + off_y) / 4;
+                        let part_w4 = (sub_part_w[sub] / 4).max(1);
+                        let (pred_x, pred_y) = self.predict_mv_l1_partition(
+                            mb_x,
+                            mb_y,
+                            part_x4,
+                            part_y4,
+                            part_w4,
+                            ref_idx_l1[sub],
+                        );
+                        let motion = BMotion {
+                            mv_x: pred_x + mvd_x,
+                            mv_y: pred_y + mvd_y,
+                            ref_idx: ref_idx_l1[sub],
+                        };
+                        let bpx_x = mb_x * 16 + sx + off_x;
+                        let bpx_y = mb_y * 16 + sy + off_y;
                         self.set_mvd_block_4x4(
-                            mb_x * 16 + sx + off_x,
-                            mb_y * 16 + sy + off_y,
+                            bpx_x,
+                            bpx_y,
                             sub_part_w[sub],
                             sub_part_h[sub],
                             mvd_x,
                             mvd_y,
                             1,
                         );
-                        mvd_l1_x[sub][part] = mvd_x;
-                        mvd_l1_y[sub][part] = mvd_y;
+                        self.set_l1_motion_block_4x4(
+                            bpx_x,
+                            bpx_y,
+                            sub_part_w[sub],
+                            sub_part_h[sub],
+                            motion.mv_x,
+                            motion.mv_y,
+                            motion.ref_idx,
+                        );
+                        motion_l1_parts[sub][part] = Some(motion);
                     }
                 }
 
@@ -556,44 +606,8 @@ impl H264Decoder {
                         );
                         let bpx_x = mb_x * 16 + sx + off_x;
                         let bpx_y = mb_y * 16 + sy + off_y;
-                        let part_x4 = (sx + off_x) / 4;
-                        let part_y4 = (sy + off_y) / 4;
-                        let part_w4 = (sub_part_w[sub] / 4).max(1);
-
-                        let motion_l0 = if sub_use_l0[sub] {
-                            let (pred_x, pred_y) = self.predict_mv_l0_partition(
-                                mb_x,
-                                mb_y,
-                                part_x4,
-                                part_y4,
-                                part_w4,
-                                ref_idx_l0[sub],
-                            );
-                            Some(BMotion {
-                                mv_x: pred_x + mvd_l0_x[sub][part],
-                                mv_y: pred_y + mvd_l0_y[sub][part],
-                                ref_idx: ref_idx_l0[sub],
-                            })
-                        } else {
-                            None
-                        };
-                        let motion_l1 = if sub_use_l1[sub] {
-                            let (pred_x, pred_y) = self.predict_mv_l1_partition(
-                                mb_x,
-                                mb_y,
-                                part_x4,
-                                part_y4,
-                                part_w4,
-                                ref_idx_l1[sub],
-                            );
-                            Some(BMotion {
-                                mv_x: pred_x + mvd_l1_x[sub][part],
-                                mv_y: pred_y + mvd_l1_y[sub][part],
-                                ref_idx: ref_idx_l1[sub],
-                            })
-                        } else {
-                            None
-                        };
+                        let motion_l0 = motion_l0_parts[sub][part];
+                        let motion_l1 = motion_l1_parts[sub][part];
 
                         let (mv_x, mv_y, ref_idx) = self.apply_b_prediction_block(
                             motion_l0,
@@ -765,6 +779,17 @@ impl H264Decoder {
                                 mv_y: pred_y + mvd_y,
                                 ref_idx: ref_idx_l0[part],
                             });
+                            if let Some(motion) = motion_l0[part] {
+                                self.set_l0_motion_block_4x4(
+                                    mb_x * 16 + part_off_x[part],
+                                    mb_y * 16 + part_off_y[part],
+                                    part_w[part],
+                                    part_h[part],
+                                    motion.mv_x,
+                                    motion.mv_y,
+                                    motion.ref_idx,
+                                );
+                            }
                         }
                     }
                     for part in 0..part_count {
@@ -801,6 +826,17 @@ impl H264Decoder {
                                 mv_y: pred_y + mvd_y,
                                 ref_idx: ref_idx_l1[part],
                             });
+                            if let Some(motion) = motion_l1[part] {
+                                self.set_l1_motion_block_4x4(
+                                    mb_x * 16 + part_off_x[part],
+                                    mb_y * 16 + part_off_y[part],
+                                    part_w[part],
+                                    part_h[part],
+                                    motion.mv_x,
+                                    motion.mv_y,
+                                    motion.ref_idx,
+                                );
+                            }
                         }
                     }
 
