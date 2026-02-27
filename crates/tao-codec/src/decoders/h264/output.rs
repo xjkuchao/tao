@@ -491,7 +491,7 @@ impl H264Decoder {
 
     pub(super) fn maybe_swap_b_default_ref_list_l1(
         &self,
-        l0: &[RefPlanes],
+        _l0: &[RefPlanes],
         l1: &mut [RefPlanes],
         l0_mods: &[RefPicListMod],
         l1_mods: &[RefPicListMod],
@@ -501,15 +501,19 @@ impl H264Decoder {
             || num_ref_idx_l1 <= 1
             || !l0_mods.is_empty()
             || !l1_mods.is_empty()
-            || l0.len() != l1.len()
             || l1.len() < 2
         {
             return;
         }
-        let same_default_order = l0.iter().zip(l1.iter()).all(|(a, b)| {
+        // 对齐 FFmpeg: 交换判定应基于“完整默认列表”而非 active_ref 截断后的列表.
+        let default_l0 = self.collect_default_reference_list_l0();
+        let default_l1 = self.collect_default_reference_list_l1();
+        if default_l0.len() != default_l1.len() || default_l0.len() < 2 {
+            return;
+        }
+        let same_default_order = default_l0.iter().zip(default_l1.iter()).all(|(a, b)| {
             a.frame_num == b.frame_num
                 && a.poc == b.poc
-                && a.is_long_term == b.is_long_term
                 && a.long_term_frame_idx == b.long_term_frame_idx
         });
         if same_default_order {
