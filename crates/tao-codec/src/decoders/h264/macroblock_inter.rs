@@ -243,6 +243,10 @@ impl H264Decoder {
             }
             let cx4_u = cx4 as usize;
             let cy4_u = cy4 as usize;
+            // 空间 direct 邻居必须满足同 slice 约束, 跨 slice 一律视为不可用.
+            if !self.same_slice_4x4(x4, y4, cx4_u, cy4_u) {
+                return None;
+            }
             let mb_fallback = || -> Option<(i32, i32, i8)> {
                 let mb_x = cx4_u / 4;
                 let mb_y = cy4_u / 4;

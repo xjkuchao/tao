@@ -629,6 +629,56 @@ fn test_build_b_direct_motion_spatial_zero_condition_uses_top_and_diagonal_neigh
 }
 
 #[test]
+fn test_build_b_direct_motion_spatial_ignores_cross_slice_neighbors() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+
+    let mb_00 = dec.mb_index(0, 0).expect("左上宏块索引应存在");
+    let mb_10 = dec.mb_index(1, 0).expect("上邻宏块索引应存在");
+    let mb_01 = dec.mb_index(0, 1).expect("左邻宏块索引应存在");
+    let mb_11 = dec.mb_index(1, 1).expect("目标宏块索引应存在");
+    dec.mb_slice_first_mb[mb_00] = 10;
+    dec.mb_slice_first_mb[mb_11] = 10;
+    dec.mb_slice_first_mb[mb_10] = 11;
+    dec.mb_slice_first_mb[mb_01] = 12;
+
+    // 左/上邻居属于不同 slice, 不应参与 spatial direct 邻居预测.
+    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 20, 0, 0);
+    dec.set_l1_motion_block_4x4(0, 16, 16, 16, 20, 0, 0);
+    dec.set_l0_motion_block_4x4(16, 0, 16, 16, 30, 0, 0);
+    dec.set_l1_motion_block_4x4(16, 0, 16, 16, 30, 0, 0);
+
+    // 左上对角邻居与当前同 slice, 应作为 C 不可用时的 D 回退候选.
+    dec.set_l0_motion_block_4x4(0, 0, 16, 16, 6, 0, 0);
+    dec.set_l1_motion_block_4x4(0, 0, 16, 16, 6, 0, 0);
+
+    let ref_l0_list = vec![build_constant_ref_planes(&dec, 32, 64, 96)];
+    let ref_l1_list = vec![build_constant_ref_planes(&dec, 48, 80, 112)];
+    let (motion_l0, motion_l1) =
+        dec.build_b_direct_motion(1, 1, 12, -8, true, &ref_l0_list, &ref_l1_list);
+    let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
+    let motion_l1 = motion_l1.expect("spatial direct 应提供 L1 运动信息");
+    assert_eq!(
+        motion_l0.mv_x, 6,
+        "跨 slice 左/上邻居不应参与, L0 应回退使用同 slice 对角邻居 MV(x)"
+    );
+    assert_eq!(
+        motion_l0.mv_y, 0,
+        "跨 slice 左/上邻居不应参与, L0 应回退使用同 slice 对角邻居 MV(y)"
+    );
+    assert_eq!(
+        motion_l1.mv_x, 6,
+        "跨 slice 左/上邻居不应参与, L1 应回退使用同 slice 对角邻居 MV(x)"
+    );
+    assert_eq!(
+        motion_l1.mv_y, 0,
+        "跨 slice 左/上邻居不应参与, L1 应回退使用同 slice 对角邻居 MV(y)"
+    );
+}
+
+#[test]
 fn test_build_b_direct_motion_spatial_l1_fallback_keeps_input_when_neighbors_absent() {
     let mut dec = build_test_decoder();
     dec.width = 32;
