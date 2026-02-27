@@ -243,25 +243,32 @@ impl Player {
                     .end_time
                     .map(|t| format!("{:.2}s", t))
                     .unwrap_or_else(|| "未知".to_string());
-                
+
                 let title = chapter
                     .metadata
                     .iter()
                     .find(|(k, _)| k == "title")
                     .map(|(_, v)| v.as_str())
                     .unwrap_or("未命名");
-                
+
                 let artist = chapter
                     .metadata
                     .iter()
                     .find(|(k, _)| k == "artist")
                     .map(|(_, v)| v.as_str())
                     .unwrap_or("");
-                
+
                 if artist.is_empty() {
                     info!("  [{:2}] {} ~ {}: {}", idx + 1, start, end, title);
                 } else {
-                    info!("  [{:2}] {} ~ {}: {} - {}", idx + 1, start, end, artist, title);
+                    info!(
+                        "  [{:2}] {} ~ {}: {} - {}",
+                        idx + 1,
+                        start,
+                        end,
+                        artist,
+                        title
+                    );
                 }
             }
         }
@@ -371,7 +378,7 @@ impl Player {
                         } else {
                             let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
                             let current_idx = find_chapter_index(&chapters, current_sec);
-                            
+
                             let target_sec = if let Some(idx) = current_idx {
                                 let chapter_start = chapters[idx].start_time.unwrap_or(0.0);
                                 // 如果当前章节已播放超过 3 秒, 跳回章节开头
@@ -393,10 +400,13 @@ impl Player {
                             } else {
                                 0.0
                             };
-                            
+
                             let _offset = target_sec - current_sec;
-                            info!("[切歌] 上一首: 当前={:.2}s, 目标={:.2}s", current_sec, target_sec);
-                            
+                            info!(
+                                "[切歌] 上一首: 当前={:.2}s, 目标={:.2}s",
+                                current_sec, target_sec
+                            );
+
                             // 复用 Seek 逻辑
                             seek_eof_retried = false;
                             seek_skip_until = None;
@@ -405,13 +415,25 @@ impl Player {
                                 let tb = &stream.time_base;
                                 if tb.num > 0 && tb.den > 0 {
                                     let ts = (target_sec * tb.den as f64 / tb.num as f64) as i64;
-                                    if let Ok(()) = demuxer.seek(&mut io, stream.index, ts, SeekFlags::default()) {
-                                        if let Some(d) = &mut video_decoder { d.flush(); }
-                                        if let Some(d) = &mut audio_decoder { d.flush(); }
-                                        if let Some(a) = &audio_sender { a.flush(); }
+                                    if let Ok(()) = demuxer.seek(
+                                        &mut io,
+                                        stream.index,
+                                        ts,
+                                        SeekFlags::default(),
+                                    ) {
+                                        if let Some(d) = &mut video_decoder {
+                                            d.flush();
+                                        }
+                                        if let Some(d) = &mut audio_decoder {
+                                            d.flush();
+                                        }
+                                        if let Some(a) = &audio_sender {
+                                            a.flush();
+                                        }
                                         let target_us = (target_sec * 1_000_000.0) as i64;
                                         clock.seek_reset(target_us);
-                                        audio_cum_samples = (target_sec * audio_sample_rate as f64) as u64;
+                                        audio_cum_samples =
+                                            (target_sec * audio_sample_rate as f64) as u64;
                                         eof = false;
                                         audio_eof_wait_start = None;
                                         seek_flush_pending = true;
@@ -426,7 +448,7 @@ impl Player {
                         } else {
                             let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
                             let current_idx = find_chapter_index(&chapters, current_sec);
-                            
+
                             let target_sec = if let Some(idx) = current_idx {
                                 if idx + 1 < chapters.len() {
                                     // 跳到下一章开头
@@ -441,9 +463,12 @@ impl Player {
                             } else {
                                 0.0
                             };
-                            
-                            info!("[切歌] 下一首: 当前={:.2}s, 目标={:.2}s", current_sec, target_sec);
-                            
+
+                            info!(
+                                "[切歌] 下一首: 当前={:.2}s, 目标={:.2}s",
+                                current_sec, target_sec
+                            );
+
                             // 复用 Seek 逻辑
                             seek_eof_retried = false;
                             seek_skip_until = None;
@@ -452,13 +477,25 @@ impl Player {
                                 let tb = &stream.time_base;
                                 if tb.num > 0 && tb.den > 0 {
                                     let ts = (target_sec * tb.den as f64 / tb.num as f64) as i64;
-                                    if let Ok(()) = demuxer.seek(&mut io, stream.index, ts, SeekFlags::default()) {
-                                        if let Some(d) = &mut video_decoder { d.flush(); }
-                                        if let Some(d) = &mut audio_decoder { d.flush(); }
-                                        if let Some(a) = &audio_sender { a.flush(); }
+                                    if let Ok(()) = demuxer.seek(
+                                        &mut io,
+                                        stream.index,
+                                        ts,
+                                        SeekFlags::default(),
+                                    ) {
+                                        if let Some(d) = &mut video_decoder {
+                                            d.flush();
+                                        }
+                                        if let Some(d) = &mut audio_decoder {
+                                            d.flush();
+                                        }
+                                        if let Some(a) = &audio_sender {
+                                            a.flush();
+                                        }
                                         let target_us = (target_sec * 1_000_000.0) as i64;
                                         clock.seek_reset(target_us);
-                                        audio_cum_samples = (target_sec * audio_sample_rate as f64) as u64;
+                                        audio_cum_samples =
+                                            (target_sec * audio_sample_rate as f64) as u64;
                                         eof = false;
                                         audio_eof_wait_start = None;
                                         seek_flush_pending = true;
@@ -472,26 +509,30 @@ impl Player {
                         seek_skip_until = None;
                         let current_sec = clock.current_time_us() as f64 / 1_000_000.0;
                         let is_paused = clock.is_paused();
-                        
+
                         // 计算原始目标时间
                         let mut target_sec = if total_duration_sec > 0.0 {
                             (current_sec + offset).clamp(0.0, max_seekable_sec)
                         } else {
                             (current_sec + offset).max(0.0)
                         };
-                        
+
                         // 智能章节跳转: 如果启用了章节且正在跨章节 seek
                         if !chapters.is_empty() && offset != 0.0 {
                             let current_idx = find_chapter_index(&chapters, current_sec);
                             let target_idx = find_chapter_index(&chapters, target_sec);
-                            
+
                             if offset > 0.0 {
                                 // 前进: 如果跨章节, 跳到下一章开头
                                 if let (Some(cur), Some(tgt)) = (current_idx, target_idx) {
                                     if tgt > cur {
                                         if let Some(start) = chapters[tgt].start_time {
-                                            info!("[Seek] 前进跨章节: 从章节{} 跳到章节{} 开头 ({:.2}s)", 
-                                                  cur + 1, tgt + 1, start);
+                                            info!(
+                                                "[Seek] 前进跨章节: 从章节{} 跳到章节{} 开头 ({:.2}s)",
+                                                cur + 1,
+                                                tgt + 1,
+                                                start
+                                            );
                                             target_sec = start;
                                         }
                                     }
@@ -501,13 +542,26 @@ impl Player {
                                 if let Some(cur_idx) = current_idx {
                                     if let Some(chapter_start) = chapters[cur_idx].start_time {
                                         // 如果当前章节已播放超过 3 秒且后退会超过章节开头
-                                        if current_sec - chapter_start > 3.0 && target_sec < chapter_start {
-                                            info!("[Seek] 后退超过3秒: 跳到当前章节开头 ({:.2}s)", chapter_start);
+                                        if current_sec - chapter_start > 3.0
+                                            && target_sec < chapter_start
+                                        {
+                                            info!(
+                                                "[Seek] 后退超过3秒: 跳到当前章节开头 ({:.2}s)",
+                                                chapter_start
+                                            );
                                             target_sec = chapter_start;
-                                        } else if current_sec - chapter_start <= 3.0 && target_sec < chapter_start && cur_idx > 0 {
+                                        } else if current_sec - chapter_start <= 3.0
+                                            && target_sec < chapter_start
+                                            && cur_idx > 0
+                                        {
                                             // 如果当前章节播放不超过 3 秒且后退会超过章节开头, 跳到上一章开头
-                                            if let Some(prev_start) = chapters[cur_idx - 1].start_time {
-                                                info!("[Seek] 后退未满3秒: 跳到上一章节开头 ({:.2}s)", prev_start);
+                                            if let Some(prev_start) =
+                                                chapters[cur_idx - 1].start_time
+                                            {
+                                                info!(
+                                                    "[Seek] 后退未满3秒: 跳到上一章节开头 ({:.2}s)",
+                                                    prev_start
+                                                );
                                                 target_sec = prev_start;
                                             }
                                         }
@@ -607,10 +661,10 @@ impl Player {
                 status_tx
                     .send(PlayerStatus::Time(current_sec, total_duration_sec))
                     .ok();
-                
+
                 // 更新当前章节
                 let current_chapter_idx = find_chapter_index(&chapters, current_sec);
-                
+
                 // 仅在章节变化时通知
                 if current_chapter_idx != last_notified_chapter_idx {
                     last_notified_chapter_idx = current_chapter_idx;
@@ -623,7 +677,9 @@ impl Player {
                             .unwrap_or_else(|| format!("章節 {}", idx + 1));
                         (idx, title)
                     });
-                    status_tx.send(PlayerStatus::CurrentChapter(chapter_info)).ok();
+                    status_tx
+                        .send(PlayerStatus::CurrentChapter(chapter_info))
+                        .ok();
                 }
             }
 
@@ -1163,15 +1219,15 @@ fn find_chapter_index(chapters: &[DemuxerChapter], current_sec: f64) -> Option<u
     if chapters.is_empty() {
         return None;
     }
-    
+
     for (idx, chapter) in chapters.iter().enumerate() {
         let start = chapter.start_time.unwrap_or(0.0);
         let end = chapter.end_time.unwrap_or(f64::MAX);
-        
+
         if current_sec >= start && current_sec < end {
             return Some(idx);
         }
     }
-    
+
     None
 }

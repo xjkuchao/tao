@@ -12,6 +12,8 @@ use tao_core::TaoResult;
 pub struct IoContext {
     /// 内部 I/O 实现
     inner: Box<dyn IoBackend>,
+    /// 数据源路径或 URL (可选)
+    source_path: Option<String>,
     /// 读缓冲区
     buffer: Vec<u8>,
     /// 缓冲区中的有效数据长度
@@ -48,6 +50,18 @@ impl IoContext {
     pub fn new(backend: Box<dyn IoBackend>) -> Self {
         Self {
             inner: backend,
+            source_path: None,
+            buffer: vec![0u8; DEFAULT_BUFFER_SIZE],
+            buf_len: 0,
+            buf_pos: 0,
+        }
+    }
+
+    /// 从 I/O 后端创建上下文并设置数据源路径
+    pub fn new_with_source(backend: Box<dyn IoBackend>, source_path: String) -> Self {
+        Self {
+            inner: backend,
+            source_path: Some(source_path),
             buffer: vec![0u8; DEFAULT_BUFFER_SIZE],
             buf_len: 0,
             buf_pos: 0,
@@ -57,7 +71,10 @@ impl IoContext {
     /// 从文件路径打开 (只读)
     pub fn open_read(path: &str) -> TaoResult<Self> {
         let file = std::fs::File::open(path)?;
-        Ok(Self::new(Box::new(FileBackend::new(file))))
+        Ok(Self::new_with_source(
+            Box::new(FileBackend::new(file)),
+            path.to_string(),
+        ))
     }
 
     /// 从 URL 打开 (只读, HTTP/HTTPS)
@@ -68,13 +85,16 @@ impl IoContext {
     pub fn open_url(url: &str) -> TaoResult<Self> {
         log::info!("正在连接: {}", url);
         let backend = HttpBackend::open(url).map_err(tao_core::TaoError::Io)?;
-        Ok(Self::new(Box::new(backend)))
+        Ok(Self::new_with_source(Box::new(backend), url.to_string()))
     }
 
     /// 从文件路径打开 (写入)
     pub fn open_write(path: &str) -> TaoResult<Self> {
         let file = std::fs::File::create(path)?;
-        Ok(Self::new(Box::new(FileBackend::new(file))))
+        Ok(Self::new_with_source(
+            Box::new(FileBackend::new(file)),
+            path.to_string(),
+        ))
     }
 
     /// 从文件路径打开 (读写)
@@ -85,7 +105,10 @@ impl IoContext {
             .create(true)
             .truncate(true)
             .open(path)?;
-        Ok(Self::new(Box::new(FileBackend::new(file))))
+        Ok(Self::new_with_source(
+            Box::new(FileBackend::new(file)),
+            path.to_string(),
+        ))
     }
 
     // ========================
@@ -315,6 +338,11 @@ impl IoContext {
     /// 获取总大小
     pub fn size(&self) -> Option<u64> {
         self.inner.size()
+    }
+
+    /// 获取数据源路径或 URL
+    pub fn source_path(&self) -> Option<&str> {
+        self.source_path.as_deref()
     }
 }
 

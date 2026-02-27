@@ -25,9 +25,9 @@
 //! - demuxer 为底层音频文件创建单个流
 //! - 读取数据包时直接委托给底层 demuxer
 
+use encoding_rs::{BIG5, Encoding, GBK, UTF_16BE, UTF_16LE};
 use log::debug;
-use std::io::{BufRead, BufReader, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tao_codec::Packet;
 use tao_core::{TaoError, TaoResult};
 
@@ -61,17 +61,15 @@ impl CueDemuxer {
         }))
     }
 
-    /// 解析 CUE 文件
-    fn parse_cue<R: Read>(&mut self, reader: R) -> TaoResult<PathBuf> {
-        let buf_reader = BufReader::new(reader);
+    /// 解析 CUE 文本内容
+    fn parse_cue_text(&mut self, text: &str) -> TaoResult<PathBuf> {
         let mut audio_file_path: Option<PathBuf> = None;
         let mut current_track: Option<CueTrack> = None;
         let mut global_performer: Option<String> = None;
         let mut global_title: Option<String> = None;
         let mut line_count = 0;
 
-        for line in buf_reader.lines() {
-            let line = line.map_err(|e| TaoError::Io(e))?;
+        for line in text.lines() {
             let trimmed = line.trim();
             line_count += 1;
 
@@ -132,11 +130,13 @@ impl CueDemuxer {
             self.add_chapter(track, global_performer.as_deref(), global_title.as_deref());
         }
 
-        debug!("CUE 解析完成，共 {} 行，文件路径: {:?}", line_count, audio_file_path);
+        debug!(
+            "CUE 解析完成，共 {} 行，文件路径: {:?}",
+            line_count, audio_file_path
+        );
 
-        audio_file_path.ok_or_else(|| {
-            TaoError::InvalidData("CUE 文件中未找到 FILE 字段".to_string())
-        })
+        audio_file_path
+            .ok_or_else(|| TaoError::InvalidData("CUE 文件中未找到 FILE 字段".to_string()))
     }
 
     /// 添加一个 chapter
@@ -195,38 +195,35 @@ impl Demuxer for CueDemuxer {
     fn open(&mut self, io: &mut IoContext) -> TaoResult<()> {
         // 1. 读取整个 CUE 文件内容
         // CUE 文件通常很小（几 KB），一次性读取
-        let file_size = io.size().ok_or_else(|| {
-            TaoError::InvalidData("无法获取 CUE 文件大小".to_string())
-        })? as usize;
-        
+        let file_size = io
+            .size()
+            .ok_or_else(|| TaoError::InvalidData("无法获取 CUE 文件大小".to_string()))?
+            as usize;
+
         if file_size == 0 {
             return Err(TaoError::InvalidData("CUE 文件为空".to_string()));
         }
-        
+
         debug!("CUE 文件大小: {} 字节", file_size);
-        
+
         // 使用 read_bytes 一次性读取所有数据
         let cue_content = io.read_bytes(file_size)?;
-        
+
         debug!("成功读取 {} 字节 CUE 内容", cue_content.len());
 
         // 2. 解析 CUE 文件，获取音频文件路径
-        let audio_file_relative_path = self.parse_cue(&cue_content[..])?;
+        let cue_text = decode_cue_text(&cue_content)?;
+        let audio_file_relative_path = self.parse_cue_text(&cue_text)?;
+        let audio_file_path = resolve_audio_path(audio_file_relative_path, io.source_path());
 
         // 3. 音频文件路径处理
         // 注意: CUE 文件中的路径通常是相对路径，相对于 CUE 文件所在目录
-        // 这里我们直接使用该路径，假设它相对于当前工作目录或是绝对路径
-        let audio_file_path = audio_file_relative_path;
-
-        debug!(
-            "CUE 文件引用音频文件: {}",
-            audio_file_path.display()
-        );
+        debug!("CUE 文件引用音频文件: {}", audio_file_path.display());
 
         // 4. 打开音频文件
-        let audio_path_str = audio_file_path.to_str().ok_or_else(|| {
-            TaoError::InvalidData("无效的音频文件路径".to_string())
-        })?;
+        let audio_path_str = audio_file_path
+            .to_str()
+            .ok_or_else(|| TaoError::InvalidData("无效的音频文件路径".to_string()))?;
 
         let mut audio_io = IoContext::open_read(audio_path_str)?;
 
@@ -266,12 +263,14 @@ impl Demuxer for CueDemuxer {
     }
 
     fn read_packet(&mut self, _io: &mut IoContext) -> TaoResult<Packet> {
-        let demuxer = self.inner_demuxer.as_mut().ok_or_else(|| {
-            TaoError::InvalidData("CUE demuxer 未初始化".to_string())
-        })?;
-        let audio_io = self.audio_io.as_mut().ok_or_else(|| {
-            TaoError::InvalidData("音频文件 IoContext 未初始化".to_string())
-        })?;
+        let demuxer = self
+            .inner_demuxer
+            .as_mut()
+            .ok_or_else(|| TaoError::InvalidData("CUE demuxer 未初始化".to_string()))?;
+        let audio_io = self
+            .audio_io
+            .as_mut()
+            .ok_or_else(|| TaoError::InvalidData("音频文件 IoContext 未初始化".to_string()))?;
         demuxer.read_packet(audio_io)
     }
 
@@ -282,12 +281,14 @@ impl Demuxer for CueDemuxer {
         timestamp: i64,
         flags: SeekFlags,
     ) -> TaoResult<()> {
-        let demuxer = self.inner_demuxer.as_mut().ok_or_else(|| {
-            TaoError::InvalidData("CUE demuxer 未初始化".to_string())
-        })?;
-        let audio_io = self.audio_io.as_mut().ok_or_else(|| {
-            TaoError::InvalidData("音频文件 IoContext 未初始化".to_string())
-        })?;
+        let demuxer = self
+            .inner_demuxer
+            .as_mut()
+            .ok_or_else(|| TaoError::InvalidData("CUE demuxer 未初始化".to_string()))?;
+        let audio_io = self
+            .audio_io
+            .as_mut()
+            .ok_or_else(|| TaoError::InvalidData("音频文件 IoContext 未初始化".to_string()))?;
         demuxer.seek(audio_io, stream_index, timestamp, flags)
     }
 
@@ -308,6 +309,85 @@ impl Demuxer for CueDemuxer {
     }
 }
 
+fn resolve_audio_path(path_from_cue: PathBuf, cue_source: Option<&str>) -> PathBuf {
+    if path_from_cue.is_absolute() {
+        return path_from_cue;
+    }
+
+    let base_dir = cue_source.and_then(|p| Path::new(p).parent().map(|dir| dir.to_path_buf()));
+
+    if let Some(dir) = base_dir {
+        let joined = dir.join(&path_from_cue);
+        debug!(
+            "CUE 相对路径解析: base={}, file={}, resolved={}",
+            dir.display(),
+            path_from_cue.display(),
+            joined.display()
+        );
+        return joined;
+    }
+
+    path_from_cue
+}
+
+fn decode_cue_text(data: &[u8]) -> TaoResult<String> {
+    if data.is_empty() {
+        return Err(TaoError::InvalidData("CUE 文件为空".to_string()));
+    }
+
+    if data.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        let text = String::from_utf8_lossy(&data[3..]).to_string();
+        debug!("CUE 编码探测: UTF-8 BOM");
+        return Ok(text);
+    }
+
+    if data.starts_with(&[0xFF, 0xFE]) {
+        if let Some(text) = decode_with_encoding(&data[2..], UTF_16LE, "UTF-16LE BOM") {
+            return Ok(text);
+        }
+    }
+
+    if data.starts_with(&[0xFE, 0xFF]) {
+        if let Some(text) = decode_with_encoding(&data[2..], UTF_16BE, "UTF-16BE BOM") {
+            return Ok(text);
+        }
+    }
+
+    if let Ok(text) = std::str::from_utf8(data) {
+        debug!("CUE 编码探测: UTF-8");
+        return Ok(text.to_string());
+    }
+
+    if let Some(text) = decode_with_encoding(data, GBK, "GBK") {
+        return Ok(text);
+    }
+
+    if let Some(text) = decode_with_encoding(data, BIG5, "Big5") {
+        return Ok(text);
+    }
+
+    if let Some(text) = decode_with_encoding(data, UTF_16LE, "UTF-16LE") {
+        return Ok(text);
+    }
+
+    if let Some(text) = decode_with_encoding(data, UTF_16BE, "UTF-16BE") {
+        return Ok(text);
+    }
+
+    let (text, _) = GBK.decode_without_bom_handling(data);
+    debug!("CUE 编码探测: GBK 宽松解码");
+    Ok(text.into_owned())
+}
+
+fn decode_with_encoding(data: &[u8], encoding: &'static Encoding, label: &str) -> Option<String> {
+    let (text, had_errors) = encoding.decode_without_bom_handling(data);
+    if had_errors {
+        return None;
+    }
+    debug!("CUE 编码探测: {}", label);
+    Some(text.into_owned())
+}
+
 /// CUE 轨道信息 (临时解析结构)
 #[derive(Debug)]
 struct CueTrack {
@@ -319,9 +399,8 @@ struct CueTrack {
 
 /// 解析字段值 (去除引号)
 fn parse_field(line: &str, prefix: &str) -> Option<String> {
-    if line.starts_with(prefix) {
-        let rest = line[prefix.len()..].trim();
-        return Some(unquote(rest));
+    if let Some(rest) = line.strip_prefix(prefix) {
+        return Some(unquote(rest.trim()));
     }
     None
 }
@@ -333,9 +412,9 @@ fn parse_file_path(line: &str) -> Option<PathBuf> {
     if !trimmed.starts_with("FILE") {
         return None;
     }
-    
+
     let rest = trimmed["FILE".len()..].trim();
-    
+
     // 查找引号
     if let Some(quote_start) = rest.find('"') {
         // 查找结束引号
@@ -344,19 +423,14 @@ fn parse_file_path(line: &str) -> Option<PathBuf> {
             return Some(PathBuf::from(path));
         }
     }
-    
+
     // 没有引号，按空格分割
     let parts: Vec<&str> = rest.split_whitespace().collect();
     if !parts.is_empty() {
         // 第一个部分是路径，最后一个可能是 WAVE/MP3 等
-        let path = if parts.len() == 1 {
-            parts[0]
-        } else {
-            parts[0] // 简单情况：假设路径是第一个词
-        };
-        return Some(PathBuf::from(path));
+        return Some(PathBuf::from(parts[0]));
     }
-    
+
     None
 }
 
@@ -457,7 +531,10 @@ mod tests {
             parse_field("TITLE \"可爱女人\"", "TITLE"),
             Some("可爱女人".to_string())
         );
-        assert_eq!(parse_field("INDEX 01 00:00:00", "INDEX 01"), Some("00:00:00".to_string()));
+        assert_eq!(
+            parse_field("INDEX 01 00:00:00", "INDEX 01"),
+            Some("00:00:00".to_string())
+        );
     }
 
     #[test]

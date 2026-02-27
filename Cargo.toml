@@ -61,6 +61,9 @@ serde_json = "1"
 # 位操作
 bitflags = "2"
 
+# 编码处理
+encoding_rs = "0.8"
+
 # 字节处理
 bytes = "1"
 byteorder = "1"

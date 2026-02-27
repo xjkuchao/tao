@@ -11,6 +11,7 @@ use sdl2::rect::Rect;
 use sdl2::render::{Canvas, Texture, TextureAccess, TextureCreator};
 use sdl2::video::{Window, WindowContext};
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
@@ -154,6 +155,7 @@ fn video_refresh<'a>(
     clock: &MediaClock,
     canvas: &mut Canvas<Window>,
     texture_creator: &'a TextureCreator<WindowContext>,
+    hud_font: Option<&sdl2::ttf::Font<'_, 'static>>,
     paused: bool,
 ) -> (f64, bool) {
     let mut remaining_time = REFRESH_RATE;
@@ -161,7 +163,7 @@ fn video_refresh<'a>(
 
     if state.frame_queue.is_empty() {
         if state.force_refresh {
-            render_current_texture(state, canvas);
+            render_current_texture(state, canvas, texture_creator, hud_font);
             state.force_refresh = false;
         }
         return (remaining_time, false);
@@ -178,12 +180,12 @@ fn video_refresh<'a>(
             );
             // Seek 后收到新帧: 显示并停留 (对齐 ffplay 暂停 seek)
             upload_front_frame(state, texture_creator);
-            render_current_texture(state, canvas);
+            render_current_texture(state, canvas, texture_creator, hud_font);
             state.frame_queue.pop_front();
             state.seek_frame_pending = false;
             state.force_refresh = false;
         } else if state.force_refresh {
-            render_current_texture(state, canvas);
+            render_current_texture(state, canvas, texture_creator, hud_font);
             state.force_refresh = false;
         }
         return (remaining_time, false);
@@ -247,7 +249,7 @@ fn video_refresh<'a>(
     // ── display: 刷新画面 ──
     if state.force_refresh && !state.frame_queue.is_empty() {
         upload_front_frame(state, texture_creator);
-        render_current_texture(state, canvas);
+        render_current_texture(state, canvas, texture_creator, hud_font);
         state.frame_queue.pop_front();
         state.force_refresh = false;
     }
@@ -296,7 +298,12 @@ fn upload_front_frame<'a>(
 }
 
 /// 渲染已上传纹理到 canvas (保持宽高比)
-fn render_current_texture(state: &VideoDisplayState, canvas: &mut Canvas<Window>) {
+fn render_current_texture(
+    state: &VideoDisplayState,
+    canvas: &mut Canvas<Window>,
+    texture_creator: &TextureCreator<WindowContext>,
+    hud_font: Option<&sdl2::ttf::Font<'_, 'static>>,
+) {
     canvas.set_draw_color(Color::RGB(0, 0, 0));
     canvas.clear();
 
@@ -312,6 +319,8 @@ fn render_current_texture(state: &VideoDisplayState, canvas: &mut Canvas<Window>
             state.volume_level,
             state.muted,
             &state.current_chapter,
+            texture_creator,
+            hud_font,
         );
     }
     canvas.present();
@@ -391,6 +400,7 @@ fn glyph_rows(ch: char) -> Option<[u8; 5]> {
 }
 
 /// 绘制进度 HUD (左上角)
+#[allow(clippy::too_many_arguments)]
 fn draw_time_overlay(
     canvas: &mut Canvas<Window>,
     current_sec: f64,
@@ -398,20 +408,90 @@ fn draw_time_overlay(
     volume: f32,
     muted: bool,
     current_chapter: &Option<(usize, String)>,
+    texture_creator: &TextureCreator<WindowContext>,
+    hud_font: Option<&sdl2::ttf::Font<'_, 'static>>,
 ) {
     let mut lines = Vec::new();
-    
+
     // 第一行: 时间进度
     lines.push(format_progress_text(current_sec, total_sec));
-    
+
     // 第二行: 音量
     lines.push(format_volume_text(volume, muted));
-    
+
     // 第三行: 当前章节 (如果有)
     if let Some((idx, title)) = current_chapter {
         lines.push(format!("Track {}: {}", idx + 1, title));
     }
-    
+
+    if let Some(font) = hud_font {
+        if draw_time_overlay_ttf(canvas, texture_creator, &lines, font).is_ok() {
+            return;
+        }
+        log::warn!("HUD 字体渲染失败, 回退到点阵字体");
+    }
+
+    draw_time_overlay_bitmap(canvas, &lines);
+}
+
+fn draw_time_overlay_ttf(
+    canvas: &mut Canvas<Window>,
+    texture_creator: &TextureCreator<WindowContext>,
+    lines: &[String],
+    font: &sdl2::ttf::Font<'_, 'static>,
+) -> Result<(), String> {
+    if lines.is_empty() {
+        return Ok(());
+    }
+
+    let padding: i32 = 8;
+    let line_gap: i32 = 4;
+    let x0: i32 = 10;
+    let y0: i32 = 10;
+
+    let mut max_line_w: i32 = 0;
+    let mut total_h: i32 = 0;
+    for (idx, line) in lines.iter().enumerate() {
+        let (w, h) = font
+            .size_of(line)
+            .map_err(|e| format!("测量字体失败: {}", e))?;
+        max_line_w = max_line_w.max(w as i32);
+        total_h += h as i32;
+        if idx + 1 < lines.len() {
+            total_h += line_gap;
+        }
+    }
+
+    let bg = Rect::new(
+        x0 - padding,
+        y0 - padding,
+        (max_line_w + padding * 2) as u32,
+        (total_h + padding * 2) as u32,
+    );
+    canvas.set_draw_color(Color::RGBA(0, 0, 0, 200));
+    let _ = canvas.fill_rect(bg);
+
+    let mut pen_y = y0;
+    for line in lines {
+        let surface = font
+            .render(line)
+            .blended(Color::RGB(235, 235, 235))
+            .map_err(|e| format!("渲染字体失败: {}", e))?;
+        let texture = texture_creator
+            .create_texture_from_surface(&surface)
+            .map_err(|e| format!("创建字体纹理失败: {}", e))?;
+        let query = texture.query();
+        let target = Rect::new(x0, pen_y, query.width, query.height);
+        canvas
+            .copy(&texture, None, target)
+            .map_err(|e| format!("绘制字体失败: {}", e))?;
+        pen_y += query.height as i32 + line_gap;
+    }
+
+    Ok(())
+}
+
+fn draw_time_overlay_bitmap(canvas: &mut Canvas<Window>, lines: &[String]) {
     let scale: i32 = 3;
     let glyph_w: i32 = 3 * scale;
     let glyph_h: i32 = 5 * scale;
@@ -455,6 +535,94 @@ fn draw_time_overlay(
             }
         }
     }
+}
+
+fn find_external_font_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+    let font_path = exe_dir.join("fonts").join("font.ttf");
+    if font_path.exists() {
+        Some(font_path)
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn find_system_font_path() -> Option<PathBuf> {
+    let windir = std::env::var("WINDIR").ok()?;
+    let font_dir = Path::new(&windir).join("Fonts");
+    let candidates = [
+        "msyh.ttc",
+        "msyhl.ttc",
+        "simsun.ttc",
+        "simhei.ttf",
+        "arial.ttf",
+    ];
+    for name in candidates {
+        let path = font_dir.join(name);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn find_system_font_path() -> Option<PathBuf> {
+    let candidates = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ];
+    for path in candidates {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn find_system_font_path() -> Option<PathBuf> {
+    let candidates = [
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/Helvetica.ttc",
+    ];
+    for path in candidates {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+fn find_system_font_path() -> Option<PathBuf> {
+    None
+}
+
+fn load_hud_font(ttf_context: &sdl2::ttf::Sdl2TtfContext) -> Option<sdl2::ttf::Font<'_, 'static>> {
+    let external = find_external_font_path();
+    let system = find_system_font_path();
+
+    let font_path = if let Some(path) = external {
+        log::info!("HUD 字体: 使用外部字体 {}", path.display());
+        path
+    } else if let Some(path) = system {
+        log::info!("HUD 字体: 使用系统字体 {}", path.display());
+        path
+    } else {
+        log::warn!("HUD 字体: 未找到可用字体, 使用点阵字体");
+        return None;
+    };
+
+    let font = ttf_context.load_font(font_path, 18).ok()?;
+    Some(font)
 }
 
 /// 计算保持宽高比的居中显示矩形 (对齐 ffplay calculate_display_rect)
@@ -530,6 +698,8 @@ pub fn run_event_loop(
     let mut holding = false;
 
     let sdl_context = canvas.window().subsystem().sdl();
+    let ttf_context = sdl2::ttf::init().map_err(|e| format!("初始化 SDL_ttf 失败: {}", e))?;
+    let hud_font = load_hud_font(&ttf_context);
     let mut event_pump = sdl_context.event_pump()?;
 
     'running: loop {
@@ -725,8 +895,14 @@ pub fn run_event_loop(
         }
 
         // 4. 视频刷新: 决定帧显示时机
-        let (remaining_time, step_completed) =
-            video_refresh(&mut state, &clock, &mut canvas, &texture_creator, paused);
+        let (remaining_time, step_completed) = video_refresh(
+            &mut state,
+            &clock,
+            &mut canvas,
+            &texture_creator,
+            hud_font.as_ref(),
+            paused,
+        );
 
         // 检查是否播放完毕
         if eof && state.frame_queue.is_empty() && !holding {

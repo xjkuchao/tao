@@ -17,4 +17,5 @@ thiserror.workspace = true
 log.workspace = true
 bytes.workspace = true
 byteorder.workspace = true
+encoding_rs.workspace = true
 ureq = { workspace = true, optional = true }
