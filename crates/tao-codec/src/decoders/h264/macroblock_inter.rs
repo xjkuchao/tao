@@ -247,46 +247,18 @@ impl H264Decoder {
             if !self.same_slice_4x4(x4, y4, cx4_u, cy4_u) {
                 return None;
             }
-            let mb_fallback = || -> Option<(i32, i32, i8)> {
-                let mb_x = cx4_u / 4;
-                let mb_y = cy4_u / 4;
-                let mb_idx = self.mb_index(mb_x, mb_y)?;
-                if list1 {
-                    let ref_idx = *self.ref_idx_l1.get(mb_idx)?;
-                    if ref_idx < 0 {
-                        return None;
-                    }
-                    Some((
-                        self.mv_l1_x.get(mb_idx).copied().unwrap_or(0) as i32,
-                        self.mv_l1_y.get(mb_idx).copied().unwrap_or(0) as i32,
-                        ref_idx,
-                    ))
-                } else {
-                    let ref_idx = *self.ref_idx_l0.get(mb_idx)?;
-                    if ref_idx < 0 {
-                        return None;
-                    }
-                    Some((
-                        self.mv_l0_x.get(mb_idx).copied().unwrap_or(0) as i32,
-                        self.mv_l0_y.get(mb_idx).copied().unwrap_or(0) as i32,
-                        ref_idx,
-                    ))
-                }
-            };
             if list1 {
                 if self.motion_l1_4x4_index(cx4_u, cy4_u).is_none() {
-                    return mb_fallback().or(Some((0, 0, -1)));
+                    // 越界邻居是 PART_NOT_AVAILABLE, 由 C->D 回退逻辑处理.
+                    return None;
                 }
-                self.l1_motion_candidate_4x4(cx4, cy4)
-                    .or_else(mb_fallback)
-                    .or(Some((0, 0, -1)))
+                self.l1_motion_candidate_4x4(cx4, cy4).or(Some((0, 0, -1)))
             } else {
                 if self.motion_l0_4x4_index(cx4_u, cy4_u).is_none() {
-                    return mb_fallback().or(Some((0, 0, -1)));
+                    // 越界邻居是 PART_NOT_AVAILABLE, 由 C->D 回退逻辑处理.
+                    return None;
                 }
-                self.l0_motion_candidate_4x4(cx4, cy4)
-                    .or_else(mb_fallback)
-                    .or(Some((0, 0, -1)))
+                self.l0_motion_candidate_4x4(cx4, cy4).or(Some((0, 0, -1)))
             }
         };
 

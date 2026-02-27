@@ -679,6 +679,46 @@ fn test_build_b_direct_motion_spatial_ignores_cross_slice_neighbors() {
 }
 
 #[test]
+fn test_build_b_direct_motion_spatial_ignores_mb_fallback_when_4x4_list_unused() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+
+    let left_mb = dec.mb_index(0, 1).expect("左邻索引应存在");
+    let top_mb = dec.mb_index(1, 0).expect("上邻索引应存在");
+
+    // 仅写入 MB 级运动信息, 保持 4x4 ref_idx=-1(默认值).
+    // 空间 direct 邻居预测应基于 4x4 cache, 不应回退读取 MB 级字段.
+    dec.mv_l0_x[left_mb] = 20;
+    dec.mv_l0_y[left_mb] = 0;
+    dec.ref_idx_l0[left_mb] = 0;
+    dec.mv_l0_x[top_mb] = 20;
+    dec.mv_l0_y[top_mb] = 0;
+    dec.ref_idx_l0[top_mb] = 0;
+
+    let ref_l0_list = vec![build_constant_ref_planes(&dec, 32, 64, 96)];
+    let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true, &ref_l0_list, &[]);
+    let motion_l0 = motion_l0.expect("spatial direct 应提供 L0 运动信息");
+    assert_eq!(
+        motion_l0.mv_x, 0,
+        "邻居 4x4 list 未使用时, 不应回退到 MB 级 MV(x)"
+    );
+    assert_eq!(
+        motion_l0.mv_y, 0,
+        "邻居 4x4 list 未使用时, 不应回退到 MB 级 MV(y)"
+    );
+    assert_eq!(
+        motion_l0.ref_idx, 0,
+        "邻居都不可用时, spatial direct 应按规范将 L0 ref_idx 回退为 0"
+    );
+    assert!(
+        motion_l1.is_none(),
+        "当 L1 参考列表为空时, spatial direct 不应伪造 L1 运动信息"
+    );
+}
+
+#[test]
 fn test_build_b_direct_motion_spatial_l1_fallback_keeps_input_when_neighbors_absent() {
     let mut dec = build_test_decoder();
     dec.width = 32;
@@ -720,22 +760,11 @@ fn test_build_b_direct_motion_spatial_uses_independent_l1_neighbor_mv() {
     dec.height = 32;
     dec.init_buffers();
 
-    let left_mb = dec.mb_index(0, 1).expect("左邻索引应存在");
-    let top_mb = dec.mb_index(1, 0).expect("上邻索引应存在");
-
-    dec.mv_l0_x[left_mb] = 0;
-    dec.mv_l0_y[left_mb] = 0;
-    dec.ref_idx_l0[left_mb] = 0;
-    dec.mv_l0_x[top_mb] = 0;
-    dec.mv_l0_y[top_mb] = 0;
-    dec.ref_idx_l0[top_mb] = 0;
-
-    dec.mv_l1_x[left_mb] = 20;
-    dec.mv_l1_y[left_mb] = 0;
-    dec.ref_idx_l1[left_mb] = 0;
-    dec.mv_l1_x[top_mb] = 20;
-    dec.mv_l1_y[top_mb] = 0;
-    dec.ref_idx_l1[top_mb] = 0;
+    // 邻居候选来自 4x4 cache, 显式写入左/上宏块的 4x4 运动信息.
+    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 0, 0, 0);
+    dec.set_l0_motion_block_4x4(16, 0, 16, 16, 0, 0, 0);
+    dec.set_l1_motion_block_4x4(0, 16, 16, 16, 20, 0, 0);
+    dec.set_l1_motion_block_4x4(16, 0, 16, 16, 20, 0, 0);
 
     let ref_l0_list = vec![build_constant_ref_planes(&dec, 32, 64, 96)];
     let ref_l1_list = vec![build_constant_ref_planes(&dec, 48, 80, 112)];
@@ -756,17 +785,9 @@ fn test_build_b_direct_motion_spatial_uses_independent_l0_neighbor_mv() {
     dec.height = 32;
     dec.init_buffers();
 
-    let left_mb = dec.mb_index(0, 1).expect("左邻索引应存在");
-    let top_mb = dec.mb_index(1, 0).expect("上邻索引应存在");
-
-    dec.mv_l0_x[left_mb] = 20;
-    dec.mv_l0_y[left_mb] = 0;
-    dec.ref_idx_l0[left_mb] = 0;
-    dec.mv_l0_x[top_mb] = 20;
-    dec.mv_l0_y[top_mb] = 0;
-    dec.ref_idx_l0[top_mb] = 0;
-    dec.ref_idx_l1[left_mb] = -1;
-    dec.ref_idx_l1[top_mb] = -1;
+    // 邻居候选来自 4x4 cache, 显式写入左/上宏块的 L0 运动信息.
+    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 20, 0, 0);
+    dec.set_l0_motion_block_4x4(16, 0, 16, 16, 20, 0, 0);
 
     let ref_l0_list = vec![build_constant_ref_planes(&dec, 32, 64, 96)];
     let (motion_l0, motion_l1) = dec.build_b_direct_motion(1, 1, 12, -8, true, &ref_l0_list, &[]);
