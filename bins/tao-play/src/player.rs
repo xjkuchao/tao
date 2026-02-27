@@ -226,6 +226,42 @@ impl Player {
         let streams = demuxer.streams().to_vec();
         info!("发现 {} 条流", streams.len());
 
+        // 显示 CUE 章节信息 (如果有)
+        let chapters = demuxer.chapters();
+        if !chapters.is_empty() {
+            info!("发现 {} 个章节/轨道:", chapters.len());
+            for (idx, chapter) in chapters.iter().enumerate() {
+                let start = chapter
+                    .start_time
+                    .map(|t| format!("{:.2}s", t))
+                    .unwrap_or_else(|| "未知".to_string());
+                let end = chapter
+                    .end_time
+                    .map(|t| format!("{:.2}s", t))
+                    .unwrap_or_else(|| "未知".to_string());
+                
+                let title = chapter
+                    .metadata
+                    .iter()
+                    .find(|(k, _)| k == "title")
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or("未命名");
+                
+                let artist = chapter
+                    .metadata
+                    .iter()
+                    .find(|(k, _)| k == "artist")
+                    .map(|(_, v)| v.as_str())
+                    .unwrap_or("");
+                
+                if artist.is_empty() {
+                    info!("  [{:2}] {} ~ {}: {}", idx + 1, start, end, title);
+                } else {
+                    info!("  [{:2}] {} ~ {}: {} - {}", idx + 1, start, end, artist, title);
+                }
+            }
+        }
+
         let audio_stream = if !self.config.no_audio {
             streams.iter().find(|s| s.media_type == MediaType::Audio)
         } else {

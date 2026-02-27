@@ -3,6 +3,7 @@
 pub mod aac;
 pub mod aiff;
 pub mod avi;
+pub mod cue;
 pub mod flac;
 pub mod flv;
 pub mod h264es;
@@ -24,6 +25,9 @@ pub fn register_all_demuxers(registry: &mut FormatRegistry) {
 
     registry.register_demuxer(FormatId::Aiff, "aiff", aiff::AiffDemuxer::create);
     registry.register_probe(Box::new(aiff::AiffProbe));
+
+    registry.register_demuxer(FormatId::Cue, "cue", cue::CueDemuxer::create);
+    registry.register_probe(Box::new(cue::CueProbe));
 
     registry.register_demuxer(FormatId::FlacContainer, "flac", flac::FlacDemuxer::create);
     registry.register_probe(Box::new(flac::FlacProbe));

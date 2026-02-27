@@ -49,6 +49,8 @@ pub enum FormatId {
     AacAdts,
     /// AIFF
     Aiff,
+    /// CUE Sheet (播放列表/元数据)
+    Cue,
 
     // ========================
     // 图片序列
@@ -93,6 +95,7 @@ impl FormatId {
             Self::Mp3Container => "mp3",
             Self::AacAdts => "aac",
             Self::Aiff => "aiff",
+            Self::Cue => "cue",
             Self::ImageSequence => "image2",
             Self::RawVideo => "rawvideo",
             Self::RawAudio => "rawaudio",
@@ -120,6 +123,7 @@ impl FormatId {
             Self::Mp3Container => &["mp3"],
             Self::AacAdts => &["aac"],
             Self::Aiff => &["aiff", "aif"],
+            Self::Cue => &["cue"],
             Self::ImageSequence => &["png", "jpg", "jpeg", "bmp"],
             Self::RawVideo => &["yuv", "rgb"],
             Self::RawAudio => &["pcm", "raw"],
@@ -148,6 +152,7 @@ impl FormatId {
         Self::Mp3Container,
         Self::AacAdts,
         Self::Aiff,
+        Self::Cue,
         Self::ImageSequence,
         Self::RawVideo,
         Self::RawAudio,
