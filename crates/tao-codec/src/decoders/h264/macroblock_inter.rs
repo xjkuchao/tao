@@ -116,6 +116,77 @@ impl H264Decoder {
         refs
     }
 
+    fn collect_default_reference_list_l1_for_colocated_picture(
+        &self,
+        col_pic: &ReferencePicture,
+    ) -> Vec<&ReferencePicture> {
+        let is_b_like = Self::picture_uses_list1_motion(col_pic);
+        if is_b_like {
+            let cur_poc = col_pic.poc;
+            let short_refs: Vec<&ReferencePicture> = self
+                .reference_frames
+                .iter()
+                .filter(|pic| {
+                    pic.long_term_frame_idx.is_none()
+                        && !Self::same_reference_picture_identity(pic, col_pic)
+                })
+                .collect();
+            let mut after: Vec<&ReferencePicture> = short_refs
+                .iter()
+                .copied()
+                .filter(|pic| pic.poc >= cur_poc)
+                .collect();
+            let mut before: Vec<&ReferencePicture> = short_refs
+                .iter()
+                .copied()
+                .filter(|pic| pic.poc < cur_poc)
+                .collect();
+            after.sort_by_key(|pic| pic.poc);
+            before.sort_by_key(|pic| std::cmp::Reverse(pic.poc));
+            let mut refs = after;
+            refs.extend(before);
+            let mut long_refs: Vec<&ReferencePicture> = self
+                .reference_frames
+                .iter()
+                .filter(|pic| {
+                    pic.long_term_frame_idx.is_some()
+                        && !Self::same_reference_picture_identity(pic, col_pic)
+                })
+                .collect();
+            long_refs.sort_by_key(|pic| pic.long_term_frame_idx.unwrap_or(u32::MAX));
+            refs.extend(long_refs);
+            return refs;
+        }
+
+        let cur_frame_num = col_pic.frame_num;
+        let mut short_refs: Vec<&ReferencePicture> = self
+            .reference_frames
+            .iter()
+            .filter(|pic| {
+                pic.long_term_frame_idx.is_none()
+                    && !Self::same_reference_picture_identity(pic, col_pic)
+            })
+            .collect();
+        short_refs.sort_by_key(|pic| {
+            (
+                self.frame_num_forward_distance_for(cur_frame_num, pic.frame_num),
+                self.frame_num_backward_distance_for(cur_frame_num, pic.frame_num),
+            )
+        });
+        let mut refs = short_refs;
+        let mut long_refs: Vec<&ReferencePicture> = self
+            .reference_frames
+            .iter()
+            .filter(|pic| {
+                pic.long_term_frame_idx.is_some()
+                    && !Self::same_reference_picture_identity(pic, col_pic)
+            })
+            .collect();
+        long_refs.sort_by_key(|pic| pic.long_term_frame_idx.unwrap_or(u32::MAX));
+        refs.extend(long_refs);
+        refs
+    }
+
     fn find_reference_picture_for_planes(&self, planes: &RefPlanes) -> Option<&ReferencePicture> {
         if planes.is_long_term {
             if let Some(long_idx) = planes.long_term_frame_idx
@@ -450,9 +521,13 @@ impl H264Decoder {
                 return idx as i8;
             }
         } else {
-            // 回退: 如果存储的 POC 列表不可用, 使用旧的 DPB 重建方法
-            let col_l0_list = self.collect_default_reference_list_l0_for_colocated_picture(col_pic);
-            if let Some(col_ref_pic) = col_l0_list.get(col_ref_idx as usize).copied()
+            // 回退: 如果存储的 POC 列表不可用, 按共定位分区所属列表重建默认参考列表.
+            let col_list_refs = if col_list == 1 {
+                self.collect_default_reference_list_l1_for_colocated_picture(col_pic)
+            } else {
+                self.collect_default_reference_list_l0_for_colocated_picture(col_pic)
+            };
+            if let Some(col_ref_pic) = col_list_refs.get(col_ref_idx as usize).copied()
                 && let Some((idx, _)) = ref_l0_list
                     .iter()
                     .enumerate()

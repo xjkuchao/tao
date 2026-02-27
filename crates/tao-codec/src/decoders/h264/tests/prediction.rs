@@ -945,6 +945,51 @@ fn test_build_b_direct_motion_temporal_map_col_uses_ref_l1_poc() {
 }
 
 #[test]
+fn test_build_b_direct_motion_temporal_map_col_list1_fallback_uses_col_list1_order() {
+    let mut dec = build_test_decoder();
+    dec.last_slice_type = 1;
+    dec.last_poc = 10;
+    push_custom_reference(&mut dec, 1, 2, 10, None);
+    push_custom_reference(&mut dec, 2, 8, 20, None);
+    push_custom_reference(&mut dec, 3, 12, 30, None);
+    // 共定位图像只提供 list1 运动, 且不写 ref_l1_poc, 触发 map_col 的列表重建回退.
+    push_custom_reference_with_l1_motion_and_ref_l1_poc(
+        &mut dec,
+        9,
+        10,
+        90,
+        None,
+        (12, 0, 0),
+        vec![],
+    );
+    {
+        let col_pic = dec.reference_frames.back_mut().expect("应存在共定位参考帧");
+        // 故意设置 ref_l0_poc, 用于区分“误用 list0 回退”与“正确按 list1 回退”.
+        col_pic.ref_l0_poc = vec![8];
+    }
+
+    let mut ref_l0_0 = build_constant_ref_planes(&dec, 20, 128, 128);
+    ref_l0_0.frame_num = 2;
+    ref_l0_0.poc = 8;
+    let mut ref_l0_1 = build_constant_ref_planes(&dec, 30, 128, 128);
+    ref_l0_1.frame_num = 3;
+    ref_l0_1.poc = 12;
+    let ref_l0_list = vec![ref_l0_0, ref_l0_1];
+
+    let mut ref_l1_0 = build_constant_ref_planes(&dec, 40, 128, 128);
+    ref_l1_0.frame_num = 9;
+    ref_l1_0.poc = 10;
+    let ref_l1_list = vec![ref_l1_0];
+
+    let (motion_l0, _) = dec.build_b_direct_motion(0, 0, 0, 0, false, &ref_l0_list, &ref_l1_list);
+    let motion_l0 = motion_l0.expect("temporal direct 应提供 L0 运动信息");
+    assert_eq!(
+        motion_l0.ref_idx, 1,
+        "col_list=1 且 ref_l1_poc 缺失时, 回退应按共定位 list1 默认顺序映射到当前 list0"
+    );
+}
+
+#[test]
 fn test_build_b_direct_motion_temporal_colocated_lookup_prefers_poc_over_frame_num() {
     let mut dec = build_test_decoder();
     dec.last_slice_type = 1;
