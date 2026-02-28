@@ -943,7 +943,44 @@ impl H264Decoder {
         intra_defaults: bool,
     ) {
         let (mb_x, mb_y) = mb_pos;
-        let _mb_idx = mb_y * self.mb_width + mb_x;
+        let mb_idx = mb_y * self.mb_width + mb_x;
+        let chroma_skip_detail = std::env::var("TAO_H264_SKIP_CHROMA_DETAIL")
+            .ok()
+            .and_then(|v| {
+                let mut it = v.split(',');
+                let frame = it.next()?.parse::<u32>().ok()?;
+                let target_mb = it.next()?.parse::<usize>().ok()?;
+                let scope = it.next()?.to_ascii_lowercase();
+                Some((frame, target_mb, scope))
+            });
+        let scope = chroma_skip_detail
+            .and_then(|(frame, target_mb, scope)| {
+                if self.last_frame_num == frame && mb_idx == target_mb {
+                    Some(scope)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        let skip_all = scope == "all";
+        let skip_u_dc = skip_all || scope == "u_dc";
+        let skip_v_dc = skip_all || scope == "v_dc";
+        let skip_u_ac = skip_all || scope == "u_ac";
+        let skip_v_ac = skip_all || scope == "v_ac";
+        let mut skip_u_ac_block = [false; 4];
+        let mut skip_v_ac_block = [false; 4];
+        if let Some(rest) = scope.strip_prefix('u')
+            && let Ok(idx) = rest.parse::<usize>()
+            && idx < 4
+        {
+            skip_u_ac_block[idx] = true;
+        }
+        if let Some(rest) = scope.strip_prefix('v')
+            && let Ok(idx) = rest.parse::<usize>()
+            && idx < 4
+        {
+            skip_v_ac_block[idx] = true;
+        }
         let u_scaling_4x4 = self.active_chroma_scaling_list_4x4(intra_defaults, false);
         let v_scaling_4x4 = self.active_chroma_scaling_list_4x4(intra_defaults, true);
         let transform_bypass = self.is_transform_bypass_active(slice_qp);
@@ -957,12 +994,16 @@ impl H264Decoder {
         let chroma_qp_v = chroma_qp_from_luma_with_offset(slice_qp, chroma_off_v);
 
         // U 通道
-        let chroma_dc_cbf_inc_u = self.chroma_dc_cbf_ctx_inc(mb_x, mb_y, intra_defaults);
-        let u_coeffs = decode_residual_block(cabac, ctxs, &CAT_CHROMA_DC, chroma_dc_cbf_inc_u);
-        self.set_chroma_dc_u_cbf(mb_x, mb_y, u_coeffs.iter().any(|&c| c != 0));
         let mut u_dc = [0i32; 4];
-        for (i, &c) in u_coeffs.iter().enumerate().take(4) {
-            u_dc[i] = c;
+        if !skip_u_dc {
+            let chroma_dc_cbf_inc_u = self.chroma_dc_cbf_ctx_inc(mb_x, mb_y, intra_defaults);
+            let u_coeffs = decode_residual_block(cabac, ctxs, &CAT_CHROMA_DC, chroma_dc_cbf_inc_u);
+            self.set_chroma_dc_u_cbf(mb_x, mb_y, u_coeffs.iter().any(|&c| c != 0));
+            for (i, &c) in u_coeffs.iter().enumerate().take(4) {
+                u_dc[i] = c;
+            }
+        } else {
+            self.set_chroma_dc_u_cbf(mb_x, mb_y, false);
         }
         if !transform_bypass {
             inverse_hadamard_2x2(&mut u_dc);
@@ -970,12 +1011,16 @@ impl H264Decoder {
         }
 
         // V 通道
-        let chroma_dc_cbf_inc_v = self.chroma_dc_v_cbf_ctx_inc(mb_x, mb_y, intra_defaults);
-        let v_coeffs = decode_residual_block(cabac, ctxs, &CAT_CHROMA_DC, chroma_dc_cbf_inc_v);
-        self.set_chroma_dc_v_cbf(mb_x, mb_y, v_coeffs.iter().any(|&c| c != 0));
         let mut v_dc = [0i32; 4];
-        for (i, &c) in v_coeffs.iter().enumerate().take(4) {
-            v_dc[i] = c;
+        if !skip_v_dc {
+            let chroma_dc_cbf_inc_v = self.chroma_dc_v_cbf_ctx_inc(mb_x, mb_y, intra_defaults);
+            let v_coeffs = decode_residual_block(cabac, ctxs, &CAT_CHROMA_DC, chroma_dc_cbf_inc_v);
+            self.set_chroma_dc_v_cbf(mb_x, mb_y, v_coeffs.iter().any(|&c| c != 0));
+            for (i, &c) in v_coeffs.iter().enumerate().take(4) {
+                v_dc[i] = c;
+            }
+        } else {
+            self.set_chroma_dc_v_cbf(mb_x, mb_y, false);
         }
         if !transform_bypass {
             inverse_hadamard_2x2(&mut v_dc);
@@ -987,32 +1032,60 @@ impl H264Decoder {
         let mut v_scans = [[0i32; 16]; 4];
 
         if has_chroma_ac {
-            for (block_idx, u_scan) in u_scans.iter_mut().enumerate() {
-                let sub_x = block_idx & 1;
-                let sub_y = block_idx >> 1;
-                let x2 = mb_x * 2 + sub_x;
-                let y2 = mb_y * 2 + sub_y;
+            if !skip_u_ac {
+                for (block_idx, u_scan) in u_scans.iter_mut().enumerate() {
+                    let sub_x = block_idx & 1;
+                    let sub_y = block_idx >> 1;
+                    let x2 = mb_x * 2 + sub_x;
+                    let y2 = mb_y * 2 + sub_y;
+                    if skip_u_ac_block[block_idx] {
+                        self.set_chroma_u_cbf(x2, y2, false);
+                        continue;
+                    }
 
-                let cbf_inc_u = self.chroma_u_cbf_ctx_inc(x2, y2, intra_defaults);
-                let raw_u_ac = decode_residual_block(cabac, ctxs, &CAT_CHROMA_AC, cbf_inc_u);
-                let coded_u = raw_u_ac.iter().any(|&c| c != 0);
-                self.set_chroma_u_cbf(x2, y2, coded_u);
-                for (scan, &c) in raw_u_ac.iter().enumerate().take(15) {
-                    u_scan[scan + 1] = c;
+                    let cbf_inc_u = self.chroma_u_cbf_ctx_inc(x2, y2, intra_defaults);
+                    let raw_u_ac = decode_residual_block(cabac, ctxs, &CAT_CHROMA_AC, cbf_inc_u);
+                    let coded_u = raw_u_ac.iter().any(|&c| c != 0);
+                    self.set_chroma_u_cbf(x2, y2, coded_u);
+                    for (scan, &c) in raw_u_ac.iter().enumerate().take(15) {
+                        u_scan[scan + 1] = c;
+                    }
+                }
+            } else {
+                for block_idx in 0..4usize {
+                    let sub_x = block_idx & 1;
+                    let sub_y = block_idx >> 1;
+                    let x2 = mb_x * 2 + sub_x;
+                    let y2 = mb_y * 2 + sub_y;
+                    self.set_chroma_u_cbf(x2, y2, false);
                 }
             }
-            for (block_idx, v_scan) in v_scans.iter_mut().enumerate() {
-                let sub_x = block_idx & 1;
-                let sub_y = block_idx >> 1;
-                let x2 = mb_x * 2 + sub_x;
-                let y2 = mb_y * 2 + sub_y;
+            if !skip_v_ac {
+                for (block_idx, v_scan) in v_scans.iter_mut().enumerate() {
+                    let sub_x = block_idx & 1;
+                    let sub_y = block_idx >> 1;
+                    let x2 = mb_x * 2 + sub_x;
+                    let y2 = mb_y * 2 + sub_y;
+                    if skip_v_ac_block[block_idx] {
+                        self.set_chroma_v_cbf(x2, y2, false);
+                        continue;
+                    }
 
-                let cbf_inc_v = self.chroma_v_cbf_ctx_inc(x2, y2, intra_defaults);
-                let raw_v_ac = decode_residual_block(cabac, ctxs, &CAT_CHROMA_AC, cbf_inc_v);
-                let coded_v = raw_v_ac.iter().any(|&c| c != 0);
-                self.set_chroma_v_cbf(x2, y2, coded_v);
-                for (scan, &c) in raw_v_ac.iter().enumerate().take(15) {
-                    v_scan[scan + 1] = c;
+                    let cbf_inc_v = self.chroma_v_cbf_ctx_inc(x2, y2, intra_defaults);
+                    let raw_v_ac = decode_residual_block(cabac, ctxs, &CAT_CHROMA_AC, cbf_inc_v);
+                    let coded_v = raw_v_ac.iter().any(|&c| c != 0);
+                    self.set_chroma_v_cbf(x2, y2, coded_v);
+                    for (scan, &c) in raw_v_ac.iter().enumerate().take(15) {
+                        v_scan[scan + 1] = c;
+                    }
+                }
+            } else {
+                for block_idx in 0..4usize {
+                    let sub_x = block_idx & 1;
+                    let sub_y = block_idx >> 1;
+                    let x2 = mb_x * 2 + sub_x;
+                    let y2 = mb_y * 2 + sub_y;
+                    self.set_chroma_v_cbf(x2, y2, false);
                 }
             }
         } else {

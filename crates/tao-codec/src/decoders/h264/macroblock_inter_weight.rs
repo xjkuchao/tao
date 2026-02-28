@@ -192,6 +192,33 @@ impl H264Decoder {
         ref_l0_list: &[RefPlanes],
     ) {
         let mb_idx = mb_y * self.mb_width + mb_x;
+        let trace_detail = std::env::var("TAO_H264_TRACE_P_MB_DETAIL")
+            .ok()
+            .and_then(|v| {
+                let mut it = v.split(',');
+                let frame = it.next()?.parse::<u32>().ok()?;
+                let target_mb = it.next()?.parse::<usize>().ok()?;
+                Some((frame, target_mb))
+            });
+        let trace_this_mb = trace_detail
+            .map(|(frame, target_mb)| self.last_frame_num == frame && mb_idx == target_mb)
+            .unwrap_or(false);
+        let parse_target_mb = |key: &str| {
+            std::env::var(key)
+                .ok()
+                .and_then(|v| {
+                    let mut it = v.split(',');
+                    let frame = it.next()?.parse::<u32>().ok()?;
+                    let target_mb = it.next()?.parse::<usize>().ok()?;
+                    Some((frame, target_mb))
+                })
+                .map(|(frame, target_mb)| self.last_frame_num == frame && mb_idx == target_mb)
+                .unwrap_or(false)
+        };
+        let skip_residual_this_mb = parse_target_mb("TAO_H264_SKIP_RES_MB");
+        let skip_luma_this_mb = skip_residual_this_mb || parse_target_mb("TAO_H264_SKIP_LUMA_MB");
+        let skip_chroma_this_mb =
+            skip_residual_this_mb || parse_target_mb("TAO_H264_SKIP_CHROMA_MB");
         self.set_luma_dc_cbf(mb_x, mb_y, false);
         self.reset_chroma_cbf_mb(mb_x, mb_y);
         self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
@@ -204,6 +231,12 @@ impl H264Decoder {
 
         match p_mb_type {
             0 => {
+                if trace_this_mb {
+                    eprintln!(
+                        "[H264-P-DETAIL] frame_num={} mb_idx={} mode=P16x16",
+                        self.last_frame_num, mb_idx
+                    );
+                }
                 final_ref_idx =
                     self.decode_ref_idx(cabac, ctxs, num_ref_idx_l0, 0, mb_x * 4, mb_y * 4, false);
                 let ref_idx_i8 = final_ref_idx.min(i8::MAX as u32) as i8;
@@ -232,6 +265,12 @@ impl H264Decoder {
                 );
             }
             1 => {
+                if trace_this_mb {
+                    eprintln!(
+                        "[H264-P-DETAIL] frame_num={} mb_idx={} mode=P16x8",
+                        self.last_frame_num, mb_idx
+                    );
+                }
                 let mut ref_idx_parts = [0u32; 2];
                 for (part, slot) in ref_idx_parts.iter_mut().enumerate() {
                     let ref_idx = if num_ref_idx_l0 > 1 {
@@ -290,6 +329,12 @@ impl H264Decoder {
                 }
             }
             2 => {
+                if trace_this_mb {
+                    eprintln!(
+                        "[H264-P-DETAIL] frame_num={} mb_idx={} mode=P8x16",
+                        self.last_frame_num, mb_idx
+                    );
+                }
                 let mut ref_idx_parts = [0u32; 2];
                 for (part, slot) in ref_idx_parts.iter_mut().enumerate() {
                     let ref_idx = if num_ref_idx_l0 > 1 {
@@ -352,6 +397,12 @@ impl H264Decoder {
                 for slot in &mut sub_types {
                     *slot = self.decode_p_sub_mb_type(cabac, ctxs);
                 }
+                if trace_this_mb {
+                    eprintln!(
+                        "[H264-P-DETAIL] frame_num={} mb_idx={} mode=P8x8 sub_types={:?}",
+                        self.last_frame_num, mb_idx, sub_types
+                    );
+                }
                 no_sub_mb_part_size_less_than_8x8_flag =
                     sub_types.iter().all(|&sub_type| sub_type == 0);
 
@@ -373,6 +424,12 @@ impl H264Decoder {
                     };
                     *slot = ref_idx;
                     let ref_idx_i8 = ref_idx.min(i8::MAX as u32) as i8;
+                    if trace_this_mb {
+                        eprintln!(
+                            "[H264-P-DETAIL] frame_num={} mb_idx={} sub={} ref_idx={}",
+                            self.last_frame_num, mb_idx, sub, ref_idx
+                        );
+                    }
                     self.set_l0_motion_block_4x4(
                         mb_x * 16 + (sub & 1) * 8,
                         mb_y * 16 + (sub >> 1) * 8,
@@ -553,6 +610,12 @@ impl H264Decoder {
             self.decode_coded_block_pattern(cabac, ctxs, mb_x, mb_y, false);
         let cbp = luma_cbp | (chroma_cbp << 4);
         self.set_mb_cbp(mb_x, mb_y, cbp);
+        if trace_this_mb {
+            eprintln!(
+                "[H264-P-DETAIL] frame_num={} mb_idx={} cbp_luma={} cbp_chroma={} cbp={}",
+                self.last_frame_num, mb_idx, luma_cbp, chroma_cbp, cbp
+            );
+        }
 
         // H.264 规范 7.3.5.1: transform_size_8x8_flag 必须在 mb_qp_delta 之前解析
         let parsed_use_8x8 = luma_cbp != 0
@@ -565,21 +628,54 @@ impl H264Decoder {
             && self.decode_transform_size_8x8_flag_inter(cabac, ctxs, mb_x, mb_y);
         let use_8x8_residual = parsed_use_8x8;
         self.set_transform_8x8_flag(mb_x, mb_y, parsed_use_8x8);
+        if trace_this_mb {
+            eprintln!(
+                "[H264-P-DETAIL] frame_num={} mb_idx={} no_sub_lt8={} transform8x8={}",
+                self.last_frame_num,
+                mb_idx,
+                no_sub_mb_part_size_less_than_8x8_flag,
+                parsed_use_8x8
+            );
+        }
 
         if cbp != 0 {
             let qp_delta = decode_qp_delta(cabac, ctxs, self.prev_qp_delta_nz);
             self.prev_qp_delta_nz = qp_delta != 0;
             *cur_qp = wrap_qp((*cur_qp + qp_delta) as i64);
+            if trace_this_mb {
+                eprintln!(
+                    "[H264-P-DETAIL] frame_num={} mb_idx={} qp_delta={} cur_qp={}",
+                    self.last_frame_num, mb_idx, qp_delta, *cur_qp
+                );
+            }
         } else {
             self.prev_qp_delta_nz = false;
+            if trace_this_mb {
+                eprintln!(
+                    "[H264-P-DETAIL] frame_num={} mb_idx={} qp_delta=0(cur_coded=0) cur_qp={}",
+                    self.last_frame_num, mb_idx, *cur_qp
+                );
+            }
         }
-        if use_8x8_residual {
-            self.decode_i8x8_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp, false);
-        } else {
-            self.decode_inter_4x4_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp);
+        if !skip_luma_this_mb {
+            if use_8x8_residual {
+                self.decode_i8x8_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp, false);
+            } else {
+                self.decode_inter_4x4_residual(cabac, ctxs, luma_cbp, mb_x, mb_y, *cur_qp);
+            }
+        } else if trace_this_mb {
+            eprintln!(
+                "[H264-P-DETAIL] frame_num={} mb_idx={} 实验: 跳过 luma 残差解码",
+                self.last_frame_num, mb_idx
+            );
         }
-        if chroma_cbp >= 1 {
+        if chroma_cbp >= 1 && !skip_chroma_this_mb {
             self.decode_chroma_residual(cabac, ctxs, (mb_x, mb_y), *cur_qp, chroma_cbp >= 2, false);
+        } else if chroma_cbp >= 1 && trace_this_mb && skip_chroma_this_mb {
+            eprintln!(
+                "[H264-P-DETAIL] frame_num={} mb_idx={} 实验: 跳过 chroma 残差解码",
+                self.last_frame_num, mb_idx
+            );
         }
     }
 

@@ -938,6 +938,20 @@ impl H264Decoder {
         mb_y: usize,
         qp: i32,
     ) {
+        let mb_idx = mb_y * self.mb_width + mb_x;
+        let skip_luma_block = std::env::var("TAO_H264_SKIP_LUMA_DETAIL")
+            .ok()
+            .and_then(|v| {
+                let mut it = v.split(',');
+                let frame = it.next()?.parse::<u32>().ok()?;
+                let target_mb = it.next()?.parse::<usize>().ok()?;
+                let block = it.next()?.parse::<usize>().ok()?;
+                if self.last_frame_num == frame && mb_idx == target_mb {
+                    Some(block)
+                } else {
+                    None
+                }
+            });
         let luma_scaling_4x4 = self.active_luma_scaling_list_4x4(false);
         let transform_bypass = self.is_transform_bypass_active(qp);
         for sub_y in 0..4 {
@@ -953,6 +967,7 @@ impl H264Decoder {
             let mut coded_8x8 = false;
 
             for i_sub in 0..4 {
+                let block_idx = usize::from(i8x8) * 4 + i_sub;
                 let sub_x = i_sub & 1;
                 let sub_y = i_sub >> 1;
                 let abs_sub_x = x8x8 * 2 + sub_x;
@@ -961,6 +976,10 @@ impl H264Decoder {
                 let y4 = mb_y * 4 + abs_sub_y;
 
                 if !has_residual_8x8 {
+                    self.set_luma_cbf(x4, y4, false);
+                    continue;
+                }
+                if skip_luma_block == Some(block_idx) {
                     self.set_luma_cbf(x4, y4, false);
                     continue;
                 }

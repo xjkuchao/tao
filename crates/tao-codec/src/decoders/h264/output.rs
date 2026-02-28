@@ -894,6 +894,30 @@ impl H264Decoder {
         let w = self.width as usize;
         let h = self.height as usize;
         self.conceal_frame_level_errors();
+        if std::env::var("TAO_H264_TRACE_NEG_REF_MV")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+        {
+            let l0_neg_nonzero = self
+                .ref_idx_l0_4x4
+                .iter()
+                .zip(self.mv_l0_x_4x4.iter())
+                .zip(self.mv_l0_y_4x4.iter())
+                .filter(|((r, mx), my)| **r < 0 && (**mx != 0 || **my != 0))
+                .count();
+            let l1_neg_nonzero = self
+                .ref_idx_l1_4x4
+                .iter()
+                .zip(self.mv_l1_x_4x4.iter())
+                .zip(self.mv_l1_y_4x4.iter())
+                .filter(|((r, mx), my)| **r < 0 && (**mx != 0 || **my != 0))
+                .count();
+            let intra_mb_count = self.mb_types.iter().filter(|&&t| t <= 25).count();
+            println!(
+                "[H264-DEBLOCK-TRACE] frame_num={} neg_ref_nonzero_mv l0={} l1={} intra_mb={}",
+                self.last_frame_num, l0_neg_nonzero, l1_neg_nonzero, intra_mb_count
+            );
+        }
 
         if self.last_disable_deblocking_filter_idc != 1 && !self.skip_deblock_by_env() {
             let (chroma_qp_index_offset, second_chroma_qp_index_offset) = self

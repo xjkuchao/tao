@@ -332,6 +332,18 @@ fn verbose_frame_diff_enabled() -> bool {
         .unwrap_or(false)
 }
 
+fn diff_coords_enabled() -> bool {
+    std::env::var("TAO_H264_COMPARE_DIFF_COORDS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn ffmpeg_skip_loop_filter_enabled() -> bool {
+    std::env::var("TAO_H264_COMPARE_FF_SKIP_DEBLOCK")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 fn should_skip_fixed_sample(path: &str) -> bool {
     let _ = path;
     if let Ok(input) = std::env::var("TAO_H264_COMPARE_INPUT")
@@ -675,8 +687,11 @@ fn decode_h264_with_ffmpeg(
     } else {
         "yuv420p"
     };
+    cmd.arg("-y");
+    if ffmpeg_skip_loop_filter_enabled() {
+        cmd.args(["-skip_loop_filter", "all"]);
+    }
     cmd.args([
-        "-y",
         "-i",
         path,
         "-map",
@@ -789,6 +804,63 @@ fn compare_frame(
             || frame_v.equal_bytes < frame_v.total_bytes)
     {
         stats.first_mismatch_frame = Some(frame_idx);
+        if diff_coords_enabled() {
+            if let Some((off, (r, t))) = y_ref
+                .iter()
+                .zip(y_test.iter())
+                .enumerate()
+                .find(|(_, (r, t))| r != t)
+            {
+                let x = off % width as usize;
+                let y = off / width as usize;
+                println!(
+                    "[diff坐标] 帧{} Y 首差坐标=({}, {}) ref={} tao={} diff={}",
+                    frame_idx,
+                    x,
+                    y,
+                    r,
+                    t,
+                    r.abs_diff(*t)
+                );
+            }
+            let uv_w = width.div_ceil(2) as usize;
+            if let Some((off, (r, t))) = u_ref
+                .iter()
+                .zip(u_test.iter())
+                .enumerate()
+                .find(|(_, (r, t))| r != t)
+            {
+                let x = off % uv_w;
+                let y = off / uv_w;
+                println!(
+                    "[diff坐标] 帧{} U 首差坐标=({}, {}) ref={} tao={} diff={}",
+                    frame_idx,
+                    x,
+                    y,
+                    r,
+                    t,
+                    r.abs_diff(*t)
+                );
+            }
+            if let Some((off, (r, t))) = v_ref
+                .iter()
+                .zip(v_test.iter())
+                .enumerate()
+                .find(|(_, (r, t))| r != t)
+            {
+                let x = off % uv_w;
+                let y = off / uv_w;
+                println!(
+                    "[diff坐标] 帧{} V 首差坐标=({}, {}) ref={} tao={} diff={}",
+                    frame_idx,
+                    x,
+                    y,
+                    r,
+                    t,
+                    r.abs_diff(*t)
+                );
+            }
+        }
     }
 
     Ok(PerFrameReport {

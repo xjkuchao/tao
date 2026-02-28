@@ -7,6 +7,9 @@
 
 use tao_core::bitreader::BitReader;
 use tao_core::{TaoError, TaoResult};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static COEFF_TOKEN_FALLBACK_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 // ============================================================
 // coeff_token VLC 表 (H.264 Table 9-5)
@@ -254,6 +257,21 @@ pub fn decode_coeff_token(br: &mut BitReader, nc: i32) -> TaoResult<(u8, u8)> {
     // 仅尝试相邻 VLC 表, 避免跨级别回退带来的过度容错误解码.
     for &table_idx in coeff_token_fallback_tables(primary_table) {
         if let Ok(parsed) = decode_coeff_token_with_table(br, table_idx) {
+            if std::env::var("TAO_H264_CAVLC_TRACE_FALLBACK")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+            {
+                let idx = COEFF_TOKEN_FALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
+                if idx < 64 {
+                    println!(
+                        "[H264-CAVLC-FALLBACK] nc={} primary={} fallback={} bits_read={}",
+                        nc,
+                        primary_table,
+                        table_idx,
+                        br.bits_read()
+                    );
+                }
+            }
             return Ok(parsed);
         }
     }
