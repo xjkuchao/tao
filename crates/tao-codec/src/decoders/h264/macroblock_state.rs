@@ -574,31 +574,21 @@ impl H264Decoder {
         if x4 >= stride || y4 >= h4 {
             return (0, 0);
         }
-        let (mvd_x_arr, mvd_y_arr, ref_idx_arr) = if list == 0 {
-            (&self.mvd_l0_x_4x4, &self.mvd_l0_y_4x4, &self.ref_idx_l0_4x4)
+        let (mvd_x_arr, mvd_y_arr) = if list == 0 {
+            (&self.mvd_l0_x_4x4, &self.mvd_l0_y_4x4)
         } else {
-            (&self.mvd_l1_x_4x4, &self.mvd_l1_y_4x4, &self.ref_idx_l1_4x4)
+            (&self.mvd_l1_x_4x4, &self.mvd_l1_y_4x4)
         };
         let left_idx = y4
             .saturating_mul(stride)
             .saturating_add(x4.saturating_sub(1));
-        let left_ref_valid = self.left_neighbor_available_4x4(x4, y4)
-            && ref_idx_arr.get(left_idx).copied().unwrap_or(-1) >= 0;
-        let left_abs_x = if left_ref_valid {
-            mvd_x_arr
-                .get(y4 * stride + x4 - 1)
-                .copied()
-                .unwrap_or(0)
-                .unsigned_abs() as i32
+        let left_abs_x = if self.left_neighbor_available_4x4(x4, y4) {
+            mvd_x_arr.get(left_idx).copied().unwrap_or(0).unsigned_abs() as i32
         } else {
             0
         };
-        let left_abs_y = if left_ref_valid {
-            mvd_y_arr
-                .get(y4 * stride + x4 - 1)
-                .copied()
-                .unwrap_or(0)
-                .unsigned_abs() as i32
+        let left_abs_y = if self.left_neighbor_available_4x4(x4, y4) {
+            mvd_y_arr.get(left_idx).copied().unwrap_or(0).unsigned_abs() as i32
         } else {
             0
         };
@@ -606,23 +596,13 @@ impl H264Decoder {
             .saturating_sub(1)
             .saturating_mul(stride)
             .saturating_add(x4);
-        let top_ref_valid = self.top_neighbor_available_4x4(x4, y4)
-            && ref_idx_arr.get(top_idx).copied().unwrap_or(-1) >= 0;
-        let top_abs_x = if top_ref_valid {
-            mvd_x_arr
-                .get((y4 - 1) * stride + x4)
-                .copied()
-                .unwrap_or(0)
-                .unsigned_abs() as i32
+        let top_abs_x = if self.top_neighbor_available_4x4(x4, y4) {
+            mvd_x_arr.get(top_idx).copied().unwrap_or(0).unsigned_abs() as i32
         } else {
             0
         };
-        let top_abs_y = if top_ref_valid {
-            mvd_y_arr
-                .get((y4 - 1) * stride + x4)
-                .copied()
-                .unwrap_or(0)
-                .unsigned_abs() as i32
+        let top_abs_y = if self.top_neighbor_available_4x4(x4, y4) {
+            mvd_y_arr.get(top_idx).copied().unwrap_or(0).unsigned_abs() as i32
         } else {
             0
         };

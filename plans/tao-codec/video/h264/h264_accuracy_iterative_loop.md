@@ -146,11 +146,11 @@
 
 ### 9.1 当前循环状态
 
-- 当前轮次: `Round-9`.
+- 当前轮次: `Round-10`.
 - 当前功能点: `1`.
 - 当前子功能: `1-1`.
 - 当前状态: `in_progress`.
-- 上次提交: `1d75c67`.
+- 上次提交: `9bd99cf`.
 
 ### 9.2 子功能检查表
 
@@ -404,3 +404,34 @@
   - 新增 direct 缓存时序回归用例通过.
 - 判定: `有效修复(逻辑与参考实现一致, 且主目标精度显著提升)`.
 - 下一子功能: `1-1` (继续定位 `data/2.mp4` frame1 首次失配, 聚焦 B_8x8 CABAC 与 MVP 交互分支).
+
+### 9.12 Round-10 记录(1-1: CABAC mvd 上下文 amvd 口径对齐 FFmpeg)
+
+- 子功能: `1-1`.
+- 对比结论: `不一致`.
+  - Tao 的 `compute_cabac_amvd` 额外依赖 `ref_idx>=0` 门控后再累计左/上邻居 mvd.
+  - FFmpeg `DECODE_CABAC_MB_MVD` 直接使用 `mvd_cache[left] + mvd_cache[top]` 计算 `amvd`, 不额外读取 `ref_cache/ref_idx`.
+- 逻辑证据:
+  - FFmpeg `libavcodec/h264_cabac.c`:
+    - `DECODE_CABAC_MB_MVD` 宏中 `amvd0/amvd1` 直接取 `mvd_cache` 左/上项求和.
+    - `decode_cabac_mb_mvd` 的 `ctxbase + (amvd>2) + (amvd>32)` 决策仅依赖该 `amvd`.
+  - 因此 `amvd` 口径应由写缓存路径保障(无效邻居写 0), 不应在读取时再二次门控 `ref_idx`.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/macroblock_state.rs`
+    - `compute_cabac_amvd` 改为:
+      - 仅按可用性判断左/上邻居.
+      - 直接累计 `mvd_cache` 左/上绝对值.
+      - 移除 `ref_idx>=0` 的附加门控.
+  - 文件: `crates/tao-codec/src/decoders/h264/tests/prediction.rs`
+    - 更新单测口径为 “`amvd` 直接来自 `mvd_cache`”.
+- 精度变化:
+  - `data/2.mp4`:
+    - 20 帧: `95.284645%` (持平)
+    - 67 帧: `85.109306%` (持平)
+  - `data/1.mp4`:
+    - 10 帧: `100.000000%` (持平)
+- 测试结果:
+  - `cargo test -p tao-codec test_cabac_amvd_ -- --nocapture` 通过.
+  - `cargo test -p tao-codec decoders::h264::tests:: -- --nocapture` 全通过(`186 passed`).
+- 判定: `有效修复(与参考实现语义对齐, 主目标无回归)`.
+- 下一子功能: `1-1` (继续定位 `data/2.mp4` frame1 首失配, 聚焦 P-slice partition_count=4 的 ref_idx/mvd 上下文时序).

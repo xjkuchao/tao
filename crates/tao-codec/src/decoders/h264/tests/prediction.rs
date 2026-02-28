@@ -1360,24 +1360,18 @@ fn test_cabac_amvd_uses_clipped_mvd_cache_value() {
 }
 
 #[test]
-fn test_cabac_amvd_ignores_neighbors_without_valid_ref_idx() {
+fn test_cabac_amvd_uses_mvd_cache_even_when_ref_idx_is_invalid() {
     let mut dec = build_test_decoder();
 
     // 目标块为 (x4=1,y4=1), 左邻/上邻分别在 (0,1)/(1,0).
     dec.set_mvd_block_4x4(0, 4, 4, 4, 50, 60, 0);
     dec.set_mvd_block_4x4(4, 0, 4, 4, 30, 40, 0);
 
-    // 对齐 OpenH264/FFmpeg: ref_idx < 0 的邻居不参与 amvd 上下文.
+    // 对齐 FFmpeg: amvd 直接来自 mvd_cache 左/上项求和, 不额外读取 ref_idx.
+    // 对于 ref_idx<0 的邻居, 语义依赖写缓存路径把 mvd_cache 置 0.
     dec.set_l0_motion_block_4x4(0, 4, 4, 4, 0, 0, -1);
     dec.set_l0_motion_block_4x4(4, 0, 4, 4, 0, 0, -1);
     let (amvd_x, amvd_y) = dec.compute_cabac_amvd(1, 1, 0);
-    assert_eq!(amvd_x, 0, "ref_idx<0 的左/上邻居不应贡献 amvd_x");
-    assert_eq!(amvd_y, 0, "ref_idx<0 的左/上邻居不应贡献 amvd_y");
-
-    // 邻居参考有效时, 才累加绝对值.
-    dec.set_l0_motion_block_4x4(0, 4, 4, 4, 0, 0, 0);
-    dec.set_l0_motion_block_4x4(4, 0, 4, 4, 0, 0, 0);
-    let (amvd_x_valid, amvd_y_valid) = dec.compute_cabac_amvd(1, 1, 0);
-    assert_eq!(amvd_x_valid, 80, "有效参考邻居时 amvd_x 应为 |50|+|30|");
-    assert_eq!(amvd_y_valid, 100, "有效参考邻居时 amvd_y 应为 |60|+|40|");
+    assert_eq!(amvd_x, 80, "amvd_x 应按 mvd_cache 左/上绝对值求和");
+    assert_eq!(amvd_y, 100, "amvd_y 应按 mvd_cache 左/上绝对值求和");
 }
