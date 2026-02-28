@@ -686,3 +686,39 @@
   - `TAO_H264_COMPARE_FAIL_ON_REF_FALLBACK=1` 下 `E1/E9` 通过.
 - 判定: `有效修复(逻辑层面确认实现错误并已对齐 slice 边界语义, 为后续精度链路修复提供稳定前提)`.
 - 下一子功能: `1-4` (继续定位 frame1 首失配, 优先核对 CAVLC P-slice residual/qp_delta 与 FFmpeg 的时序一致性).
+
+### 9.20 Round-18 记录(1-4: CAVLC Inter 残差路径补齐 `prev_qp_delta_nz` 时序维护)
+
+- 子功能: `1-4`.
+- 对比结论: `不一致`.
+  - Tao 的 `decode_cavlc_mb_residual` 在 Inter 宏块路径中只更新 `cur_qp`, 未同步维护 `prev_qp_delta_nz`.
+  - 同文件 I 宏块路径(`decode_cavlc_i_mb`)已在 `has_residual` 分支维护该状态, Inter 路径存在时序不对称.
+- 逻辑证据:
+  - 文件: `crates/tao-codec/src/decoders/h264/cavlc_mb.rs`.
+    - 修复前 Inter 路径:
+      - `has_residual=true` 时读取 `qp_delta` 但不写 `prev_qp_delta_nz`.
+      - `has_residual=false` 时也不清零 `prev_qp_delta_nz`.
+  - 规范语义: `mb_qp_delta` 仅在存在残差时出现, 无残差宏块不应延续上个宏块的“qp_delta 非零”状态.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/cavlc_mb.rs`
+    - 在 `decode_cavlc_mb_residual` 中补齐状态维护:
+      - `has_residual=true` 时 `self.prev_qp_delta_nz = (qp_delta != 0)`.
+      - `has_residual=false` 时 `self.prev_qp_delta_nz = false`.
+  - 文件: `crates/tao-codec/src/decoders/h264/tests/decode.rs`
+    - 新增回归:
+      - `test_decode_cavlc_mb_residual_inter_cbp_zero_clears_prev_qp_delta_flag`
+      - 验证 Inter 宏块 `cbp=0` 时会清零 `prev_qp_delta_nz`, 且不改写 `cur_qp`.
+- 精度变化:
+  - `data/1.mp4`: `100.000000%` (持平)
+  - `data/2.mp4`: `100.000000%` (持平)
+  - `E1`: `38.256061%` (持平)
+  - `E9`: `36.828409%` (持平)
+- 测试结果:
+  - `cargo test -p tao-codec test_decode_cavlc_mb_residual_inter_cbp_zero_clears_prev_qp_delta_flag -- --nocapture` 通过.
+  - `cargo test -p tao-codec decode_cavlc_slice_data_p_non_skip_inter_ -- --nocapture` 通过(`15 passed`).
+  - `cargo test --test run_decoder h264::test_h264_compare_sample_1 -- --ignored --nocapture` 通过.
+  - `cargo test --test run_decoder h264::test_h264_compare_sample_2 -- --ignored --nocapture` 通过.
+  - `cargo test --test run_decoder h264::test_h264_accuracy_e1 -- --ignored --nocapture` 通过.
+  - `cargo test --test run_decoder h264::test_h264_accuracy_e9 -- --ignored --nocapture` 通过.
+- 判定: `有效修复(逻辑正确性优先: 修复了 Inter/I 路径的状态机不一致, 主目标与回归集无回退)`.
+- 下一子功能: `2-1` (继续定位 E1/E9 首失配, 优先核对多参考帧默认 L0 列表与 DPB 更新链路).

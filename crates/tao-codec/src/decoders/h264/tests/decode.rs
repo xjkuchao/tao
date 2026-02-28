@@ -1,5 +1,6 @@
 use crate::decoder::Decoder;
 use crate::packet::Packet;
+use tao_core::bitreader::BitReader;
 
 use super::super::{H264Decoder, NalUnit};
 
@@ -1068,4 +1069,23 @@ fn test_decode_cavlc_slice_data_i_minimal_intra_predict() {
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(dec.ref_y[0], 128, "I-slice 最小路径应执行帧内预测");
     assert_eq!(dec.mb_types[0], 1, "I-slice 最小路径应标记为帧内宏块");
+}
+
+#[test]
+fn test_decode_cavlc_mb_residual_inter_cbp_zero_clears_prev_qp_delta_flag() {
+    let mut dec = build_test_decoder();
+    dec.prev_qp_delta_nz = true;
+
+    // Inter CBP code_num=0 => cbp=0, 本宏块不含残差也不含 mb_qp_delta.
+    let rbsp = build_rbsp_from_ues(&[0]);
+    let mut br = BitReader::new(&rbsp);
+    let mut cur_qp = 26;
+
+    dec.decode_cavlc_mb_residual(&mut br, 0, 0, &mut cur_qp, false, true);
+
+    assert!(
+        !dec.prev_qp_delta_nz,
+        "Inter 宏块在无残差时应清零 prev_qp_delta_nz"
+    );
+    assert_eq!(cur_qp, 26, "无残差时不应改写当前 QP");
 }

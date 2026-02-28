@@ -1043,7 +1043,10 @@ impl H264Decoder {
         let has_residual = luma_cbp != 0 || chroma_cbp != 0;
         if has_residual {
             let qp_delta = read_se(br).unwrap_or(0);
+            self.prev_qp_delta_nz = qp_delta != 0;
             *cur_qp = wrap_qp((*cur_qp + qp_delta) as i64);
+        } else {
+            self.prev_qp_delta_nz = false;
         }
 
         // Inter 宏块: 若 PPS 允许 8x8 变换且 luma_cbp != 0, 读取 transform_size_8x8_flag
