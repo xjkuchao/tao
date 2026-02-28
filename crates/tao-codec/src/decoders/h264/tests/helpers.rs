@@ -492,6 +492,23 @@ pub fn write_se(bits: &mut Vec<bool>, value: i32) {
     write_ue(bits, code_num);
 }
 
+pub fn write_te(bits: &mut Vec<bool>, max_value: u32, value: u32) {
+    assert!(
+        value <= max_value,
+        "te(v) 测试构造值越界, value={}, max={}",
+        value,
+        max_value
+    );
+    if max_value == 0 {
+        return;
+    }
+    if max_value == 1 {
+        bits.push(value == 0);
+        return;
+    }
+    write_ue(bits, value);
+}
+
 pub fn bits_to_bytes(bits: &[bool]) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut idx = 0usize;

@@ -481,16 +481,20 @@ impl H264Decoder {
                         let mut ref_idx_l0 = [0usize; 4];
                         let mut ref_idx_l1 = [0usize; 4];
                         if header.num_ref_idx_l0 > 1 {
+                            let max_ref_idx_l0 = header.num_ref_idx_l0.saturating_sub(1);
                             for sub_idx in 0..4usize {
                                 if use_l0[sub_idx] {
-                                    ref_idx_l0[sub_idx] = read_ue(&mut br).unwrap_or(0) as usize;
+                                    ref_idx_l0[sub_idx] =
+                                        read_te(&mut br, max_ref_idx_l0).unwrap_or(0) as usize;
                                 }
                             }
                         }
                         if header.num_ref_idx_l1 > 1 {
+                            let max_ref_idx_l1 = header.num_ref_idx_l1.saturating_sub(1);
                             for sub_idx in 0..4usize {
                                 if use_l1[sub_idx] {
-                                    ref_idx_l1[sub_idx] = read_ue(&mut br).unwrap_or(0) as usize;
+                                    ref_idx_l1[sub_idx] =
+                                        read_te(&mut br, max_ref_idx_l1).unwrap_or(0) as usize;
                                 }
                             }
                         }
@@ -801,16 +805,20 @@ impl H264Decoder {
                         let mut ref_idx_l1 = [0usize; 2];
                         // 按 H264 语法顺序分组消费: 先全部 ref_idx, 再全部 mvd。
                         if header.num_ref_idx_l0 > 1 {
+                            let max_ref_idx_l0 = header.num_ref_idx_l0.saturating_sub(1);
                             for part_idx in 0..2usize {
                                 if part_use_l0[part_idx] {
-                                    ref_idx_l0[part_idx] = read_ue(&mut br).unwrap_or(0) as usize;
+                                    ref_idx_l0[part_idx] =
+                                        read_te(&mut br, max_ref_idx_l0).unwrap_or(0) as usize;
                                 }
                             }
                         }
                         if header.num_ref_idx_l1 > 1 {
+                            let max_ref_idx_l1 = header.num_ref_idx_l1.saturating_sub(1);
                             for part_idx in 0..2usize {
                                 if part_use_l1[part_idx] {
-                                    ref_idx_l1[part_idx] = read_ue(&mut br).unwrap_or(0) as usize;
+                                    ref_idx_l1[part_idx] =
+                                        read_te(&mut br, max_ref_idx_l1).unwrap_or(0) as usize;
                                 }
                             }
                         }
@@ -984,10 +992,12 @@ impl H264Decoder {
                         let mut l0_ref_idx = 0usize;
                         let mut l1_ref_idx = 0usize;
                         if use_l0 && header.num_ref_idx_l0 > 1 {
-                            l0_ref_idx = read_ue(&mut br).unwrap_or(0) as usize;
+                            l0_ref_idx = read_te(&mut br, header.num_ref_idx_l0.saturating_sub(1))
+                                .unwrap_or(0) as usize;
                         }
                         if use_l1 && header.num_ref_idx_l1 > 1 {
-                            l1_ref_idx = read_ue(&mut br).unwrap_or(0) as usize;
+                            l1_ref_idx = read_te(&mut br, header.num_ref_idx_l1.saturating_sub(1))
+                                .unwrap_or(0) as usize;
                         }
 
                         if use_l0 {
@@ -1062,6 +1072,7 @@ impl H264Decoder {
                 self.mb_types[mb_idx] = 200u8.saturating_add((mb_type as u8).min(3));
                 let base_x = mb_x * 16;
                 let base_y = mb_y * 16;
+                let max_ref_idx_l0 = header.num_ref_idx_l0.saturating_sub(1);
                 let mut final_mv_x = 0i32;
                 let mut final_mv_y = 0i32;
                 let mut final_ref_idx = 0u32;
@@ -1070,7 +1081,7 @@ impl H264Decoder {
                     0 => {
                         let mut ref_idx_l0 = 0u32;
                         if header.num_ref_idx_l0 > 1 {
-                            ref_idx_l0 = read_ue(&mut br).unwrap_or(0);
+                            ref_idx_l0 = read_te(&mut br, max_ref_idx_l0).unwrap_or(0);
                         }
                         let ref_idx_i8 = ref_idx_l0.min(i8::MAX as u32) as i8;
                         self.set_l0_motion_block_4x4(base_x, base_y, 16, 16, 0, 0, ref_idx_i8);
@@ -1104,8 +1115,8 @@ impl H264Decoder {
                         let mut ref_idx_top = 0u32;
                         let mut ref_idx_bottom = 0u32;
                         if header.num_ref_idx_l0 > 1 {
-                            ref_idx_top = read_ue(&mut br).unwrap_or(0);
-                            ref_idx_bottom = read_ue(&mut br).unwrap_or(0);
+                            ref_idx_top = read_te(&mut br, max_ref_idx_l0).unwrap_or(0);
+                            ref_idx_bottom = read_te(&mut br, max_ref_idx_l0).unwrap_or(0);
                         }
                         let top_ref_idx_i8 = ref_idx_top.min(i8::MAX as u32) as i8;
                         let (pred_mv_x, pred_mv_y) =
@@ -1176,8 +1187,8 @@ impl H264Decoder {
                         let mut ref_idx_left = 0u32;
                         let mut ref_idx_right = 0u32;
                         if header.num_ref_idx_l0 > 1 {
-                            ref_idx_left = read_ue(&mut br).unwrap_or(0);
-                            ref_idx_right = read_ue(&mut br).unwrap_or(0);
+                            ref_idx_left = read_te(&mut br, max_ref_idx_l0).unwrap_or(0);
+                            ref_idx_right = read_te(&mut br, max_ref_idx_l0).unwrap_or(0);
                         }
                         let left_ref_idx_i8 = ref_idx_left.min(i8::MAX as u32) as i8;
                         let (pred_mv_x, pred_mv_y) =
@@ -1255,7 +1266,7 @@ impl H264Decoder {
                         let mut sub_ref_idx = [0u32; 4];
                         if mb_type == 3 && header.num_ref_idx_l0 > 1 {
                             for slot in &mut sub_ref_idx {
-                                *slot = read_ue(&mut br).unwrap_or(0);
+                                *slot = read_te(&mut br, max_ref_idx_l0).unwrap_or(0);
                             }
                         }
 

@@ -633,6 +633,26 @@ pub(super) fn read_se(br: &mut BitReader) -> TaoResult<i32> {
     if code & 1 == 0 { Ok(-value) } else { Ok(value) }
 }
 
+/// 读取截断 Exp-Golomb (te(v), H.264 9.1.2).
+pub(super) fn read_te(br: &mut BitReader, max_value: u32) -> TaoResult<u32> {
+    if max_value == 0 {
+        return Ok(0);
+    }
+    if max_value == 1 {
+        // te(v) 在 max_value=1 时仅占 1bit, 映射为 val = 1 - bit.
+        let bit = br.read_bit()?;
+        return Ok(if bit == 0 { 1 } else { 0 });
+    }
+    let value = read_ue(br)?;
+    if value > max_value {
+        return Err(TaoError::InvalidData(format!(
+            "H264: 截断 Exp-Golomb 超范围, value={}, max={}",
+            value, max_value
+        )));
+    }
+    Ok(value)
+}
+
 /// QP 按 H.264 规则做 0..51 环绕.
 pub(super) fn wrap_qp(qp: i64) -> i32 {
     let m = 52i64;

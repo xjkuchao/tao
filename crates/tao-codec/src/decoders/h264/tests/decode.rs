@@ -476,7 +476,14 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_ref_idx_l0() {
     header.num_ref_idx_l0 = 2;
 
     // mb_skip_run=0, mb_type=0(P_L0_16x16), ref_idx_l0=1
-    let rbsp = build_rbsp_from_ues(&[0, 0, 1]);
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 0);
+    write_te(&mut bits, 1, 1);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    write_ue(&mut bits, 0); // CBP=0
+    let rbsp = bits_to_bytes(&bits);
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(
         dec.ref_y[0], 99,
@@ -487,8 +494,6 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_ref_idx_l0() {
 
 #[test]
 fn test_decode_cavlc_slice_data_p_non_skip_inter_ref_idx_l0_mvd_alignment() {
-    use ExpGolombValue::{Se, Ue};
-
     let mut dec = build_test_decoder();
     let sps_resize = build_sps_nalu(0, 32, 16);
     dec.handle_sps(&sps_resize);
@@ -502,19 +507,17 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_ref_idx_l0_mvd_alignment() {
 
     // mb0: skip_run=0, mb_type=0(P_L0_16x16), ref_idx_l0=1, mvd=(0,0), CBP=0
     // mb1: skip_run=0, mb_type=6(I_16x16), 后接 I_16x16 最小尾, 用于验证 mvd 语法消费对齐。
-    let rbsp = build_rbsp_from_exp_golomb_with_tail(
-        &[
-            Ue(0),
-            Ue(0),
-            Ue(1),
-            Se(0),
-            Se(0),
-            Ue(0), // CBP=0
-            Ue(0),
-            Ue(6),
-        ],
-        &i16x16_minimal_tail_bits(),
-    );
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 0);
+    write_te(&mut bits, 1, 1);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    write_ue(&mut bits, 0); // CBP=0
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 6);
+    bits.extend(i16x16_minimal_tail_bits());
+    let rbsp = bits_to_bytes(&bits);
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(dec.ref_y[0], 90, "P_L0_16x16 应按 ref_idx_l0 选择参考帧");
     assert_eq!(dec.mb_types[1], 1, "第二个宏块应解析为帧内宏块");
@@ -552,7 +555,12 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_16x8_partition_ref_idx() {
     header.num_ref_idx_l0 = 2;
 
     // mb_skip_run=0, mb_type=1(P_L0_L0_16x8), top ref_idx=0, bottom ref_idx=1
-    let rbsp = build_rbsp_from_ues(&[0, 1, 0, 1]);
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 1);
+    write_te(&mut bits, 1, 0);
+    write_te(&mut bits, 1, 1);
+    let rbsp = bits_to_bytes(&bits);
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(dec.ref_y[0], 20, "16x8 顶部分区应使用 ref_idx=0");
     assert_eq!(
@@ -574,7 +582,12 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_8x16_partition_ref_idx() {
     header.num_ref_idx_l0 = 2;
 
     // mb_skip_run=0, mb_type=2(P_L0_L0_8x16), left ref_idx=0, right ref_idx=1
-    let rbsp = build_rbsp_from_ues(&[0, 2, 0, 1]);
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 2);
+    write_te(&mut bits, 1, 0);
+    write_te(&mut bits, 1, 1);
+    let rbsp = bits_to_bytes(&bits);
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(dec.ref_y[0], 20, "8x16 左分区应使用 ref_idx=0");
     assert_eq!(dec.ref_y[8], 90, "8x16 右分区应使用 ref_idx=1");
@@ -630,8 +643,6 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_8x16_directional_mvp_uses_left_
 
 #[test]
 fn test_decode_cavlc_slice_data_p_non_skip_inter_16x16_prefers_single_ref_match_mvp() {
-    use ExpGolombValue::{Se, Ue};
-
     let mut dec = build_test_decoder();
     dec.width = 32;
     dec.height = 32;
@@ -652,7 +663,13 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_16x16_prefers_single_ref_match_
     header.num_ref_idx_l0 = 2;
 
     // mb_skip_run=0, mb_type=0(P_L0_16x16), ref_idx_l0=1, mvd=(0,0)
-    let rbsp = build_rbsp_from_exp_golomb(&[Ue(0), Ue(0), Ue(1), Se(0), Se(0)]);
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 0);
+    write_te(&mut bits, 1, 1);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    let rbsp = bits_to_bytes(&bits);
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     let base = 16 + 16 * dec.stride_y;
@@ -664,8 +681,6 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_16x16_prefers_single_ref_match_
 
 #[test]
 fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_ref_idx_and_alignment() {
-    use ExpGolombValue::{Se, Ue};
-
     let mut dec = build_test_decoder();
     let sps_resize = build_sps_nalu(0, 32, 16);
     dec.handle_sps(&sps_resize);
@@ -679,32 +694,30 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_ref_idx_and_alignment() {
 
     // mb0: skip_run=0, mb_type=3(P_8x8), 四个 sub_mb_type=0, ref_idx=[0,1,1,0]
     // 并为每个子分区提供 mvd=(0,0), CBP=0; mb1: skip_run=0, mb_type=6(I_16x16), 后接 I_16x16 最小尾.
-    let rbsp = build_rbsp_from_exp_golomb_with_tail(
-        &[
-            Ue(0),
-            Ue(3),
-            Ue(0),
-            Ue(0),
-            Ue(0),
-            Ue(0),
-            Ue(0),
-            Ue(1),
-            Ue(1),
-            Ue(0),
-            Se(0),
-            Se(0),
-            Se(0),
-            Se(0),
-            Se(0),
-            Se(0),
-            Se(0),
-            Se(0),
-            Ue(0), // CBP=0
-            Ue(0),
-            Ue(6),
-        ],
-        &i16x16_minimal_tail_bits(),
-    );
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 3);
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 0);
+    write_te(&mut bits, 1, 0);
+    write_te(&mut bits, 1, 1);
+    write_te(&mut bits, 1, 1);
+    write_te(&mut bits, 1, 0);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    write_ue(&mut bits, 0); // CBP=0
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 6);
+    bits.extend(i16x16_minimal_tail_bits());
+    let rbsp = bits_to_bytes(&bits);
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(dec.mb_types[0], 203, "P_8x8 宏块应标记为互预测类型");
