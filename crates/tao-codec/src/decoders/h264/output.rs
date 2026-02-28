@@ -317,17 +317,19 @@ impl H264Decoder {
         }
     }
 
-    pub(super) fn find_short_term_ref_index_by_pic_num(
+    fn find_short_term_ref_index_by_pic_num_from(
         &self,
         refs: &[&ReferencePicture],
         pic_num: i32,
         cur_pic_num: i32,
         max_frame_num: i32,
+        start: usize,
     ) -> Option<usize> {
-        refs.iter().position(|pic| {
-            pic.long_term_frame_idx.is_none()
+        refs.iter().enumerate().skip(start).find_map(|(idx, pic)| {
+            let is_match = pic.long_term_frame_idx.is_none()
                 && self.short_term_pic_num_from_ref(pic.frame_num, cur_pic_num, max_frame_num)
-                    == pic_num
+                    == pic_num;
+            if is_match { Some(idx) } else { None }
         })
     }
 
@@ -345,6 +347,7 @@ impl H264Decoder {
             return;
         }
 
+        let original_len = refs.len();
         let cur_pic_num = cur_frame_num as i32;
         let mut pic_num_pred = cur_pic_num;
         let mut insert_idx = 0usize;
@@ -365,12 +368,22 @@ impl H264Decoder {
                     } else {
                         pic_num_no_wrap
                     };
-                    self.find_short_term_ref_index_by_pic_num(
+                    self.find_short_term_ref_index_by_pic_num_from(
                         refs.as_slice(),
                         pic_num,
                         cur_pic_num,
                         max_frame_num,
+                        insert_idx,
                     )
+                    .or_else(|| {
+                        self.find_short_term_ref_index_by_pic_num_from(
+                            refs.as_slice(),
+                            pic_num,
+                            cur_pic_num,
+                            max_frame_num,
+                            0,
+                        )
+                    })
                 }
                 RefPicListMod::ShortTermAdd {
                     abs_diff_pic_num_minus1,
@@ -386,22 +399,63 @@ impl H264Decoder {
                     } else {
                         pic_num_no_wrap
                     };
-                    self.find_short_term_ref_index_by_pic_num(
+                    self.find_short_term_ref_index_by_pic_num_from(
                         refs.as_slice(),
                         pic_num,
                         cur_pic_num,
                         max_frame_num,
+                        insert_idx,
                     )
+                    .or_else(|| {
+                        self.find_short_term_ref_index_by_pic_num_from(
+                            refs.as_slice(),
+                            pic_num,
+                            cur_pic_num,
+                            max_frame_num,
+                            0,
+                        )
+                    })
                 }
                 RefPicListMod::LongTerm { long_term_pic_num } => refs
                     .iter()
-                    .position(|pic| pic.long_term_frame_idx == Some(long_term_pic_num)),
+                    .enumerate()
+                    .skip(insert_idx)
+                    .find_map(|(idx, pic)| {
+                        if pic.long_term_frame_idx == Some(long_term_pic_num) {
+                            Some(idx)
+                        } else {
+                            None
+                        }
+                    })
+                    .or_else(|| {
+                        refs.iter().enumerate().find_map(|(idx, pic)| {
+                            if pic.long_term_frame_idx == Some(long_term_pic_num) {
+                                Some(idx)
+                            } else {
+                                None
+                            }
+                        })
+                    }),
             };
 
             if let Some(src_idx) = target_idx {
-                let selected = refs.remove(src_idx);
-                let dst_idx = insert_idx.min(refs.len());
-                refs.insert(dst_idx, selected);
+                let selected = refs.get(src_idx).copied();
+                if let Some(pic) = selected {
+                    if src_idx >= insert_idx {
+                        let moved = refs.remove(src_idx);
+                        let dst_idx = insert_idx.min(refs.len());
+                        refs.insert(dst_idx, moved);
+                    } else {
+                        let dst_idx = insert_idx.min(refs.len());
+                        refs.insert(dst_idx, pic);
+                        if refs.len() > original_len {
+                            let _ = refs.pop();
+                        }
+                    }
+                }
+            }
+            if insert_idx < original_len {
+                // 与 FFmpeg 对齐: 无论命中与否, 每条修改语法都会推进一个重排槽位.
                 insert_idx += 1;
             }
         }
