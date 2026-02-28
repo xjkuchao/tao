@@ -642,6 +642,77 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_8x16_directional_mvp_uses_left_
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_p_non_skip_inter_16x8_part1_prefers_left_neighbor() {
+    use ExpGolombValue::{Se, Ue};
+
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+    dec.reference_frames.clear();
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    // 目标宏块为 (1,1), 左邻可用且 ref 匹配:
+    // - 左邻 MV=+2 像素
+    // - 顶部分区 mvd=(+1 像素), 其预测会受左邻影响
+    // FFmpeg pred_16x8(n=1) 语义下, part1 应优先取左邻, 不应强制复用 part0.
+    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 8, 0, 0);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.first_mb = 3; // 仅解码右下宏块
+    header.data_bit_offset = 0;
+
+    // mb_skip_run=0, mb_type=1(P_L0_L0_16x8), mvd_top=(4,0), mvd_bottom=(0,0)
+    let rbsp = build_rbsp_from_exp_golomb(&[Ue(0), Ue(1), Se(4), Se(0), Se(0), Se(0)]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    let base = 16 + 16 * dec.stride_y;
+    assert_eq!(dec.ref_y[base], 19, "part0 应包含左邻预测 + mvd 叠加");
+    assert_eq!(
+        dec.ref_y[base + 8 * dec.stride_y],
+        18,
+        "part1 应优先使用左邻 MVP(+2 像素), 不应强制复用 part0"
+    );
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_p_non_skip_inter_8x16_part1_prefers_diagonal_neighbor() {
+    use ExpGolombValue::{Se, Ue};
+
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+    dec.reference_frames.clear();
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    // 目标宏块为 (1,1):
+    // - 左邻 MV=+1 像素
+    // - 对角(D)邻居 MV=+3 像素 (当前图宽 2MB, C 不可用时应回退 D)
+    // FFmpeg pred_8x16(n=1) 语义下, part1 应优先取对角邻居而非复用 part0.
+    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 4, 0, 0);
+    dec.set_l0_motion_block_4x4(16, 0, 16, 16, 12, 0, 0);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.first_mb = 3; // 仅解码右下宏块
+    header.data_bit_offset = 0;
+
+    // mb_skip_run=0, mb_type=2(P_L0_L0_8x16), mvd_left=(4,0), mvd_right=(0,0)
+    let rbsp = build_rbsp_from_exp_golomb(&[Ue(0), Ue(2), Se(4), Se(0), Se(0), Se(0)]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    let base = 16 + 16 * dec.stride_y;
+    assert_eq!(dec.ref_y[base], 18, "part0 应为 +2 像素位移");
+    assert_eq!(
+        dec.ref_y[base + 8],
+        27,
+        "part1 应优先使用对角邻居 MVP(+3 像素), 不应强制复用 part0"
+    );
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_p_non_skip_inter_16x16_prefers_single_ref_match_mvp() {
     let mut dec = build_test_decoder();
     dec.width = 32;

@@ -1120,7 +1120,7 @@ impl H264Decoder {
                         }
                         let top_ref_idx_i8 = ref_idx_top.min(i8::MAX as u32) as i8;
                         let (pred_mv_x, pred_mv_y) =
-                            self.predict_mv_l0_partition(mb_x, mb_y, 0, 0, 4, top_ref_idx_i8);
+                            self.predict_mv_l0_16x8(mb_x, mb_y, 0, top_ref_idx_i8);
                         let mvd_top_x = read_se(&mut br).unwrap_or(0);
                         let mvd_top_y = read_se(&mut br).unwrap_or(0);
                         let mv_top_x = pred_mv_x + mvd_top_x;
@@ -1135,11 +1135,8 @@ impl H264Decoder {
                             top_ref_idx_i8,
                         );
                         let bottom_ref_idx_i8 = ref_idx_bottom.min(i8::MAX as u32) as i8;
-                        let (pred_bottom_x, pred_bottom_y) = if ref_idx_bottom == ref_idx_top {
-                            (mv_top_x, mv_top_y)
-                        } else {
-                            self.predict_mv_l0_partition(mb_x, mb_y, 0, 2, 4, bottom_ref_idx_i8)
-                        };
+                        let (pred_bottom_x, pred_bottom_y) =
+                            self.predict_mv_l0_16x8(mb_x, mb_y, 1, bottom_ref_idx_i8);
                         let mvd_bottom_x = read_se(&mut br).unwrap_or(0);
                         let mvd_bottom_y = read_se(&mut br).unwrap_or(0);
                         let mv_bottom_x = pred_bottom_x + mvd_bottom_x;
@@ -1192,7 +1189,7 @@ impl H264Decoder {
                         }
                         let left_ref_idx_i8 = ref_idx_left.min(i8::MAX as u32) as i8;
                         let (pred_mv_x, pred_mv_y) =
-                            self.predict_mv_l0_partition(mb_x, mb_y, 0, 0, 2, left_ref_idx_i8);
+                            self.predict_mv_l0_8x16(mb_x, mb_y, 0, left_ref_idx_i8);
                         let mvd_left_x = read_se(&mut br).unwrap_or(0);
                         let mvd_left_y = read_se(&mut br).unwrap_or(0);
                         let mv_left_x = pred_mv_x + mvd_left_x;
@@ -1207,11 +1204,8 @@ impl H264Decoder {
                             left_ref_idx_i8,
                         );
                         let right_ref_idx_i8 = ref_idx_right.min(i8::MAX as u32) as i8;
-                        let (pred_right_x, pred_right_y) = if ref_idx_right == ref_idx_left {
-                            (mv_left_x, mv_left_y)
-                        } else {
-                            self.predict_mv_l0_partition(mb_x, mb_y, 2, 0, 2, right_ref_idx_i8)
-                        };
+                        let (pred_right_x, pred_right_y) =
+                            self.predict_mv_l0_8x16(mb_x, mb_y, 1, right_ref_idx_i8);
                         let mvd_right_x = read_se(&mut br).unwrap_or(0);
                         let mvd_right_y = read_se(&mut br).unwrap_or(0);
                         let mv_right_x = pred_right_x + mvd_right_x;

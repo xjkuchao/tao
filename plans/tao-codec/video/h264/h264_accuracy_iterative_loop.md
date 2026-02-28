@@ -562,3 +562,51 @@
   - `cargo test --release --test run_decoder h264::test_h264_accuracy_ -- --nocapture --ignored` 通过(`17 passed`).
 - 判定: `有效修复(去块滤波判定逻辑已与 FFmpeg 对齐; 精度轻微波动可接受)`.
 - 下一子功能: `1-1` (继续聚焦 frame2 首失配, 优先定位 B 16x8 L0/L1 在去块边界强度与亚像素补偿链路的联动差异).
+
+### 9.17 Round-15 记录(1-1: CAVLC P_16x8/P_8x16 的方向性 MVP 对齐 FFmpeg)
+
+- 子功能: `1-1`.
+- 对比结论: `不一致`.
+  - Tao 的 CAVLC P-slice 路径在 `mb_type=1(P_16x8)` / `mb_type=2(P_8x16)` 中, 使用了通用 `predict_mv_l0_partition` + “同 ref 直接复用上一分区 MV”捷径.
+  - FFmpeg `h264_mvpred.h` 的 `pred_16x8_motion/pred_8x16_motion` 为方向性规则:
+    - `16x8 part1` 优先左邻(匹配时直接取左邻), 否则回退 `pred_motion`.
+    - `8x16 part1` 优先对角 C(仅 C 不可用时回退 D), 否则回退 `pred_motion`.
+  - 上述差异会在 CAVLC 的 P 帧首批分区中直接改变 MVP, 并在后续参考帧链路累积误差.
+- 逻辑证据:
+  - Tao 文件: `crates/tao-codec/src/decoders/h264/slice_decode.rs`
+    - 原实现在 `mb_type=1/2` 分支中未调用 `predict_mv_l0_16x8/predict_mv_l0_8x16`.
+    - 且对 `part1` 存在 `if ref_idx_same { 复用 part0 MV }` 的捷径.
+  - FFmpeg 文件: `libavcodec/h264_mvpred.h`
+    - `pred_16x8_motion` 与 `pred_8x16_motion` 均在 `ff_h264_decode_mb_cavlc` 路径被调用, 与 CABAC 共享同一方向性 MVP 语义.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/slice_decode.rs`
+    - `P_16x8`:
+      - part0 改为 `predict_mv_l0_16x8(..., part=0, ...)`.
+      - part1 改为 `predict_mv_l0_16x8(..., part=1, ...)`.
+      - 删除“同 ref 直接复用 part0 MV”捷径.
+    - `P_8x16`:
+      - part0 改为 `predict_mv_l0_8x16(..., part=0, ...)`.
+      - part1 改为 `predict_mv_l0_8x16(..., part=1, ...)`.
+      - 删除“同 ref 直接复用 part0 MV”捷径.
+  - 文件: `crates/tao-codec/src/decoders/h264/tests/decode.rs`
+    - 新增回归:
+      - `test_decode_cavlc_slice_data_p_non_skip_inter_16x8_part1_prefers_left_neighbor`
+      - `test_decode_cavlc_slice_data_p_non_skip_inter_8x16_part1_prefers_diagonal_neighbor`
+- 精度变化:
+  - `data/1.mp4`:
+    - 120 帧: `100.000000%` (保持无回归)
+  - `data/2.mp4`:
+    - 120 帧: `100.000000%` (保持无回归)
+  - `E1`:
+    - 10 帧: `37.419886% -> 38.256061%` (`+0.836175`)
+    - `first_mismatch=1` (未前移)
+  - `E9`:
+    - 10 帧: `36.024242% -> 36.828409%` (`+0.804167`)
+    - `first_mismatch=1` (未前移)
+- 测试结果:
+  - `cargo test -p tao-codec decode_cavlc_slice_data_p_non_skip_inter_ -- --nocapture` 通过(`13 passed`).
+  - `cargo test --test run_decoder h264::test_h264_accuracy_e1 -- --ignored --nocapture` 通过.
+  - `cargo test --test run_decoder h264::test_h264_accuracy_e9 -- --ignored --nocapture` 通过.
+  - `TAO_H264_COMPARE_FAIL_ON_REF_FALLBACK=1` 下 `E1/E9` 均通过(无缺失参考回退门禁触发).
+- 判定: `有效修复(逻辑与 FFmpeg 方向性 MVP 语义对齐, 且 E1/E9 精度提升)`.
+- 下一子功能: `1-2` (继续定位 CAVLC P_8x8 子分区 MVP/MC 链路与 FFmpeg 的细粒度差异, 优先 frame1 首失配区域).
