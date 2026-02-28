@@ -527,3 +527,38 @@
   - 新增 L0/L1 8x16 C/D 回退语义单测通过.
 - 判定: `有效修复(逻辑与 FFmpeg 对齐, 且主目标精度显著提升)`.
 - 下一子功能: `1-1` (继续聚焦 frame2 新首失配, 优先排查 CABAC 与 P/B 运动预测联动路径).
+
+### 9.16 Round-14 记录(1-1: deblock B-slice 交叉匹配语义对齐 FFmpeg check_mv)
+
+- 子功能: `1-1`.
+- 对比结论: `不一致`.
+  - Tao 的 `combine_motion_list_mismatch` 在 B-slice 交叉匹配分支中额外要求 `ref_idx>=0`, 并且对 `ref=-1` 场景直接跳过 MV 门限比较.
+  - FFmpeg `check_mv` 语义:
+    - 交叉参考匹配判定仅做相等比较, 不要求 `>=0`.
+    - 在 list1 路径中, 即使 `ref=-1` 仍参与 MV 差门限比较.
+- 逻辑证据:
+  - FFmpeg `libavcodec/h264_loopfilter.c:check_mv`:
+    - `ref_cache[0]` 仅在 `ref!=-1` 时比较 MV.
+    - `ref_cache[1]` 分支直接比较 `ref` 或 MV 差.
+    - 交叉分支仅检查 `ref0(a)==ref1(b)` 与 `ref1(a)==ref0(b)`.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/deblock.rs`
+    - 重写 `combine_motion_list_mismatch` 为 FFmpeg `check_mv` 等价流程:
+      - L0/L1 的 mismatch 触发条件与顺序对齐.
+      - 交叉参考匹配去掉 `>=0` 限制.
+      - list1 在 `ref=-1` 情况下保留 MV 门限判定.
+  - 新增回归测试:
+    - `test_boundary_strength_vertical_within_mb_cross_ref_match_accepts_negative_ref`
+    - `test_boundary_strength_vertical_within_mb_list1_negative_ref_mv_diff_is_one`
+- 精度变化:
+  - `data/2.mp4`:
+    - 67 帧: `98.099946% -> 98.089780%` (`-0.010166`)
+    - 首个不一致帧维持 `2`.
+  - `data/1.mp4`:
+    - 10 帧: `100.000000%` (持平).
+- 测试结果:
+  - `cargo test -p tao-codec decoders::h264::deblock::tests:: -- --nocapture` 通过(`23 passed`).
+  - `cargo test -p tao-codec decoders::h264::tests:: -- --nocapture` 通过(`189 passed`).
+  - `cargo test --release --test run_decoder h264::test_h264_accuracy_ -- --nocapture --ignored` 通过(`17 passed`).
+- 判定: `有效修复(去块滤波判定逻辑已与 FFmpeg 对齐; 精度轻微波动可接受)`.
+- 下一子功能: `1-1` (继续聚焦 frame2 首失配, 优先定位 B 16x8 L0/L1 在去块边界强度与亚像素补偿链路的联动差异).

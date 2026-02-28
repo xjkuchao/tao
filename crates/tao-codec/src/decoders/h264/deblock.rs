@@ -872,9 +872,6 @@ fn list_motion_mismatch(a: Option<MotionSample>, b: Option<MotionSample>) -> Opt
     if a.ref_idx != b.ref_idx {
         return Some(true);
     }
-    if a.ref_idx < 0 {
-        return Some(false);
-    }
     let mv_dx = (i32::from(a.mv_x) - i32::from(b.mv_x)).abs();
     let mv_dy = (i32::from(a.mv_y) - i32::from(b.mv_y)).abs();
     Some(mv_dx >= 4 || mv_dy >= 4)
@@ -886,31 +883,43 @@ fn combine_motion_list_mismatch(
     l1_a: Option<MotionSample>,
     l1_b: Option<MotionSample>,
 ) -> Option<u8> {
-    let list0 = list_motion_mismatch(l0_a, l0_b);
-    let list1 = list_motion_mismatch(l1_a, l1_b);
+    let list0_pair = l0_a.zip(l0_b);
+    let list1_pair = l1_a.zip(l1_b);
+    if list0_pair.is_none() && list1_pair.is_none() {
+        return None;
+    }
 
-    if list0.unwrap_or(false) || list1.unwrap_or(false) {
-        // 对齐 FFmpeg 的 B-slice 交叉匹配语义:
-        // 直接匹配不一致时,若 L0/L1 交叉参考一致,则再按交叉 MV 判断.
-        if let (Some(a0), Some(b0), Some(a1), Some(b1)) = (l0_a, l0_b, l1_a, l1_b) {
-            let cross_ref_match = a0.ref_idx >= 0
-                && b0.ref_idx >= 0
-                && a1.ref_idx >= 0
-                && b1.ref_idx >= 0
-                && a0.ref_idx == b1.ref_idx
-                && a1.ref_idx == b0.ref_idx;
-            if cross_ref_match {
+    // 对齐 FFmpeg check_mv:
+    // 1) L0: ref 不同即 mismatch; ref 相同且 ref!=-1 时再比较 MV 门限.
+    // 2) L1: 仅当当前仍未 mismatch 时参与检测; 这里即使 ref==-1 也比较 MV.
+    // 3) 若命中 mismatch 且两列表交叉参考一致, 再做交叉 MV 比较决定是否可降为 0.
+    let mut mismatch = false;
+    if let Some((a0, b0)) = list0_pair {
+        mismatch = a0.ref_idx != b0.ref_idx;
+        if !mismatch && a0.ref_idx != -1 {
+            mismatch = list_motion_mismatch(Some(a0), Some(b0)).unwrap_or(false);
+        }
+    }
+
+    if let Some((a1, b1)) = list1_pair {
+        if !mismatch {
+            mismatch = a1.ref_idx != b1.ref_idx
+                || list_motion_mismatch(Some(a1), Some(b1)).unwrap_or(false);
+        }
+        if mismatch {
+            if let Some((a0, b0)) = list0_pair {
+                if a0.ref_idx != b1.ref_idx || a1.ref_idx != b0.ref_idx {
+                    return Some(1);
+                }
                 let cross_l0 = list_motion_mismatch(Some(a0), Some(b1)).unwrap_or(false);
                 let cross_l1 = list_motion_mismatch(Some(a1), Some(b0)).unwrap_or(false);
                 return Some(if cross_l0 || cross_l1 { 1 } else { 0 });
             }
+            return Some(1);
         }
-        return Some(1);
     }
-    if list0.is_some() || list1.is_some() {
-        return Some(0);
-    }
-    None
+
+    Some(if mismatch { 1 } else { 0 })
 }
 
 fn luma_cbf_non_zero_across_boundary(
@@ -1835,6 +1844,96 @@ mod tests {
         };
         let bs = boundary_strength_vertical(4, 2, 16, Some(&ctx));
         assert_eq!(bs, 0, "4x4 内部边界同参考且 MV 接近时应返回 bs=0");
+    }
+
+    #[test]
+    fn test_boundary_strength_vertical_within_mb_cross_ref_match_accepts_negative_ref() {
+        let mb_types = [255u8];
+        let mb_cbp = [0u8];
+        let cbf_luma = [false; 16];
+        let mv_l0_x_4x4 = [0i16; 16];
+        let mv_l0_y_4x4 = [0i16; 16];
+        let mut ref_idx_l0_4x4 = [0i8; 16];
+        let mv_l1_x_4x4 = [0i16; 16];
+        let mv_l1_y_4x4 = [0i16; 16];
+        let mut ref_idx_l1_4x4 = [0i8; 16];
+
+        // 边界两侧构造 L0/L1 交叉匹配:
+        // A: L0(ref=0), L1(ref=-1); B: L0(ref=-1), L1(ref=0).
+        ref_idx_l0_4x4[0] = 0;
+        ref_idx_l0_4x4[1] = -1;
+        ref_idx_l1_4x4[0] = -1;
+        ref_idx_l1_4x4[1] = 0;
+
+        let ctx = DeblockMbContext {
+            mb_width: 1,
+            mb_height: 1,
+            mb_types: &mb_types,
+            mb_cbp: &mb_cbp,
+            mb_slice_first_mb: None,
+            disable_cross_slice_boundary_filter: false,
+            mv_l0_x: None,
+            mv_l0_y: None,
+            ref_idx_l0: None,
+            mv_l1_x: None,
+            mv_l1_y: None,
+            ref_idx_l1: None,
+            cbf_luma: Some(&cbf_luma),
+            mv_l0_x_4x4: Some(&mv_l0_x_4x4),
+            mv_l0_y_4x4: Some(&mv_l0_y_4x4),
+            ref_idx_l0_4x4: Some(&ref_idx_l0_4x4),
+            mv_l1_x_4x4: Some(&mv_l1_x_4x4),
+            mv_l1_y_4x4: Some(&mv_l1_y_4x4),
+            ref_idx_l1_4x4: Some(&ref_idx_l1_4x4),
+            mb_qp: None,
+            transform_8x8_flags: None,
+            alpha_offset_div2: 0,
+            beta_offset_div2: 0,
+        };
+        let bs = boundary_strength_vertical(4, 2, 16, Some(&ctx));
+        assert_eq!(bs, 0, "B-slice 交叉参考一致(含 -1)且 MV 对齐时应返回 bs=0");
+    }
+
+    #[test]
+    fn test_boundary_strength_vertical_within_mb_list1_negative_ref_mv_diff_is_one() {
+        let mb_types = [255u8];
+        let mb_cbp = [0u8];
+        let cbf_luma = [false; 16];
+        let mv_l0_x_4x4 = [0i16; 16];
+        let mv_l0_y_4x4 = [0i16; 16];
+        let ref_idx_l0_4x4 = [-1i8; 16];
+        let mut mv_l1_x_4x4 = [0i16; 16];
+        let mv_l1_y_4x4 = [0i16; 16];
+        let ref_idx_l1_4x4 = [-1i8; 16];
+        mv_l1_x_4x4[1] = 4;
+
+        let ctx = DeblockMbContext {
+            mb_width: 1,
+            mb_height: 1,
+            mb_types: &mb_types,
+            mb_cbp: &mb_cbp,
+            mb_slice_first_mb: None,
+            disable_cross_slice_boundary_filter: false,
+            mv_l0_x: None,
+            mv_l0_y: None,
+            ref_idx_l0: None,
+            mv_l1_x: None,
+            mv_l1_y: None,
+            ref_idx_l1: None,
+            cbf_luma: Some(&cbf_luma),
+            mv_l0_x_4x4: Some(&mv_l0_x_4x4),
+            mv_l0_y_4x4: Some(&mv_l0_y_4x4),
+            ref_idx_l0_4x4: Some(&ref_idx_l0_4x4),
+            mv_l1_x_4x4: Some(&mv_l1_x_4x4),
+            mv_l1_y_4x4: Some(&mv_l1_y_4x4),
+            ref_idx_l1_4x4: Some(&ref_idx_l1_4x4),
+            mb_qp: None,
+            transform_8x8_flags: None,
+            alpha_offset_div2: 0,
+            beta_offset_div2: 0,
+        };
+        let bs = boundary_strength_vertical(4, 2, 16, Some(&ctx));
+        assert_eq!(bs, 1, "list1 的 ref=-1 但 MV 差>=4 时应返回 bs=1");
     }
 
     #[test]
