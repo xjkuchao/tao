@@ -722,3 +722,33 @@
   - `cargo test --test run_decoder h264::test_h264_accuracy_e9 -- --ignored --nocapture` 通过.
 - 判定: `有效修复(逻辑正确性优先: 修复了 Inter/I 路径的状态机不一致, 主目标与回归集无回退)`.
 - 下一子功能: `2-1` (继续定位 E1/E9 首失配, 优先核对多参考帧默认 L0 列表与 DPB 更新链路).
+
+### 9.21 Round-19 记录(2-1: RBSP 尾比特判定修正, 避免把 trailing_bits 误判为语法数据)
+
+- 子功能: `2-1`.
+- 对比结论: `不一致`.
+  - Tao 的 `has_more_rbsp_data` 在 `bits_left > 8` 时直接返回 `true`.
+  - 该行为与 H.264 `rbsp_trailing_bits` 语义不一致: 当剩余比特是 `1` 后接全 `0`(即使超过 8 bit)时, 应判定为“无更多语法数据”.
+- 逻辑证据:
+  - 文件:
+    - `crates/tao-codec/src/decoders/h264/slice_decode.rs`
+    - `crates/tao-codec/src/decoders/h264/parameter_sets.rs`
+  - 修复前实现对 `bits_left > 8` 无条件返回 `true`, 会把多字节 trailing_bits 误判为有效负载.
+- 修复改动:
+  - 上述两个文件中的 `has_more_rbsp_data` 统一改为:
+    - 从当前位置按位检查: 仅当“当前位是 stop_bit=1 且后续全 0”时返回 `false`.
+    - 其余情况返回 `true`.
+  - 该实现与 `rbsp_trailing_bits` 定义一致, 且不依赖剩余位数阈值.
+- 精度变化:
+  - `data/1.mp4`: `100.000000%` (持平)
+  - `data/2.mp4`: `100.000000%` (持平)
+  - `E1`: `38.256061%` (持平)
+  - `E9`: `36.828409%` (持平)
+- 测试结果:
+  - `cargo test -p tao-codec decode_cavlc_slice_data_p_non_skip_inter_ -- --nocapture` 通过(`15 passed`).
+  - `TAO_H264_COMPARE_INPUT=data/1.mp4 ...` 120 帧通过, `SCORE=100.000000`.
+  - `TAO_H264_COMPARE_INPUT=data/2.mp4 ...` 120 帧通过, `SCORE=100.000000`.
+  - `TAO_H264_COMPARE_INPUT=data/h264_samples/e1_baseline_cavlc_lowres.mp4 ...` 10 帧通过, `SCORE=38.256061`.
+  - `TAO_H264_COMPARE_INPUT=data/h264_samples/e9_cavlc_baseline2.mp4 ...` 10 帧通过, `SCORE=36.828409`.
+- 判定: `有效修复(逻辑正确性优先: 修复了 trailing_bits 判定错误, 主目标与回归集无回退)`.
+- 下一子功能: `2-1` (继续定位 E1/E9 的首失配, 优先排查 MP4 路径与 AnnexB 路径在 CAVLC 样本上的差异链路).

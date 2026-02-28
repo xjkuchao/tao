@@ -1597,16 +1597,29 @@ impl H264Decoder {
 
 /// 判断 RBSP 是否仍有有效语法数据 (排除 rbsp_trailing_bits).
 fn has_more_rbsp_data(br: &mut BitReader) -> bool {
-    let bits_left = br.bits_left();
-    if bits_left == 0 {
+    if br.bits_left() == 0 {
         return false;
     }
-    if bits_left > 8 {
+    let data = br.data();
+    let start_bit = br.bits_read();
+    let total_bits = data.len().saturating_mul(8);
+    if start_bit >= total_bits {
+        return false;
+    }
+
+    let bit_at = |idx: usize| -> u8 {
+        let byte = data[idx / 8];
+        (byte >> (7 - (idx % 8))) & 1
+    };
+    // rbsp_trailing_bits: stop_bit(1) + 全 0 对齐位.
+    // 若当前位置不是 1, 或 stop_bit 后仍存在 1, 说明还有有效语法数据.
+    if bit_at(start_bit) == 0 {
         return true;
     }
-    let Ok(rest) = br.peek_bits(bits_left as u32) else {
-        return false;
-    };
-    let trailing = 1u32 << (bits_left - 1);
-    rest != trailing
+    for idx in (start_bit + 1)..total_bits {
+        if bit_at(idx) != 0 {
+            return true;
+        }
+    }
+    false
 }
