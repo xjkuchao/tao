@@ -260,27 +260,34 @@ impl H264Decoder {
         let x4 = mb_x * 4 + part * 2;
         let y4 = mb_y * 4;
         if part == 0 {
-            if let Some((mv_x, mv_y, left_ref)) =
-                self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
+            if let MotionNeighbor::Available {
+                mv_x,
+                mv_y,
+                ref_idx: left_ref,
+            } = self.l0_motion_neighbor_state(x4, y4, x4 as isize - 1, y4 as isize, ref_idx)
+                && left_ref == ref_idx
             {
-                if left_ref == ref_idx && self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4) {
-                    return (mv_x, mv_y);
-                }
+                return (mv_x, mv_y);
             }
         } else {
-            let mut diag = self.l0_motion_candidate_4x4((x4 + 2) as isize, y4 as isize - 1);
-            if diag.is_some() && !self.same_slice_4x4(x4, y4, x4 + 2, y4.saturating_sub(1)) {
-                diag = None;
+            let mut diag =
+                self.l0_motion_neighbor_state(x4, y4, (x4 + 2) as isize, y4 as isize - 1, ref_idx);
+            // 仅在 C=PartNotAvailable 时回退到 D.
+            // 若 C=ListNotUsed, 需保留该状态并在后续走 pred_motion 的中值分支.
+            if matches!(diag, MotionNeighbor::PartNotAvailable) {
+                diag = self.l0_motion_neighbor_state(
+                    x4,
+                    y4,
+                    x4 as isize - 1,
+                    y4 as isize - 1,
+                    ref_idx,
+                );
             }
-            if diag.is_none() {
-                diag = self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize - 1);
-                if diag.is_some()
-                    && !self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4.saturating_sub(1))
-                {
-                    diag = None;
-                }
-            }
-            if let Some((mv_x, mv_y, diag_ref)) = diag
+            if let MotionNeighbor::Available {
+                mv_x,
+                mv_y,
+                ref_idx: diag_ref,
+            } = diag
                 && diag_ref == ref_idx
             {
                 return (mv_x, mv_y);
@@ -328,27 +335,32 @@ impl H264Decoder {
         let x4 = mb_x * 4 + part * 2;
         let y4 = mb_y * 4;
         if part == 0 {
-            if let Some((mv_x, mv_y, left_ref)) =
-                self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
+            if let MotionNeighbor::Available {
+                mv_x,
+                mv_y,
+                ref_idx: left_ref,
+            } = self.l1_motion_neighbor_state(x4, y4, x4 as isize - 1, y4 as isize, ref_idx)
+                && left_ref == ref_idx
             {
-                if left_ref == ref_idx && self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4) {
-                    return (mv_x, mv_y);
-                }
+                return (mv_x, mv_y);
             }
         } else {
-            let mut diag = self.l1_motion_candidate_4x4((x4 + 2) as isize, y4 as isize - 1);
-            if diag.is_some() && !self.same_slice_4x4(x4, y4, x4 + 2, y4.saturating_sub(1)) {
-                diag = None;
+            let mut diag =
+                self.l1_motion_neighbor_state(x4, y4, (x4 + 2) as isize, y4 as isize - 1, ref_idx);
+            if matches!(diag, MotionNeighbor::PartNotAvailable) {
+                diag = self.l1_motion_neighbor_state(
+                    x4,
+                    y4,
+                    x4 as isize - 1,
+                    y4 as isize - 1,
+                    ref_idx,
+                );
             }
-            if diag.is_none() {
-                diag = self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize - 1);
-                if diag.is_some()
-                    && !self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4.saturating_sub(1))
-                {
-                    diag = None;
-                }
-            }
-            if let Some((mv_x, mv_y, diag_ref)) = diag
+            if let MotionNeighbor::Available {
+                mv_x,
+                mv_y,
+                ref_idx: diag_ref,
+            } = diag
                 && diag_ref == ref_idx
             {
                 return (mv_x, mv_y);

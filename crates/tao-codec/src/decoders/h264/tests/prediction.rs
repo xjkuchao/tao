@@ -518,6 +518,53 @@ fn test_predict_mv_l0_partition_prefers_single_ref_match_and_fallback_to_d() {
 }
 
 #[test]
+fn test_predict_mv_l0_8x16_part1_does_not_use_d_when_c_is_list_not_used() {
+    let mut dec = build_test_decoder();
+    dec.width = 48;
+    dec.height = 32;
+    dec.init_buffers();
+
+    // 目标分区: 宏块 (1,1) 的 part=1, 起点 4x4 为 (x4=6,y4=4).
+    // 构造:
+    // - A(左邻) ref=0, mv=(20,0)
+    // - B(上邻) ref=0, mv=(30,0)
+    // - C(右上) list 未使用(ref=-1), 但同 slice 可达
+    // - D(左上) ref=0, mv=(77,0)
+    // FFmpeg 语义: C=LIST_NOT_USED 时不能回退到 D, 应进入 pred_motion 中值分支.
+    dec.set_l0_motion_block_4x4(20, 16, 4, 4, 20, 0, 0); // A: (5,4)
+    dec.set_l0_motion_block_4x4(24, 12, 4, 4, 30, 0, 0); // B: (6,3)
+    dec.set_l0_motion_block_4x4(32, 12, 4, 4, 60, 0, -1); // C: (8,3), LIST_NOT_USED
+    dec.set_l0_motion_block_4x4(20, 12, 4, 4, 77, 0, 0); // D: (5,3)
+
+    let mv = dec.predict_mv_l0_8x16(1, 1, 1, 0);
+    assert_eq!(
+        mv,
+        (20, 0),
+        "当 C=LIST_NOT_USED 时, part=1 不能直接回退到 D, 应走 pred_motion 中值结果"
+    );
+}
+
+#[test]
+fn test_predict_mv_l1_8x16_part1_does_not_use_d_when_c_is_list_not_used() {
+    let mut dec = build_test_decoder();
+    dec.width = 48;
+    dec.height = 32;
+    dec.init_buffers();
+
+    dec.set_l1_motion_block_4x4(20, 16, 4, 4, 12, 0, 0); // A
+    dec.set_l1_motion_block_4x4(24, 12, 4, 4, 28, 0, 0); // B
+    dec.set_l1_motion_block_4x4(32, 12, 4, 4, 44, 0, -1); // C: LIST_NOT_USED
+    dec.set_l1_motion_block_4x4(20, 12, 4, 4, 66, 0, 0); // D
+
+    let mv = dec.predict_mv_l1_8x16(1, 1, 1, 0);
+    assert_eq!(
+        mv,
+        (12, 0),
+        "L1 路径中 C=LIST_NOT_USED 时同样不能误回退 D, 应保持与 pred_motion 一致"
+    );
+}
+
+#[test]
 fn test_predict_p_skip_mv_returns_zero_when_left_top_mb_motion_are_zero() {
     let mut dec = build_test_decoder();
     dec.width = 32;

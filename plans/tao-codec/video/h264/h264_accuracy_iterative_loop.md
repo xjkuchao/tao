@@ -491,3 +491,39 @@
   - `cargo test -p tao-codec decoders::h264::tests:: -- --nocapture` 全通过(`187 passed`).
 - 判定: `有效修复(与参考实现语义对齐, 主目标无回归)`.
 - 下一子功能: `1-1` (继续聚焦 frame1 的 `P_8x16` 首失配, 下一轮优先核对 subpel 插值与边界采样的实现细节).
+
+### 9.15 Round-13 记录(1-1: P_8x16 part=1 的 C/D 回退条件对齐 FFmpeg)
+
+- 子功能: `1-1`.
+- 对比结论: `不一致`.
+  - Tao 的 `predict_mv_l0_8x16/predict_mv_l1_8x16` 在 part=1 快捷路径中, 使用 `Option` 获取 C 候选.
+  - 该实现将 `C=LIST_NOT_USED(ref=-1)` 与 `C=PART_NOT_AVAILABLE` 混同为 `None`, 会误触发 “C 不可用 -> 回退 D(左上)” 逻辑.
+  - FFmpeg 语义中, 仅当 `C=PART_NOT_AVAILABLE` 才回退 D; `C=LIST_NOT_USED` 必须保留并进入 `pred_motion` 中值分支.
+- 逻辑证据:
+  - FFmpeg `libavcodec/h264_mvpred.h`:
+    - `fetch_diagonal_mv` 显式区分 `PART_NOT_AVAILABLE` 与 `LIST_NOT_USED`.
+    - `pred_8x16_motion` 仅在 `diagonal_ref == ref` 时走快捷返回, 否则进入 `pred_motion`.
+    - `pred_motion` 仅在 `diagonal_ref == PART_NOT_AVAILABLE` 时回退 D.
+  - 说明 “C 不可用” 与 “C 可用但 list 未使用” 在语义上不可合并.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/macroblock_inter_mv.rs`
+    - `predict_mv_l0_8x16` / `predict_mv_l1_8x16` 改为基于 `MotionNeighbor` 状态机:
+      - 保留 `PartNotAvailable` 与 `ListNotUsed` 区分.
+      - 仅在 `PartNotAvailable` 时回退 D.
+      - 其余场景按 `pred_motion` 路径回退到通用分区预测.
+  - 文件: `crates/tao-codec/src/decoders/h264/tests/prediction.rs`
+    - 新增:
+      - `test_predict_mv_l0_8x16_part1_does_not_use_d_when_c_is_list_not_used`
+      - `test_predict_mv_l1_8x16_part1_does_not_use_d_when_c_is_list_not_used`
+- 精度变化:
+  - `data/2.mp4`:
+    - 20 帧: `95.284645% -> 98.558978%` (`+3.274333`)
+    - 67 帧: `85.109306% -> 98.099946%` (`+12.990640`)
+    - 首个不一致帧: `1 -> 2`
+  - `data/1.mp4`:
+    - 10 帧: `100.000000%` (保持无回归)
+- 测试结果:
+  - `cargo test -p tao-codec decoders::h264::tests:: -- --nocapture` 全通过(`189 passed`).
+  - 新增 L0/L1 8x16 C/D 回退语义单测通过.
+- 判定: `有效修复(逻辑与 FFmpeg 对齐, 且主目标精度显著提升)`.
+- 下一子功能: `1-1` (继续聚焦 frame2 新首失配, 优先排查 CABAC 与 P/B 运动预测联动路径).
