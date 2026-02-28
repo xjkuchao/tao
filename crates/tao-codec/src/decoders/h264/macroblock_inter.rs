@@ -323,7 +323,43 @@ impl H264Decoder {
                     // 越界邻居是 PART_NOT_AVAILABLE, 由 C->D 回退逻辑处理.
                     return None;
                 }
-                self.l1_motion_candidate_4x4(cx4, cy4).or(Some((0, 0, -1)))
+                // 仅在局部/断点解码导致 slice 标记未知(u32::MAX)时, 放宽为 MB 级 L1 回退.
+                // 正常全量解码路径维持严格 4x4 cache 语义, 避免引入精度回退.
+                let allow_mb_l1_fallback = self
+                    .mb_index(x4 / 4, y4 / 4)
+                    .zip(self.mb_index(cx4_u / 4, cy4_u / 4))
+                    .map(|(cur_mb_idx, nbr_mb_idx)| {
+                        self.mb_slice_first_mb
+                            .get(cur_mb_idx)
+                            .copied()
+                            .unwrap_or(u32::MAX)
+                            == u32::MAX
+                            || self
+                                .mb_slice_first_mb
+                                .get(nbr_mb_idx)
+                                .copied()
+                                .unwrap_or(u32::MAX)
+                                == u32::MAX
+                    })
+                    .unwrap_or(false);
+                if allow_mb_l1_fallback {
+                    self.l1_motion_candidate_4x4(cx4, cy4)
+                        .or_else(|| {
+                            let mb_idx = self.mb_index(cx4_u / 4, cy4_u / 4)?;
+                            let ref_idx = self.ref_idx_l1.get(mb_idx).copied().unwrap_or(-1);
+                            if ref_idx < 0 {
+                                return None;
+                            }
+                            Some((
+                                self.mv_l1_x.get(mb_idx).copied().unwrap_or(0) as i32,
+                                self.mv_l1_y.get(mb_idx).copied().unwrap_or(0) as i32,
+                                ref_idx,
+                            ))
+                        })
+                        .or(Some((0, 0, -1)))
+                } else {
+                    self.l1_motion_candidate_4x4(cx4, cy4).or(Some((0, 0, -1)))
+                }
             } else {
                 if self.motion_l0_4x4_index(cx4_u, cy4_u).is_none() {
                     // 越界邻居是 PART_NOT_AVAILABLE, 由 C->D 回退逻辑处理.

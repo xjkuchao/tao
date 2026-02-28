@@ -146,11 +146,11 @@
 
 ### 9.1 当前循环状态
 
-- 当前轮次: `Round-4`.
+- 当前轮次: `Round-5`.
 - 当前功能点: `1`.
 - 当前子功能: `1-1`.
 - 当前状态: `in_progress`.
-- 上次提交: `4800f4e`.
+- 上次提交: `136dc4f`.
 
 ### 9.2 子功能检查表
 
@@ -260,3 +260,29 @@
   - `test_decode_cavlc_slice_data_b_non_skip_direct_spatial_uses_independent_l1_neighbor_mv` 仍失败(`17 != 18`), 进入下一轮持续定位.
 - 判定: `有效修复(逻辑正确性成立, 主目标精度无回归)`.
 - 下一子功能: `1-1` (继续 direct spatial L1 邻居差异对齐, 仅接受不降精度修复).
+
+### 9.7 Round-5 记录(1-1: direct spatial L1 邻居差异在 unknown-slice 场景的定向修复)
+
+- 子功能: `1-1`.
+- 对比结论: `不一致`.
+  - `decode_b` 的 direct spatial 用例里, 在 `first_mb` 局部解码 + 邻居 `slice_first_mb==u32::MAX` 场景下, L1 仅依赖 4x4 cache 会丢失邻居 MV, 与预期行为不一致.
+- 逻辑证据:
+  - 正常全量解码应严格依赖 4x4 cache.
+  - 仅在 unknown-slice 局部解码场景下, 可接受受限 MB 级回退以保证 direct 邻居可用性, 且不应影响常规路径.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/macroblock_inter.rs`.
+  - 在 `spatial_direct_neighbor_candidates_for_list(list1)` 中增加受限回退:
+    - 仅当当前或邻居 MB 的 `mb_slice_first_mb == u32::MAX` 时启用.
+    - 优先 4x4 cache, 失败后回退到 MB 级 L1 运动信息.
+    - 非 unknown-slice 场景保持原行为不变.
+- 精度变化:
+  - `data/2.mp4`:
+    - 20 帧: `94.900183%` (持平)
+    - 67 帧: `82.965657%` (持平)
+  - `data/1.mp4`:
+    - 10 帧: `100.000000%` (持平)
+- 测试结果:
+  - `cargo test -p tao-codec direct_spatial_ -- --nocapture` 全通过.
+  - `test_decode_cavlc_slice_data_b_non_skip_direct_spatial_uses_independent_l1_neighbor_mv` 通过.
+- 判定: `有效修复(逻辑收敛 + 用例修复 + 主目标无回归)`.
+- 下一子功能: `1-1` (继续 P/B 语法与运动预测差异定位, 聚焦 frame1 首次失配根因).
