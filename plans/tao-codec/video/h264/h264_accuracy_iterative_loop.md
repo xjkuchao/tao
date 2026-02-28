@@ -610,3 +610,46 @@
   - `TAO_H264_COMPARE_FAIL_ON_REF_FALLBACK=1` 下 `E1/E9` 均通过(无缺失参考回退门禁触发).
 - 判定: `有效修复(逻辑与 FFmpeg 方向性 MVP 语义对齐, 且 E1/E9 精度提升)`.
 - 下一子功能: `1-2` (继续定位 CAVLC P_8x8 子分区 MVP/MC 链路与 FFmpeg 的细粒度差异, 优先 frame1 首失配区域).
+
+### 9.18 Round-16 记录(1-2: CAVLC P_8x8 子分区 8x4/4x8 方向性 MVP 对齐 FFmpeg)
+
+- 子功能: `1-2`.
+- 对比结论: `不一致`.
+  - Tao 在 CAVLC `P_8x8` 路径中, `sub_mb_type=1(8x4)` / `sub_mb_type=2(4x8)` 的子分区 MVP 统一走 `predict_mv_l0_partition`.
+  - FFmpeg `h264_mvpred.h` 对这些子分区沿用方向性规则:
+    - `8x4 part1` 优先左邻(匹配时直接返回).
+    - `4x8 part1` 优先对角 C(仅 C 不可用时回退 D, 且匹配时直接返回).
+  - Tao 的通用中值路径在 `A/B/C` 同时匹配但 MV 不一致时会偏离上述方向性优先级.
+- 逻辑证据:
+  - Tao 文件: `crates/tao-codec/src/decoders/h264/slice_decode.rs`
+    - `sub_mb_type=1/2` 的 part0/part1 全部调用 `predict_mv_l0_partition`.
+  - FFmpeg 文件: `libavcodec/h264_mvpred.h`
+    - `pred_16x8_motion/pred_8x16_motion` 的方向性快捷返回规则同样适用于子分区路径.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/macroblock_inter_mv.rs`
+    - 新增:
+      - `predict_mv_l0_sub_8x4` (part0 顶邻优先, part1 左邻优先).
+      - `predict_mv_l0_sub_4x8` (part0 左邻优先, part1 对角 C/D 优先).
+  - 文件: `crates/tao-codec/src/decoders/h264/slice_decode.rs`
+    - `P_8x8` 分支:
+      - `sub_mb_type=1` 改用 `predict_mv_l0_sub_8x4`.
+      - `sub_mb_type=2` 改用 `predict_mv_l0_sub_4x8`.
+  - 文件: `crates/tao-codec/src/decoders/h264/tests/decode.rs`
+    - 新增回归:
+      - `test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_8x4_part1_prefers_left_neighbor`
+      - `test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_4x8_part1_prefers_diagonal_neighbor`
+- 精度变化:
+  - `data/1.mp4`:
+    - 120 帧: `100.000000%` (持平)
+  - `data/2.mp4`:
+    - 120 帧: `100.000000%` (持平)
+  - `E1`:
+    - 10 帧: `38.256061%` (持平)
+  - `E9`:
+    - 10 帧: `36.828409%` (持平)
+- 测试结果:
+  - `cargo test -p tao-codec decode_cavlc_slice_data_p_non_skip_inter_ -- --nocapture` 通过(`15 passed`).
+  - `cargo test --test run_decoder h264::test_h264_accuracy_e1 -- --ignored --nocapture` 通过.
+  - `cargo test --test run_decoder h264::test_h264_accuracy_e9 -- --ignored --nocapture` 通过.
+- 判定: `有效修复(逻辑与 FFmpeg 方向性 MVP 规则对齐, 主/次要目标无回归; 预期为后续链式修复铺垫)`.
+- 下一子功能: `1-3` (继续定位 frame1 首失配, 优先核对 CAVLC P 帧残差解码与边界可用性联动).

@@ -846,6 +846,115 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_uses_mvp_from_left_neighbo
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_8x4_part1_prefers_left_neighbor() {
+    use ExpGolombValue::{Se, Ue};
+
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+    dec.reference_frames.clear();
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    // 目标宏块为 (1,1), sub0=8x4:
+    // - A(左邻)=+2 像素
+    // - B(当前 sub0 上半)=+3 像素
+    // - C(上方右侧)=+5 像素
+    // FFmpeg pred_16x8(n=1) 语义下, part1 应直接取 A, 不应退化到中值.
+    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 8, 0, 0);
+    dec.set_l0_motion_block_4x4(16, 0, 16, 16, 20, 0, 0);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.first_mb = 3; // 仅解码右下宏块
+    header.data_bit_offset = 0;
+
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0),
+        Ue(3),
+        Ue(1),
+        Ue(0),
+        Ue(0),
+        Ue(0),
+        Se(-8),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Ue(0),
+    ]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    let base = 16 + 16 * dec.stride_y;
+    assert_eq!(dec.ref_y[base], 19, "sub0 上半应为 +3 像素位移");
+    assert_eq!(
+        dec.ref_y[base + 4 * dec.stride_y],
+        18,
+        "sub0 下半应优先使用左邻 MVP(+2 像素)"
+    );
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_4x8_part1_prefers_diagonal_neighbor() {
+    use ExpGolombValue::{Se, Ue};
+
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+    dec.reference_frames.clear();
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    // 目标宏块为 (1,1), sub0=4x8:
+    // - A(左邻/part0)=+2 像素
+    // - B(上邻)=+4 像素
+    // - C(对角)=+6 像素
+    // FFmpeg pred_4x8 part1 语义下, 应优先使用对角 C.
+    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 8, 0, 0);
+    dec.set_l0_motion_block_4x4(20, 12, 4, 4, 16, 0, 0);
+    dec.set_l0_motion_block_4x4(24, 12, 4, 4, 24, 0, 0);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.first_mb = 3; // 仅解码右下宏块
+    header.data_bit_offset = 0;
+
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0),
+        Ue(3),
+        Ue(2),
+        Ue(0),
+        Ue(0),
+        Ue(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Ue(0),
+    ]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    let base = 16 + 16 * dec.stride_y;
+    assert_eq!(dec.ref_y[base], 18, "sub0 左半应为 +2 像素位移");
+    assert_eq!(
+        dec.ref_y[base + 4],
+        26,
+        "sub0 右半应优先使用对角 MVP(+6 像素)"
+    );
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8ref0_no_ref_idx_parse() {
     use ExpGolombValue::{Se, Ue};
 

@@ -296,6 +296,91 @@ impl H264Decoder {
         self.predict_mv_l0_partition(mb_x, mb_y, part * 2, 0, 2, ref_idx)
     }
 
+    /// P_8x8 子分区类型 8x4 的方向性 MVP.
+    ///
+    /// - part=0 (上半): 优先使用上邻居 MV (若 ref 匹配)
+    /// - part=1 (下半): 优先使用左邻居 MV (若 ref 匹配)
+    /// - 不匹配时回退到通用分区预测
+    pub(super) fn predict_mv_l0_sub_8x4(
+        &self,
+        mb_x: usize,
+        mb_y: usize,
+        sub_part_x4: usize,
+        sub_part_y4: usize,
+        part: usize,
+        ref_idx: i8,
+    ) -> (i32, i32) {
+        let x4 = mb_x * 4 + sub_part_x4;
+        let y4 = mb_y * 4 + sub_part_y4 + part;
+        if part == 0 {
+            if let Some((mv_x, mv_y, top_ref)) =
+                self.l0_motion_candidate_4x4(x4 as isize, y4 as isize - 1)
+            {
+                if top_ref == ref_idx && self.same_slice_4x4(x4, y4, x4, y4.saturating_sub(1)) {
+                    return (mv_x, mv_y);
+                }
+            }
+        } else if let Some((mv_x, mv_y, left_ref)) =
+            self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
+        {
+            if left_ref == ref_idx && self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4) {
+                return (mv_x, mv_y);
+            }
+        }
+        self.predict_mv_l0_partition(mb_x, mb_y, sub_part_x4, sub_part_y4 + part, 2, ref_idx)
+    }
+
+    /// P_8x8 子分区类型 4x8 的方向性 MVP.
+    ///
+    /// - part=0 (左半): 优先使用左邻居 MV (若 ref 匹配)
+    /// - part=1 (右半): 优先使用对角邻居 C (C 不可用时回退 D, 且仅 ref 匹配时快捷返回)
+    /// - 不匹配时回退到通用分区预测
+    pub(super) fn predict_mv_l0_sub_4x8(
+        &self,
+        mb_x: usize,
+        mb_y: usize,
+        sub_part_x4: usize,
+        sub_part_y4: usize,
+        part: usize,
+        ref_idx: i8,
+    ) -> (i32, i32) {
+        let x4 = mb_x * 4 + sub_part_x4 + part;
+        let y4 = mb_y * 4 + sub_part_y4;
+        if part == 0 {
+            if let MotionNeighbor::Available {
+                mv_x,
+                mv_y,
+                ref_idx: left_ref,
+            } = self.l0_motion_neighbor_state(x4, y4, x4 as isize - 1, y4 as isize, ref_idx)
+                && left_ref == ref_idx
+            {
+                return (mv_x, mv_y);
+            }
+        } else {
+            let mut diag =
+                self.l0_motion_neighbor_state(x4, y4, (x4 + 1) as isize, y4 as isize - 1, ref_idx);
+            if matches!(diag, MotionNeighbor::PartNotAvailable) {
+                diag = self.l0_motion_neighbor_state(
+                    x4,
+                    y4,
+                    x4 as isize - 1,
+                    y4 as isize - 1,
+                    ref_idx,
+                );
+            }
+            if let MotionNeighbor::Available {
+                mv_x,
+                mv_y,
+                ref_idx: diag_ref,
+            } = diag
+                && diag_ref == ref_idx
+            {
+                return (mv_x, mv_y);
+            }
+        }
+        self.predict_mv_l0_partition(mb_x, mb_y, sub_part_x4 + part, sub_part_y4, 1, ref_idx)
+    }
+
     /// L1 版本的 16x8 方向性 MV 预测 (对标 FFmpeg pred_16x8_motion with list=1).
     pub(super) fn predict_mv_l1_16x8(
         &self,
