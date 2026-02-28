@@ -345,6 +345,15 @@ impl H264Decoder {
             self.set_mb_skip_flag(mb_idx, false);
             let mb_x = mb_idx % self.mb_width;
             let mb_y = mb_idx / self.mb_width;
+            let saved_slice_first_mb = self.mb_slice_first_mb[mb_idx];
+            let left_unknown = mb_x > 0 && self.mb_slice_first_mb[mb_idx - 1] == u32::MAX;
+            let top_unknown =
+                mb_y > 0 && self.mb_slice_first_mb[mb_idx - self.mb_width] == u32::MAX;
+            let relax_unknown_neighbors = is_b && (left_unknown || top_unknown);
+            if relax_unknown_neighbors {
+                // 仅在局部/断点解码导致邻居 slice 标记缺失时放宽同 slice 判断.
+                self.mb_slice_first_mb[mb_idx] = u32::MAX;
+            }
             let (b_pred_mv_x, b_pred_mv_y) = if is_b {
                 self.predict_mv_l0_16x16(mb_x, mb_y)
             } else {
@@ -402,9 +411,15 @@ impl H264Decoder {
                 if mb_idx < self.mb_qp.len() {
                     self.mb_qp[mb_idx] = cur_qp;
                 }
+                if relax_unknown_neighbors {
+                    self.mb_slice_first_mb[mb_idx] = saved_slice_first_mb;
+                }
                 continue;
             }
             if !has_more_rbsp_data(&mut br) {
+                if relax_unknown_neighbors {
+                    self.mb_slice_first_mb[mb_idx] = saved_slice_first_mb;
+                }
                 break;
             }
             let Ok(mb_type) = read_ue(&mut br) else {
@@ -413,6 +428,9 @@ impl H264Decoder {
                     mb_idx, header.first_mb
                 );
                 self.record_mb_decode_error(mb_idx, header.first_mb, "slice_cavlc_mb_type", &err);
+                if relax_unknown_neighbors {
+                    self.mb_slice_first_mb[mb_idx] = saved_slice_first_mb;
+                }
                 break;
             };
             if is_b {
@@ -737,6 +755,9 @@ impl H264Decoder {
                             self.mb_qp[mb_idx] = cur_qp;
                         }
                         self.mb_slice_first_mb[mb_idx] = saved_first_mb;
+                        if relax_unknown_neighbors {
+                            self.mb_slice_first_mb[mb_idx] = saved_slice_first_mb;
+                        }
                         continue;
                     }
 
@@ -1007,6 +1028,9 @@ impl H264Decoder {
                 }
                 if mb_idx < self.mb_qp.len() {
                     self.mb_qp[mb_idx] = cur_qp;
+                }
+                if relax_unknown_neighbors {
+                    self.mb_slice_first_mb[mb_idx] = saved_slice_first_mb;
                 }
                 continue;
             }

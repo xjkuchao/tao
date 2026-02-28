@@ -146,7 +146,7 @@
 
 ### 9.1 当前循环状态
 
-- 当前轮次: `Round-3`.
+- 当前轮次: `Round-4`.
 - 当前功能点: `1`.
 - 当前子功能: `1-1`.
 - 当前状态: `in_progress`.
@@ -228,3 +228,35 @@
     - 修复后 `shift=0` 已明显最佳, 帧错位特征消失.
 - 判定: `有效修复(逻辑正确性与精度均显著提升)`.
 - 下一子功能: `1-1` (继续 CABAC P/B 帧语法同步主线).
+
+### 9.6 Round-4 记录(1-1: B-slice 邻居 slice 标记缺失容错 + direct spatial AB)
+
+- 子功能: `1-1`.
+- 对比结论:
+  - `不一致`: B-slice CAVLC 路径在局部/断点解码场景下, 当左/上邻居 `mb_slice_first_mb==u32::MAX` 时, 当前 MB 仍按严格同 slice 约束计算邻居可用性, 导致 direct spatial/predict 路径退化.
+  - `无效尝试已回滚`: 在 spatial direct 的 L1 邻居提取中引入 MB 级回退后, 主目标精度显著下降.
+- 逻辑证据:
+  - P-slice CAVLC 已有 `unknown neighbor` 放宽逻辑, B-slice 缺失同等容错, 路径不对称.
+  - FFmpeg `pred_spatial_direct_motion` 依赖邻居缓存可用性;在局部调试/断点解码环境下若 slice 标记缺失, 需要避免把本应可用邻居全部判为跨 slice.
+- 修复改动(保留):
+  - 文件: `crates/tao-codec/src/decoders/h264/slice_decode.rs`.
+  - 在 B-slice CAVLC 每 MB 处理入口增加 `unknown neighbor` 检测.
+  - 仅当左/上邻居 slice 标记为 `u32::MAX` 时, 临时将当前 MB 标记为 `u32::MAX` 放宽同 slice 判定.
+  - 在 `continue/break` 前恢复原 `slice_first_mb`, 避免污染后续 MB 状态.
+- 无效改动(已回滚):
+  - 尝试在 `macroblock_inter.rs` 的 spatial direct L1 邻居提取中加入 MB 级回退.
+  - 回归结果:
+    - `data/2.mp4` 20 帧: `94.900183% -> 88.672407%`
+    - `data/2.mp4` 67 帧: `82.965657% -> 78.567244%`
+  - 判定: `无效修复`, 已完整回滚.
+- 精度变化(保留改动后):
+  - `data/2.mp4`:
+    - 20 帧: `94.900183%` (持平)
+    - 67 帧: `82.965657%` (持平)
+  - `data/1.mp4`:
+    - 10 帧: `100.000000%` (持平)
+- 测试结果:
+  - `test_decode_cavlc_slice_data_b_non_skip_direct_spatial_zero_condition_forces_zero_mv` 通过.
+  - `test_decode_cavlc_slice_data_b_non_skip_direct_spatial_uses_independent_l1_neighbor_mv` 仍失败(`17 != 18`), 进入下一轮持续定位.
+- 判定: `有效修复(逻辑正确性成立, 主目标精度无回归)`.
+- 下一子功能: `1-1` (继续 direct spatial L1 邻居差异对齐, 仅接受不降精度修复).
