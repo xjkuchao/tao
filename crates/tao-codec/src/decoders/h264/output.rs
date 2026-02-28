@@ -333,21 +333,24 @@ impl H264Decoder {
         })
     }
 
-    pub(super) fn apply_ref_pic_list_modifications(
+    pub(super) fn apply_ref_pic_list_modifications<'a>(
         &self,
-        refs: &mut Vec<&ReferencePicture>,
+        refs: &mut Vec<&'a ReferencePicture>,
+        lookup_refs: &[&'a ReferencePicture],
         mods: &[RefPicListMod],
         cur_frame_num: u32,
+        active_count: usize,
     ) {
-        if mods.is_empty() || refs.is_empty() {
+        if mods.is_empty() || refs.is_empty() || active_count == 0 {
             return;
         }
+        refs.truncate(active_count);
         let max_frame_num = self.max_frame_num_modulo() as i32;
         if max_frame_num <= 0 {
             return;
         }
 
-        let original_len = refs.len();
+        let original_len = refs.len().max(active_count);
         let cur_pic_num = cur_frame_num as i32;
         let mut pic_num_pred = cur_pic_num;
         let mut insert_idx = 0usize;
@@ -369,21 +372,12 @@ impl H264Decoder {
                         pic_num_no_wrap
                     };
                     self.find_short_term_ref_index_by_pic_num_from(
-                        refs.as_slice(),
+                        lookup_refs,
                         pic_num,
                         cur_pic_num,
                         max_frame_num,
-                        insert_idx,
+                        0,
                     )
-                    .or_else(|| {
-                        self.find_short_term_ref_index_by_pic_num_from(
-                            refs.as_slice(),
-                            pic_num,
-                            cur_pic_num,
-                            max_frame_num,
-                            0,
-                        )
-                    })
                 }
                 RefPicListMod::ShortTermAdd {
                     abs_diff_pic_num_minus1,
@@ -400,63 +394,62 @@ impl H264Decoder {
                         pic_num_no_wrap
                     };
                     self.find_short_term_ref_index_by_pic_num_from(
-                        refs.as_slice(),
+                        lookup_refs,
                         pic_num,
                         cur_pic_num,
                         max_frame_num,
-                        insert_idx,
+                        0,
                     )
-                    .or_else(|| {
-                        self.find_short_term_ref_index_by_pic_num_from(
-                            refs.as_slice(),
-                            pic_num,
-                            cur_pic_num,
-                            max_frame_num,
-                            0,
-                        )
-                    })
                 }
-                RefPicListMod::LongTerm { long_term_pic_num } => refs
-                    .iter()
-                    .enumerate()
-                    .skip(insert_idx)
-                    .find_map(|(idx, pic)| {
+                RefPicListMod::LongTerm { long_term_pic_num } => {
+                    lookup_refs.iter().enumerate().find_map(|(idx, pic)| {
                         if pic.long_term_frame_idx == Some(long_term_pic_num) {
                             Some(idx)
                         } else {
                             None
                         }
                     })
-                    .or_else(|| {
-                        refs.iter().enumerate().find_map(|(idx, pic)| {
-                            if pic.long_term_frame_idx == Some(long_term_pic_num) {
-                                Some(idx)
-                            } else {
-                                None
-                            }
-                        })
-                    }),
+                }
             };
 
             if let Some(src_idx) = target_idx {
-                let selected = refs.get(src_idx).copied();
+                let selected = lookup_refs.get(src_idx).copied();
                 if let Some(pic) = selected {
-                    if src_idx >= insert_idx {
-                        let moved = refs.remove(src_idx);
+                    let existing_idx =
+                        refs.iter()
+                            .enumerate()
+                            .skip(insert_idx)
+                            .find_map(|(idx, cur)| {
+                                if cur.frame_num == pic.frame_num
+                                    && cur.poc == pic.poc
+                                    && cur.long_term_frame_idx == pic.long_term_frame_idx
+                                {
+                                    Some(idx)
+                                } else {
+                                    None
+                                }
+                            });
+                    if let Some(existing_idx) = existing_idx {
+                        let moved = refs.remove(existing_idx);
                         let dst_idx = insert_idx.min(refs.len());
                         refs.insert(dst_idx, moved);
                     } else {
                         let dst_idx = insert_idx.min(refs.len());
                         refs.insert(dst_idx, pic);
-                        if refs.len() > original_len {
-                            let _ = refs.pop();
-                        }
+                    }
+                    if refs.len() > active_count {
+                        refs.truncate(active_count);
+                    } else if refs.len() > original_len {
+                        refs.truncate(original_len);
                     }
                 }
             }
-            if insert_idx < original_len {
+            if insert_idx < active_count {
                 // 与 FFmpeg 对齐: 无论命中与否, 每条修改语法都会推进一个重排槽位.
                 insert_idx += 1;
+            }
+            if insert_idx >= active_count {
+                break;
             }
         }
     }
@@ -468,8 +461,15 @@ impl H264Decoder {
         cur_frame_num: u32,
     ) -> Vec<RefPlanes> {
         let target = count.max(1) as usize;
-        let mut refs = self.collect_default_reference_list_l0();
-        self.apply_ref_pic_list_modifications(&mut refs, mods, cur_frame_num);
+        let default_refs = self.collect_default_reference_list_l0();
+        let mut refs = default_refs.clone();
+        self.apply_ref_pic_list_modifications(
+            &mut refs,
+            default_refs.as_slice(),
+            mods,
+            cur_frame_num,
+            target,
+        );
         let refs_empty = refs.is_empty();
         let refs_len = refs.len();
         let mut empty_missing_ranks = Vec::new();
@@ -516,8 +516,15 @@ impl H264Decoder {
         cur_frame_num: u32,
     ) -> Vec<RefPlanes> {
         let target = count.max(1) as usize;
-        let mut refs = self.collect_default_reference_list_l1();
-        self.apply_ref_pic_list_modifications(&mut refs, mods, cur_frame_num);
+        let default_refs = self.collect_default_reference_list_l1();
+        let mut refs = default_refs.clone();
+        self.apply_ref_pic_list_modifications(
+            &mut refs,
+            default_refs.as_slice(),
+            mods,
+            cur_frame_num,
+            target,
+        );
         let refs_empty = refs.is_empty();
         let refs_len = refs.len();
         let mut empty_missing_ranks = Vec::new();
