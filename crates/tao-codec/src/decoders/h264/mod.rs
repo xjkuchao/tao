@@ -1268,7 +1268,7 @@ impl Decoder for H264Decoder {
                         // 否则会把上一帧的 CBF/预测模式/运动缓存污染到当前帧.
                         self.reset_mb_runtime_state();
                     }
-                    if is_idr && !idr_reset_done {
+                    if is_idr && start_new_picture && !idr_reset_done {
                         self.finalize_pending_frame();
                         self.drain_reorder_buffer_to_output();
                         self.reset_reference_planes();
