@@ -653,3 +653,36 @@
   - `cargo test --test run_decoder h264::test_h264_accuracy_e9 -- --ignored --nocapture` 通过.
 - 判定: `有效修复(逻辑与 FFmpeg 方向性 MVP 规则对齐, 主/次要目标无回归; 预期为后续链式修复铺垫)`.
 - 下一子功能: `1-3` (继续定位 frame1 首失配, 优先核对 CAVLC P 帧残差解码与边界可用性联动).
+
+### 9.19 Round-17 记录(1-3: P-skip 在多 slice 起始处的跨 slice 邻居误用修正)
+
+- 子功能: `1-3`.
+- 对比结论: `不一致`.
+  - Tao 在 CAVLC `skip_run` 路径的 P-slice 分支里, 会无条件把当前 MB 的 `mb_slice_first_mb` 临时改写为左/上邻居的 slice 标记.
+  - 该行为会让“下一 slice 的首个 P-skip MB”错误地把前一 slice 左邻当作同 slice 可用邻居参与 MVP.
+  - FFmpeg 语义下, slice 边界邻居应不可用; 仅在调试/局部解码导致邻居 slice 标记缺失时才需要做受限放宽.
+- 逻辑证据:
+  - Tao 文件: `crates/tao-codec/src/decoders/h264/slice_decode.rs`
+    - 原实现位于 `if skip_run_left > 0` 的 P-slice 分支, 无条件执行 `self.mb_slice_first_mb[mb_idx] = relaxed_first_mb`.
+  - 与现有 `unknown-slice` 容错策略不一致:
+    - 其它路径已按 `left_unknown || top_unknown` 条件化放宽.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/slice_decode.rs`
+    - P-skip 分支改为:
+      - 仅当 `left_unknown || top_unknown` 时才临时放宽 slice 标记.
+      - 正常多-slice 场景保持原 slice 标记, 防止跨 slice 邻居泄漏.
+  - 文件: `crates/tao-codec/src/decoders/h264/tests/decode.rs`
+    - 新增回归:
+      - `test_decode_cavlc_slice_data_p_skip_at_slice_start_does_not_use_prev_slice_left_mv`
+      - 覆盖“第二个 slice 首 MB 为 P-skip”时不借用前一 slice 左邻 MV.
+- 精度变化:
+  - `data/1.mp4`: `100.000000%` (持平)
+  - `data/2.mp4`: `100.000000%` (持平)
+  - `E1`: `38.256061%` (持平)
+  - `E9`: `36.828409%` (持平)
+- 测试结果:
+  - `cargo test -p tao-codec test_decode_cavlc_slice_data_p_skip_at_slice_start_does_not_use_prev_slice_left_mv -- --nocapture` 通过.
+  - `cargo test -p tao-codec decode_cavlc_slice_data_p_non_skip_inter_ -- --nocapture` 通过(`15 passed`).
+  - `TAO_H264_COMPARE_FAIL_ON_REF_FALLBACK=1` 下 `E1/E9` 通过.
+- 判定: `有效修复(逻辑层面确认实现错误并已对齐 slice 边界语义, 为后续精度链路修复提供稳定前提)`.
+- 下一子功能: `1-4` (继续定位 frame1 首失配, 优先核对 CAVLC P-slice residual/qp_delta 与 FFmpeg 的时序一致性).

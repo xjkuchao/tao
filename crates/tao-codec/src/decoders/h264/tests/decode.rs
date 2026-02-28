@@ -440,6 +440,47 @@ fn test_decode_cavlc_slice_data_merges_multi_slice_by_first_mb_offset() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_p_skip_at_slice_start_does_not_use_prev_slice_left_mv() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 16;
+    dec.init_buffers();
+    dec.reference_frames.clear();
+    push_horizontal_gradient_reference(&mut dec, 5, 5, None);
+
+    let mut header0 = build_test_slice_header(0, 1, false, None);
+    header0.slice_type = 0; // P slice
+    header0.data_bit_offset = 0;
+    header0.first_mb = 0;
+    // slice0: mb0 非 skip, P16x16, mvd=(+1px,0), 并在 rbsp_trailing_bits 结束.
+    let mut bits0 = Vec::new();
+    write_ue(&mut bits0, 0);
+    write_ue(&mut bits0, 0);
+    write_se(&mut bits0, 4);
+    write_se(&mut bits0, 0);
+    let rbsp0 = bits_to_bytes(&bits0);
+    dec.decode_cavlc_slice_data(&rbsp0, &header0);
+
+    let mut header1 = build_test_slice_header(0, 1, false, None);
+    header1.slice_type = 0; // P slice
+    header1.data_bit_offset = 0;
+    header1.first_mb = 1;
+    // slice1: 仅包含 mb1 的 skip_run=1.
+    let mut bits1 = Vec::new();
+    write_ue(&mut bits1, 1);
+    let rbsp1 = bits_to_bytes(&bits1);
+    dec.decode_cavlc_slice_data(&rbsp1, &header1);
+
+    assert_eq!(dec.ref_y[0], 1, "mb0 应保持第一 slice 的 +1 像素位移结果");
+    assert_eq!(
+        dec.ref_y[16], 16,
+        "第二 slice 首个 P-skip 宏块不应借用前一 slice 左邻 MV"
+    );
+    assert_eq!(dec.mb_slice_first_mb[0], 0, "mb0 应保留 first_mb=0");
+    assert_eq!(dec.mb_slice_first_mb[1], 1, "mb1 应保留 first_mb=1");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_p_non_skip_intra_mb_type() {
     let mut dec = build_test_decoder();
     push_custom_reference(&mut dec, 3, 3, 77, None);

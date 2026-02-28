@@ -398,24 +398,37 @@ impl H264Decoder {
                         16,
                     );
                 } else {
-                    let saved_first_mb = self.mb_slice_first_mb[mb_idx];
-                    let relaxed_first_mb = if mb_x > 0 {
-                        self.mb_slice_first_mb[mb_idx - 1]
-                    } else if mb_y > 0 {
-                        self.mb_slice_first_mb[mb_idx - self.mb_width]
+                    let relax_p_skip_unknown_neighbors = left_unknown || top_unknown;
+                    if relax_p_skip_unknown_neighbors {
+                        // 仅在局部/断点解码导致邻居 slice 标记缺失时放宽同 slice 判断.
+                        let saved_first_mb = self.mb_slice_first_mb[mb_idx];
+                        let relaxed_first_mb = if mb_x > 0 {
+                            self.mb_slice_first_mb[mb_idx - 1]
+                        } else if mb_y > 0 {
+                            self.mb_slice_first_mb[mb_idx - self.mb_width]
+                        } else {
+                            saved_first_mb
+                        };
+                        self.mb_slice_first_mb[mb_idx] = relaxed_first_mb;
+                        self.decode_p_skip_mb(
+                            mb_x,
+                            mb_y,
+                            &ref_l0_list,
+                            &header.l0_weights,
+                            header.luma_log2_weight_denom,
+                            header.chroma_log2_weight_denom,
+                        );
+                        self.mb_slice_first_mb[mb_idx] = saved_first_mb;
                     } else {
-                        saved_first_mb
-                    };
-                    self.mb_slice_first_mb[mb_idx] = relaxed_first_mb;
-                    self.decode_p_skip_mb(
-                        mb_x,
-                        mb_y,
-                        &ref_l0_list,
-                        &header.l0_weights,
-                        header.luma_log2_weight_denom,
-                        header.chroma_log2_weight_denom,
-                    );
-                    self.mb_slice_first_mb[mb_idx] = saved_first_mb;
+                        self.decode_p_skip_mb(
+                            mb_x,
+                            mb_y,
+                            &ref_l0_list,
+                            &header.l0_weights,
+                            header.luma_log2_weight_denom,
+                            header.chroma_log2_weight_denom,
+                        );
+                    }
                 }
                 skip_run_left -= 1;
                 if mb_idx < self.mb_qp.len() {
