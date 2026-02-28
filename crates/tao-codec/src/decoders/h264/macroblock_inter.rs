@@ -916,9 +916,7 @@ impl H264Decoder {
         self.set_mb_cbp(mb_x, mb_y, 0);
         self.set_transform_8x8_flag(mb_x, mb_y, false);
         self.set_chroma_pred_mode(mb_x, mb_y, 0);
-        self.set_luma_dc_cbf(mb_x, mb_y, false);
-        self.reset_chroma_cbf_mb(mb_x, mb_y);
-        self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
+        self.clear_cavlc_mb_coeff_state(mb_x, mb_y);
         let (pred_x, pred_y) = self.predict_p_skip_mv(mb_x, mb_y);
         self.apply_inter_block_l0(
             ref_l0_list,

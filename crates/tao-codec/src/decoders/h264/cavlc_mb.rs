@@ -206,7 +206,7 @@ impl H264Decoder {
     /// 每个 4x4 块: prev_intra4x4_pred_mode_flag(1bit),
     /// 若为 0 则 rem_intra4x4_pred_mode(3bits).
     pub(super) fn decode_cavlc_i4x4_pred_modes(
-        &self,
+        &mut self,
         br: &mut BitReader,
         mb_x: usize,
         mb_y: usize,
@@ -236,7 +236,7 @@ impl H264Decoder {
             };
             modes[sub_y * 4 + sub_x] = mode;
             // 同步到全局缓存, 供后续块引用
-            self.set_i4x4_mode_unchecked(x4, y4, mode);
+            self.set_i4x4_mode(x4, y4, mode);
         }
         modes
     }
@@ -246,7 +246,7 @@ impl H264Decoder {
     /// 每个 8x8 块: prev_intra8x8_pred_mode_flag(1bit),
     /// 若为 0 则 rem_intra8x8_pred_mode(3bits).
     pub(super) fn decode_cavlc_i8x8_pred_modes(
-        &self,
+        &mut self,
         br: &mut BitReader,
         mb_x: usize,
         mb_y: usize,
@@ -282,30 +282,11 @@ impl H264Decoder {
             // I_8x8 模式同步到对应 2x2 个 4x4 子块, 供后续块 MPM 推导.
             for sub_y in 0..2 {
                 for sub_x in 0..2 {
-                    self.set_i4x4_mode_unchecked(x4 + sub_x, y4 + sub_y, mode);
+                    self.set_i4x4_mode(x4 + sub_x, y4 + sub_y, mode);
                 }
             }
         }
         modes
-    }
-
-    /// 无 &mut self 借用冲突的 set_i4x4_mode (通过裸指针绕过).
-    ///
-    /// # Safety
-    /// 仅在 decode_cavlc_i4x4_pred_modes 中使用, 调用方已确保 x4/y4 在有效范围内.
-    fn set_i4x4_mode_unchecked(&self, x4: usize, y4: usize, mode: u8) {
-        let stride = self.mb_width * 4;
-        if stride == 0 || y4 >= self.mb_height * 4 || x4 >= stride {
-            return;
-        }
-        let idx = y4 * stride + x4;
-        if idx < self.i4x4_modes.len() {
-            // SAFETY: 单线程上下文, 且 decode_cavlc_i4x4_pred_modes 不持有 i4x4_modes 的其他引用.
-            unsafe {
-                let ptr = self.i4x4_modes.as_ptr() as *mut u8;
-                *ptr.add(idx) = mode;
-            }
-        }
     }
 
     // ============================================================
@@ -1267,7 +1248,6 @@ impl H264Decoder {
             self.mb_types[mb_idx] = 25;
             self.set_mb_cbp(mb_x, mb_y, 0x2f);
             self.prev_qp_delta_nz = false;
-            *cur_qp = 0;
             br.align_to_byte();
             let x0 = mb_x * 16;
             let y0 = mb_y * 16;
@@ -1326,6 +1306,29 @@ impl H264Decoder {
             for sub_x in 0..2 {
                 self.set_nz_count_chroma_u(mb_x * 2 + sub_x, mb_y * 2 + sub_y, 0);
                 self.set_nz_count_chroma_v(mb_x * 2 + sub_x, mb_y * 2 + sub_y, 0);
+            }
+        }
+    }
+
+    /// 清空一个宏块的 CAVLC 系数状态 (skip/零残差路径).
+    pub(super) fn clear_cavlc_mb_coeff_state(&mut self, mb_x: usize, mb_y: usize) {
+        self.set_luma_dc_cbf(mb_x, mb_y, false);
+        self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
+        self.reset_chroma_cbf_mb(mb_x, mb_y);
+        for sub_y in 0..4 {
+            for sub_x in 0..4 {
+                let x4 = mb_x * 4 + sub_x;
+                let y4 = mb_y * 4 + sub_y;
+                self.set_luma_cbf(x4, y4, false);
+                self.set_nz_count_luma(x4, y4, 0);
+            }
+        }
+        for sub_y in 0..2 {
+            for sub_x in 0..2 {
+                let x2 = mb_x * 2 + sub_x;
+                let y2 = mb_y * 2 + sub_y;
+                self.set_nz_count_chroma_u(x2, y2, 0);
+                self.set_nz_count_chroma_v(x2, y2, 0);
             }
         }
     }

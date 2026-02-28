@@ -5,6 +5,15 @@ use super::*;
 // ============================================================
 
 impl H264Decoder {
+    #[inline]
+    fn qp_for_mb_store(&self, mb_idx: usize, cur_qp: i32) -> i32 {
+        if self.mb_types.get(mb_idx).copied() == Some(25) {
+            0
+        } else {
+            cur_qp
+        }
+    }
+
     /// 解码一个 VCL NAL (slice)
     pub(super) fn decode_slice(&mut self, nalu: &NalUnit) {
         let rbsp = nalu.rbsp();
@@ -297,7 +306,7 @@ impl H264Decoder {
                 let mb_y = mb_idx / self.mb_width;
                 self.decode_cavlc_i_mb(&mut br, mb_x, mb_y, mb_type, &mut cur_qp);
                 if mb_idx < self.mb_qp.len() {
-                    self.mb_qp[mb_idx] = cur_qp;
+                    self.mb_qp[mb_idx] = self.qp_for_mb_store(mb_idx, cur_qp);
                 }
             }
             return;
@@ -363,6 +372,7 @@ impl H264Decoder {
                 self.set_mb_skip_flag(mb_idx, true);
                 self.mb_types[mb_idx] = if is_b { 254 } else { 255 };
                 self.mb_cbp[mb_idx] = 0;
+                self.clear_cavlc_mb_coeff_state(mb_x, mb_y);
                 if is_b {
                     let (motion_l0, motion_l1) = self.build_b_direct_motion(
                         mb_x,
@@ -409,7 +419,7 @@ impl H264Decoder {
                 }
                 skip_run_left -= 1;
                 if mb_idx < self.mb_qp.len() {
-                    self.mb_qp[mb_idx] = cur_qp;
+                    self.mb_qp[mb_idx] = self.qp_for_mb_store(mb_idx, cur_qp);
                 }
                 if relax_unknown_neighbors {
                     self.mb_slice_first_mb[mb_idx] = saved_slice_first_mb;
@@ -752,7 +762,7 @@ impl H264Decoder {
                             no_sub_mb_part_size_less_than_8x8_flag,
                         );
                         if mb_idx < self.mb_qp.len() {
-                            self.mb_qp[mb_idx] = cur_qp;
+                            self.mb_qp[mb_idx] = self.qp_for_mb_store(mb_idx, cur_qp);
                         }
                         self.mb_slice_first_mb[mb_idx] = saved_first_mb;
                         if relax_unknown_neighbors {
@@ -951,7 +961,7 @@ impl H264Decoder {
                             true,
                         );
                         if mb_idx < self.mb_qp.len() {
-                            self.mb_qp[mb_idx] = cur_qp;
+                            self.mb_qp[mb_idx] = self.qp_for_mb_store(mb_idx, cur_qp);
                         }
                         continue;
                     }
@@ -1027,7 +1037,7 @@ impl H264Decoder {
                     self.decode_cavlc_i_mb(&mut br, mb_x, mb_y, i_mb_type, &mut cur_qp);
                 }
                 if mb_idx < self.mb_qp.len() {
-                    self.mb_qp[mb_idx] = cur_qp;
+                    self.mb_qp[mb_idx] = self.qp_for_mb_store(mb_idx, cur_qp);
                 }
                 if relax_unknown_neighbors {
                     self.mb_slice_first_mb[mb_idx] = saved_slice_first_mb;
@@ -1562,7 +1572,7 @@ impl H264Decoder {
                 self.mb_slice_first_mb[mb_idx] = saved_first_mb;
             }
             if mb_idx < self.mb_qp.len() {
-                self.mb_qp[mb_idx] = cur_qp;
+                self.mb_qp[mb_idx] = self.qp_for_mb_store(mb_idx, cur_qp);
             }
         }
     }
