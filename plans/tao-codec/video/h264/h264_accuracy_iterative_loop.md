@@ -146,11 +146,11 @@
 
 ### 9.1 当前循环状态
 
-- 当前轮次: `Round-5`.
+- 当前轮次: `Round-6`.
 - 当前功能点: `1`.
 - 当前子功能: `1-1`.
 - 当前状态: `in_progress`.
-- 上次提交: `136dc4f`.
+- 上次提交: `b371b20`.
 
 ### 9.2 子功能检查表
 
@@ -286,3 +286,32 @@
   - `test_decode_cavlc_slice_data_b_non_skip_direct_spatial_uses_independent_l1_neighbor_mv` 通过.
 - 判定: `有效修复(逻辑收敛 + 用例修复 + 主目标无回归)`.
 - 下一子功能: `1-1` (继续 P/B 语法与运动预测差异定位, 聚焦 frame1 首次失配根因).
+
+### 9.8 Round-6 记录(1-1 + 6-3: unknown-slice L1 回退收敛 + reorder_depth 推导修复)
+
+- 子功能:
+  - `1-1`: direct spatial unknown-slice 回退约束修正.
+  - `6-3`: SPS 未显式信令 `max_num_reorder_frames` 时的 `reorder_depth` 推导.
+- 对比结论: `不一致`.
+  - Round-5 的 L1 MB 回退在部分 `prediction` 场景会过度生效, 导致 L0 被意外置空.
+  - `derive_reorder_depth_from_sps` 在 `max_num_reorder_frames=None` 且 `max_num_ref_frames` 较小时会被放大到 level 上限(如 15), 与预期不符.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/macroblock_inter.rs`
+    - L1 MB 回退新增 `has_l0_seed_for_direct` 约束.
+    - 仅在 unknown-slice 且存在 L0 4x4 邻居种子时启用回退, 避免破坏 `L0/L1 同时回退` 语义.
+  - 文件: `crates/tao-codec/src/decoders/h264/mod.rs`
+    - `derive_reorder_depth_from_sps` 引入 `signaled_ref_cap`.
+    - 当未显式信令 `max_num_reorder_frames` 时, 使用 `min(signaled_ref_cap, level_reorder_cap)`.
+    - 显式信令路径同样受 `signaled_ref_cap` 约束.
+- 精度变化:
+  - `data/2.mp4`:
+    - 20 帧: `94.900183%` (持平)
+    - 67 帧: `82.965657%` (持平)
+  - `data/1.mp4`:
+    - 10 帧: `100.000000%` (持平)
+- 测试结果:
+  - `cargo test -p tao-codec decoders::h264::tests:: -- --nocapture` 全部通过(`184 passed`).
+  - `test_activate_sps_updates_reorder_depth_from_sps_max_ref_frames` 通过.
+  - `test_activate_sps_reorder_depth_clamped_by_max_num_reorder_frames` 通过.
+- 判定: `有效修复(逻辑正确性成立 + 测试覆盖提升 + 主目标无回归)`.
+- 下一子功能: `1-1` (继续定位 `data/2.mp4` frame1 首次失配根因, 优先 CABAC P/B 语法细节差异).

@@ -308,6 +308,24 @@ impl H264Decoder {
         part_w4: usize,
         list1: bool,
     ) -> [Option<(i32, i32, i8)>; 3] {
+        let has_l0_seed_for_direct = if list1 {
+            let l0_seed = |cx4: isize, cy4: isize| -> bool {
+                if cx4 < 0 || cy4 < 0 {
+                    return false;
+                }
+                let cx4_u = cx4 as usize;
+                let cy4_u = cy4 as usize;
+                self.motion_l0_4x4_index(cx4_u, cy4_u).is_some()
+                    && self.same_slice_4x4(x4, y4, cx4_u, cy4_u)
+                    && self.l0_motion_candidate_4x4(cx4, cy4).is_some()
+            };
+            let c_or_d = l0_seed((x4 + part_w4) as isize, y4 as isize - 1)
+                || l0_seed(x4 as isize - 1, y4 as isize - 1);
+            l0_seed(x4 as isize - 1, y4 as isize) || l0_seed(x4 as isize, y4 as isize - 1) || c_or_d
+        } else {
+            false
+        };
+
         let cand = |cx4: isize, cy4: isize, list1: bool| -> Option<(i32, i32, i8)> {
             if cx4 < 0 || cy4 < 0 {
                 return None;
@@ -341,7 +359,8 @@ impl H264Decoder {
                                 .unwrap_or(u32::MAX)
                                 == u32::MAX
                     })
-                    .unwrap_or(false);
+                    .unwrap_or(false)
+                    && has_l0_seed_for_direct;
                 if allow_mb_l1_fallback {
                     self.l1_motion_candidate_4x4(cx4, cy4)
                         .or_else(|| {
