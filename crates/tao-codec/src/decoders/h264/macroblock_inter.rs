@@ -956,6 +956,20 @@ impl H264Decoder {
     ) {
         self.prev_qp_delta_nz = false;
         let mut cur_qp = slice_qp;
+        let trace_range = std::env::var("TAO_H264_TRACE_P_MB_RANGE")
+            .ok()
+            .and_then(|v| {
+                let mut it = v.split(',');
+                let frame = it.next()?.parse::<u32>().ok()?;
+                let start = it.next()?.parse::<usize>().ok()?;
+                let end = it.next()?.parse::<usize>().ok()?;
+                Some((frame, start, end))
+            });
+        let ignore_terminate = std::env::var("TAO_H264_IGNORE_TERMINATE_FRAME")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .map(|frame| self.last_frame_num == frame)
+            .unwrap_or(false);
         for mb_idx in first..total {
             self.mark_mb_slice_first_mb(mb_idx, slice_first_mb);
             self.set_mb_skip_flag(mb_idx, false);
@@ -964,9 +978,20 @@ impl H264Decoder {
             self.clear_mb_mvd_cache(mb_x, mb_y);
             self.clear_mb_motion_cache(mb_x, mb_y);
             let skip = self.decode_p_mb_skip_flag(cabac, ctxs, mb_x, mb_y);
+            let should_trace_mb = trace_range
+                .map(|(frame, start, end)| {
+                    self.last_frame_num == frame && mb_idx >= start && mb_idx <= end
+                })
+                .unwrap_or(false);
 
             if skip {
                 self.set_mb_skip_flag(mb_idx, true);
+                if should_trace_mb {
+                    eprintln!(
+                        "[H264-P-MB] frame_num={} mb_idx={} skip=1 mb_type=SKIP",
+                        self.last_frame_num, mb_idx
+                    );
+                }
                 self.decode_p_skip_mb(
                     mb_x,
                     mb_y,
@@ -976,6 +1001,12 @@ impl H264Decoder {
                     chroma_log2_weight_denom,
                 );
             } else if let Some(p_mb_type) = self.decode_p_mb_type(cabac, ctxs, mb_x, mb_y) {
+                if should_trace_mb {
+                    eprintln!(
+                        "[H264-P-MB] frame_num={} mb_idx={} skip=0 mb_type=P{}",
+                        self.last_frame_num, mb_idx, p_mb_type
+                    );
+                }
                 self.decode_p_inter_mb(
                     cabac,
                     ctxs,
@@ -1001,6 +1032,12 @@ impl H264Decoder {
                     mb_x,
                     mb_y,
                 );
+                if should_trace_mb {
+                    eprintln!(
+                        "[H264-P-MB] frame_num={} mb_idx={} skip=0 mb_type=INTRA({})",
+                        self.last_frame_num, mb_idx, intra_mb_type
+                    );
+                }
                 self.mb_types[mb_idx] = intra_mb_type as u8;
                 if intra_mb_type == 0 {
                     self.decode_i_4x4_mb(cabac, ctxs, mb_x, mb_y, &mut cur_qp);
@@ -1017,7 +1054,17 @@ impl H264Decoder {
                 self.mb_qp[mb_idx] = cur_qp;
             }
             // 对齐 FFmpeg/OpenH264: CABAC end_of_slice_flag 在每个 MB 后都需要解码.
-            let terminate = cabac.decode_terminate() == 1;
+            let terminate = if ignore_terminate {
+                false
+            } else {
+                cabac.decode_terminate() == 1
+            };
+            if should_trace_mb {
+                eprintln!(
+                    "[H264-P-MB] frame_num={} mb_idx={} terminate={}",
+                    self.last_frame_num, mb_idx, terminate
+                );
+            }
             if terminate {
                 break;
             }
@@ -1336,21 +1383,18 @@ impl H264Decoder {
             return 0;
         }
         // 对齐 FFmpeg decode_cabac_mb_ref:
-        // 1) 首位使用 54 + ctxInc
-        // 2) 第二位固定使用 58
-        // 3) 后续位固定使用 59
+        // 使用 unary 码循环解码, 即使达到最大合法参考索引也要继续消费终止位;
+        // 最终再做越界裁剪, 避免提前停止导致 CABAC 失步.
         let ctx_inc = self.ref_idx_ctx_inc(list, x4, y4, is_b_slice);
-        if cabac.decode_decision(&mut ctxs[54 + ctx_inc]) == 0 {
-            return 0;
-        }
-
-        let mut ref_idx = 1u32;
-        if cabac.decode_decision(&mut ctxs[58]) == 1 {
-            ref_idx = 2;
-            let max_ref = num_ref_idx.saturating_sub(1);
-            while ref_idx < max_ref && cabac.decode_decision(&mut ctxs[59]) == 1 {
-                ref_idx += 1;
+        let mut ref_idx = 0u32;
+        let mut unary_ctx = ctx_inc;
+        while cabac.decode_decision(&mut ctxs[54 + unary_ctx]) == 1 {
+            ref_idx = ref_idx.saturating_add(1);
+            // 与 FFmpeg 一致保留防护上界: 超过 31 视为异常, 仍继续后续容错裁剪.
+            if ref_idx >= 32 {
+                break;
             }
+            unary_ctx = (unary_ctx >> 2) + 4;
         }
         if ref_idx >= num_ref_idx {
             // 越界通常意味着当前语法路径已偏离; 夹到最大合法参考可减轻后续上下文偏移扩散.
