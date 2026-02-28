@@ -146,11 +146,11 @@
 
 ### 9.1 当前循环状态
 
-- 当前轮次: `Round-8`.
+- 当前轮次: `Round-9`.
 - 当前功能点: `1`.
 - 当前子功能: `1-1`.
 - 当前状态: `in_progress`.
-- 上次提交: `46b8664`.
+- 上次提交: `1d75c67`.
 
 ### 9.2 子功能检查表
 
@@ -373,3 +373,34 @@
   - `TAO_H264_COMPARE_INPUT=data/2.mp4` 的 20/67 帧回归无退化, `data/1.mp4` 维持 100%.
 - 判定: `有效修复(语法时序与参考实现一致, 主目标无回归)`.
 - 下一子功能: `1-1` (继续聚焦 frame1 首次失配, 排查 CABAC mb_type 分支选择与 MVD 上下文联动差异).
+
+### 9.11 Round-9 记录(1-1: B_8x8 direct 缓存建立时序对齐)
+
+- 子功能: `1-1`.
+- 对比结论: `不一致`.
+  - FFmpeg 在 `B_8x8(partition_count==4)` 路径中, 会在解析 non-direct 子分区 `ref_idx/mvd` 之前先执行 direct 运动推导并写入缓存.
+  - Tao 原实现仅提前写了 direct 标记, 但直到最后 `apply` 阶段才建立 direct 运动缓存, 导致 non-direct 子分区 MVP 无法读取 direct 邻居运动信息.
+- 逻辑证据:
+  - FFmpeg `libavcodec/h264_cabac.c`:
+    - direct 子分区存在时先调用 `ff_h264_pred_direct_motion(...)` (source line 2124).
+    - 后续 `ref_idx` 循环跳过 `IS_DIRECT` 分区 (source line 2142), non-direct 分区继续解码 `ref_idx/mvd`.
+  - 这意味着 direct 子分区缓存在 non-direct `pred_motion` 前已可见.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/macroblock_inter_cache.rs`.
+  - `Some(22)`(B_8x8) 路径中:
+    - 在 `sub_mb_type` 解析后、`ref_idx/mvd` 解析前, 提前对 direct 子分区执行 `apply_b_direct_sub_8x8`, 建立 direct 运动缓存.
+    - `ref_idx_l0/ref_idx_l1` 初始化阶段对 direct 子分区不再写 `-1`, 避免覆盖提前写入的 direct 缓存.
+    - 最终应用阶段对已提前处理的 direct 子分区跳过重复 `apply`.
+  - 文件: `crates/tao-codec/src/decoders/h264/tests/decode_b.rs`.
+    - 新增 `test_decode_cavlc_slice_data_b_non_skip_b8x8_l0_uses_direct_neighbor_motion_cache`.
+- 精度变化:
+  - `data/2.mp4`:
+    - 20 帧: `95.284645%` (前: `94.900183%`, `+0.384462`)
+    - 67 帧: `85.109306%` (前: `82.965657%`, `+2.143649`)
+  - `data/1.mp4`:
+    - 10 帧: `100.000000%` (保持无回归)
+- 测试结果:
+  - `cargo test -p tao-codec decoders::h264::tests:: -- --nocapture` 全通过(`186 passed`).
+  - 新增 direct 缓存时序回归用例通过.
+- 判定: `有效修复(逻辑与参考实现一致, 且主目标精度显著提升)`.
+- 下一子功能: `1-1` (继续定位 `data/2.mp4` frame1 首次失配, 聚焦 B_8x8 CABAC 与 MVP 交互分支).

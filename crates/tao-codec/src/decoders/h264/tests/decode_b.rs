@@ -1022,6 +1022,68 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_direct_uses_predicted_mv_from_le
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l0_uses_direct_neighbor_motion_cache() {
+    use ExpGolombValue::{Se, Ue};
+
+    let mut dec = build_test_decoder();
+    let sps_resize = build_sps_nalu(0, 32, 16);
+    dec.handle_sps(&sps_resize);
+    if let Some(sps) = dec.sps.as_mut() {
+        sps.direct_8x8_inference_flag = true;
+    }
+    if let Some(sps) = dec.sps_map.get_mut(&0) {
+        sps.direct_8x8_inference_flag = true;
+    }
+    dec.last_slice_type = 1;
+    dec.last_poc = 5;
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 1; // B slice
+    header.data_bit_offset = 0;
+    header.direct_spatial_mv_pred_flag = false;
+    header.num_ref_idx_l0 = 1;
+    header.num_ref_idx_l1 = 1;
+
+    // mb0: skip_run=0, mb_type=1(B_L0_16x16), mvd=(+1px,0), cbp=0
+    // mb1: skip_run=0, mb_type=22(B_8x8), sub_mb_type=[0(Direct),1(L0_8x8),0(Direct),0(Direct)].
+    // 仅 sub1 读取 L0 mvd=(0,0), 预期其 MVP 来自 sub0 的 direct 运动缓存(+1px).
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0),
+        Ue(1),
+        Se(4),
+        Se(0),
+        Ue(0),
+        Ue(0),
+        Ue(22),
+        Ue(0),
+        Ue(1),
+        Ue(0),
+        Ue(0),
+        Se(0),
+        Se(0),
+        Ue(0),
+    ]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    let top_right_x4 = 6usize;
+    let top_right_y4 = 0usize;
+    let top_right_idx4 = top_right_y4 * dec.mb_width * 4 + top_right_x4;
+    assert_eq!(
+        dec.ref_y[24], 25,
+        "sub1(L0_8x8) 应复用 sub0(Direct) 提前建立的 +1px MVP"
+    );
+    assert_eq!(
+        dec.ref_idx_l0_4x4[top_right_idx4], 0,
+        "sub1(L0_8x8) 应保持 L0 参考索引 0"
+    );
+    assert_eq!(
+        dec.mv_l0_x_4x4[top_right_idx4], 4,
+        "sub1(L0_8x8) 的 L0 MV(x) 应由 direct 邻居缓存引导为 +1px"
+    );
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_b_non_skip_b8x8_direct_right_sub_block_respects_inference_flag() {
     use ExpGolombValue::{Se, Ue};
 

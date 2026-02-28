@@ -364,6 +364,33 @@ impl H264Decoder {
                     let sy = (sub >> 1) * 8;
                     self.set_direct_block_4x4(mb_x * 16 + sx, mb_y * 16 + sy, 8, 8, true);
                 }
+                // 对齐 FFmpeg `partition_count==4` 路径:
+                // 先为 direct 子分区建立运动缓存, 再解码 non-direct 子分区的 ref_idx/mvd.
+                let mut direct_applied = [false; 4];
+                for sub in 0..4usize {
+                    if !matches!(sub_dir[sub], BPredDir::Direct) {
+                        continue;
+                    }
+                    let sx = (sub & 1) * 8;
+                    let sy = (sub >> 1) * 8;
+                    let (mv_x, mv_y, ref_idx) = self.apply_b_direct_sub_8x8(
+                        mb_x,
+                        mb_y,
+                        sx,
+                        sy,
+                        pred_mv_x,
+                        pred_mv_y,
+                        direct_spatial_mv_pred_flag,
+                        l0_weights,
+                        l1_weights,
+                        luma_log2_weight_denom,
+                        chroma_log2_weight_denom,
+                        ref_l0_list,
+                        ref_l1_list,
+                    );
+                    let _ = (mv_x, mv_y, ref_idx);
+                    direct_applied[sub] = true;
+                }
 
                 // 语法顺序必须与规范一致: 先完整读取所有 L0 ref_idx, 再读取所有 L1 ref_idx.
                 // 若按分区交错读取(L0/L1 同时), 在 L1_L0/L0_L1 等组合会导致 CABAC 失步.
@@ -395,7 +422,7 @@ impl H264Decoder {
                             0,
                             ref_idx_l0[sub],
                         );
-                    } else {
+                    } else if !matches!(sub_dir[sub], BPredDir::Direct) {
                         self.set_l0_motion_block_4x4(
                             mb_x * 16 + sx,
                             mb_y * 16 + sy,
@@ -435,7 +462,7 @@ impl H264Decoder {
                             0,
                             ref_idx_l1[sub],
                         );
-                    } else {
+                    } else if !matches!(sub_dir[sub], BPredDir::Direct) {
                         self.set_l1_motion_block_4x4(
                             mb_x * 16 + sx,
                             mb_y * 16 + sy,
@@ -581,23 +608,25 @@ impl H264Decoder {
                     let sx = (sub & 1) * 8;
                     let sy = (sub >> 1) * 8;
                     if matches!(sub_dir[sub], BPredDir::Direct) {
-                        self.set_direct_block_4x4(mb_x * 16 + sx, mb_y * 16 + sy, 8, 8, true);
-                        let (mv_x, mv_y, ref_idx) = self.apply_b_direct_sub_8x8(
-                            mb_x,
-                            mb_y,
-                            sx,
-                            sy,
-                            pred_mv_x,
-                            pred_mv_y,
-                            direct_spatial_mv_pred_flag,
-                            l0_weights,
-                            l1_weights,
-                            luma_log2_weight_denom,
-                            chroma_log2_weight_denom,
-                            ref_l0_list,
-                            ref_l1_list,
-                        );
-                        let _ = (mv_x, mv_y, ref_idx);
+                        if !direct_applied[sub] {
+                            self.set_direct_block_4x4(mb_x * 16 + sx, mb_y * 16 + sy, 8, 8, true);
+                            let (mv_x, mv_y, ref_idx) = self.apply_b_direct_sub_8x8(
+                                mb_x,
+                                mb_y,
+                                sx,
+                                sy,
+                                pred_mv_x,
+                                pred_mv_y,
+                                direct_spatial_mv_pred_flag,
+                                l0_weights,
+                                l1_weights,
+                                luma_log2_weight_denom,
+                                chroma_log2_weight_denom,
+                                ref_l0_list,
+                                ref_l1_list,
+                            );
+                            let _ = (mv_x, mv_y, ref_idx);
+                        }
                         continue;
                     }
 
