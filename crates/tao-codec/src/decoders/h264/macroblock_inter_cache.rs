@@ -354,6 +354,16 @@ impl H264Decoder {
                     sub_use_l0[sub] = matches!(dir, BPredDir::L0 | BPredDir::Bi);
                     sub_use_l1[sub] = matches!(dir, BPredDir::L1 | BPredDir::Bi);
                 }
+                // 对齐 FFmpeg: 在解析 ref_idx 之前先落 direct 标记,
+                // 使 ref_idx CABAC 上下文能正确把 direct 邻居视为不可用.
+                for sub in 0..4usize {
+                    if !matches!(sub_dir[sub], BPredDir::Direct) {
+                        continue;
+                    }
+                    let sx = (sub & 1) * 8;
+                    let sy = (sub >> 1) * 8;
+                    self.set_direct_block_4x4(mb_x * 16 + sx, mb_y * 16 + sy, 8, 8, true);
+                }
 
                 // 语法顺序必须与规范一致: 先完整读取所有 L0 ref_idx, 再读取所有 L1 ref_idx.
                 // 若按分区交错读取(L0/L1 同时), 在 L1_L0/L0_L1 等组合会导致 CABAC 失步.

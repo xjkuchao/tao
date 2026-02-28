@@ -146,11 +146,11 @@
 
 ### 9.1 当前循环状态
 
-- 当前轮次: `Round-7`.
+- 当前轮次: `Round-8`.
 - 当前功能点: `1`.
 - 当前子功能: `1-1`.
 - 当前状态: `in_progress`.
-- 上次提交: `0de9e99`.
+- 上次提交: `46b8664`.
 
 ### 9.2 子功能检查表
 
@@ -346,3 +346,30 @@
   - 新增 no_sub 门控测试通过.
 - 判定: `有效修复(规范/参考实现一致性成立, 主目标无回归)`.
 - 下一子功能: `1-1` (继续定位 `data/2.mp4` frame1 局部失配, 优先 CABAC mb_type/ref_idx/mvd 条件分支差异).
+
+### 9.10 Round-8 记录(1-1: B_8x8 混合 direct 子分区的 ref_idx 上下文时序对齐)
+
+- 子功能: `1-1`.
+- 对比结论: `不一致`.
+  - Tao 在 `B_8x8` 混合子分区路径中, 先解析 `ref_idx` 再写入 direct 4x4 标记.
+  - FFmpeg 在同路径先建立 direct cache, 再进入 `ref_idx` 语法解析, 以保证 `ctxIdxInc` 正确忽略 direct 邻居.
+- 逻辑证据:
+  - FFmpeg `libavcodec/h264_cabac.c` 中:
+    - 先在 `partition_count == 4` 分支对 direct 子分区执行 `fill_rectangle(... direct_cache ...)`.
+    - 随后才进入 `decode_cabac_mb_ref` 循环解析 `ref_idx`.
+  - Tao 的 `decode_ref_idx` 上下文计算依赖 `get_direct_4x4_flag`, 若标记写入滞后会改变 `ctxIdxInc`.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/macroblock_inter_cache.rs`.
+  - 在 `Some(22)`(B_8x8) 路径中, `sub_type` 解析后立即对 direct 子分区预写 `set_direct_block_4x4(..., true)`.
+  - 保持后续语法顺序不变(`L0 ref_idx` 全量后再 `L1 ref_idx`).
+- 精度变化:
+  - `data/2.mp4`:
+    - 20 帧: `94.900183%` (持平)
+    - 67 帧: `82.965657%` (持平)
+  - `data/1.mp4`:
+    - 10 帧: `100.000000%` (持平)
+- 测试结果:
+  - `cargo test -p tao-codec decoders::h264::tests:: -- --nocapture` 全通过(`185 passed`).
+  - `TAO_H264_COMPARE_INPUT=data/2.mp4` 的 20/67 帧回归无退化, `data/1.mp4` 维持 100%.
+- 判定: `有效修复(语法时序与参考实现一致, 主目标无回归)`.
+- 下一子功能: `1-1` (继续聚焦 frame1 首次失配, 排查 CABAC mb_type 分支选择与 MVD 上下文联动差异).
