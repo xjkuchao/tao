@@ -306,29 +306,27 @@ impl H264Decoder {
                 self.mb_types[mb_idx] = 254;
                 no_sub_mb_part_size_less_than_8x8_flag = self.direct_8x8_inference_enabled();
                 self.set_direct_block_4x4(mb_x * 16, mb_y * 16, 16, 16, true);
-                let (motion_l0, motion_l1) = self.build_b_direct_motion(
-                    mb_x,
-                    mb_y,
-                    pred_mv_x,
-                    pred_mv_y,
-                    direct_spatial_mv_pred_flag,
-                    ref_l0_list,
-                    ref_l1_list,
-                );
-                let (mv_x, mv_y, ref_idx) = self.apply_b_prediction_block(
-                    motion_l0,
-                    motion_l1,
-                    l0_weights,
-                    l1_weights,
-                    luma_log2_weight_denom,
-                    chroma_log2_weight_denom,
-                    ref_l0_list,
-                    ref_l1_list,
-                    mb_x * 16,
-                    mb_y * 16,
-                    16,
-                    16,
-                );
+                let mut last_motion = (0i32, 0i32, 0i8);
+                for sub in 0..4usize {
+                    let sub_x = (sub & 1) * 8;
+                    let sub_y = (sub >> 1) * 8;
+                    last_motion = self.apply_b_direct_sub_8x8(
+                        mb_x,
+                        mb_y,
+                        sub_x,
+                        sub_y,
+                        pred_mv_x,
+                        pred_mv_y,
+                        direct_spatial_mv_pred_flag,
+                        l0_weights,
+                        l1_weights,
+                        luma_log2_weight_denom,
+                        chroma_log2_weight_denom,
+                        ref_l0_list,
+                        ref_l1_list,
+                    );
+                }
+                let (mv_x, mv_y, ref_idx) = last_motion;
                 let _ = (mv_x, mv_y, ref_idx);
             }
             Some(22) => {

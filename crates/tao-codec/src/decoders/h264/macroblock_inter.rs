@@ -249,13 +249,14 @@ impl H264Decoder {
         let y4 = mb_y * 4 + part_y4;
         if let Some(idx4) = self.ref_pic_motion_4x4_index(x4, y4) {
             let ref_idx = pic.ref_idx_l0_4x4.get(idx4).copied().unwrap_or(-1);
-            if ref_idx >= 0 {
-                return Some((
-                    pic.mv_l0_x_4x4.get(idx4).copied().unwrap_or(0) as i32,
-                    pic.mv_l0_y_4x4.get(idx4).copied().unwrap_or(0) as i32,
-                    ref_idx,
-                ));
+            if ref_idx < 0 {
+                return None;
             }
+            return Some((
+                pic.mv_l0_x_4x4.get(idx4).copied().unwrap_or(0) as i32,
+                pic.mv_l0_y_4x4.get(idx4).copied().unwrap_or(0) as i32,
+                ref_idx,
+            ));
         }
         let mb_idx = self.mb_index(mb_x, mb_y)?;
         let ref_idx = pic.ref_idx_l0.get(mb_idx).copied().unwrap_or(-1);
@@ -281,13 +282,14 @@ impl H264Decoder {
         let y4 = mb_y * 4 + part_y4;
         if let Some(idx4) = self.ref_pic_motion_4x4_index(x4, y4) {
             let ref_idx = pic.ref_idx_l1_4x4.get(idx4).copied().unwrap_or(-1);
-            if ref_idx >= 0 {
-                return Some((
-                    pic.mv_l1_x_4x4.get(idx4).copied().unwrap_or(0) as i32,
-                    pic.mv_l1_y_4x4.get(idx4).copied().unwrap_or(0) as i32,
-                    ref_idx,
-                ));
+            if ref_idx < 0 {
+                return None;
             }
+            return Some((
+                pic.mv_l1_x_4x4.get(idx4).copied().unwrap_or(0) as i32,
+                pic.mv_l1_y_4x4.get(idx4).copied().unwrap_or(0) as i32,
+                ref_idx,
+            ));
         }
         let mb_idx = self.mb_index(mb_x, mb_y)?;
         let ref_idx = pic.ref_idx_l1.get(mb_idx).copied().unwrap_or(-1);
