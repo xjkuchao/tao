@@ -29,9 +29,11 @@ pub(super) struct DeblockSliceParams<'a> {
     pub(super) mv_l0_x: Option<&'a [i16]>,
     pub(super) mv_l0_y: Option<&'a [i16]>,
     pub(super) ref_idx_l0: Option<&'a [i8]>,
+    pub(super) ref_l0_poc: Option<&'a [i32]>,
     pub(super) mv_l1_x: Option<&'a [i16]>,
     pub(super) mv_l1_y: Option<&'a [i16]>,
     pub(super) ref_idx_l1: Option<&'a [i8]>,
+    pub(super) ref_l1_poc: Option<&'a [i32]>,
     pub(super) cbf_luma: Option<&'a [bool]>,
     pub(super) mv_l0_x_4x4: Option<&'a [i16]>,
     pub(super) mv_l0_y_4x4: Option<&'a [i16]>,
@@ -69,9 +71,11 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
         mv_l0_x,
         mv_l0_y,
         ref_idx_l0,
+        ref_l0_poc,
         mv_l1_x,
         mv_l1_y,
         ref_idx_l1,
+        ref_l1_poc,
         cbf_luma,
         mv_l0_x_4x4,
         mv_l0_y_4x4,
@@ -116,9 +120,11 @@ pub(super) fn apply_deblock_yuv420_with_slice_params(
                     mv_l0_x,
                     mv_l0_y,
                     ref_idx_l0,
+                    ref_l0_poc,
                     mv_l1_x,
                     mv_l1_y,
                     ref_idx_l1,
+                    ref_l1_poc,
                     cbf_luma,
                     mv_l0_x_4x4,
                     mv_l0_y_4x4,
@@ -187,9 +193,11 @@ struct DeblockMbContext<'a> {
     mv_l0_x: Option<&'a [i16]>,
     mv_l0_y: Option<&'a [i16]>,
     ref_idx_l0: Option<&'a [i8]>,
+    ref_l0_poc: Option<&'a [i32]>,
     mv_l1_x: Option<&'a [i16]>,
     mv_l1_y: Option<&'a [i16]>,
     ref_idx_l1: Option<&'a [i8]>,
+    ref_l1_poc: Option<&'a [i32]>,
     cbf_luma: Option<&'a [bool]>,
     mv_l0_x_4x4: Option<&'a [i16]>,
     mv_l0_y_4x4: Option<&'a [i16]>,
@@ -723,10 +731,34 @@ fn boundary_strength_within_mb_common(
 
 fn motion_boundary_strength(ctx: &DeblockMbContext<'_>, idx_a: usize, idx_b: usize) -> u8 {
     combine_motion_list_mismatch(
-        motion_sample_at(ctx.ref_idx_l0, ctx.mv_l0_x, ctx.mv_l0_y, idx_a),
-        motion_sample_at(ctx.ref_idx_l0, ctx.mv_l0_x, ctx.mv_l0_y, idx_b),
-        motion_sample_at(ctx.ref_idx_l1, ctx.mv_l1_x, ctx.mv_l1_y, idx_a),
-        motion_sample_at(ctx.ref_idx_l1, ctx.mv_l1_x, ctx.mv_l1_y, idx_b),
+        motion_sample_at(
+            ctx.ref_idx_l0,
+            ctx.mv_l0_x,
+            ctx.mv_l0_y,
+            ctx.ref_l0_poc,
+            idx_a,
+        ),
+        motion_sample_at(
+            ctx.ref_idx_l0,
+            ctx.mv_l0_x,
+            ctx.mv_l0_y,
+            ctx.ref_l0_poc,
+            idx_b,
+        ),
+        motion_sample_at(
+            ctx.ref_idx_l1,
+            ctx.mv_l1_x,
+            ctx.mv_l1_y,
+            ctx.ref_l1_poc,
+            idx_a,
+        ),
+        motion_sample_at(
+            ctx.ref_idx_l1,
+            ctx.mv_l1_x,
+            ctx.mv_l1_y,
+            ctx.ref_l1_poc,
+            idx_b,
+        ),
     )
     .unwrap_or(1)
 }
@@ -838,7 +870,7 @@ fn cross_slice_boundary_is_disabled(
 
 #[derive(Clone, Copy)]
 struct MotionSample {
-    ref_idx: i8,
+    ref_id: i32,
     mv_x: i16,
     mv_y: i16,
 }
@@ -847,6 +879,7 @@ fn motion_sample_at(
     ref_idx: Option<&[i8]>,
     mv_x: Option<&[i16]>,
     mv_y: Option<&[i16]>,
+    ref_poc: Option<&[i32]>,
     idx: usize,
 ) -> Option<MotionSample> {
     let (Some(ref_idx), Some(mv_x), Some(mv_y)) = (ref_idx, mv_x, mv_y) else {
@@ -858,18 +891,24 @@ fn motion_sample_at(
     if idx >= mv_x.len() || idx >= mv_y.len() {
         return None;
     }
-    Some(MotionSample {
-        ref_idx: ref_idx[idx],
-        mv_x: mv_x[idx],
-        mv_y: mv_y[idx],
-    })
+    let raw_ref_idx = ref_idx[idx];
+    let ref_id = if raw_ref_idx < 0 {
+        -1
+    } else if let Some(pocs) = ref_poc {
+        pocs.get(raw_ref_idx as usize)
+            .copied()
+            .unwrap_or(i32::from(raw_ref_idx))
+    } else {
+        i32::from(raw_ref_idx)
+    };
+    Some(MotionSample { ref_id, mv_x: mv_x[idx], mv_y: mv_y[idx] })
 }
 
 fn list_motion_mismatch(a: Option<MotionSample>, b: Option<MotionSample>) -> Option<bool> {
     let (Some(a), Some(b)) = (a, b) else {
         return None;
     };
-    if a.ref_idx != b.ref_idx {
+    if a.ref_id != b.ref_id {
         return Some(true);
     }
     let mv_dx = (i32::from(a.mv_x) - i32::from(b.mv_x)).abs();
@@ -895,20 +934,20 @@ fn combine_motion_list_mismatch(
     // 3) 若命中 mismatch 且两列表交叉参考一致, 再做交叉 MV 比较决定是否可降为 0.
     let mut mismatch = false;
     if let Some((a0, b0)) = list0_pair {
-        mismatch = a0.ref_idx != b0.ref_idx;
-        if !mismatch && a0.ref_idx != -1 {
+        mismatch = a0.ref_id != b0.ref_id;
+        if !mismatch && a0.ref_id != -1 {
             mismatch = list_motion_mismatch(Some(a0), Some(b0)).unwrap_or(false);
         }
     }
 
     if let Some((a1, b1)) = list1_pair {
         if !mismatch {
-            mismatch = a1.ref_idx != b1.ref_idx
+            mismatch = a1.ref_id != b1.ref_id
                 || list_motion_mismatch(Some(a1), Some(b1)).unwrap_or(false);
         }
         if mismatch {
             if let Some((a0, b0)) = list0_pair {
-                if a0.ref_idx != b1.ref_idx || a1.ref_idx != b0.ref_idx {
+                if a0.ref_id != b1.ref_id || a1.ref_id != b0.ref_id {
                     return Some(1);
                 }
                 let cross_l0 = list_motion_mismatch(Some(a0), Some(b1)).unwrap_or(false);
@@ -953,10 +992,34 @@ fn motion_boundary_strength_4x4(
     let idx_a = luma4x4_index(ctx.mb_width, ctx.mb_height, x4_a, y4_a)?;
     let idx_b = luma4x4_index(ctx.mb_width, ctx.mb_height, x4_b, y4_b)?;
     combine_motion_list_mismatch(
-        motion_sample_at(ctx.ref_idx_l0_4x4, ctx.mv_l0_x_4x4, ctx.mv_l0_y_4x4, idx_a),
-        motion_sample_at(ctx.ref_idx_l0_4x4, ctx.mv_l0_x_4x4, ctx.mv_l0_y_4x4, idx_b),
-        motion_sample_at(ctx.ref_idx_l1_4x4, ctx.mv_l1_x_4x4, ctx.mv_l1_y_4x4, idx_a),
-        motion_sample_at(ctx.ref_idx_l1_4x4, ctx.mv_l1_x_4x4, ctx.mv_l1_y_4x4, idx_b),
+        motion_sample_at(
+            ctx.ref_idx_l0_4x4,
+            ctx.mv_l0_x_4x4,
+            ctx.mv_l0_y_4x4,
+            ctx.ref_l0_poc,
+            idx_a,
+        ),
+        motion_sample_at(
+            ctx.ref_idx_l0_4x4,
+            ctx.mv_l0_x_4x4,
+            ctx.mv_l0_y_4x4,
+            ctx.ref_l0_poc,
+            idx_b,
+        ),
+        motion_sample_at(
+            ctx.ref_idx_l1_4x4,
+            ctx.mv_l1_x_4x4,
+            ctx.mv_l1_y_4x4,
+            ctx.ref_l1_poc,
+            idx_a,
+        ),
+        motion_sample_at(
+            ctx.ref_idx_l1_4x4,
+            ctx.mv_l1_x_4x4,
+            ctx.mv_l1_y_4x4,
+            ctx.ref_l1_poc,
+            idx_b,
+        ),
     )
 }
 
@@ -1099,9 +1162,11 @@ mod tests {
                 mv_l0_x: None,
                 mv_l0_y: None,
                 ref_idx_l0: None,
+                ref_l0_poc: None,
                 mv_l1_x: None,
                 mv_l1_y: None,
                 ref_idx_l1: None,
+                ref_l1_poc: None,
                 cbf_luma: None,
                 mv_l0_x_4x4: None,
                 mv_l0_y_4x4: None,
@@ -1140,9 +1205,11 @@ mod tests {
                 mv_l0_x: None,
                 mv_l0_y: None,
                 ref_idx_l0: None,
+                ref_l0_poc: None,
                 mv_l1_x: None,
                 mv_l1_y: None,
                 ref_idx_l1: None,
+                ref_l1_poc: None,
                 cbf_luma: None,
                 mv_l0_x_4x4: None,
                 mv_l0_y_4x4: None,
@@ -1221,9 +1288,11 @@ mod tests {
                 mv_l0_x: None,
                 mv_l0_y: None,
                 ref_idx_l0: None,
+                ref_l0_poc: None,
                 mv_l1_x: None,
                 mv_l1_y: None,
                 ref_idx_l1: None,
+                ref_l1_poc: None,
                 cbf_luma: None,
                 mv_l0_x_4x4: None,
                 mv_l0_y_4x4: None,
@@ -1293,9 +1362,11 @@ mod tests {
                 mv_l0_x: None,
                 mv_l0_y: None,
                 ref_idx_l0: None,
+                ref_l0_poc: None,
                 mv_l1_x: None,
                 mv_l1_y: None,
                 ref_idx_l1: None,
+                ref_l1_poc: None,
                 cbf_luma: None,
                 mv_l0_x_4x4: None,
                 mv_l0_y_4x4: None,
@@ -1327,9 +1398,11 @@ mod tests {
             mv_l0_x: None,
             mv_l0_y: None,
             ref_idx_l0: None,
+            ref_l0_poc: None,
             mv_l1_x: None,
             mv_l1_y: None,
             ref_idx_l1: None,
+            ref_l1_poc: None,
             cbf_luma: None,
             mv_l0_x_4x4: None,
             mv_l0_y_4x4: None,
@@ -1363,9 +1436,11 @@ mod tests {
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
+            ref_l0_poc: None,
             mv_l1_x: None,
             mv_l1_y: None,
             ref_idx_l1: None,
+            ref_l1_poc: None,
             cbf_luma: None,
             mv_l0_x_4x4: None,
             mv_l0_y_4x4: None,
@@ -1399,9 +1474,11 @@ mod tests {
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
+            ref_l0_poc: None,
             mv_l1_x: None,
             mv_l1_y: None,
             ref_idx_l1: None,
+            ref_l1_poc: None,
             cbf_luma: None,
             mv_l0_x_4x4: None,
             mv_l0_y_4x4: None,
@@ -1436,9 +1513,11 @@ mod tests {
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
+            ref_l0_poc: None,
             mv_l1_x: None,
             mv_l1_y: None,
             ref_idx_l1: None,
+            ref_l1_poc: None,
             cbf_luma: None,
             mv_l0_x_4x4: None,
             mv_l0_y_4x4: None,
@@ -1461,9 +1540,11 @@ mod tests {
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
+            ref_l0_poc: None,
             mv_l1_x: None,
             mv_l1_y: None,
             ref_idx_l1: None,
+            ref_l1_poc: None,
             cbf_luma: None,
             mv_l0_x_4x4: None,
             mv_l0_y_4x4: None,
@@ -1508,9 +1589,11 @@ mod tests {
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
+            ref_l0_poc: None,
             mv_l1_x: None,
             mv_l1_y: None,
             ref_idx_l1: None,
+            ref_l1_poc: None,
             cbf_luma: Some(&cbf_luma),
             mv_l0_x_4x4: Some(&mv_l0_x_4x4),
             mv_l0_y_4x4: Some(&mv_l0_y_4x4),
@@ -1552,9 +1635,11 @@ mod tests {
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
+            ref_l0_poc: None,
             mv_l1_x: None,
             mv_l1_y: None,
             ref_idx_l1: None,
+            ref_l1_poc: None,
             cbf_luma: Some(&cbf_luma),
             mv_l0_x_4x4: Some(&mv_l0_x_4x4),
             mv_l0_y_4x4: Some(&mv_l0_y_4x4),
@@ -1598,9 +1683,11 @@ mod tests {
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
+            ref_l0_poc: None,
             mv_l1_x: None,
             mv_l1_y: None,
             ref_idx_l1: None,
+            ref_l1_poc: None,
             cbf_luma: Some(&cbf_luma),
             mv_l0_x_4x4: Some(&mv_l0_x_4x4),
             mv_l0_y_4x4: Some(&mv_l0_y_4x4),
@@ -1639,9 +1726,11 @@ mod tests {
             mv_l0_x: None,
             mv_l0_y: None,
             ref_idx_l0: None,
+            ref_l0_poc: None,
             mv_l1_x: None,
             mv_l1_y: None,
             ref_idx_l1: None,
+            ref_l1_poc: None,
             cbf_luma: Some(&cbf_luma),
             mv_l0_x_4x4: Some(&mv_l0_x_4x4),
             mv_l0_y_4x4: Some(&mv_l0_y_4x4),
@@ -1678,9 +1767,11 @@ mod tests {
             mv_l0_x: None,
             mv_l0_y: None,
             ref_idx_l0: None,
+            ref_l0_poc: None,
             mv_l1_x: None,
             mv_l1_y: None,
             ref_idx_l1: None,
+            ref_l1_poc: None,
             cbf_luma: Some(&cbf_luma),
             mv_l0_x_4x4: Some(&mv_l0_x_4x4_ref_mismatch),
             mv_l0_y_4x4: Some(&mv_l0_y_4x4_ref_mismatch),
@@ -1710,9 +1801,11 @@ mod tests {
             mv_l0_x: None,
             mv_l0_y: None,
             ref_idx_l0: None,
+            ref_l0_poc: None,
             mv_l1_x: None,
             mv_l1_y: None,
             ref_idx_l1: None,
+            ref_l1_poc: None,
             cbf_luma: Some(&cbf_luma),
             mv_l0_x_4x4: Some(&mv_l0_x_4x4_mv_mismatch),
             mv_l0_y_4x4: Some(&mv_l0_y_4x4_mv_mismatch),
@@ -1749,9 +1842,11 @@ mod tests {
             mv_l0_x: Some(&mv_l0_x),
             mv_l0_y: Some(&mv_l0_y),
             ref_idx_l0: Some(&ref_idx_l0),
+            ref_l0_poc: None,
             mv_l1_x: Some(&mv_l1_x),
             mv_l1_y: Some(&mv_l1_y),
             ref_idx_l1: Some(&ref_idx_l1),
+            ref_l1_poc: None,
             cbf_luma: None,
             mv_l0_x_4x4: None,
             mv_l0_y_4x4: None,
@@ -1790,9 +1885,11 @@ mod tests {
             mv_l0_x: None,
             mv_l0_y: None,
             ref_idx_l0: None,
+            ref_l0_poc: None,
             mv_l1_x: None,
             mv_l1_y: None,
             ref_idx_l1: None,
+            ref_l1_poc: None,
             cbf_luma: Some(&cbf_luma),
             mv_l0_x_4x4: Some(&mv_l0_x_4x4),
             mv_l0_y_4x4: Some(&mv_l0_y_4x4),
@@ -1827,9 +1924,11 @@ mod tests {
             mv_l0_x: None,
             mv_l0_y: None,
             ref_idx_l0: None,
+            ref_l0_poc: None,
             mv_l1_x: None,
             mv_l1_y: None,
             ref_idx_l1: None,
+            ref_l1_poc: None,
             cbf_luma: Some(&cbf_luma),
             mv_l0_x_4x4: Some(&mv_l0_x_4x4),
             mv_l0_y_4x4: Some(&mv_l0_y_4x4),
@@ -1875,9 +1974,11 @@ mod tests {
             mv_l0_x: None,
             mv_l0_y: None,
             ref_idx_l0: None,
+            ref_l0_poc: None,
             mv_l1_x: None,
             mv_l1_y: None,
             ref_idx_l1: None,
+            ref_l1_poc: None,
             cbf_luma: Some(&cbf_luma),
             mv_l0_x_4x4: Some(&mv_l0_x_4x4),
             mv_l0_y_4x4: Some(&mv_l0_y_4x4),
@@ -1917,9 +2018,11 @@ mod tests {
             mv_l0_x: None,
             mv_l0_y: None,
             ref_idx_l0: None,
+            ref_l0_poc: None,
             mv_l1_x: None,
             mv_l1_y: None,
             ref_idx_l1: None,
+            ref_l1_poc: None,
             cbf_luma: Some(&cbf_luma),
             mv_l0_x_4x4: Some(&mv_l0_x_4x4),
             mv_l0_y_4x4: Some(&mv_l0_y_4x4),
