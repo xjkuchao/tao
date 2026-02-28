@@ -215,17 +215,22 @@ impl H264Decoder {
         for &(sub_x, sub_y) in &I4X4_SCAN_ORDER {
             let x4 = mb_x * 4 + sub_x;
             let y4 = mb_y * 4 + sub_y;
-            let pred_a = if x4 > 0 {
-                self.get_i4x4_mode(x4 - 1, y4)
+            let left = if self.left_neighbor_available_4x4(x4, y4) {
+                i16::from(self.get_i4x4_mode(x4 - 1, y4))
             } else {
-                2
+                -1
             };
-            let pred_b = if y4 > 0 {
-                self.get_i4x4_mode(x4, y4 - 1)
+            let top = if self.top_neighbor_available_4x4(x4, y4) {
+                i16::from(self.get_i4x4_mode(x4, y4 - 1))
             } else {
-                2
+                -1
             };
-            let mpm = pred_a.min(pred_b);
+            // 对齐 FFmpeg pred_intra_mode: 任一方向不可用时回落 DC(2), 否则取 min(A, B).
+            let mpm = if left.min(top) < 0 {
+                2u8
+            } else {
+                left.min(top).clamp(0, 11) as u8
+            };
 
             let prev_flag = br.read_bit().unwrap_or(0);
             let mode = if prev_flag == 1 {
@@ -252,20 +257,31 @@ impl H264Decoder {
         mb_y: usize,
     ) -> [u8; 4] {
         let mut modes = [2u8; 4];
+        let mb_left_avail = self.left_avail(mb_x, mb_y);
+        let mb_top_avail = self.top_avail(mb_x, mb_y);
         for &(block_x, block_y) in &I8X8_SCAN_ORDER {
             let x4 = mb_x * 4 + block_x * 2;
             let y4 = mb_y * 4 + block_y * 2;
-            let pred_a = if x4 > 0 {
-                self.get_i4x4_mode(x4 - 1, y4)
+            let left = if block_x > 0 {
+                i16::from(modes[block_y * 2 + (block_x - 1)])
+            } else if mb_left_avail {
+                i16::from(self.get_i4x4_mode(x4 - 1, y4))
             } else {
-                2
+                -1
             };
-            let pred_b = if y4 > 0 {
-                self.get_i4x4_mode(x4, y4 - 1)
+            let top = if block_y > 0 {
+                i16::from(modes[(block_y - 1) * 2 + block_x])
+            } else if mb_top_avail {
+                i16::from(self.get_i4x4_mode(x4, y4 - 1))
             } else {
-                2
+                -1
             };
-            let mpm = pred_a.min(pred_b);
+            // 对齐 FFmpeg pred_intra_mode: 任一方向不可用时回落 DC(2), 否则取 min(A, B).
+            let mpm = if left.min(top) < 0 {
+                2u8
+            } else {
+                left.min(top).clamp(0, 11) as u8
+            };
 
             let prev_flag = br.read_bit().unwrap_or(0);
             let mode = if prev_flag == 1 {
