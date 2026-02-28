@@ -367,7 +367,7 @@ fn test_decode_cavlc_slice_data_b_non_skip_l1_only_ref_idx() {
 
 #[test]
 fn test_decode_cavlc_slice_data_b_non_skip_bi_16x16_ref_idx() {
-    use ExpGolombValue::{Se, Ue};
+    use ExpGolombValue::{Se, Te, Ue};
 
     let mut dec = build_test_decoder();
     dec.last_slice_type = 1;
@@ -383,14 +383,14 @@ fn test_decode_cavlc_slice_data_b_non_skip_bi_16x16_ref_idx() {
 
     // mb_skip_run=0, mb_type=3(B_Bi_16x16), ref_idx_l0=1, ref_idx_l1=1, mvd_l0/mvd_l1 均为 0
     let rbsp =
-        build_rbsp_from_exp_golomb(&[Ue(0), Ue(3), Ue(1), Ue(1), Se(0), Se(0), Se(0), Se(0)]);
+        build_rbsp_from_exp_golomb(&[Ue(0), Ue(3), Te(1, 1), Te(1, 1), Se(0), Se(0), Se(0), Se(0)]);
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(dec.ref_y[0], 99, "B_Bi_16x16 应按 ref_idx_l0/l1 选择参考帧");
 }
 
 #[test]
 fn test_decode_cavlc_slice_data_b_non_skip_bi_16x16_ref_idx_alignment() {
-    use ExpGolombValue::{Se, Ue};
+    use ExpGolombValue::{Se, Te, Ue};
 
     let mut dec = build_test_decoder();
     let sps_resize = build_sps_nalu(0, 32, 16);
@@ -412,8 +412,8 @@ fn test_decode_cavlc_slice_data_b_non_skip_bi_16x16_ref_idx_alignment() {
         &[
             Ue(0),
             Ue(3),
-            Ue(1),
-            Ue(1),
+            Te(1, 1),
+            Te(1, 1),
             Se(0),
             Se(0),
             Se(0),
@@ -431,7 +431,7 @@ fn test_decode_cavlc_slice_data_b_non_skip_bi_16x16_ref_idx_alignment() {
 
 #[test]
 fn test_decode_cavlc_slice_data_b_non_skip_bi_16x16_mvd_alignment() {
-    use ExpGolombValue::{Se, Ue};
+    use ExpGolombValue::{Se, Te, Ue};
 
     let mut dec = build_test_decoder();
     let sps_resize = build_sps_nalu(0, 32, 16);
@@ -453,8 +453,8 @@ fn test_decode_cavlc_slice_data_b_non_skip_bi_16x16_mvd_alignment() {
         &[
             Ue(0),
             Ue(3),
-            Ue(1),
-            Ue(1),
+            Te(1, 1),
+            Te(1, 1),
             Se(2),
             Se(-1),
             Se(-2),
@@ -716,7 +716,7 @@ fn test_decode_cavlc_slice_data_b_non_skip_b_l0_l1_8x16_grouped_syntax_alignment
 
 #[test]
 fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l0_ref_idx_alignment() {
-    use ExpGolombValue::{Se, Ue};
+    use ExpGolombValue::{Se, Te, Ue};
 
     let mut dec = build_test_decoder();
     let sps_resize = build_sps_nalu(0, 32, 16);
@@ -742,10 +742,10 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l0_ref_idx_alignment() {
             Ue(1),
             Ue(1),
             Ue(1),
-            Ue(0),
-            Ue(1),
-            Ue(1),
-            Ue(0),
+            Te(1, 0),
+            Te(1, 1),
+            Te(1, 1),
+            Te(1, 0),
             Se(0),
             Se(0),
             Se(0),
@@ -779,7 +779,7 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l0_ref_idx_alignment() {
 
 #[test]
 fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l1_ref_idx_alignment() {
-    use ExpGolombValue::{Se, Ue};
+    use ExpGolombValue::{Se, Te, Ue};
 
     let mut dec = build_test_decoder();
     let sps_resize = build_sps_nalu(0, 32, 16);
@@ -805,10 +805,10 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l1_ref_idx_alignment() {
             Ue(2),
             Ue(2),
             Ue(2),
-            Ue(0),
-            Ue(1),
-            Ue(1),
-            Ue(0),
+            Te(1, 0),
+            Te(1, 1),
+            Te(1, 1),
+            Te(1, 0),
             Se(0),
             Se(0),
             Se(0),
@@ -842,7 +842,7 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l1_ref_idx_alignment() {
 
 #[test]
 fn test_decode_cavlc_slice_data_b_non_skip_b8x8_mixed_sub_mb_types_alignment() {
-    use ExpGolombValue::{Se, Ue};
+    use ExpGolombValue::{Se, Te, Ue};
 
     let mut dec = build_test_decoder();
     let sps_resize = build_sps_nalu(0, 32, 16);
@@ -871,12 +871,12 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_mixed_sub_mb_types_alignment() {
             Ue(6),
             Ue(8),
             Ue(12),
-            Ue(1),
-            Ue(0),
-            Ue(1),
-            Ue(1),
-            Ue(1),
-            Ue(0),
+            Te(1, 1),
+            Te(1, 0),
+            Te(1, 1),
+            Te(1, 1),
+            Te(1, 1),
+            Te(1, 0),
             Se(0),
             Se(0),
             Se(0),

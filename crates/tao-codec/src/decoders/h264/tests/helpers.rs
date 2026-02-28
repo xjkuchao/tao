@@ -629,6 +629,7 @@ pub fn build_rbsp_from_ues(values: &[u32]) -> Vec<u8> {
 pub enum ExpGolombValue {
     Ue(u32),
     Se(i32),
+    Te(u32, u32),
 }
 
 pub fn build_rbsp_from_exp_golomb(values: &[ExpGolombValue]) -> Vec<u8> {
@@ -637,6 +638,7 @@ pub fn build_rbsp_from_exp_golomb(values: &[ExpGolombValue]) -> Vec<u8> {
         match value {
             ExpGolombValue::Ue(v) => write_ue(&mut bits, *v),
             ExpGolombValue::Se(v) => write_se(&mut bits, *v),
+            ExpGolombValue::Te(max, v) => write_te(&mut bits, *max, *v),
         }
     }
     bits_to_bytes(&bits)
@@ -652,6 +654,7 @@ pub fn build_rbsp_from_exp_golomb_with_tail(
         match value {
             ExpGolombValue::Ue(v) => write_ue(&mut bits, *v),
             ExpGolombValue::Se(v) => write_se(&mut bits, *v),
+            ExpGolombValue::Te(max, v) => write_te(&mut bits, *max, *v),
         }
     }
     bits.extend(tail_bits);
