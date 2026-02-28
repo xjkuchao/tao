@@ -146,11 +146,11 @@
 
 ### 9.1 当前循环状态
 
-- 当前轮次: `Round-6`.
+- 当前轮次: `Round-7`.
 - 当前功能点: `1`.
 - 当前子功能: `1-1`.
 - 当前状态: `in_progress`.
-- 上次提交: `b371b20`.
+- 上次提交: `0de9e99`.
 
 ### 9.2 子功能检查表
 
@@ -315,3 +315,34 @@
   - `test_activate_sps_reorder_depth_clamped_by_max_num_reorder_frames` 通过.
 - 判定: `有效修复(逻辑正确性成立 + 测试覆盖提升 + 主目标无回归)`.
 - 下一子功能: `1-1` (继续定位 `data/2.mp4` frame1 首次失配根因, 优先 CABAC P/B 语法细节差异).
+
+### 9.9 Round-7 记录(1-1: Direct_8x8 与 transform_size_8x8_flag 门控对齐)
+
+- 子功能: `1-1`.
+- 对比结论: `不一致`.
+  - Tao 在 CABAC B-slice 的 `no_sub_mb_part_size_less_than_8x8_flag` 计算中, 未把 `direct_8x8_inference_flag==0` 纳入 Direct 路径约束.
+  - 结果是某些 B_Direct/B_8x8(Direct_8x8) 场景会错误允许解析 `transform_size_8x8_flag`, 存在 CABAC 语法失步风险.
+- 逻辑证据:
+  - FFmpeg `libavcodec/h264_cabac.c` 在 `IS_DIRECT(mb_type)` 路径显式执行 `dct8x8_allowed &= sps->direct_8x8_inference_flag`.
+  - OpenH264 `codec/decoder/core/src/decode_slice.cpp` 通过 `pNoSubMbPartSizeLessThan8x8Flag` 门控 `transform_size_8x8_flag` 读取, 与规范口径一致.
+  - VLC `modules/codec/avcodec/video.c` 使用 libavcodec 解码 H264, 行为与 FFmpeg 主路径一致.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/macroblock_inter.rs`
+    - 新增 `b_no_sub_mb_part_size_less_than_8x8()`:
+      - 仅当子分区均为 8x8 且若存在 Direct_8x8 时 `direct_8x8_inference_flag==1`, 才返回 true.
+  - 文件: `crates/tao-codec/src/decoders/h264/macroblock_inter_cache.rs`
+    - `B_Direct_16x16` 分支将 `no_sub_mb_part_size_less_than_8x8_flag` 绑定为 `direct_8x8_inference_enabled()`.
+    - `B_8x8` 分支改为调用新 helper 计算 no_sub 标记.
+  - 文件: `crates/tao-codec/src/decoders/h264/tests/prediction.rs`
+    - 新增 `test_b_no_sub_mb_part_size_less_than_8x8_respects_direct_8x8_inference_flag`.
+- 精度变化:
+  - `data/2.mp4`:
+    - 20 帧: `94.900183%` (持平)
+    - 67 帧: `82.965657%` (持平)
+  - `data/1.mp4`:
+    - 10 帧: `100.000000%` (持平)
+- 测试结果:
+  - `cargo test -p tao-codec decoders::h264::tests:: -- --nocapture` 全通过(`185 passed`).
+  - 新增 no_sub 门控测试通过.
+- 判定: `有效修复(规范/参考实现一致性成立, 主目标无回归)`.
+- 下一子功能: `1-1` (继续定位 `data/2.mp4` frame1 局部失配, 优先 CABAC mb_type/ref_idx/mvd 条件分支差异).

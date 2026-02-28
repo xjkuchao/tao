@@ -304,6 +304,7 @@ impl H264Decoder {
         match mb_type_idx {
             None => {
                 self.mb_types[mb_idx] = 254;
+                no_sub_mb_part_size_less_than_8x8_flag = self.direct_8x8_inference_enabled();
                 self.set_direct_block_4x4(mb_x * 16, mb_y * 16, 16, 16, true);
                 let (motion_l0, motion_l1) = self.build_b_direct_motion(
                     mb_x,
@@ -337,7 +338,7 @@ impl H264Decoder {
                     *slot = self.decode_b_sub_mb_type(cabac, ctxs);
                 }
                 no_sub_mb_part_size_less_than_8x8_flag =
-                    sub_types.iter().all(|&sub_type| sub_type <= 3);
+                    self.b_no_sub_mb_part_size_less_than_8x8(&sub_types);
                 let mut sub_part_w = [8usize; 4];
                 let mut sub_part_h = [8usize; 4];
                 let mut sub_part_count = [1usize; 4];

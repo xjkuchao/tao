@@ -801,6 +801,36 @@ fn test_build_b_direct_motion_spatial_uses_independent_l0_neighbor_mv() {
 }
 
 #[test]
+fn test_b_no_sub_mb_part_size_less_than_8x8_respects_direct_8x8_inference_flag() {
+    let mut dec = build_test_decoder();
+    dec.sps = Some(build_test_sps(0));
+
+    if let Some(sps) = dec.sps.as_mut() {
+        sps.direct_8x8_inference_flag = true;
+    }
+    assert!(
+        dec.b_no_sub_mb_part_size_less_than_8x8(&[0, 0, 0, 0]),
+        "direct_8x8_inference_flag=1 时, Direct_8x8 子分区应视为不小于 8x8"
+    );
+
+    if let Some(sps) = dec.sps.as_mut() {
+        sps.direct_8x8_inference_flag = false;
+    }
+    assert!(
+        !dec.b_no_sub_mb_part_size_less_than_8x8(&[0, 0, 0, 0]),
+        "direct_8x8_inference_flag=0 时, Direct_8x8 子分区应使 no_sub 标记为 false"
+    );
+    assert!(
+        dec.b_no_sub_mb_part_size_less_than_8x8(&[1, 2, 3, 1]),
+        "仅包含 8x8 分区类型时应保持 no_sub 标记为 true"
+    );
+    assert!(
+        !dec.b_no_sub_mb_part_size_less_than_8x8(&[4, 1, 1, 1]),
+        "存在 8x4/4x8/4x4 分区时应将 no_sub 标记置为 false"
+    );
+}
+
+#[test]
 fn test_build_b_direct_motion_temporal_prefers_list1_colocated_mb() {
     let mut dec = build_test_decoder();
     dec.last_slice_type = 1;

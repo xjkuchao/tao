@@ -1238,6 +1238,15 @@ impl H264Decoder {
         }
     }
 
+    /// 规范 7.4.5 / 8.5.3: `no_sub_mb_part_size_less_than_8x8_flag`.
+    /// 当出现 Direct_8x8 且 `direct_8x8_inference_flag==0` 时, 也应判为 false.
+    pub(super) fn b_no_sub_mb_part_size_less_than_8x8(&self, sub_mb_types: &[u8; 4]) -> bool {
+        let direct_8x8_inference = self.direct_8x8_inference_enabled();
+        sub_mb_types
+            .iter()
+            .all(|&sub_mb_type| sub_mb_type <= 3 && (sub_mb_type != 0 || direct_8x8_inference))
+    }
+
     fn ref_idx_ctx_neighbor_bin(
         &self,
         list: usize,
