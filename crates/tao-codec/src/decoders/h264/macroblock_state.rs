@@ -567,7 +567,7 @@ impl H264Decoder {
         }
     }
 
-    /// 计算 CABAC MVD 上下文: 左/上 4x4 邻居 MVD 绝对值之和.
+    /// 计算 CABAC MVD 上下文: 左/上 4x4 邻居 MVD 幅值之和.
     pub(super) fn compute_cabac_amvd(&self, x4: usize, y4: usize, list: usize) -> (i32, i32) {
         let stride = self.mb_width * 4;
         let h4 = self.mb_height * 4;
@@ -579,30 +579,34 @@ impl H264Decoder {
         } else {
             (&self.mvd_l1_x_4x4, &self.mvd_l1_y_4x4)
         };
+        let left_available = self.left_neighbor_available_4x4(x4, y4)
+            && self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4);
         let left_idx = y4
             .saturating_mul(stride)
             .saturating_add(x4.saturating_sub(1));
-        let left_abs_x = if self.left_neighbor_available_4x4(x4, y4) {
-            mvd_x_arr.get(left_idx).copied().unwrap_or(0).unsigned_abs() as i32
+        let left_abs_x = if left_available {
+            i32::from(mvd_x_arr.get(left_idx).copied().unwrap_or(0))
         } else {
             0
         };
-        let left_abs_y = if self.left_neighbor_available_4x4(x4, y4) {
-            mvd_y_arr.get(left_idx).copied().unwrap_or(0).unsigned_abs() as i32
+        let left_abs_y = if left_available {
+            i32::from(mvd_y_arr.get(left_idx).copied().unwrap_or(0))
         } else {
             0
         };
+        let top_available =
+            self.top_neighbor_available_4x4(x4, y4) && self.same_slice_4x4(x4, y4, x4, y4 - 1);
         let top_idx = y4
             .saturating_sub(1)
             .saturating_mul(stride)
             .saturating_add(x4);
-        let top_abs_x = if self.top_neighbor_available_4x4(x4, y4) {
-            mvd_x_arr.get(top_idx).copied().unwrap_or(0).unsigned_abs() as i32
+        let top_abs_x = if top_available {
+            i32::from(mvd_x_arr.get(top_idx).copied().unwrap_or(0))
         } else {
             0
         };
-        let top_abs_y = if self.top_neighbor_available_4x4(x4, y4) {
-            mvd_y_arr.get(top_idx).copied().unwrap_or(0).unsigned_abs() as i32
+        let top_abs_y = if top_available {
+            i32::from(mvd_y_arr.get(top_idx).copied().unwrap_or(0))
         } else {
             0
         };
@@ -629,9 +633,9 @@ impl H264Decoder {
         let x4_end = (px_x + w).div_ceil(4);
         let y4_end = (px_y + h).div_ceil(4);
         let stride = self.mb_width * 4;
-        // 与 FFmpeg `decode_cabac_mb_mvd` 对齐: mvd_cache 仅保留 [-70, 70] 截断值用于后续 amvd 上下文.
-        let mvd_x_i16 = mvd_x.clamp(-70, 70) as i16;
-        let mvd_y_i16 = mvd_y.clamp(-70, 70) as i16;
+        // 与 FFmpeg `decode_cabac_mb_mvd` 对齐: mvd_cache 存储非负幅值, 并在高幅值时截断到 70.
+        let mvd_x_i16 = mvd_x.abs().min(70) as i16;
+        let mvd_y_i16 = mvd_y.abs().min(70) as i16;
         let (mvd_x_arr, mvd_y_arr) = if list == 0 {
             (&mut self.mvd_l0_x_4x4, &mut self.mvd_l0_y_4x4)
         } else {

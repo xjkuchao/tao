@@ -1328,9 +1328,9 @@ fn test_cabac_amvd_uses_clipped_mvd_cache_value() {
     let mut dec = build_test_decoder();
     let stride4 = dec.mb_width * 4;
 
-    // 左邻 4x4: mvd_x=+200,mvd_y=-200, 期望缓存截断为 (+70,-70).
+    // 左邻 4x4: mvd_x=+200,mvd_y=-200, 期望缓存截断为幅值 (+70,+70).
     dec.set_mvd_block_4x4(0, 4, 4, 4, 200, -200, 0);
-    // 上邻 4x4: mvd_x=-300,mvd_y=300, 期望缓存截断为 (-70,+70).
+    // 上邻 4x4: mvd_x=-300,mvd_y=300, 期望缓存截断为幅值 (+70,+70).
     dec.set_mvd_block_4x4(4, 0, 4, 4, -300, 300, 0);
     dec.set_l0_motion_block_4x4(0, 4, 4, 4, 0, 0, 0);
     dec.set_l0_motion_block_4x4(4, 0, 4, 4, 0, 0, 0);
@@ -1342,12 +1342,12 @@ fn test_cabac_amvd_uses_clipped_mvd_cache_value() {
         "mvd_cache 的 x 分量应按 FFmpeg 语义截断到 +70"
     );
     assert_eq!(
-        dec.mvd_l0_y_4x4[left_idx], -70,
-        "mvd_cache 的 y 分量应按 FFmpeg 语义截断到 -70"
+        dec.mvd_l0_y_4x4[left_idx], 70,
+        "mvd_cache 的 y 分量应按 FFmpeg 语义截断到 +70 幅值"
     );
     assert_eq!(
-        dec.mvd_l0_x_4x4[top_idx], -70,
-        "mvd_cache 的 x 分量应按 FFmpeg 语义截断到 -70"
+        dec.mvd_l0_x_4x4[top_idx], 70,
+        "mvd_cache 的 x 分量应按 FFmpeg 语义截断到 +70 幅值"
     );
     assert_eq!(
         dec.mvd_l0_y_4x4[top_idx], 70,
@@ -1374,4 +1374,30 @@ fn test_cabac_amvd_uses_mvd_cache_even_when_ref_idx_is_invalid() {
     let (amvd_x, amvd_y) = dec.compute_cabac_amvd(1, 1, 0);
     assert_eq!(amvd_x, 80, "amvd_x 应按 mvd_cache 左/上绝对值求和");
     assert_eq!(amvd_y, 100, "amvd_y 应按 mvd_cache 左/上绝对值求和");
+}
+
+#[test]
+fn test_cabac_amvd_ignores_cross_slice_neighbors() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+
+    // 目标 4x4 为 (4,4), 位于宏块 (1,1) 左上角.
+    // 左邻 (3,4) 与上邻 (4,3) 属于不同 slice, 应视为不可用.
+    let mb_00 = dec.mb_index(0, 0).expect("左上宏块索引应存在");
+    let mb_10 = dec.mb_index(1, 0).expect("上邻宏块索引应存在");
+    let mb_01 = dec.mb_index(0, 1).expect("左邻宏块索引应存在");
+    let mb_11 = dec.mb_index(1, 1).expect("目标宏块索引应存在");
+    dec.mb_slice_first_mb[mb_00] = 10;
+    dec.mb_slice_first_mb[mb_11] = 10;
+    dec.mb_slice_first_mb[mb_10] = 11;
+    dec.mb_slice_first_mb[mb_01] = 12;
+
+    dec.set_mvd_block_4x4(12, 16, 4, 4, 33, 44, 0); // 左邻 (x4=3,y4=4)
+    dec.set_mvd_block_4x4(16, 12, 4, 4, 55, 66, 0); // 上邻 (x4=4,y4=3)
+
+    let (amvd_x, amvd_y) = dec.compute_cabac_amvd(4, 4, 0);
+    assert_eq!(amvd_x, 0, "跨 slice 左/上邻居不应贡献 amvd_x");
+    assert_eq!(amvd_y, 0, "跨 slice 左/上邻居不应贡献 amvd_y");
 }

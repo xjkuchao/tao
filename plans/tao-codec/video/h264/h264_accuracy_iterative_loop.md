@@ -435,3 +435,59 @@
   - `cargo test -p tao-codec decoders::h264::tests:: -- --nocapture` 全通过(`186 passed`).
 - 判定: `有效修复(与参考实现语义对齐, 主目标无回归)`.
 - 下一子功能: `1-1` (继续定位 `data/2.mp4` frame1 首失配, 聚焦 P-slice partition_count=4 的 ref_idx/mvd 上下文时序).
+
+### 9.13 Round-11 记录(1-1: frame1 首失配定向诊断与无效路径回滚)
+
+- 子功能: `1-1`.
+- 对比结论: `存在差异`, 但本轮尝试路径均未形成可提交修复.
+- 诊断事实:
+  - `data/2.mp4` 首失配稳定在 frame1.
+  - 首个误差 MB 稳定在 `(109,9)`, 路径为 `PInter + p_mb_type=2(P_8x16)`.
+  - 该 MB `cbp_luma=0`, Y 仅来自运动补偿(非 luma 残差).
+  - MB 局部误差表现为小幅偏差(`max_err=1`)后在后续帧放大.
+- 本轮实验:
+  - 实验 A: 1088 非裁剪对齐诊断(`TAO_H264_OUTPUT_CODED_SIZE` + FFmpeg `apply_cropping=0`).
+  - 实验 B: 双侧关闭去块(Tao `TAO_SKIP_DEBLOCK=1` + FFmpeg `skip_loop_filter=all`).
+  - 实验 C: 关闭 `P_8x16` part=1 对角快捷预测, 强制回退 median.
+- 结果:
+  - 实验 A/B 未消除 frame1 首失配, 仅有轻微波动.
+  - 实验 C 精度显著下降:
+    - `data/2.mp4` 20 帧: `95.284645% -> 79.787928%`.
+  - 判定该方向为无效修复.
+- 处理:
+  - 全部临时代码与诊断开关实现已回滚.
+  - 回到基线:
+    - `data/2.mp4` 20 帧: `95.284645%`(恢复).
+- 判定: `无效修复(已回滚)`.
+- 下一子功能: `1-1` (继续聚焦 frame1 的 P_8x16 运动补偿链路, 优先排查 MC/MVP 与 FFmpeg 的逐分区一致性).
+
+### 9.14 Round-12 记录(1-1: CABAC amvd 跨 slice 邻居可用性门控对齐 FFmpeg)
+
+- 子功能: `1-1`.
+- 对比结论: `不一致`.
+  - Tao 的 `compute_cabac_amvd` 只按边界判断左/上邻居可用, 未过滤跨 slice 邻居.
+  - FFmpeg 的 `decode_cabac_mb_mvd` 读取的是当前 MB 局部 `mvd_cache` 邻居项, 该缓存构建时已按 slice 可用性过滤不可用邻居.
+- 逻辑证据:
+  - FFmpeg `libavcodec/h264_cabac.c`:
+    - `DECODE_CABAC_MB_MVD` 仅累加 `mvd_cache[scan8[n]-1/-8]`.
+  - FFmpeg `libavcodec/h264_mvpred.h`:
+    - 邻居提取路径将不可用(含边界/切片不可达)位置折叠为不可用候选, 不应把跨 slice 运动信息泄漏进当前上下文.
+  - Tao 直接读取全帧 4x4 MVD 缓存时若不加 slice 门控, 可能在跨 slice 边界引入错误 `ctxIdxInc`.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/macroblock_state.rs`
+    - `compute_cabac_amvd` 新增同 slice 门控:
+      - 左邻: `left_neighbor_available_4x4 && same_slice_4x4(cur, left)`.
+      - 上邻: `top_neighbor_available_4x4 && same_slice_4x4(cur, top)`.
+  - 文件: `crates/tao-codec/src/decoders/h264/tests/prediction.rs`
+    - 新增 `test_cabac_amvd_ignores_cross_slice_neighbors`.
+- 精度变化:
+  - `data/2.mp4`:
+    - 20 帧: `95.284645%` (持平)
+    - 67 帧: `85.109306%` (持平)
+  - `data/1.mp4`:
+    - 10 帧: `100.000000%` (持平)
+- 测试结果:
+  - `cargo test -p tao-codec test_cabac_amvd_ -- --nocapture` 通过(3 passed).
+  - `cargo test -p tao-codec decoders::h264::tests:: -- --nocapture` 全通过(`187 passed`).
+- 判定: `有效修复(与参考实现语义对齐, 主目标无回归)`.
+- 下一子功能: `1-1` (继续聚焦 frame1 的 `P_8x16` 首失配, 下一轮优先核对 subpel 插值与边界采样的实现细节).
