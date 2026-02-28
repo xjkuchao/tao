@@ -610,6 +610,7 @@ impl H264Decoder {
             let mb_x = mb_idx % self.mb_width;
             let mb_y = mb_idx / self.mb_width;
             self.clear_mb_mvd_cache(mb_x, mb_y);
+            self.clear_mb_motion_cache(mb_x, mb_y);
             let skip = self.decode_b_mb_skip_flag(cabac, ctxs, mb_x, mb_y);
 
             if skip {

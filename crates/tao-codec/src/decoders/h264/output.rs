@@ -421,7 +421,7 @@ impl H264Decoder {
         let mut empty_missing_ranks = Vec::new();
         let mut padded_ranks = Vec::new();
         let mut out = Vec::with_capacity(target);
-        let pad_pic = refs.last().copied();
+        let pad_pic = refs.first().copied();
         for rank in 0..target {
             if let Some(pic) = refs.get(rank).copied() {
                 out.push(Self::reference_to_planes(pic));
@@ -431,7 +431,7 @@ impl H264Decoder {
             } else {
                 padded_ranks.push(rank);
                 if let Some(pic) = pad_pic {
-                    // 对齐 FFmpeg: 当 active_ref 数量大于实际列表长度时, 复用最后一个有效参考.
+                    // 对齐 FFmpeg 缺失引用回退策略: 缺失项回退到默认参考(首个条目).
                     out.push(Self::reference_to_planes(pic));
                 } else {
                     out.push(self.zero_reference_planes());
@@ -448,7 +448,7 @@ impl H264Decoder {
         }
         for &rank in &padded_ranks {
             warn!(
-                "H264: L0 参考列表不够长, rank={} refs_len={}, 复用最后一个有效参考补位",
+                "H264: L0 参考列表不够长, rank={} refs_len={}, 使用首个默认参考补位",
                 rank, refs_len
             );
         }
@@ -469,7 +469,7 @@ impl H264Decoder {
         let mut empty_missing_ranks = Vec::new();
         let mut padded_ranks = Vec::new();
         let mut out = Vec::with_capacity(target);
-        let pad_pic = refs.last().copied();
+        let pad_pic = refs.first().copied();
         for rank in 0..target {
             if let Some(pic) = refs.get(rank).copied() {
                 out.push(Self::reference_to_planes(pic));
@@ -479,7 +479,7 @@ impl H264Decoder {
             } else {
                 padded_ranks.push(rank);
                 if let Some(pic) = pad_pic {
-                    // 对齐 FFmpeg: 当 active_ref 数量大于实际列表长度时, 复用最后一个有效参考.
+                    // 对齐 FFmpeg 缺失引用回退策略: 缺失项回退到默认参考(首个条目).
                     out.push(Self::reference_to_planes(pic));
                 } else {
                     out.push(self.zero_reference_planes());
@@ -496,7 +496,7 @@ impl H264Decoder {
         }
         for &rank in &padded_ranks {
             warn!(
-                "H264: L1 参考列表不够长, rank={} refs_len={}, 复用最后一个有效参考补位",
+                "H264: L1 参考列表不够长, rank={} refs_len={}, 使用首个默认参考补位",
                 rank, refs_len
             );
         }

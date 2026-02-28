@@ -656,24 +656,24 @@ impl H264Decoder {
             // 不能要求 L0/L1 同时为 0.
             let force_zero_l0 = col_zero && ref_idx_l0 == Some(0);
             let force_zero_l1 = col_zero && ref_idx_l1 == Some(0);
-
-            let motion_l0 = ref_idx_l0.map(|ref_idx| {
-                let (mv_l0_x, mv_l0_y) =
-                    Self::spatial_direct_mv_from_neighbors(&l0_cands, ref_idx, 0, 0);
-                BMotion {
-                    mv_x: if force_zero_l0 { 0 } else { mv_l0_x },
-                    mv_y: if force_zero_l0 { 0 } else { mv_l0_y },
-                    ref_idx,
-                }
+            let raw_l0 = ref_idx_l0.map(|ref_idx| {
+                let (mv_x, mv_y) = Self::spatial_direct_mv_from_neighbors(&l0_cands, ref_idx, 0, 0);
+                (ref_idx, mv_x, mv_y)
             });
-            let motion_l1 = ref_idx_l1.map(|ref_idx| {
-                let (mv_l1_x, mv_l1_y) =
-                    Self::spatial_direct_mv_from_neighbors(&l1_cands, ref_idx, 0, 0);
-                BMotion {
-                    mv_x: if force_zero_l1 { 0 } else { mv_l1_x },
-                    mv_y: if force_zero_l1 { 0 } else { mv_l1_y },
-                    ref_idx,
-                }
+            let raw_l1 = ref_idx_l1.map(|ref_idx| {
+                let (mv_x, mv_y) = Self::spatial_direct_mv_from_neighbors(&l1_cands, ref_idx, 0, 0);
+                (ref_idx, mv_x, mv_y)
+            });
+
+            let motion_l0 = raw_l0.map(|(ref_idx, mv_l0_x, mv_l0_y)| BMotion {
+                mv_x: if force_zero_l0 { 0 } else { mv_l0_x },
+                mv_y: if force_zero_l0 { 0 } else { mv_l0_y },
+                ref_idx,
+            });
+            let motion_l1 = raw_l1.map(|(ref_idx, mv_l1_x, mv_l1_y)| BMotion {
+                mv_x: if force_zero_l1 { 0 } else { mv_l1_x },
+                mv_y: if force_zero_l1 { 0 } else { mv_l1_y },
+                ref_idx,
             });
 
             return (motion_l0, motion_l1);
@@ -962,6 +962,7 @@ impl H264Decoder {
             let mb_x = mb_idx % self.mb_width;
             let mb_y = mb_idx / self.mb_width;
             self.clear_mb_mvd_cache(mb_x, mb_y);
+            self.clear_mb_motion_cache(mb_x, mb_y);
             let skip = self.decode_p_mb_skip_flag(cabac, ctxs, mb_x, mb_y);
 
             if skip {
