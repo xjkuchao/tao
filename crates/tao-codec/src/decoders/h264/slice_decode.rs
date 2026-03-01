@@ -146,7 +146,6 @@ impl H264Decoder {
         } else {
             init_contexts_pb_slice(header.slice_qp, header.cabac_init_idc)
         };
-        let _num_ref_idx_l1 = header.num_ref_idx_l1;
 
         let total_mbs = self.mb_width * self.mb_height;
         let first = header.first_mb as usize;
