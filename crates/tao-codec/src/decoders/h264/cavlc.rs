@@ -5,11 +5,12 @@
 //!
 //! VLC 表数据来源: ITU-T H.264 Table 9-5 ~ Table 9-10.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tao_core::bitreader::BitReader;
 use tao_core::{TaoError, TaoResult};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 static COEFF_TOKEN_FALLBACK_COUNT: AtomicUsize = AtomicUsize::new(0);
+static TOTAL_ZEROS_FALLBACK_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 // ============================================================
 // coeff_token VLC 表 (H.264 Table 9-5)
@@ -235,6 +236,18 @@ fn coeff_token_fallback_tables(primary_table: usize) -> &'static [usize] {
     }
 }
 
+fn coeff_token_fallback_enabled() -> bool {
+    std::env::var("TAO_H264_CAVLC_ALLOW_COEFF_TOKEN_FALLBACK")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn total_zeros_fallback_enabled() -> bool {
+    std::env::var("TAO_H264_CAVLC_ALLOW_TOTAL_ZEROS_FALLBACK")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// 解码 coeff_token, 返回 (total_coeff, trailing_ones).
 pub fn decode_coeff_token(br: &mut BitReader, nc: i32) -> TaoResult<(u8, u8)> {
     if nc == -1 {
@@ -252,6 +265,13 @@ pub fn decode_coeff_token(br: &mut BitReader, nc: i32) -> TaoResult<(u8, u8)> {
     let primary_table = select_coeff_token_table_index(nc);
     if let Ok(parsed) = decode_coeff_token_with_table(br, primary_table) {
         return Ok(parsed);
+    }
+
+    if !coeff_token_fallback_enabled() {
+        return Err(TaoError::InvalidData(format!(
+            "CAVLC coeff_token 解码失败(nC={}, table_idx={})",
+            nc, primary_table
+        )));
     }
 
     // 仅尝试相邻 VLC 表, 避免跨级别回退带来的过度容错误解码.
@@ -398,27 +418,44 @@ pub fn decode_total_zeros(
     let max_zeros = max_coeff.saturating_sub(total_coeff);
     let nb_codes = (max_zeros as usize + 1).min(16);
 
-    match decode_vlc(
+    let primary = decode_vlc(
         br,
         &TOTAL_ZEROS_LEN[tc_idx],
         &TOTAL_ZEROS_BITS[tc_idx],
         nb_codes,
-    ) {
-        Ok(idx) => Ok(idx as u8),
-        Err(primary_err) => {
-            if nb_codes < 16 {
-                if let Ok(idx) =
-                    decode_vlc(br, &TOTAL_ZEROS_LEN[tc_idx], &TOTAL_ZEROS_BITS[tc_idx], 16)
-                {
-                    if max_coeff < 16 {
-                        return Ok(idx.min(max_zeros as usize) as u8);
-                    }
-                    return Ok(idx as u8);
-                }
-            }
-            Err(primary_err)
-        }
+    );
+    if let Ok(idx) = primary {
+        return Ok(idx as u8);
     }
+
+    if !total_zeros_fallback_enabled() || nb_codes >= 16 {
+        return primary.map(|idx| idx as u8);
+    }
+
+    // 仅在显式开启时允许 total_zeros 扩表回退, 默认保持与参考实现一致.
+    if let Ok(idx) = decode_vlc(br, &TOTAL_ZEROS_LEN[tc_idx], &TOTAL_ZEROS_BITS[tc_idx], 16) {
+        if std::env::var("TAO_H264_CAVLC_TRACE_FALLBACK")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+        {
+            let seq = TOTAL_ZEROS_FALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
+            if seq < 64 {
+                println!(
+                    "[H264-CAVLC-FALLBACK] kind=total_zeros tc={} max_coeff={} nb_codes={} bits_read={}",
+                    total_coeff,
+                    max_coeff,
+                    nb_codes,
+                    br.bits_read()
+                );
+            }
+        }
+        if max_coeff < 16 {
+            return Ok(idx.min(max_zeros as usize) as u8);
+        }
+        return Ok(idx as u8);
+    }
+
+    primary.map(|idx| idx as u8)
 }
 
 // ============================================================

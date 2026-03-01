@@ -3,6 +3,8 @@
 //! 提供 coded_block_pattern 映射表、nC 上下文计算、
 //! 以及 CAVLC 亮度/色度残差的 MB 级解码接口.
 
+use std::cell::Cell;
+
 use super::*;
 
 // ============================================================
@@ -44,11 +46,27 @@ const I4X4_SCAN_ORDER: [(usize, usize); 16] = [
 /// I_8x8 预测模式遍历顺序 (左上, 右上, 左下, 右下).
 const I8X8_SCAN_ORDER: [(usize, usize); 4] = [(0, 0), (1, 0), (0, 1), (1, 1)];
 
+thread_local! {
+    static CAVLC_BLOCK_ERROR_FLAG: Cell<bool> = const { Cell::new(false) };
+}
+
 // ============================================================
 // nC 上下文计算
 // ============================================================
 
 impl H264Decoder {
+    pub(super) fn reset_cavlc_block_error(&self) {
+        CAVLC_BLOCK_ERROR_FLAG.with(|flag| flag.set(false));
+    }
+
+    pub(super) fn take_cavlc_block_error(&self) -> bool {
+        CAVLC_BLOCK_ERROR_FLAG.with(|flag| {
+            let value = flag.get();
+            flag.set(false);
+            value
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn decode_cavlc_residual_block_or_zero(
         &self,
@@ -57,12 +75,19 @@ impl H264Decoder {
         max_num_coeff: usize,
         coeffs: &mut [i32],
         scene: &str,
-        _coord_x: usize,
-        _coord_y: usize,
+        coord_x: usize,
+        coord_y: usize,
     ) -> u8 {
         match cavlc::decode_cavlc_residual_block(br, nc, max_num_coeff, coeffs) {
             Ok(tc) => tc,
             Err(err) => {
+                if std::env::var("TAO_H264_TRACE_CAVLC_ERRORS").as_deref() == Ok("1") {
+                    eprintln!(
+                        "[H264-CAVLC-ERR] frame_num={} scene={} x={} y={} nc={} max_coeff={} err={}",
+                        self.last_frame_num, scene, coord_x, coord_y, nc, max_num_coeff, err
+                    );
+                }
+                CAVLC_BLOCK_ERROR_FLAG.with(|flag| flag.set(true));
                 let total_coeff_overflow_i16x16 = scene == "i16x16_luma_ac"
                     && max_num_coeff == 15
                     && err
@@ -215,12 +240,12 @@ impl H264Decoder {
         for &(sub_x, sub_y) in &I4X4_SCAN_ORDER {
             let x4 = mb_x * 4 + sub_x;
             let y4 = mb_y * 4 + sub_y;
-            let left = if self.left_neighbor_available_4x4(x4, y4) {
+            let left = if self.left_neighbor_available_4x4_intra(x4, y4) {
                 i16::from(self.get_i4x4_mode(x4 - 1, y4))
             } else {
                 -1
             };
-            let top = if self.top_neighbor_available_4x4(x4, y4) {
+            let top = if self.top_neighbor_available_4x4_intra(x4, y4) {
                 i16::from(self.get_i4x4_mode(x4, y4 - 1))
             } else {
                 -1
@@ -257,8 +282,8 @@ impl H264Decoder {
         mb_y: usize,
     ) -> [u8; 4] {
         let mut modes = [2u8; 4];
-        let mb_left_avail = self.left_avail(mb_x, mb_y);
-        let mb_top_avail = self.top_avail(mb_x, mb_y);
+        let mb_left_avail = self.left_avail_intra_pred(mb_x, mb_y);
+        let mb_top_avail = self.top_avail_intra_pred(mb_x, mb_y);
         for &(block_x, block_y) in &I8X8_SCAN_ORDER {
             let x4 = mb_x * 4 + block_x * 2;
             let y4 = mb_y * 4 + block_y * 2;
@@ -345,8 +370,11 @@ impl H264Decoder {
                 let py = mb_y * 16 + abs_sub_y * 4;
                 let x4 = mb_x * 4 + abs_sub_x;
                 let y4 = mb_y * 4 + abs_sub_y;
+                let mb_idx = mb_y * self.mb_width + mb_x;
+                let sub_idx = abs_sub_y * 4 + abs_sub_x;
 
                 let mode = pred_modes[abs_sub_y * 4 + abs_sub_x];
+                let trace_i4x4 = self.should_trace_i4x4_block(mb_x, mb_y, abs_sub_x, abs_sub_y);
                 self.predict_i4x4_block_with_tr_unavail_fix(
                     mb_x, mb_y, abs_sub_x, abs_sub_y, px, py, mode,
                 );
@@ -354,10 +382,37 @@ impl H264Decoder {
                 if !has_residual_8x8 {
                     self.set_luma_cbf(x4, y4, false);
                     self.set_nz_count_luma(x4, y4, 0);
+                    if trace_i4x4 {
+                        let final_block = self.read_luma_4x4_block(px, py);
+                        eprintln!(
+                            "[H264-I4X4-RES] frame_num={} mb_idx={} sub=({},{}#{}) mode={} qp={} bypass={} nc=- tc=0 raw=none used=none final={:?}",
+                            self.last_frame_num,
+                            mb_idx,
+                            abs_sub_x,
+                            abs_sub_y,
+                            sub_idx,
+                            mode,
+                            qp,
+                            transform_bypass,
+                            final_block
+                        );
+                    }
                     continue;
                 }
 
                 let nc = self.calc_luma_nc(x4, y4);
+                let has_left = x4 > 0 && (x4 % 4 != 0 || self.left_avail(x4 / 4, y4 / 4));
+                let has_top = y4 > 0 && (y4 % 4 != 0 || self.top_avail(x4 / 4, y4 / 4));
+                let na = if has_left {
+                    self.get_nz_count_luma(x4 - 1, y4) as i32
+                } else {
+                    -1
+                };
+                let nb = if has_top {
+                    self.get_nz_count_luma(x4, y4 - 1) as i32
+                } else {
+                    -1
+                };
                 let mut coeffs = [0i32; 16];
                 let tc = self.decode_cavlc_residual_block_or_zero(
                     br,
@@ -368,6 +423,7 @@ impl H264Decoder {
                     x4,
                     y4,
                 );
+                let raw_coeffs = coeffs;
                 self.set_nz_count_luma(x4, y4, tc);
                 let coded = tc > 0;
                 self.set_luma_cbf(x4, y4, coded);
@@ -383,8 +439,32 @@ impl H264Decoder {
                         py,
                         &coeffs,
                     );
+                    if trace_i4x4 {
+                        let final_block = self.read_luma_4x4_block(px, py);
+                        eprintln!(
+                            "[H264-I4X4-RES] frame_num={} mb_idx={} sub=({},{}#{}) mode={} qp={} bypass={} nc={} has_left={} na={} has_top={} nb={} tc={} raw={:?} used={:?} final={:?}",
+                            self.last_frame_num,
+                            mb_idx,
+                            abs_sub_x,
+                            abs_sub_y,
+                            sub_idx,
+                            mode,
+                            qp,
+                            transform_bypass,
+                            nc,
+                            has_left,
+                            na,
+                            has_top,
+                            nb,
+                            tc,
+                            raw_coeffs,
+                            raw_coeffs,
+                            final_block
+                        );
+                    }
                 } else {
                     residual::dequant_4x4_ac_with_scaling(&mut coeffs, qp, &luma_scaling_4x4);
+                    let used_coeffs = coeffs;
                     residual::apply_4x4_ac_residual(
                         &mut self.ref_y,
                         self.stride_y,
@@ -392,6 +472,29 @@ impl H264Decoder {
                         py,
                         &coeffs,
                     );
+                    if trace_i4x4 {
+                        let final_block = self.read_luma_4x4_block(px, py);
+                        eprintln!(
+                            "[H264-I4X4-RES] frame_num={} mb_idx={} sub=({},{}#{}) mode={} qp={} bypass={} nc={} has_left={} na={} has_top={} nb={} tc={} raw={:?} used={:?} final={:?}",
+                            self.last_frame_num,
+                            mb_idx,
+                            abs_sub_x,
+                            abs_sub_y,
+                            sub_idx,
+                            mode,
+                            qp,
+                            transform_bypass,
+                            nc,
+                            has_left,
+                            na,
+                            has_top,
+                            nb,
+                            tc,
+                            raw_coeffs,
+                            used_coeffs,
+                            final_block
+                        );
+                    }
                 }
             }
             self.set_luma_8x8_cbf(mb_x * 2 + x8x8, mb_y * 2 + y8x8, coded_8x8);
@@ -434,10 +537,10 @@ impl H264Decoder {
             ],
         ];
 
-        let has_left_mb = self.left_avail(mb_x, mb_y);
-        let has_top_mb = self.top_avail(mb_x, mb_y);
+        let has_left_mb = self.left_avail_intra_pred(mb_x, mb_y);
+        let has_top_mb = self.top_avail_intra_pred(mb_x, mb_y);
         let has_top_right_mb = if mb_x + 1 < self.mb_width {
-            self.top_avail(mb_x + 1, mb_y)
+            self.top_right_avail_intra_pred(mb_x, mb_y)
         } else {
             false
         };
@@ -1040,16 +1143,8 @@ impl H264Decoder {
         let (luma_cbp, chroma_cbp) = Self::decode_cavlc_cbp(br, is_intra);
         self.set_mb_cbp(mb_x, mb_y, luma_cbp | (chroma_cbp << 4));
 
-        let has_residual = luma_cbp != 0 || chroma_cbp != 0;
-        if has_residual {
-            let qp_delta = read_se(br).unwrap_or(0);
-            self.prev_qp_delta_nz = qp_delta != 0;
-            *cur_qp = wrap_qp((*cur_qp + qp_delta) as i64);
-        } else {
-            self.prev_qp_delta_nz = false;
-        }
-
-        // Inter 宏块: 若 PPS 允许 8x8 变换且 luma_cbp != 0, 读取 transform_size_8x8_flag
+        // Inter 宏块: 若 PPS 允许 8x8 变换且 luma_cbp != 0, 读取 transform_size_8x8_flag.
+        // 语法顺序必须先于 mb_qp_delta, 否则会导致位流消费错位.
         let use_8x8 = if !is_intra && luma_cbp != 0 && no_sub_mb_part_size_less_than_8x8_flag {
             let pps_8x8 = self
                 .pps
@@ -1065,6 +1160,15 @@ impl H264Decoder {
             false
         };
         self.set_transform_8x8_flag(mb_x, mb_y, use_8x8);
+
+        let has_residual = luma_cbp != 0 || chroma_cbp != 0;
+        if has_residual {
+            let qp_delta = read_se(br).unwrap_or(0);
+            self.prev_qp_delta_nz = qp_delta != 0;
+            *cur_qp = wrap_qp((*cur_qp + qp_delta) as i64);
+        } else {
+            self.prev_qp_delta_nz = false;
+        }
 
         if luma_cbp != 0 {
             if use_8x8 {
@@ -1121,8 +1225,8 @@ impl H264Decoder {
         self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
         self.set_transform_8x8_flag(mb_x, mb_y, false);
 
-        let has_left = self.left_avail(mb_x, mb_y);
-        let has_top = self.top_avail(mb_x, mb_y);
+        let has_left = self.left_avail_intra_pred(mb_x, mb_y);
+        let has_top = self.top_avail_intra_pred(mb_x, mb_y);
 
         if raw_mb_type == 0 {
             // I_4x4

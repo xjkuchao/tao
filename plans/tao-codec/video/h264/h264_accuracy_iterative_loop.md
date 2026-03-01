@@ -752,3 +752,116 @@
   - `TAO_H264_COMPARE_INPUT=data/h264_samples/e9_cavlc_baseline2.mp4 ...` 10 帧通过, `SCORE=36.828409`.
 - 判定: `有效修复(逻辑正确性优先: 修复了 trailing_bits 判定错误, 主目标与回归集无回退)`.
 - 下一子功能: `2-1` (继续定位 E1/E9 的首失配, 优先排查 MP4 路径与 AnnexB 路径在 CAVLC 样本上的差异链路).
+
+### 9.22 Round-20 记录(2-1: C1 首帧首失配从 MB 级下钻到 4x4 子块, 验证 tr_not_avail 分支)
+
+- 子功能: `2-1` (CAVLC I-slice 帧内链路下钻).
+- 对比结论: `存在差异, 尚未形成有效修复`.
+  - `c1` 首帧基线:
+    - `SCORE=25.042390%`, `first_mismatch=0`.
+    - 在默认去块下, 首个误差 MB 为 `MB(45,1)`.
+  - 关闭双方去块(`TAO_SKIP_DEBLOCK=1 + TAO_H264_COMPARE_FF_SKIP_DEBLOCK=1`)后:
+    - 首个误差 MB 前移定位为 `MB(45,2)`, 说明根因在去块前链路, 非去块滤波主因.
+- 本轮新增诊断能力:
+  - 文件: `crates/tao-codec/src/decoders/h264/macroblock_intra.rs`
+    - 新增 `TAO_H264_TRACE_I4X4_BLOCK=frame,mb[,sub|x:y|all]` 精确跟踪 4x4 预测输入/输出.
+    - 新增 `read_luma_4x4_block` 辅助读取重建块, 用于残差后快照.
+  - 文件: `crates/tao-codec/src/decoders/h264/cavlc_mb.rs`
+    - 在 I4x4 残差路径输出目标子块 `raw/used/final` 快照.
+  - 文件: `plans/tao-codec/video/h264/decoder_compare.rs`
+    - 首个误差 MB 像素 diff 由 `8` 行扩展为 `16` 行, 便于定位底部 4x4 漏差.
+- 定位证据:
+  - `MB(45,1)` 的误差仅出现在底部少量像素(`dy14/dy15`), 属于连锁放大前的微差.
+  - 去块关闭后首个误差 `MB(45,2)` 全 MB 扩散, 命中 `mb_idx=205` 的 I4x4 子块链.
+  - `mb_idx=205` 追踪中命中 `mode=7 + tr_not_avail` 的关键分支(`sub=(3,2)`), 需要继续与 FFmpeg 行为逐项对齐验证.
+  - `mb_idx=205/sub(0,0)` 的 `nC` 取值为 `5(na=4, nb=5)`, 当前未发现邻居可用性判定异常, 差异更可能来自残差语法/系数解码链路.
+- 修复试验(无效, 已回滚):
+  - 试验: 去掉 `tr_not_avail` 对 `(abs_sub_x,abs_sub_y)=(3,2)` 的触发条件.
+  - 结果: `c1` 首帧精度明显下降:
+    - 默认去块: `25.042390% -> 18.318866%`
+    - 双方去块关闭: `24.540654% -> 17.851418%`
+  - 判定: `无效修复`, 已恢复该改动.
+- 当前判定:
+  - `逻辑证据成立`: 首个可见差异入口已稳定收敛到 `MB(45,2)` 去块前 I4x4 路径.
+  - `修复尚未完成`: 需继续核对 `MB(45,2)` 的 mode/coeff 链路与 FFmpeg 一致性.
+- 下一子功能: `2-2` (对 `MB(45,2)` 逐 4x4 子块做 "mode + nC + coeff_token/level" 对齐核查, 优先验证 CAVLC level/suffix_length 演进路径).
+
+### 9.23 Round-21 记录(2-2: 对齐 coeff_token 主路径, 默认关闭跨表回退)
+
+- 子功能: `2-2` (CAVLC coeff_token 路径与参考实现对齐).
+- 对比结论: `存在实现差异`.
+  - Tao 当前 `decode_coeff_token` 在主表解码失败后, 会尝试相邻 VLC 表回退.
+  - FFmpeg 与 OpenH264 的主路径均为: 按 `nC` 映射到唯一表/固定 6bit FLC, 失败即报错, 不进行跨表回退.
+    - FFmpeg 参考: `libavcodec/h264_cavlc.c` 中 `coeff_token_vlc[table_index]` 直接解码.
+    - OpenH264 参考: `parse_mb_syn_cavlc.cpp` 中 `g_kuiNcMapTable[nC]` 选择表, `nC>=8` 直接读 6bit.
+- 逻辑证据:
+  - 在 `c1` 首帧解码过程中, 开启 `TAO_H264_CAVLC_TRACE_FALLBACK=1` 可观测到跨表回退实际触发:
+    - `nc=8 primary=3 fallback=2`
+    - `nc=7 primary=2 fallback=1`
+  - 该行为属于容错扩展, 非 H.264 CAVLC 常规语义, 容易引入静默错解码.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/cavlc.rs`.
+  - 新增 `coeff_token_fallback_enabled()`, 由环境变量 `TAO_H264_CAVLC_ALLOW_COEFF_TOKEN_FALLBACK` 控制.
+  - 默认关闭跨表回退; 仅在显式开启时才执行原相邻表回退逻辑.
+- 精度变化:
+  - `c1`(10 帧):
+    - 默认关闭回退: `11.787659%`
+    - 强制开启回退: `11.768613%`
+    - 关闭回退小幅提升.
+  - `data/1.mp4`(30 帧): `100.000000%` (持平)
+  - `data/2.mp4`(30 帧): `100.000000%` (持平)
+- 测试结果:
+  - `TAO_H264_COMPARE_INPUT=data/h264_samples/c1_cavlc_baseline_720p.mp4 TAO_H264_COMPARE_FRAMES=1 TAO_H264_COMPARE_TRACE_PTS=1 ...` 通过, 并确认 compare 帧0对应 Tao `seen_idx=2, pts=0`.
+  - `TAO_H264_COMPARE_INPUT=data/h264_samples/c1_cavlc_baseline_720p.mp4 TAO_H264_COMPARE_FRAMES=10 ...` 通过.
+  - `TAO_H264_COMPARE_INPUT=data/1.mp4 TAO_H264_COMPARE_FRAMES=30 ...` 通过.
+  - `TAO_H264_COMPARE_INPUT=data/2.mp4 TAO_H264_COMPARE_FRAMES=30 ...` 通过.
+- 判定: `有效修复(逻辑正确性优先: 对齐参考实现并消除非标准静默回退路径, 主目标无回退且次要目标小幅改善)`.
+- 下一子功能: `2-3` (继续下钻 `MB(45,2)` 的 level_prefix/suffix_length 演进, 核查 `decode_level` 边界分支与参考实现一致性).
+
+### 9.24 Round-22 记录(2-3: total_zeros 扩表回退改为默认关闭)
+
+- 子功能: `2-3` (CAVLC `total_zeros` 主路径对齐).
+- 对比结论: `存在实现差异`.
+  - Tao 在 `decode_total_zeros` 主表解码失败时, 会尝试 `nb_codes=16` 的扩表回退并 `clamp`.
+  - FFmpeg/OpenH264 主路径均为: 按当前 `total_coeff/max_num_coeff` 约束使用对应表, 失败即报错, 不做扩表静默回退.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/cavlc.rs`.
+  - 新增 `total_zeros_fallback_enabled()`, 由 `TAO_H264_CAVLC_ALLOW_TOTAL_ZEROS_FALLBACK` 控制.
+  - 默认关闭扩表回退; 仅显式开启时保留原容错路径.
+- 精度变化:
+  - `c1`(10 帧): `10.739576% -> 10.683485%` (小幅下降).
+  - `data/1.mp4`(30 帧): `100.000000%` (持平).
+  - `data/2.mp4`(30 帧): `100.000000%` (持平).
+- 判定: `有效修复(逻辑正确性优先: 对齐参考实现语义, 主目标无回退; 次要目标小幅波动, 后续联动复核)`.
+- 下一子功能: `2-3` (继续处理 CAVLC 残差错误后的连锁扩散问题).
+
+### 9.25 Round-23 记录(2-3: 残差 block 解码错误触发 slice 级中止, 阻断连锁扩散)
+
+- 子功能: `2-3` (CAVLC 残差错误处理链路).
+- 对比结论: `不一致`.
+  - Tao 原实现在 `decode_cavlc_residual_block_or_zero` 出错后返回 `tc=0/15` 并继续同 slice 后续解析.
+  - 该路径在未知剩余比特长度前提下继续消费, 易造成同 slice 连锁错位, 放大后续 `coeff_token/total_zeros/run_before` 异常.
+  - FFmpeg 路径在残差语法错误时会返回失败并中止当前解码路径, 不会在错误状态下继续推进同一语法链.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/cavlc_mb.rs`.
+    - 新增线程局部错误标志:
+      - `reset_cavlc_block_error()`
+      - `take_cavlc_block_error()`
+    - 在 `decode_cavlc_residual_block_or_zero` 解码失败时置位错误标志.
+  - 文件: `crates/tao-codec/src/decoders/h264/slice_decode.rs`.
+    - 每个 MB 开始前重置错误标志.
+    - 在 I/P/B CAVLC 路径关键分支读取残差后检查标志, 若命中则:
+      - 记录宏块解码错误(`mb_type=252`).
+      - 中止当前 slice 的后续 MB 解码, 避免错误扩散.
+- 验证证据:
+  - 开启 `TAO_H264_TRACE_CAVLC_ERRORS=1` 后, `c1` 每帧错误日志从“单帧多处连锁报错”收敛为“每帧首个错误即停止扩散”.
+- 精度变化:
+  - `c1`(10 帧): `10.683485% -> 11.434889%` (提升).
+  - `data/1.mp4`(30 帧): `100.000000%` (持平).
+  - `data/2.mp4`(30 帧): `100.000000%` (持平).
+- 测试结果:
+  - `TAO_H264_COMPARE_INPUT=data/h264_samples/c1_cavlc_baseline_720p.mp4 TAO_H264_COMPARE_FRAMES=10 ...` 通过.
+  - `TAO_H264_COMPARE_INPUT=data/1.mp4 TAO_H264_COMPARE_FRAMES=30 ...` 通过.
+  - `TAO_H264_COMPARE_INPUT=data/2.mp4 TAO_H264_COMPARE_FRAMES=30 ...` 通过.
+- 判定: `有效修复(逻辑正确性与精度双向成立: 阻断错误连锁扩散且次要目标提升, 主目标无回归)`.
+- 下一子功能: `2-4` (继续定位 frame1 首个残差错误点: `frame_num=1, mb=(7,5), scene=chroma_u_ac`, 对齐 `nC/coeff_token/total_zeros` 逐项解析).
