@@ -531,6 +531,9 @@ impl H264Decoder {
             {
                 return Some((mv_x, mv_y, col_ref_idx, 1, col_pic));
             }
+            // 对齐 FFmpeg temporal direct:
+            // 共定位块为 intra/无可用运动时, 不能回退到当前帧邻居预测 MV, 应按零向量处理.
+            return Some((0, 0, 0, 0, col_pic));
         }
 
         // list1 共定位不可用时, 回退到 list0[0] 共定位宏块.
@@ -547,6 +550,8 @@ impl H264Decoder {
             {
                 return Some((mv_x, mv_y, col_ref_idx, 1, col_pic));
             }
+            // list0 回退共定位图也应保持同语义.
+            return Some((0, 0, 0, 0, col_pic));
         }
 
         None
