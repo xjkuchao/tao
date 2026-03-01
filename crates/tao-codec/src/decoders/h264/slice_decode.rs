@@ -39,8 +39,7 @@ impl H264Decoder {
                 self.last_slice_beta_offset_div2 = header.slice_beta_offset_div2;
                 let prev_frame_num_for_poc =
                     self.fill_frame_num_gaps_if_needed(&header, prev_frame_num);
-                let computed_poc = self.compute_slice_poc(&header, prev_frame_num_for_poc);
-                self.last_poc = computed_poc;
+                self.last_poc = self.compute_slice_poc(&header, prev_frame_num_for_poc);
                 self.last_frame_num = header.frame_num;
                 self.last_dec_ref_pic_marking = std::mem::take(&mut header.dec_ref_pic_marking);
                 self.decode_slice_data(&rbsp, &header);

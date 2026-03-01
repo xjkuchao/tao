@@ -114,8 +114,9 @@
 - [x] 小块 65: `mod.rs` 在 `activate_parameter_sets` 中移除 `prev_pps` 整体克隆, 改为借用 `self.pps` 计算 `rebuild_action`.
 - [x] 小块 66: `output.rs` 清理 `apply_ref_pic_list_modifications` 中恒等的重复截断分支, 减少无效判断.
 - [x] 小块 67: `slice_decode.rs` 删除 CABAC 路径中无效占位变量 `_num_ref_idx_l1`.
+- [x] 小块 68: `slice_decode.rs` 删除 `computed_poc` 中间变量并直接写入 `last_poc`.
 - [x] 质量门禁全量回归(`fmt/clippy/check/test/doc`).
-- [ ] 小块 68+: 继续推进剩余性能收敛.
+- [ ] 小块 69+: 继续推进剩余性能收敛.
 
 ## 6. 本轮结果
 
@@ -140,6 +141,7 @@
   - 小块 65 的增量 16+2 验证保持 `100.000000%`.
   - 小块 66 的增量 16+2 验证保持 `100.000000%`.
   - 小块 67 的增量 16+2 验证保持 `100.000000%`.
+  - 小块 68 的增量 16+2 验证保持 `100.000000%`.
   - 提交前全量门禁已通过:
     - `cargo fmt --all -- --check`
     - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
