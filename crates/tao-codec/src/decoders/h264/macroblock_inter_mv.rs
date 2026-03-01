@@ -110,18 +110,25 @@ impl H264Decoder {
         }
         let nbr_x4 = nbr_x4 as usize;
         let nbr_y4 = nbr_y4 as usize;
-        if self.motion_l0_4x4_index(nbr_x4, nbr_y4).is_none()
-            || !self.same_slice_4x4(cur_x4, cur_y4, nbr_x4, nbr_y4)
-        {
+        let Some(idx) = self.motion_l0_4x4_index(nbr_x4, nbr_y4) else {
+            return MotionNeighbor::PartNotAvailable;
+        };
+        if !self.same_slice_4x4(cur_x4, cur_y4, nbr_x4, nbr_y4) {
             return MotionNeighbor::PartNotAvailable;
         }
-        match self.l0_motion_candidate_4x4(nbr_x4 as isize, nbr_y4 as isize) {
-            Some((mv_x, mv_y, ref_idx)) => MotionNeighbor::Available {
-                mv_x,
-                mv_y,
-                ref_idx,
-            },
-            None => MotionNeighbor::ListNotUsed,
+        let ref_idx = self.ref_idx_l0_4x4.get(idx).copied().unwrap_or(-1);
+        if ref_idx == -2 {
+            return MotionNeighbor::PartNotAvailable;
+        }
+        if ref_idx < 0 {
+            return MotionNeighbor::ListNotUsed;
+        }
+        let mv_x = self.mv_l0_x_4x4.get(idx).copied().unwrap_or(0) as i32;
+        let mv_y = self.mv_l0_y_4x4.get(idx).copied().unwrap_or(0) as i32;
+        MotionNeighbor::Available {
+            mv_x,
+            mv_y,
+            ref_idx,
         }
     }
 
@@ -138,18 +145,25 @@ impl H264Decoder {
         }
         let nbr_x4 = nbr_x4 as usize;
         let nbr_y4 = nbr_y4 as usize;
-        if self.motion_l1_4x4_index(nbr_x4, nbr_y4).is_none()
-            || !self.same_slice_4x4(cur_x4, cur_y4, nbr_x4, nbr_y4)
-        {
+        let Some(idx) = self.motion_l1_4x4_index(nbr_x4, nbr_y4) else {
+            return MotionNeighbor::PartNotAvailable;
+        };
+        if !self.same_slice_4x4(cur_x4, cur_y4, nbr_x4, nbr_y4) {
             return MotionNeighbor::PartNotAvailable;
         }
-        match self.l1_motion_candidate_4x4(nbr_x4 as isize, nbr_y4 as isize) {
-            Some((mv_x, mv_y, ref_idx)) => MotionNeighbor::Available {
-                mv_x,
-                mv_y,
-                ref_idx,
-            },
-            None => MotionNeighbor::ListNotUsed,
+        let ref_idx = self.ref_idx_l1_4x4.get(idx).copied().unwrap_or(-1);
+        if ref_idx == -2 {
+            return MotionNeighbor::PartNotAvailable;
+        }
+        if ref_idx < 0 {
+            return MotionNeighbor::ListNotUsed;
+        }
+        let mv_x = self.mv_l1_x_4x4.get(idx).copied().unwrap_or(0) as i32;
+        let mv_y = self.mv_l1_y_4x4.get(idx).copied().unwrap_or(0) as i32;
+        MotionNeighbor::Available {
+            mv_x,
+            mv_y,
+            ref_idx,
         }
     }
 

@@ -562,6 +562,7 @@ impl H264Decoder {
                     // 对齐 FFmpeg 的 ref_cache 写入时序:
                     // 先写 [1]/[8]/[9], 保留 [0] 到该 sub 真正开始解码 mvd 前再写入,
                     // 避免未来 sub 的左上 4x4 过早参与当前 sub 的 nC 候选.
+                    self.set_l0_motion_block_4x4(sub_x, sub_y, 4, 4, 0, 0, -2);
                     self.set_l0_motion_block_4x4(sub_x + 4, sub_y, 4, 4, 0, 0, ref_idx_i8);
                     self.set_l0_motion_block_4x4(sub_x, sub_y + 4, 4, 4, 0, 0, ref_idx_i8);
                     self.set_l0_motion_block_4x4(sub_x + 4, sub_y + 4, 4, 4, 0, 0, ref_idx_i8);
