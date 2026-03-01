@@ -6,35 +6,6 @@ use super::super::{H264Decoder, NalUnit};
 
 use super::helpers::*;
 
-struct ScopedEnvVar {
-    key: &'static str,
-    prev: Option<String>,
-}
-
-impl ScopedEnvVar {
-    fn set(key: &'static str, value: &str) -> Self {
-        let prev = std::env::var(key).ok();
-        // SAFETY: 单元测试串行场景下, 本地短时设置环境变量用于定向覆盖分支.
-        unsafe {
-            std::env::set_var(key, value);
-        }
-        Self { key, prev }
-    }
-}
-
-impl Drop for ScopedEnvVar {
-    fn drop(&mut self) {
-        // SAFETY: 与 set 对称恢复原值, 仅用于当前测试进程.
-        unsafe {
-            if let Some(prev) = &self.prev {
-                std::env::set_var(self.key, prev);
-            } else {
-                std::env::remove_var(self.key);
-            }
-        }
-    }
-}
-
 #[test]
 fn test_decode_cavlc_slice_data_p_skip_run_reconstructs_from_l0_prediction() {
     let mut dec = build_test_decoder();
@@ -925,8 +896,8 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_uses_mvp_from_left_neighbo
 fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_8x4_part1_prefers_left_neighbor() {
     use ExpGolombValue::{Se, Ue};
 
-    let _dir_guard = ScopedEnvVar::set("TAO_H264_USE_DIR_SUB_8X4", "1");
     let mut dec = build_test_decoder();
+    dec.set_dir_sub_mv_predictor_for_test(true, false);
     dec.width = 32;
     dec.height = 32;
     dec.init_buffers();
@@ -980,8 +951,8 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_8x4_part1_prefers_left_nei
 fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_4x8_part1_prefers_diagonal_neighbor() {
     use ExpGolombValue::{Se, Ue};
 
-    let _dir_guard = ScopedEnvVar::set("TAO_H264_USE_DIR_SUB_4X8", "1");
     let mut dec = build_test_decoder();
+    dec.set_dir_sub_mv_predictor_for_test(false, true);
     dec.width = 32;
     dec.height = 32;
     dec.init_buffers();

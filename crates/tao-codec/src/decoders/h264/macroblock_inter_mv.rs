@@ -95,35 +95,8 @@ impl H264Decoder {
         if matches!(c, MotionNeighbor::PartNotAvailable) {
             c = self.l1_motion_neighbor_state(x4, y4, x4 as isize - 1, y4 as isize - 1, ref_idx);
         }
-        let pred = Self::predict_motion_from_neighbors(a, b, c, ref_idx);
-        let trace_this_mb = std::env::var("TAO_H264_TRACE_CAVLC_MB")
-            .ok()
-            .and_then(|v| {
-                let mut it = v.split(',');
-                let frame = it.next()?.parse::<u32>().ok()?;
-                let target_mb = it.next()?.parse::<usize>().ok()?;
-                Some((frame, target_mb))
-            })
-            .map(|(frame, target_mb)| self.last_frame_num == frame && mb_idx == target_mb)
-            .unwrap_or(false);
-        if trace_this_mb {
-            eprintln!(
-                "[H264-MVP-L1] frame_num={} poc={} mb_idx={} part_x4={} part_y4={} part_w4={} ref_idx={} A={:?} B={:?} C={:?} pred=({}, {})",
-                self.last_frame_num,
-                self.last_poc,
-                mb_idx,
-                part_x4,
-                part_y4,
-                part_w4,
-                ref_idx,
-                a,
-                b,
-                c,
-                pred.0,
-                pred.1
-            );
-        }
-        pred
+        let _ = mb_idx;
+        Self::predict_motion_from_neighbors(a, b, c, ref_idx)
     }
 
     fn l0_motion_neighbor_state(
@@ -269,9 +242,6 @@ impl H264Decoder {
         part: usize,
         ref_idx: i8,
     ) -> (i32, i32) {
-        if std::env::var("TAO_H264_DISABLE_L0_DIR_MVP").as_deref() == Ok("1") {
-            return self.predict_mv_l0_partition(mb_x, mb_y, 0, part * 2, 4, ref_idx);
-        }
         let x4 = mb_x * 4;
         let y4 = mb_y * 4 + part * 2;
         if part == 0 {
@@ -304,9 +274,6 @@ impl H264Decoder {
         part: usize,
         ref_idx: i8,
     ) -> (i32, i32) {
-        if std::env::var("TAO_H264_DISABLE_L0_DIR_MVP").as_deref() == Ok("1") {
-            return self.predict_mv_l0_partition(mb_x, mb_y, part * 2, 0, 2, ref_idx);
-        }
         let x4 = mb_x * 4 + part * 2;
         let y4 = mb_y * 4;
         if part == 0 {
@@ -360,7 +327,7 @@ impl H264Decoder {
         part: usize,
         ref_idx: i8,
     ) -> (i32, i32) {
-        if std::env::var("TAO_H264_USE_DIR_SUB_8X4").as_deref() == Ok("1") {
+        if self.use_dir_sub_8x4 {
             let x4 = mb_x * 4 + sub_part_x4;
             let y4 = mb_y * 4 + sub_part_y4 + part;
             if part == 0 {
@@ -397,7 +364,7 @@ impl H264Decoder {
         part: usize,
         ref_idx: i8,
     ) -> (i32, i32) {
-        if std::env::var("TAO_H264_USE_DIR_SUB_4X8").as_deref() == Ok("1") {
+        if self.use_dir_sub_4x8 {
             let x4 = mb_x * 4 + sub_part_x4 + part;
             let y4 = mb_y * 4 + sub_part_y4;
             if part == 0 {
@@ -450,9 +417,6 @@ impl H264Decoder {
         part: usize,
         ref_idx: i8,
     ) -> (i32, i32) {
-        if std::env::var("TAO_H264_DISABLE_L1_DIR_MVP").as_deref() == Ok("1") {
-            return self.predict_mv_l1_partition(mb_x, mb_y, 0, part * 2, 4, ref_idx);
-        }
         let x4 = mb_x * 4;
         let y4 = mb_y * 4 + part * 2;
         if part == 0 {
@@ -481,9 +445,6 @@ impl H264Decoder {
         part: usize,
         ref_idx: i8,
     ) -> (i32, i32) {
-        if std::env::var("TAO_H264_DISABLE_L1_DIR_MVP").as_deref() == Ok("1") {
-            return self.predict_mv_l1_partition(mb_x, mb_y, part * 2, 0, 2, ref_idx);
-        }
         let x4 = mb_x * 4 + part * 2;
         let y4 = mb_y * 4;
         if part == 0 {
@@ -716,11 +677,7 @@ impl H264Decoder {
             h,
             mv_x_qpel,
             mv_y_qpel,
-            if self.weighted_pred_disabled() {
-                None
-            } else {
-                p_l0_weight(l0_weights, ref_idx)
-            },
+            p_l0_weight(l0_weights, ref_idx),
             luma_log2_weight_denom,
             chroma_log2_weight_denom,
         );

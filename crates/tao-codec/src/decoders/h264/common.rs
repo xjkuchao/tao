@@ -151,19 +151,6 @@ pub(super) fn sample_h264_luma_qpel(
     frac_x: u8,
     frac_y: u8,
 ) -> u8 {
-    if std::env::var("TAO_H264_USE_LUMA_BILINEAR").as_deref() == Ok("1") {
-        return sample_bilinear_clamped(
-            src,
-            stride,
-            src_w,
-            src_h,
-            base_x,
-            base_y,
-            frac_x & 3,
-            frac_y & 3,
-            4,
-        );
-    }
     let dx = usize::from(frac_x & 3);
     let dy = usize::from(frac_y & 3);
     let f = |ox: i32, oy: i32| -> i32 {

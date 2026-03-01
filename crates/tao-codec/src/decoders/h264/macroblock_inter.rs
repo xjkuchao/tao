@@ -14,14 +14,6 @@ impl H264Decoder {
     }
 
     fn spatial_direct_l1_col_zero_fallback_enabled(&self) -> bool {
-        if let Ok(v) = std::env::var("TAO_H264_FORCE_COL_ZERO_L1_FALLBACK") {
-            if v == "1" {
-                return true;
-            }
-            if v == "0" {
-                return false;
-            }
-        }
         // 对齐 FFmpeg: 仅当能确认 x264_build > 33 时, 才允许 col_zero_flag 走 list1 回退.
         // 对未知编码器(无 x264 build 信息)按禁用处理, 避免在旧流上误触发该分支.
         self.last_sei_payloads
@@ -994,20 +986,6 @@ impl H264Decoder {
     ) {
         self.prev_qp_delta_nz = false;
         let mut cur_qp = slice_qp;
-        let trace_range = std::env::var("TAO_H264_TRACE_P_MB_RANGE")
-            .ok()
-            .and_then(|v| {
-                let mut it = v.split(',');
-                let frame = it.next()?.parse::<u32>().ok()?;
-                let start = it.next()?.parse::<usize>().ok()?;
-                let end = it.next()?.parse::<usize>().ok()?;
-                Some((frame, start, end))
-            });
-        let ignore_terminate = std::env::var("TAO_H264_IGNORE_TERMINATE_FRAME")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .map(|frame| self.last_frame_num == frame)
-            .unwrap_or(false);
         for mb_idx in first..total {
             self.mark_mb_slice_first_mb(mb_idx, slice_first_mb);
             self.set_mb_skip_flag(mb_idx, false);
@@ -1016,20 +994,9 @@ impl H264Decoder {
             self.clear_mb_mvd_cache(mb_x, mb_y);
             self.clear_mb_motion_cache(mb_x, mb_y);
             let skip = self.decode_p_mb_skip_flag(cabac, ctxs, mb_x, mb_y);
-            let should_trace_mb = trace_range
-                .map(|(frame, start, end)| {
-                    self.last_frame_num == frame && mb_idx >= start && mb_idx <= end
-                })
-                .unwrap_or(false);
 
             if skip {
                 self.set_mb_skip_flag(mb_idx, true);
-                if should_trace_mb {
-                    eprintln!(
-                        "[H264-P-MB] frame_num={} mb_idx={} skip=1 mb_type=SKIP",
-                        self.last_frame_num, mb_idx
-                    );
-                }
                 self.decode_p_skip_mb(
                     mb_x,
                     mb_y,
@@ -1039,12 +1006,6 @@ impl H264Decoder {
                     chroma_log2_weight_denom,
                 );
             } else if let Some(p_mb_type) = self.decode_p_mb_type(cabac, ctxs, mb_x, mb_y) {
-                if should_trace_mb {
-                    eprintln!(
-                        "[H264-P-MB] frame_num={} mb_idx={} skip=0 mb_type=P{}",
-                        self.last_frame_num, mb_idx, p_mb_type
-                    );
-                }
                 self.decode_p_inter_mb(
                     cabac,
                     ctxs,
@@ -1070,12 +1031,6 @@ impl H264Decoder {
                     mb_x,
                     mb_y,
                 );
-                if should_trace_mb {
-                    eprintln!(
-                        "[H264-P-MB] frame_num={} mb_idx={} skip=0 mb_type=INTRA({})",
-                        self.last_frame_num, mb_idx, intra_mb_type
-                    );
-                }
                 self.mb_types[mb_idx] = intra_mb_type as u8;
                 if intra_mb_type == 0 {
                     self.decode_i_4x4_mb(cabac, ctxs, mb_x, mb_y, &mut cur_qp);
@@ -1092,17 +1047,7 @@ impl H264Decoder {
                 self.mb_qp[mb_idx] = cur_qp;
             }
             // 对齐 FFmpeg/OpenH264: CABAC end_of_slice_flag 在每个 MB 后都需要解码.
-            let terminate = if ignore_terminate {
-                false
-            } else {
-                cabac.decode_terminate() == 1
-            };
-            if should_trace_mb {
-                eprintln!(
-                    "[H264-P-MB] frame_num={} mb_idx={} terminate={}",
-                    self.last_frame_num, mb_idx, terminate
-                );
-            }
+            let terminate = cabac.decode_terminate() == 1;
             if terminate {
                 break;
             }
