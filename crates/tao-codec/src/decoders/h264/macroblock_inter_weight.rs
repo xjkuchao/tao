@@ -203,6 +203,75 @@ impl H264Decoder {
         let trace_this_mb = trace_detail
             .map(|(frame, target_mb)| self.last_frame_num == frame && mb_idx == target_mb)
             .unwrap_or(false);
+        if trace_this_mb {
+            let l0_summary: Vec<String> = ref_l0_list
+                .iter()
+                .enumerate()
+                .map(|(idx, r)| {
+                    format!(
+                        "#{}:fn={} poc={} lt={:?}",
+                        idx, r.frame_num, r.poc, r.long_term_frame_idx
+                    )
+                })
+                .collect();
+            eprintln!(
+                "[H264-P-DETAIL] frame_num={} poc={} mb_idx={} num_ref_idx_l0={} l0_len={} l0={}",
+                self.last_frame_num,
+                self.last_poc,
+                mb_idx,
+                num_ref_idx_l0,
+                ref_l0_list.len(),
+                l0_summary.join(" | ")
+            );
+        }
+        let last_frame_num = self.last_frame_num;
+        let trace_motion = |stage: &str,
+                            ref_idx: u32,
+                            px_x: usize,
+                            px_y: usize,
+                            w: usize,
+                            h: usize,
+                            pred_mv_x: i32,
+                            pred_mv_y: i32,
+                            amvd_x: i32,
+                            amvd_y: i32,
+                            mvd_x: i32,
+                            mvd_y: i32,
+                            mv_x: i32,
+                            mv_y: i32| {
+            if !trace_this_mb {
+                return;
+            }
+            let ref_detail = ref_l0_list
+                .get(ref_idx as usize)
+                .map(|r| {
+                    format!(
+                        "fn={} poc={} lt={:?}",
+                        r.frame_num, r.poc, r.long_term_frame_idx
+                    )
+                })
+                .unwrap_or_else(|| "fn=? poc=? lt=?".to_string());
+            eprintln!(
+                "[H264-P-MV] frame_num={} mb_idx={} stage={} pos=({}, {}) size={}x{} ref_idx={} {} pred=({}, {}) amvd=({}, {}) mvd=({}, {}) mv=({}, {})",
+                last_frame_num,
+                mb_idx,
+                stage,
+                px_x,
+                px_y,
+                w,
+                h,
+                ref_idx,
+                ref_detail,
+                pred_mv_x,
+                pred_mv_y,
+                amvd_x,
+                amvd_y,
+                mvd_x,
+                mvd_y,
+                mv_x,
+                mv_y
+            );
+        };
         let parse_target_mb = |key: &str| {
             std::env::var(key)
                 .ok()
@@ -250,6 +319,22 @@ impl H264Decoder {
                 self.set_mvd_block_4x4(mb_x * 16, mb_y * 16, 16, 16, mvd_x, mvd_y, 0);
                 final_mv_x = pred_mv_x + mvd_x;
                 final_mv_y = pred_mv_y + mvd_y;
+                trace_motion(
+                    "P16x16",
+                    final_ref_idx,
+                    mb_x * 16,
+                    mb_y * 16,
+                    16,
+                    16,
+                    pred_mv_x,
+                    pred_mv_y,
+                    amvd_x,
+                    amvd_y,
+                    mvd_x,
+                    mvd_y,
+                    final_mv_x,
+                    final_mv_y,
+                );
                 self.apply_inter_block_l0(
                     ref_l0_list,
                     final_ref_idx,
@@ -310,6 +395,27 @@ impl H264Decoder {
                     self.set_mvd_block_4x4(mb_x * 16, mb_y * 16 + y_off, 16, 8, mvd_x, mvd_y, 0);
                     let mv_x = part_pred_mv_x + mvd_x;
                     let mv_y = part_pred_mv_y + mvd_y;
+                    let stage = if part == 0 {
+                        "P16x8-part0"
+                    } else {
+                        "P16x8-part1"
+                    };
+                    trace_motion(
+                        stage,
+                        ref_idx,
+                        mb_x * 16,
+                        mb_y * 16 + y_off,
+                        16,
+                        8,
+                        part_pred_mv_x,
+                        part_pred_mv_y,
+                        amvd_x,
+                        amvd_y,
+                        mvd_x,
+                        mvd_y,
+                        mv_x,
+                        mv_y,
+                    );
                     self.apply_inter_block_l0(
                         ref_l0_list,
                         ref_idx,
@@ -374,6 +480,27 @@ impl H264Decoder {
                     self.set_mvd_block_4x4(mb_x * 16 + x_off, mb_y * 16, 8, 16, mvd_x, mvd_y, 0);
                     let mv_x = part_pred_mv_x + mvd_x;
                     let mv_y = part_pred_mv_y + mvd_y;
+                    let stage = if part == 0 {
+                        "P8x16-part0"
+                    } else {
+                        "P8x16-part1"
+                    };
+                    trace_motion(
+                        stage,
+                        ref_idx,
+                        mb_x * 16 + x_off,
+                        mb_y * 16,
+                        8,
+                        16,
+                        part_pred_mv_x,
+                        part_pred_mv_y,
+                        amvd_x,
+                        amvd_y,
+                        mvd_x,
+                        mvd_y,
+                        mv_x,
+                        mv_y,
+                    );
                     self.apply_inter_block_l0(
                         ref_l0_list,
                         ref_idx,
@@ -430,15 +557,14 @@ impl H264Decoder {
                             self.last_frame_num, mb_idx, sub, ref_idx
                         );
                     }
-                    self.set_l0_motion_block_4x4(
-                        mb_x * 16 + (sub & 1) * 8,
-                        mb_y * 16 + (sub >> 1) * 8,
-                        8,
-                        8,
-                        0,
-                        0,
-                        ref_idx_i8,
-                    );
+                    let sub_x = mb_x * 16 + (sub & 1) * 8;
+                    let sub_y = mb_y * 16 + (sub >> 1) * 8;
+                    // 对齐 FFmpeg 的 ref_cache 写入时序:
+                    // 先写 [1]/[8]/[9], 保留 [0] 到该 sub 真正开始解码 mvd 前再写入,
+                    // 避免未来 sub 的左上 4x4 过早参与当前 sub 的 nC 候选.
+                    self.set_l0_motion_block_4x4(sub_x + 4, sub_y, 4, 4, 0, 0, ref_idx_i8);
+                    self.set_l0_motion_block_4x4(sub_x, sub_y + 4, 4, 4, 0, 0, ref_idx_i8);
+                    self.set_l0_motion_block_4x4(sub_x + 4, sub_y + 4, 4, 4, 0, 0, ref_idx_i8);
                 }
 
                 for sub in 0..4usize {
@@ -447,6 +573,15 @@ impl H264Decoder {
                     let sy = (sub >> 1) * 8;
                     let ref_idx = ref_idx_sub[sub];
                     let ref_idx_i8 = ref_idx.min(i8::MAX as u32) as i8;
+                    self.set_l0_motion_block_4x4(
+                        mb_x * 16 + sx,
+                        mb_y * 16 + sy,
+                        4,
+                        4,
+                        0,
+                        0,
+                        ref_idx_i8,
+                    );
                     match sub_type {
                         0 => {
                             let (pred_mv_x, pred_mv_y) = self.predict_mv_l0_partition(
@@ -465,6 +600,23 @@ impl H264Decoder {
                             self.set_mvd_block_4x4(px_x, px_y, 8, 8, mvd_x, mvd_y, 0);
                             let mv_x = pred_mv_x + mvd_x;
                             let mv_y = pred_mv_y + mvd_y;
+                            let stage = format!("P8x8-sub{}-8x8", sub);
+                            trace_motion(
+                                stage.as_str(),
+                                ref_idx,
+                                px_x,
+                                px_y,
+                                8,
+                                8,
+                                pred_mv_x,
+                                pred_mv_y,
+                                amvd_x,
+                                amvd_y,
+                                mvd_x,
+                                mvd_y,
+                                mv_x,
+                                mv_y,
+                            );
                             self.apply_inter_block_l0(
                                 ref_l0_list,
                                 ref_idx,
@@ -501,6 +653,23 @@ impl H264Decoder {
                                 self.set_mvd_block_4x4(px_x, px_y, 8, 4, mvd_x, mvd_y, 0);
                                 let mv_x = pred_mv_x + mvd_x;
                                 let mv_y = pred_mv_y + mvd_y;
+                                let stage = format!("P8x8-sub{}-8x4-part{}", sub, part);
+                                trace_motion(
+                                    stage.as_str(),
+                                    ref_idx,
+                                    px_x,
+                                    px_y,
+                                    8,
+                                    4,
+                                    pred_mv_x,
+                                    pred_mv_y,
+                                    amvd_x,
+                                    amvd_y,
+                                    mvd_x,
+                                    mvd_y,
+                                    mv_x,
+                                    mv_y,
+                                );
                                 self.apply_inter_block_l0(
                                     ref_l0_list,
                                     ref_idx,
@@ -538,6 +707,23 @@ impl H264Decoder {
                                 self.set_mvd_block_4x4(px_x, px_y, 4, 8, mvd_x, mvd_y, 0);
                                 let mv_x = pred_mv_x + mvd_x;
                                 let mv_y = pred_mv_y + mvd_y;
+                                let stage = format!("P8x8-sub{}-4x8-part{}", sub, part);
+                                trace_motion(
+                                    stage.as_str(),
+                                    ref_idx,
+                                    px_x,
+                                    px_y,
+                                    4,
+                                    8,
+                                    pred_mv_x,
+                                    pred_mv_y,
+                                    amvd_x,
+                                    amvd_y,
+                                    mvd_x,
+                                    mvd_y,
+                                    mv_x,
+                                    mv_y,
+                                );
                                 self.apply_inter_block_l0(
                                     ref_l0_list,
                                     ref_idx,
@@ -578,6 +764,23 @@ impl H264Decoder {
                                     self.set_mvd_block_4x4(px_x, px_y, 4, 4, mvd_x, mvd_y, 0);
                                     let mv_x = pred_mv_x + mvd_x;
                                     let mv_y = pred_mv_y + mvd_y;
+                                    let stage = format!("P8x8-sub{}-4x4-{}{}", sub, part_x, part_y);
+                                    trace_motion(
+                                        stage.as_str(),
+                                        ref_idx,
+                                        px_x,
+                                        px_y,
+                                        4,
+                                        4,
+                                        pred_mv_x,
+                                        pred_mv_y,
+                                        amvd_x,
+                                        amvd_y,
+                                        mvd_x,
+                                        mvd_y,
+                                        mv_x,
+                                        mv_y,
+                                    );
                                     self.apply_inter_block_l0(
                                         ref_l0_list,
                                         ref_idx,
@@ -631,10 +834,7 @@ impl H264Decoder {
         if trace_this_mb {
             eprintln!(
                 "[H264-P-DETAIL] frame_num={} mb_idx={} no_sub_lt8={} transform8x8={}",
-                self.last_frame_num,
-                mb_idx,
-                no_sub_mb_part_size_less_than_8x8_flag,
-                parsed_use_8x8
+                self.last_frame_num, mb_idx, no_sub_mb_part_size_less_than_8x8_flag, parsed_use_8x8
             );
         }
 
@@ -700,11 +900,31 @@ impl H264Decoder {
     ) {
         self.prev_qp_delta_nz = false;
         let mut cur_qp = slice_qp;
+        let trace_detail = std::env::var("TAO_H264_TRACE_B_MB_DETAIL")
+            .ok()
+            .and_then(|v| {
+                let mut it = v.split(',');
+                let first = it.next()?;
+                let second = it.next();
+                if let Some(mb) = second {
+                    let frame = first.parse::<u32>().ok()?;
+                    let target_mb = mb.parse::<usize>().ok()?;
+                    Some((Some(frame), target_mb))
+                } else {
+                    let target_mb = first.parse::<usize>().ok()?;
+                    Some((None, target_mb))
+                }
+            });
         for mb_idx in first..total {
             self.mark_mb_slice_first_mb(mb_idx, slice_first_mb);
             self.set_mb_skip_flag(mb_idx, false);
             let mb_x = mb_idx % self.mb_width;
             let mb_y = mb_idx / self.mb_width;
+            let trace_this_mb = trace_detail
+                .map(|(frame, target_mb)| {
+                    mb_idx == target_mb && frame.map(|f| self.last_frame_num == f).unwrap_or(true)
+                })
+                .unwrap_or(false);
             self.clear_mb_mvd_cache(mb_x, mb_y);
             self.clear_mb_motion_cache(mb_x, mb_y);
             let skip = self.decode_b_mb_skip_flag(cabac, ctxs, mb_x, mb_y);
@@ -745,6 +965,21 @@ impl H264Decoder {
                 self.mv_l0_y[mb_idx] = mv_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
                 self.ref_idx_l0[mb_idx] = ref_idx;
                 self.prev_qp_delta_nz = false;
+                if trace_this_mb {
+                    eprintln!(
+                        "[H264-B-DETAIL] frame_num={} mb_idx={} skip=1 direct_spatial={} mb_type={} mv_l0=({},{} ref={}) mv_l1=({},{} ref={})",
+                        self.last_frame_num,
+                        mb_idx,
+                        direct_spatial_mv_pred_flag,
+                        self.mb_types.get(mb_idx).copied().unwrap_or(0),
+                        self.mv_l0_x.get(mb_idx).copied().unwrap_or(0),
+                        self.mv_l0_y.get(mb_idx).copied().unwrap_or(0),
+                        self.ref_idx_l0.get(mb_idx).copied().unwrap_or(-1),
+                        self.mv_l1_x.get(mb_idx).copied().unwrap_or(0),
+                        self.mv_l1_y.get(mb_idx).copied().unwrap_or(0),
+                        self.ref_idx_l1.get(mb_idx).copied().unwrap_or(-1),
+                    );
+                }
             } else {
                 match self.decode_b_mb_type(cabac, ctxs, mb_x, mb_y) {
                     BMbType::Intra => {
