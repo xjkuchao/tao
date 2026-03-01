@@ -120,8 +120,9 @@
 - [x] 小块 71: `output.rs` 删除参考队列收敛路径中两处 `pop_front` 无效返回值绑定.
 - [x] 小块 72: `output.rs` 删除 `store_reference_with_marking` 中 `remove_*` 调用的无效返回值绑定.
 - [x] 小块 73: `macroblock_inter_mv.rs` 删除 `predict_mv_l1_partition` 中未使用 `mb_idx` 计算.
+- [x] 小块 74: `macroblock_inter_cache.rs` 删除 `decode_b_inter_mb` direct 子分区路径中无效运动返回值临时变量.
 - [x] 质量门禁全量回归(`fmt/clippy/check/test/doc`).
-- [ ] 小块 74+: 继续推进剩余性能收敛.
+- [ ] 小块 75+: 继续推进剩余性能收敛.
 
 ## 6. 本轮结果
 
@@ -152,6 +153,7 @@
   - 小块 71 的增量 16+2 验证保持 `100.000000%`.
   - 小块 72 的增量 16+2 验证保持 `100.000000%`.
   - 小块 73 的增量 16+2 验证保持 `100.000000%`.
+  - 小块 74 的增量 16+2 验证保持 `100.000000%`.
   - 提交前全量门禁已通过:
     - `cargo fmt --all -- --check`
     - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
