@@ -5,8 +5,12 @@
 //!
 //! VLC 表数据来源: ITU-T H.264 Table 9-5 ~ Table 9-10.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tao_core::bitreader::BitReader;
 use tao_core::{TaoError, TaoResult};
+
+static COEFF_TOKEN_FALLBACK_COUNT: AtomicUsize = AtomicUsize::new(0);
+static TOTAL_ZEROS_FALLBACK_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 // ============================================================
 // coeff_token VLC 表 (H.264 Table 9-5)
@@ -188,7 +192,13 @@ fn decode_vlc(br: &mut BitReader, lens: &[u8], bits: &[u8], nb_codes: usize) -> 
             br.skip_bits(best_len as u32)?;
             Ok(idx)
         }
-        None => Err(TaoError::InvalidData("CAVLC VLC 码字匹配失败".into())),
+        None => Err(TaoError::InvalidData(format!(
+            "CAVLC VLC 码字匹配失败(avail_bits={}, peek=0b{:0width$b}, nb_codes={})",
+            avail,
+            peeked,
+            nb_codes,
+            width = avail as usize
+        ))),
     }
 }
 
@@ -232,6 +242,18 @@ fn coeff_token_fallback_tables(primary_table: usize) -> &'static [usize] {
     }
 }
 
+fn coeff_token_fallback_enabled() -> bool {
+    std::env::var("TAO_H264_CAVLC_ALLOW_COEFF_TOKEN_FALLBACK")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn total_zeros_fallback_enabled() -> bool {
+    std::env::var("TAO_H264_CAVLC_ALLOW_TOTAL_ZEROS_FALLBACK")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// 解码 coeff_token, 返回 (total_coeff, trailing_ones).
 pub fn decode_coeff_token(br: &mut BitReader, nc: i32) -> TaoResult<(u8, u8)> {
     if nc == -1 {
@@ -251,9 +273,31 @@ pub fn decode_coeff_token(br: &mut BitReader, nc: i32) -> TaoResult<(u8, u8)> {
         return Ok(parsed);
     }
 
+    if !coeff_token_fallback_enabled() {
+        return Err(TaoError::InvalidData(format!(
+            "CAVLC coeff_token 解码失败(nC={}, table_idx={})",
+            nc, primary_table
+        )));
+    }
+
     // 仅尝试相邻 VLC 表, 避免跨级别回退带来的过度容错误解码.
     for &table_idx in coeff_token_fallback_tables(primary_table) {
         if let Ok(parsed) = decode_coeff_token_with_table(br, table_idx) {
+            if std::env::var("TAO_H264_CAVLC_TRACE_FALLBACK")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+            {
+                let idx = COEFF_TOKEN_FALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
+                if idx < 64 {
+                    println!(
+                        "[H264-CAVLC-FALLBACK] nc={} primary={} fallback={} bits_read={}",
+                        nc,
+                        primary_table,
+                        table_idx,
+                        br.bits_read()
+                    );
+                }
+            }
             return Ok(parsed);
         }
     }
@@ -312,7 +356,7 @@ fn decode_level(
     };
 
     let mut level_code = ((prefix.min(15) as i32) << *suffix_length) + level_suffix;
-    if prefix >= 15 && *suffix_length == 0 {
+    if prefix == 15 && *suffix_length == 0 {
         level_code += 15;
     }
     if prefix >= 16 {
@@ -380,27 +424,48 @@ pub fn decode_total_zeros(
     let max_zeros = max_coeff.saturating_sub(total_coeff);
     let nb_codes = (max_zeros as usize + 1).min(16);
 
-    match decode_vlc(
+    let primary = decode_vlc(
         br,
         &TOTAL_ZEROS_LEN[tc_idx],
         &TOTAL_ZEROS_BITS[tc_idx],
         nb_codes,
-    ) {
-        Ok(idx) => Ok(idx as u8),
-        Err(primary_err) => {
-            if nb_codes < 16 {
-                if let Ok(idx) =
-                    decode_vlc(br, &TOTAL_ZEROS_LEN[tc_idx], &TOTAL_ZEROS_BITS[tc_idx], 16)
-                {
-                    if max_coeff < 16 {
-                        return Ok(idx.min(max_zeros as usize) as u8);
-                    }
-                    return Ok(idx as u8);
-                }
-            }
-            Err(primary_err)
-        }
+    );
+    if let Ok(idx) = primary {
+        return Ok(idx as u8);
     }
+
+    if !total_zeros_fallback_enabled() || nb_codes >= 16 {
+        return primary.map(|idx| idx as u8);
+    }
+
+    // 仅在显式开启时允许 total_zeros 扩表回退, 默认保持与参考实现一致.
+    if let Ok(idx) = decode_vlc(br, &TOTAL_ZEROS_LEN[tc_idx], &TOTAL_ZEROS_BITS[tc_idx], 16) {
+        let clamped_idx = if max_coeff < 16 {
+            idx.min(max_zeros as usize)
+        } else {
+            idx
+        };
+        if std::env::var("TAO_H264_CAVLC_TRACE_FALLBACK")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+        {
+            let seq = TOTAL_ZEROS_FALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
+            if seq < 64 {
+                println!(
+                    "[H264-CAVLC-FALLBACK] kind=total_zeros tc={} max_coeff={} nb_codes={} raw_idx={} clamped_idx={} bits_read={}",
+                    total_coeff,
+                    max_coeff,
+                    nb_codes,
+                    idx,
+                    clamped_idx,
+                    br.bits_read()
+                );
+            }
+        }
+        return Ok(clamped_idx as u8);
+    }
+
+    primary.map(|idx| idx as u8)
 }
 
 // ============================================================
@@ -416,7 +481,8 @@ pub fn decode_run_before(br: &mut BitReader, zeros_left: u8) -> TaoResult<u8> {
     let nb_codes = if table_idx < 6 {
         zeros_left as usize + 1
     } else {
-        15usize.min(zeros_left as usize + 1)
+        // zeros_left >= 7 时使用 Table 9-10 的完整 15 码字集合.
+        15
     };
     let idx = decode_vlc(br, &RUN_LEN[table_idx], &RUN_BITS[table_idx], nb_codes)?;
     Ok(idx as u8)
@@ -441,6 +507,29 @@ pub fn decode_cavlc_residual_block(
     max_num_coeff: usize,
     coeffs: &mut [i32],
 ) -> TaoResult<u8> {
+    let start_bits = br.bits_read();
+    let trace_this_block = std::env::var("TAO_H264_TRACE_CAVLC_START_BIT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .map(|target| target == start_bits)
+        .unwrap_or(false);
+    if trace_this_block {
+        let peek_len = br.bits_left().min(24) as u32;
+        let peek_bits = if peek_len > 0 {
+            br.peek_bits(peek_len).unwrap_or(0)
+        } else {
+            0
+        };
+        eprintln!(
+            "[H264-CAVLC-TRACE] start_bits={} nc={} max_num_coeff={} bits_left={} peek_len={} peek=0b{:024b}",
+            start_bits,
+            nc,
+            max_num_coeff,
+            br.bits_left(),
+            peek_len,
+            peek_bits
+        );
+    }
     debug_assert!(coeffs.len() >= max_num_coeff);
     for c in coeffs[..max_num_coeff].iter_mut() {
         *c = 0;
@@ -451,6 +540,14 @@ pub fn decode_cavlc_residual_block(
     // 1. coeff_token → (total_coeff, trailing_ones)
     let (total_coeff, trailing_ones) = decode_coeff_token(br, nc)
         .map_err(|err| TaoError::InvalidData(format!("CAVLC coeff_token 解码失败: {}", err)))?;
+    if trace_this_block {
+        eprintln!(
+            "[H264-CAVLC-TRACE] after_coeff_token bits={} total_coeff={} trailing_ones={}",
+            br.bits_read(),
+            total_coeff,
+            trailing_ones
+        );
+    }
     if total_coeff == 0 {
         return Ok(0);
     }
@@ -487,18 +584,33 @@ pub fn decode_cavlc_residual_block(
                 TaoError::InvalidData(format!("CAVLC level 解码失败(i={}): {}", i + t1, err))
             })?;
     }
+    if trace_this_block {
+        eprintln!(
+            "[H264-CAVLC-TRACE] after_levels bits={} suffix_length={} levels={:?}",
+            br.bits_read(),
+            suffix_length,
+            &level[..tc]
+        );
+    }
 
     // 4. total_zeros
     let total_zeros = if (total_coeff as usize) < max_num_coeff {
         decode_total_zeros(br, total_coeff, is_chroma_dc, max_num_coeff).map_err(|err| {
             TaoError::InvalidData(format!(
-                "CAVLC total_zeros 解码失败(total_coeff={}, max_num_coeff={}): {}",
-                total_coeff, max_num_coeff, err
+                "CAVLC total_zeros 解码失败(nc={}, total_coeff={}, trailing_ones={}, max_num_coeff={}): {}",
+                nc, total_coeff, trailing_ones, max_num_coeff, err
             ))
         })?
     } else {
         0u8
     };
+    if trace_this_block {
+        eprintln!(
+            "[H264-CAVLC-TRACE] after_total_zeros bits={} total_zeros={}",
+            br.bits_read(),
+            total_zeros
+        );
+    }
 
     // 5. run_before 与系数放置
     let mut zeros_left = total_zeros;
@@ -531,6 +643,15 @@ pub fn decode_cavlc_residual_block(
         } else {
             0
         };
+        if trace_this_block {
+            eprintln!(
+                "[H264-CAVLC-TRACE] run_step={} bits={} run={} zeros_left_before={}",
+                run_idx + 1,
+                br.bits_read(),
+                run,
+                zeros_left
+            );
+        }
         if run > zeros_left {
             return Err(TaoError::InvalidData(format!(
                 "CAVLC run_before={} 超过 zeros_left={}",
@@ -542,6 +663,13 @@ pub fn decode_cavlc_residual_block(
             .checked_sub(1 + run as usize)
             .ok_or_else(|| TaoError::InvalidData("CAVLC 扫描位置下溢".into()))?;
         coeffs[scan_pos] = *lev;
+    }
+    if trace_this_block {
+        eprintln!(
+            "[H264-CAVLC-TRACE] done bits={} coeffs={:?}",
+            br.bits_read(),
+            &coeffs[..max_num_coeff]
+        );
     }
 
     Ok(total_coeff)
@@ -615,14 +743,18 @@ mod tests {
     fn test_total_zeros_respects_max_num_coeff() {
         // total_coeff=14 时:
         // - max_num_coeff=16: total_zeros 可为 0..2, 码字 "1" 对应 total_zeros=2
-        // - max_num_coeff=15: total_zeros 仅可为 0..1, 回退路径会裁剪到 1
+        // - max_num_coeff=15: total_zeros 仅可为 0..1, 默认关闭回退时应解码失败
         let mut br = make_br(&[0b10000000]);
         let tz = decode_total_zeros(&mut br, 14, false, 16).unwrap();
         assert_eq!(tz, 2, "max_num_coeff=16 时应允许 total_zeros=2");
 
         let mut br = make_br(&[0b10000000]);
-        let tz = decode_total_zeros(&mut br, 14, false, 15).unwrap();
-        assert_eq!(tz, 1, "max_num_coeff=15 时应裁剪到 total_zeros=1");
+        let err = decode_total_zeros(&mut br, 14, false, 15).unwrap_err();
+        assert!(
+            err.to_string().contains("CAVLC VLC 码字匹配失败"),
+            "max_num_coeff=15 且默认关闭回退时应报错, got: {}",
+            err
+        );
     }
 
     #[test]

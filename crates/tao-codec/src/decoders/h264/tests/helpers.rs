@@ -19,6 +19,7 @@ pub fn build_test_pps() -> Pps {
         chroma_qp_index_offset: 0,
         second_chroma_qp_index_offset: 0,
         deblocking_filter_control: true,
+        constrained_intra_pred: false,
         pic_order_present: false,
         num_ref_idx_l0_default_active: 1,
         num_ref_idx_l1_default_active: 1,
@@ -492,6 +493,23 @@ pub fn write_se(bits: &mut Vec<bool>, value: i32) {
     write_ue(bits, code_num);
 }
 
+pub fn write_te(bits: &mut Vec<bool>, max_value: u32, value: u32) {
+    assert!(
+        value <= max_value,
+        "te(v) 测试构造值越界, value={}, max={}",
+        value,
+        max_value
+    );
+    if max_value == 0 {
+        return;
+    }
+    if max_value == 1 {
+        bits.push(value == 0);
+        return;
+    }
+    write_ue(bits, value);
+}
+
 pub fn bits_to_bytes(bits: &[bool]) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut idx = 0usize;
@@ -612,6 +630,7 @@ pub fn build_rbsp_from_ues(values: &[u32]) -> Vec<u8> {
 pub enum ExpGolombValue {
     Ue(u32),
     Se(i32),
+    Te(u32, u32),
 }
 
 pub fn build_rbsp_from_exp_golomb(values: &[ExpGolombValue]) -> Vec<u8> {
@@ -620,6 +639,7 @@ pub fn build_rbsp_from_exp_golomb(values: &[ExpGolombValue]) -> Vec<u8> {
         match value {
             ExpGolombValue::Ue(v) => write_ue(&mut bits, *v),
             ExpGolombValue::Se(v) => write_se(&mut bits, *v),
+            ExpGolombValue::Te(max, v) => write_te(&mut bits, *max, *v),
         }
     }
     bits_to_bytes(&bits)
@@ -635,6 +655,7 @@ pub fn build_rbsp_from_exp_golomb_with_tail(
         match value {
             ExpGolombValue::Ue(v) => write_ue(&mut bits, *v),
             ExpGolombValue::Se(v) => write_se(&mut bits, *v),
+            ExpGolombValue::Te(max, v) => write_te(&mut bits, *max, *v),
         }
     }
     bits.extend(tail_bits);

@@ -151,6 +151,19 @@ pub(super) fn sample_h264_luma_qpel(
     frac_x: u8,
     frac_y: u8,
 ) -> u8 {
+    if std::env::var("TAO_H264_USE_LUMA_BILINEAR").as_deref() == Ok("1") {
+        return sample_bilinear_clamped(
+            src,
+            stride,
+            src_w,
+            src_h,
+            base_x,
+            base_y,
+            frac_x & 3,
+            frac_y & 3,
+            4,
+        );
+    }
     let dx = usize::from(frac_x & 3);
     let dy = usize::from(frac_y & 3);
     let f = |ox: i32, oy: i32| -> i32 {
@@ -631,6 +644,26 @@ pub(super) fn read_se(br: &mut BitReader) -> TaoResult<i32> {
     let code = read_ue(br)?;
     let value = code.div_ceil(2) as i32;
     if code & 1 == 0 { Ok(-value) } else { Ok(value) }
+}
+
+/// 读取截断 Exp-Golomb (te(v), H.264 9.1.2).
+pub(super) fn read_te(br: &mut BitReader, max_value: u32) -> TaoResult<u32> {
+    if max_value == 0 {
+        return Ok(0);
+    }
+    if max_value == 1 {
+        // te(v) 在 max_value=1 时仅占 1bit, 映射为 val = 1 - bit.
+        let bit = br.read_bit()?;
+        return Ok(if bit == 0 { 1 } else { 0 });
+    }
+    let value = read_ue(br)?;
+    if value > max_value {
+        return Err(TaoError::InvalidData(format!(
+            "H264: 截断 Exp-Golomb 超范围, value={}, max={}",
+            value, max_value
+        )));
+    }
+    Ok(value)
 }
 
 /// QP 按 H.264 规则做 0..51 环绕.

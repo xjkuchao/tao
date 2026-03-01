@@ -484,6 +484,38 @@ fn test_reference_list_l0_with_short_term_reorder() {
 }
 
 #[test]
+fn test_reference_list_l0_reorder_keeps_length_when_reinserting_earlier_entry() {
+    let mut dec = build_test_decoder();
+    dec.last_slice_type = 0; // P slice
+    dec.last_frame_num = 10;
+    dec.last_poc = 10;
+
+    // 默认 L0 顺序: [9, 8, 7, 6]
+    push_custom_reference(&mut dec, 6, 6, 6, None);
+    push_custom_reference(&mut dec, 7, 7, 7, None);
+    push_custom_reference(&mut dec, 8, 8, 8, None);
+    push_custom_reference(&mut dec, 9, 9, 9, None);
+
+    // 第一步把 frame_num=8 放到 rank0.
+    // 第二步再次命中 frame_num=8(通过 +16 wrap 到同一 pic_num),
+    // 期望在后续插槽插入重复项并保持列表总长度不变(尾部截断).
+    let mods = [
+        RefPicListMod::ShortTermSub {
+            abs_diff_pic_num_minus1: 1,
+        },
+        RefPicListMod::ShortTermAdd {
+            abs_diff_pic_num_minus1: 15,
+        },
+    ];
+    let l0 = dec.build_reference_list_l0_with_mod(4, &mods, 10);
+    assert_eq!(l0.len(), 4, "重排序后 L0 长度应保持为 active_ref 数");
+    assert_eq!(l0[0].y[0], 8, "L0 rank0 应为第一次重排命中的 frame_num=8");
+    assert_eq!(l0[1].y[0], 8, "再次命中同一参考时应在后续槽位形成重复项");
+    assert_eq!(l0[2].y[0], 9, "原默认 rank0(frame_num=9) 应后移到 rank2");
+    assert_eq!(l0[3].y[0], 7, "列表尾部应截断最末项(frame_num=6)");
+}
+
+#[test]
 fn test_reference_list_l0_with_long_term_reorder() {
     let mut dec = build_test_decoder();
     dec.last_slice_type = 0; // P slice

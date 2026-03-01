@@ -110,7 +110,7 @@ pub(super) fn parse_pps(rbsp: &[u8]) -> TaoResult<super::Pps> {
     // deblocking_filter_control_present_flag
     let deblocking = br.read_bit()? == 1;
     // constrained_intra_pred_flag
-    let _constrained_intra_pred = br.read_bit()?;
+    let constrained_intra_pred = br.read_bit()? == 1;
     // redundant_pic_cnt_present_flag
     let redundant_pic_cnt_present = br.read_bit()? == 1;
 
@@ -142,6 +142,7 @@ pub(super) fn parse_pps(rbsp: &[u8]) -> TaoResult<super::Pps> {
         chroma_qp_index_offset,
         second_chroma_qp_index_offset,
         deblocking_filter_control: deblocking,
+        constrained_intra_pred,
         pic_order_present,
         num_ref_idx_l0_default_active,
         num_ref_idx_l1_default_active,
@@ -213,18 +214,29 @@ fn bits_for_slice_group_id(group_count: u32) -> u32 {
 
 /// 判断 RBSP 是否仍有有效语法数据 (排除 rbsp_trailing_bits).
 fn has_more_rbsp_data(br: &mut BitReader) -> bool {
-    let bits_left = br.bits_left();
-    if bits_left == 0 {
+    if br.bits_left() == 0 {
         return false;
     }
-    if bits_left > 8 {
+    let data = br.data();
+    let start_bit = br.bits_read();
+    let total_bits = data.len().saturating_mul(8);
+    if start_bit >= total_bits {
+        return false;
+    }
+
+    let bit_at = |idx: usize| -> u8 {
+        let byte = data[idx / 8];
+        (byte >> (7 - (idx % 8))) & 1
+    };
+    if bit_at(start_bit) == 0 {
         return true;
     }
-    let Ok(rest) = br.peek_bits(bits_left as u32) else {
-        return false;
-    };
-    let trailing = 1u32 << (bits_left - 1);
-    rest != trailing
+    for idx in (start_bit + 1)..total_bits {
+        if bit_at(idx) != 0 {
+            return true;
+        }
+    }
+    false
 }
 
 fn default_scaling_list_4x4_by_idx(idx: usize) -> [u8; 16] {

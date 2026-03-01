@@ -66,6 +66,7 @@ struct Pps {
     chroma_qp_index_offset: i32,
     second_chroma_qp_index_offset: i32,
     deblocking_filter_control: bool,
+    constrained_intra_pred: bool,
     pic_order_present: bool,
     num_ref_idx_l0_default_active: u32,
     num_ref_idx_l1_default_active: u32,
@@ -608,22 +609,27 @@ impl H264Decoder {
     /// 处理 PPS NAL 单元
     fn handle_pps(&mut self, nalu: &NalUnit) {
         let rbsp = nalu.rbsp();
-        if let Ok(pps) = parameter_sets::parse_pps(&rbsp) {
-            debug!(
-                "H264: PPS id={} sps={} entropy={} qp={}",
-                pps.pps_id,
-                pps.sps_id,
-                if pps.entropy_coding_mode == 1 {
-                    "CABAC"
-                } else {
-                    "CAVLC"
-                },
-                pps.pic_init_qp
-            );
-            let pps_id = pps.pps_id;
-            self.pps_map.insert(pps_id, pps);
-            if self.active_pps_id.map(|id| id == pps_id).unwrap_or(true) {
-                let _ = self.activate_parameter_sets(pps_id);
+        match parameter_sets::parse_pps(&rbsp) {
+            Ok(pps) => {
+                debug!(
+                    "H264: PPS id={} sps={} entropy={} qp={}",
+                    pps.pps_id,
+                    pps.sps_id,
+                    if pps.entropy_coding_mode == 1 {
+                        "CABAC"
+                    } else {
+                        "CAVLC"
+                    },
+                    pps.pic_init_qp
+                );
+                let pps_id = pps.pps_id;
+                self.pps_map.insert(pps_id, pps);
+                if self.active_pps_id.map(|id| id == pps_id).unwrap_or(true) {
+                    let _ = self.activate_parameter_sets(pps_id);
+                }
+            }
+            Err(err) => {
+                warn!("H264: PPS 解析失败, err={}", err);
             }
         }
     }
@@ -773,6 +779,63 @@ impl H264Decoder {
         }
     }
 
+    /// `constrained_intra_pred_flag` 是否开启.
+    fn constrained_intra_pred_enabled(&self) -> bool {
+        if let Ok(force) = std::env::var("TAO_H264_FORCE_CONSTRAINED_INTRA_PRED") {
+            if force == "1" || force.eq_ignore_ascii_case("true") {
+                return true;
+            }
+            if force == "0" || force.eq_ignore_ascii_case("false") {
+                return false;
+            }
+        }
+        self.pps
+            .as_ref()
+            .map(|pps| pps.constrained_intra_pred)
+            .unwrap_or(false)
+    }
+
+    /// 指定宏块是否为 Intra 宏块.
+    fn mb_is_intra(&self, mb_x: usize, mb_y: usize) -> bool {
+        self.mb_index(mb_x, mb_y)
+            .and_then(|idx| self.mb_types.get(idx).copied())
+            .map(|ty| ty <= 25)
+            .unwrap_or(false)
+    }
+
+    /// 左邻 MB 是否可用于 Intra 预测.
+    fn left_avail_intra_pred(&self, mb_x: usize, mb_y: usize) -> bool {
+        if !self.left_avail(mb_x, mb_y) {
+            return false;
+        }
+        if !self.constrained_intra_pred_enabled() {
+            return true;
+        }
+        self.mb_is_intra(mb_x - 1, mb_y)
+    }
+
+    /// 上邻 MB 是否可用于 Intra 预测.
+    fn top_avail_intra_pred(&self, mb_x: usize, mb_y: usize) -> bool {
+        if !self.top_avail(mb_x, mb_y) {
+            return false;
+        }
+        if !self.constrained_intra_pred_enabled() {
+            return true;
+        }
+        self.mb_is_intra(mb_x, mb_y - 1)
+    }
+
+    /// 右上邻 MB 是否可用于 Intra 预测.
+    fn top_right_avail_intra_pred(&self, mb_x: usize, mb_y: usize) -> bool {
+        if !self.top_right_avail(mb_x, mb_y) {
+            return false;
+        }
+        if !self.constrained_intra_pred_enabled() {
+            return true;
+        }
+        self.mb_is_intra(mb_x + 1, mb_y - 1)
+    }
+
     /// 上邻 MB 是否可用于帧内预测 (同一 slice 且 mb_y > 0).
     fn top_avail(&self, mb_x: usize, mb_y: usize) -> bool {
         if mb_y == 0 {
@@ -785,22 +848,6 @@ impl H264Decoder {
             self.mb_slice_first_mb.get(top_idx),
         ) {
             (Some(&cur), Some(&top)) => cur == top,
-            _ => true,
-        }
-    }
-
-    /// 右邻 MB 是否可用 (同一 slice 且 mb_x + 1 在图像范围内).
-    fn right_avail(&self, mb_x: usize, mb_y: usize) -> bool {
-        if mb_x + 1 >= self.mb_width {
-            return false;
-        }
-        let mb_idx = mb_y * self.mb_width + mb_x;
-        let right_idx = mb_idx + 1;
-        match (
-            self.mb_slice_first_mb.get(mb_idx),
-            self.mb_slice_first_mb.get(right_idx),
-        ) {
-            (Some(&cur), Some(&right)) => cur == right,
             _ => true,
         }
     }
@@ -857,14 +904,16 @@ impl H264Decoder {
         sps.map(|cur| {
             let level_max = Self::derive_level_max_dpb_frames(cur);
             let level_reorder_cap = level_max.saturating_sub(1).min(16);
+            let signaled_ref_cap = (cur.max_num_ref_frames.clamp(1, 16) as usize).min(level_max);
             if let Some(max_num_reorder_frames) = cur.max_num_reorder_frames {
                 (max_num_reorder_frames.min(16) as usize)
+                    .min(signaled_ref_cap)
                     .min(level_reorder_cap)
                     .max(1)
             } else {
-                // 规范未显式信令 max_num_reorder_frames 时, 用 level 上限
-                // 约束重排深度. refs=1 也可能存在参考 B 帧链路, 不能按 ref 数量硬裁剪.
-                level_reorder_cap.max(1)
+                // 未显式信令 max_num_reorder_frames 时, 取参考帧能力与 level 上限的交集.
+                // 避免 refs 较小(如 1)时被放大到不合理的重排深度.
+                signaled_ref_cap.min(level_reorder_cap).max(1)
             }
         })
         .unwrap_or(2)
@@ -1266,7 +1315,7 @@ impl Decoder for H264Decoder {
                         // 否则会把上一帧的 CBF/预测模式/运动缓存污染到当前帧.
                         self.reset_mb_runtime_state();
                     }
-                    if is_idr && !idr_reset_done {
+                    if is_idr && start_new_picture && !idr_reset_done {
                         self.finalize_pending_frame();
                         self.drain_reorder_buffer_to_output();
                         self.reset_reference_planes();

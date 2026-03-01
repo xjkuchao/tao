@@ -1,9 +1,39 @@
 use crate::decoder::Decoder;
 use crate::packet::Packet;
+use tao_core::bitreader::BitReader;
 
 use super::super::{H264Decoder, NalUnit};
 
 use super::helpers::*;
+
+struct ScopedEnvVar {
+    key: &'static str,
+    prev: Option<String>,
+}
+
+impl ScopedEnvVar {
+    fn set(key: &'static str, value: &str) -> Self {
+        let prev = std::env::var(key).ok();
+        // SAFETY: 单元测试串行场景下, 本地短时设置环境变量用于定向覆盖分支.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, prev }
+    }
+}
+
+impl Drop for ScopedEnvVar {
+    fn drop(&mut self) {
+        // SAFETY: 与 set 对称恢复原值, 仅用于当前测试进程.
+        unsafe {
+            if let Some(prev) = &self.prev {
+                std::env::set_var(self.key, prev);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+}
 
 #[test]
 fn test_decode_cavlc_slice_data_p_skip_run_reconstructs_from_l0_prediction() {
@@ -344,7 +374,7 @@ fn test_decode_cavlc_slice_data_marks_mb_error_and_skips_following_when_skip_run
 #[test]
 fn test_decode_cavlc_slice_data_marks_mb_error_and_skips_following_when_mb_type_truncated() {
     let mut dec = build_test_decoder();
-    dec.width = 32;
+    dec.width = 48;
     dec.height = 16;
     dec.init_buffers();
     let before = dec.malformed_nal_drops;
@@ -354,22 +384,27 @@ fn test_decode_cavlc_slice_data_marks_mb_error_and_skips_following_when_mb_type_
     header.data_bit_offset = 0;
     header.first_mb = 0;
 
-    // skip_run=0 后剩余全 0, 会在 mb_type ue 解码阶段失败.
-    dec.decode_cavlc_slice_data(&[0x80, 0x00], &header);
+    // skip_run=1(010) 后构造全 0 截断数据, 触发第二个宏块的 mb_type ue 解码失败.
+    dec.decode_cavlc_slice_data(&[0x40], &header);
 
     assert_eq!(
         dec.malformed_nal_drops,
         before + 1,
         "宏块 mb_type 解码失败应计入坏 NAL 丢弃统计"
     );
-    assert_eq!(dec.mb_types[0], 252, "出错宏块应标记为错误态 mb_type=252");
-    assert_eq!(dec.mb_types[1], 0, "异常后应停止本 slice 后续宏块解码");
+    assert_eq!(dec.mb_types[0], 255, "首个宏块应按 skip_run=1 走 P_Skip");
+    assert_eq!(dec.mb_types[1], 252, "出错宏块应标记为错误态 mb_type=252");
+    assert_eq!(dec.mb_types[2], 0, "异常后应停止本 slice 后续宏块解码");
     assert_eq!(
         dec.mb_slice_first_mb[0], 0,
+        "已解码宏块应记录所属 slice first_mb"
+    );
+    assert_eq!(
+        dec.mb_slice_first_mb[1], 0,
         "出错宏块应记录所属 slice first_mb"
     );
     assert_eq!(
-        dec.mb_slice_first_mb[1],
+        dec.mb_slice_first_mb[2],
         u32::MAX,
         "跳过的后续宏块不应被写入 slice first_mb 标记"
     );
@@ -440,6 +475,47 @@ fn test_decode_cavlc_slice_data_merges_multi_slice_by_first_mb_offset() {
 }
 
 #[test]
+fn test_decode_cavlc_slice_data_p_skip_at_slice_start_does_not_use_prev_slice_left_mv() {
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 16;
+    dec.init_buffers();
+    dec.reference_frames.clear();
+    push_horizontal_gradient_reference(&mut dec, 5, 5, None);
+
+    let mut header0 = build_test_slice_header(0, 1, false, None);
+    header0.slice_type = 0; // P slice
+    header0.data_bit_offset = 0;
+    header0.first_mb = 0;
+    // slice0: mb0 非 skip, P16x16, mvd=(+1px,0), 并在 rbsp_trailing_bits 结束.
+    let mut bits0 = Vec::new();
+    write_ue(&mut bits0, 0);
+    write_ue(&mut bits0, 0);
+    write_se(&mut bits0, 4);
+    write_se(&mut bits0, 0);
+    let rbsp0 = bits_to_bytes(&bits0);
+    dec.decode_cavlc_slice_data(&rbsp0, &header0);
+
+    let mut header1 = build_test_slice_header(0, 1, false, None);
+    header1.slice_type = 0; // P slice
+    header1.data_bit_offset = 0;
+    header1.first_mb = 1;
+    // slice1: 仅包含 mb1 的 skip_run=1.
+    let mut bits1 = Vec::new();
+    write_ue(&mut bits1, 1);
+    let rbsp1 = bits_to_bytes(&bits1);
+    dec.decode_cavlc_slice_data(&rbsp1, &header1);
+
+    assert_eq!(dec.ref_y[0], 1, "mb0 应保持第一 slice 的 +1 像素位移结果");
+    assert_eq!(
+        dec.ref_y[16], 16,
+        "第二 slice 首个 P-skip 宏块不应借用前一 slice 左邻 MV"
+    );
+    assert_eq!(dec.mb_slice_first_mb[0], 0, "mb0 应保留 first_mb=0");
+    assert_eq!(dec.mb_slice_first_mb[1], 1, "mb1 应保留 first_mb=1");
+}
+
+#[test]
 fn test_decode_cavlc_slice_data_p_non_skip_intra_mb_type() {
     let mut dec = build_test_decoder();
     push_custom_reference(&mut dec, 3, 3, 77, None);
@@ -476,7 +552,14 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_ref_idx_l0() {
     header.num_ref_idx_l0 = 2;
 
     // mb_skip_run=0, mb_type=0(P_L0_16x16), ref_idx_l0=1
-    let rbsp = build_rbsp_from_ues(&[0, 0, 1]);
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 0);
+    write_te(&mut bits, 1, 1);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    write_ue(&mut bits, 0); // CBP=0
+    let rbsp = bits_to_bytes(&bits);
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(
         dec.ref_y[0], 99,
@@ -487,8 +570,6 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_ref_idx_l0() {
 
 #[test]
 fn test_decode_cavlc_slice_data_p_non_skip_inter_ref_idx_l0_mvd_alignment() {
-    use ExpGolombValue::{Se, Ue};
-
     let mut dec = build_test_decoder();
     let sps_resize = build_sps_nalu(0, 32, 16);
     dec.handle_sps(&sps_resize);
@@ -502,19 +583,17 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_ref_idx_l0_mvd_alignment() {
 
     // mb0: skip_run=0, mb_type=0(P_L0_16x16), ref_idx_l0=1, mvd=(0,0), CBP=0
     // mb1: skip_run=0, mb_type=6(I_16x16), 后接 I_16x16 最小尾, 用于验证 mvd 语法消费对齐。
-    let rbsp = build_rbsp_from_exp_golomb_with_tail(
-        &[
-            Ue(0),
-            Ue(0),
-            Ue(1),
-            Se(0),
-            Se(0),
-            Ue(0), // CBP=0
-            Ue(0),
-            Ue(6),
-        ],
-        &i16x16_minimal_tail_bits(),
-    );
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 0);
+    write_te(&mut bits, 1, 1);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    write_ue(&mut bits, 0); // CBP=0
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 6);
+    bits.extend(i16x16_minimal_tail_bits());
+    let rbsp = bits_to_bytes(&bits);
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(dec.ref_y[0], 90, "P_L0_16x16 应按 ref_idx_l0 选择参考帧");
     assert_eq!(dec.mb_types[1], 1, "第二个宏块应解析为帧内宏块");
@@ -552,7 +631,12 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_16x8_partition_ref_idx() {
     header.num_ref_idx_l0 = 2;
 
     // mb_skip_run=0, mb_type=1(P_L0_L0_16x8), top ref_idx=0, bottom ref_idx=1
-    let rbsp = build_rbsp_from_ues(&[0, 1, 0, 1]);
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 1);
+    write_te(&mut bits, 1, 0);
+    write_te(&mut bits, 1, 1);
+    let rbsp = bits_to_bytes(&bits);
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(dec.ref_y[0], 20, "16x8 顶部分区应使用 ref_idx=0");
     assert_eq!(
@@ -574,7 +658,12 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_8x16_partition_ref_idx() {
     header.num_ref_idx_l0 = 2;
 
     // mb_skip_run=0, mb_type=2(P_L0_L0_8x16), left ref_idx=0, right ref_idx=1
-    let rbsp = build_rbsp_from_ues(&[0, 2, 0, 1]);
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 2);
+    write_te(&mut bits, 1, 0);
+    write_te(&mut bits, 1, 1);
+    let rbsp = bits_to_bytes(&bits);
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(dec.ref_y[0], 20, "8x16 左分区应使用 ref_idx=0");
     assert_eq!(dec.ref_y[8], 90, "8x16 右分区应使用 ref_idx=1");
@@ -629,9 +718,78 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_8x16_directional_mvp_uses_left_
 }
 
 #[test]
-fn test_decode_cavlc_slice_data_p_non_skip_inter_16x16_prefers_single_ref_match_mvp() {
+fn test_decode_cavlc_slice_data_p_non_skip_inter_16x8_part1_prefers_left_neighbor() {
     use ExpGolombValue::{Se, Ue};
 
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+    dec.reference_frames.clear();
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    // 目标宏块为 (1,1), 左邻可用且 ref 匹配:
+    // - 左邻 MV=+2 像素
+    // - 顶部分区 mvd=(+1 像素), 其预测会受左邻影响
+    // FFmpeg pred_16x8(n=1) 语义下, part1 应优先取左邻, 不应强制复用 part0.
+    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 8, 0, 0);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.first_mb = 3; // 仅解码右下宏块
+    header.data_bit_offset = 0;
+
+    // mb_skip_run=0, mb_type=1(P_L0_L0_16x8), mvd_top=(4,0), mvd_bottom=(0,0)
+    let rbsp = build_rbsp_from_exp_golomb(&[Ue(0), Ue(1), Se(4), Se(0), Se(0), Se(0)]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    let base = 16 + 16 * dec.stride_y;
+    assert_eq!(dec.ref_y[base], 19, "part0 应包含左邻预测 + mvd 叠加");
+    assert_eq!(
+        dec.ref_y[base + 8 * dec.stride_y],
+        18,
+        "part1 应优先使用左邻 MVP(+2 像素), 不应强制复用 part0"
+    );
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_p_non_skip_inter_8x16_part1_prefers_diagonal_neighbor() {
+    use ExpGolombValue::{Se, Ue};
+
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+    dec.reference_frames.clear();
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    // 目标宏块为 (1,1):
+    // - 左邻 MV=+1 像素
+    // - 对角(D)邻居 MV=+3 像素 (当前图宽 2MB, C 不可用时应回退 D)
+    // FFmpeg pred_8x16(n=1) 语义下, part1 应优先取对角邻居而非复用 part0.
+    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 4, 0, 0);
+    dec.set_l0_motion_block_4x4(16, 0, 16, 16, 12, 0, 0);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.first_mb = 3; // 仅解码右下宏块
+    header.data_bit_offset = 0;
+
+    // mb_skip_run=0, mb_type=2(P_L0_L0_8x16), mvd_left=(4,0), mvd_right=(0,0)
+    let rbsp = build_rbsp_from_exp_golomb(&[Ue(0), Ue(2), Se(4), Se(0), Se(0), Se(0)]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    let base = 16 + 16 * dec.stride_y;
+    assert_eq!(dec.ref_y[base], 18, "part0 应为 +2 像素位移");
+    assert_eq!(
+        dec.ref_y[base + 8],
+        27,
+        "part1 应优先使用对角邻居 MVP(+3 像素), 不应强制复用 part0"
+    );
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_p_non_skip_inter_16x16_prefers_single_ref_match_mvp() {
     let mut dec = build_test_decoder();
     dec.width = 32;
     dec.height = 32;
@@ -652,7 +810,13 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_16x16_prefers_single_ref_match_
     header.num_ref_idx_l0 = 2;
 
     // mb_skip_run=0, mb_type=0(P_L0_16x16), ref_idx_l0=1, mvd=(0,0)
-    let rbsp = build_rbsp_from_exp_golomb(&[Ue(0), Ue(0), Ue(1), Se(0), Se(0)]);
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 0);
+    write_te(&mut bits, 1, 1);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    let rbsp = bits_to_bytes(&bits);
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     let base = 16 + 16 * dec.stride_y;
@@ -664,8 +828,6 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_16x16_prefers_single_ref_match_
 
 #[test]
 fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_ref_idx_and_alignment() {
-    use ExpGolombValue::{Se, Ue};
-
     let mut dec = build_test_decoder();
     let sps_resize = build_sps_nalu(0, 32, 16);
     dec.handle_sps(&sps_resize);
@@ -679,32 +841,30 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_ref_idx_and_alignment() {
 
     // mb0: skip_run=0, mb_type=3(P_8x8), 四个 sub_mb_type=0, ref_idx=[0,1,1,0]
     // 并为每个子分区提供 mvd=(0,0), CBP=0; mb1: skip_run=0, mb_type=6(I_16x16), 后接 I_16x16 最小尾.
-    let rbsp = build_rbsp_from_exp_golomb_with_tail(
-        &[
-            Ue(0),
-            Ue(3),
-            Ue(0),
-            Ue(0),
-            Ue(0),
-            Ue(0),
-            Ue(0),
-            Ue(1),
-            Ue(1),
-            Ue(0),
-            Se(0),
-            Se(0),
-            Se(0),
-            Se(0),
-            Se(0),
-            Se(0),
-            Se(0),
-            Se(0),
-            Ue(0), // CBP=0
-            Ue(0),
-            Ue(6),
-        ],
-        &i16x16_minimal_tail_bits(),
-    );
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 3);
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 0);
+    write_te(&mut bits, 1, 0);
+    write_te(&mut bits, 1, 1);
+    write_te(&mut bits, 1, 1);
+    write_te(&mut bits, 1, 0);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    write_se(&mut bits, 0);
+    write_ue(&mut bits, 0); // CBP=0
+    write_ue(&mut bits, 0);
+    write_ue(&mut bits, 6);
+    bits.extend(i16x16_minimal_tail_bits());
+    let rbsp = bits_to_bytes(&bits);
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(dec.mb_types[0], 203, "P_8x8 宏块应标记为互预测类型");
@@ -759,6 +919,117 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_uses_mvp_from_left_neighbo
         "4x8 左半分区应按 mvd=(4,0) 向右偏移 1 像素"
     );
     assert_eq!(dec.ref_y[4], 5, "4x8 右半分区应在 mvd=0 时继承左半 MVP");
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_8x4_part1_prefers_left_neighbor() {
+    use ExpGolombValue::{Se, Ue};
+
+    let _dir_guard = ScopedEnvVar::set("TAO_H264_USE_DIR_SUB_8X4", "1");
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+    dec.reference_frames.clear();
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    // 目标宏块为 (1,1), sub0=8x4:
+    // - A(左邻)=+2 像素
+    // - B(当前 sub0 上半)=+3 像素
+    // - C(上方右侧)=+5 像素
+    // FFmpeg pred_16x8(n=1) 语义下, part1 应直接取 A, 不应退化到中值.
+    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 8, 0, 0);
+    dec.set_l0_motion_block_4x4(16, 0, 16, 16, 20, 0, 0);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.first_mb = 3; // 仅解码右下宏块
+    header.data_bit_offset = 0;
+
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0),
+        Ue(3),
+        Ue(1),
+        Ue(0),
+        Ue(0),
+        Ue(0),
+        Se(-8),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Ue(0),
+    ]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    let base = 16 + 16 * dec.stride_y;
+    assert_eq!(dec.ref_y[base], 19, "sub0 上半应为 +3 像素位移");
+    assert_eq!(
+        dec.ref_y[base + 4 * dec.stride_y],
+        18,
+        "sub0 下半应优先使用左邻 MVP(+2 像素)"
+    );
+}
+
+#[test]
+fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_4x8_part1_prefers_diagonal_neighbor() {
+    use ExpGolombValue::{Se, Ue};
+
+    let _dir_guard = ScopedEnvVar::set("TAO_H264_USE_DIR_SUB_4X8", "1");
+    let mut dec = build_test_decoder();
+    dec.width = 32;
+    dec.height = 32;
+    dec.init_buffers();
+    dec.reference_frames.clear();
+    push_horizontal_gradient_reference(&mut dec, 3, 3, None);
+
+    // 目标宏块为 (1,1), sub0=4x8:
+    // - A(左邻/part0)=+2 像素
+    // - B(上邻)=+4 像素
+    // - C(对角)=+6 像素
+    // FFmpeg pred_4x8 part1 语义下, 应优先使用对角 C.
+    dec.set_l0_motion_block_4x4(0, 16, 16, 16, 8, 0, 0);
+    dec.set_l0_motion_block_4x4(20, 12, 4, 4, 16, 0, 0);
+    dec.set_l0_motion_block_4x4(24, 12, 4, 4, 24, 0, 0);
+
+    let mut header = build_test_slice_header(0, 1, false, None);
+    header.slice_type = 0; // P slice
+    header.first_mb = 3; // 仅解码右下宏块
+    header.data_bit_offset = 0;
+
+    let rbsp = build_rbsp_from_exp_golomb(&[
+        Ue(0),
+        Ue(3),
+        Ue(2),
+        Ue(0),
+        Ue(0),
+        Ue(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Se(0),
+        Ue(0),
+    ]);
+    dec.decode_cavlc_slice_data(&rbsp, &header);
+
+    let base = 16 + 16 * dec.stride_y;
+    assert_eq!(dec.ref_y[base], 18, "sub0 左半应为 +2 像素位移");
+    assert_eq!(
+        dec.ref_y[base + 4],
+        26,
+        "sub0 右半应优先使用对角 MVP(+6 像素)"
+    );
 }
 
 #[test]
@@ -834,4 +1105,60 @@ fn test_decode_cavlc_slice_data_i_minimal_intra_predict() {
     dec.decode_cavlc_slice_data(&rbsp, &header);
     assert_eq!(dec.ref_y[0], 128, "I-slice 最小路径应执行帧内预测");
     assert_eq!(dec.mb_types[0], 1, "I-slice 最小路径应标记为帧内宏块");
+}
+
+#[test]
+fn test_decode_cavlc_mb_residual_inter_cbp_zero_clears_prev_qp_delta_flag() {
+    let mut dec = build_test_decoder();
+    dec.prev_qp_delta_nz = true;
+
+    // Inter CBP code_num=0 => cbp=0, 本宏块不含残差也不含 mb_qp_delta.
+    let rbsp = build_rbsp_from_ues(&[0]);
+    let mut br = BitReader::new(&rbsp);
+    let mut cur_qp = 26;
+
+    dec.decode_cavlc_mb_residual(&mut br, 0, 0, &mut cur_qp, false, true);
+
+    assert!(
+        !dec.prev_qp_delta_nz,
+        "Inter 宏块在无残差时应清零 prev_qp_delta_nz"
+    );
+    assert_eq!(cur_qp, 26, "无残差时不应改写当前 QP");
+}
+
+#[test]
+fn test_decode_cavlc_mb_residual_inter_reads_transform8x8_before_qp_delta() {
+    let mut dec = build_test_decoder();
+    let mut pps = build_test_pps();
+    pps.transform_8x8_mode = true;
+    dec.pps = Some(pps.clone());
+    dec.pps_map.insert(pps.pps_id, pps);
+
+    // 语法顺序(Inter):
+    // coded_block_pattern=ue(2)->cbp=1(luma), transform_size_8x8_flag=1, mb_qp_delta=se(+1),
+    // 后接 4 个 4x4 块 coeff_token=0(比特 '1') 作为最小残差体.
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 2);
+    bits.push(true);
+    write_se(&mut bits, 1);
+    bits.extend([true, true, true, true]);
+    let rbsp = bits_to_bytes(&bits);
+    let mut br = BitReader::new(&rbsp);
+    let mut cur_qp = 26;
+
+    dec.decode_cavlc_mb_residual(&mut br, 0, 0, &mut cur_qp, false, true);
+
+    assert!(
+        dec.get_transform_8x8_flag(0, 0),
+        "Inter CAVLC 应先读取 transform_size_8x8_flag"
+    );
+    assert_eq!(
+        cur_qp, 27,
+        "mb_qp_delta 应在 transform_size_8x8_flag 之后按 se(+1) 生效"
+    );
+    assert!(
+        dec.prev_qp_delta_nz,
+        "mb_qp_delta 非零后应置位 prev_qp_delta_nz"
+    );
+    assert_eq!(dec.mb_cbp[0] & 0x0f, 1, "CBP 低四位应保持为 luma_cbp=1");
 }

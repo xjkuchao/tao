@@ -1,6 +1,6 @@
 use super::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum MotionNeighbor {
     PartNotAvailable,
     ListNotUsed,
@@ -82,6 +82,7 @@ impl H264Decoder {
     ) -> (i32, i32) {
         let x4 = mb_x * 4 + part_x4;
         let y4 = mb_y * 4 + part_y4;
+        let mb_idx = mb_y * self.mb_width + mb_x;
         let a = self.l1_motion_neighbor_state(x4, y4, x4 as isize - 1, y4 as isize, ref_idx);
         let b = self.l1_motion_neighbor_state(x4, y4, x4 as isize, y4 as isize - 1, ref_idx);
         let mut c = self.l1_motion_neighbor_state(
@@ -94,7 +95,35 @@ impl H264Decoder {
         if matches!(c, MotionNeighbor::PartNotAvailable) {
             c = self.l1_motion_neighbor_state(x4, y4, x4 as isize - 1, y4 as isize - 1, ref_idx);
         }
-        Self::predict_motion_from_neighbors(a, b, c, ref_idx)
+        let pred = Self::predict_motion_from_neighbors(a, b, c, ref_idx);
+        let trace_this_mb = std::env::var("TAO_H264_TRACE_CAVLC_MB")
+            .ok()
+            .and_then(|v| {
+                let mut it = v.split(',');
+                let frame = it.next()?.parse::<u32>().ok()?;
+                let target_mb = it.next()?.parse::<usize>().ok()?;
+                Some((frame, target_mb))
+            })
+            .map(|(frame, target_mb)| self.last_frame_num == frame && mb_idx == target_mb)
+            .unwrap_or(false);
+        if trace_this_mb {
+            eprintln!(
+                "[H264-MVP-L1] frame_num={} poc={} mb_idx={} part_x4={} part_y4={} part_w4={} ref_idx={} A={:?} B={:?} C={:?} pred=({}, {})",
+                self.last_frame_num,
+                self.last_poc,
+                mb_idx,
+                part_x4,
+                part_y4,
+                part_w4,
+                ref_idx,
+                a,
+                b,
+                c,
+                pred.0,
+                pred.1
+            );
+        }
+        pred
     }
 
     fn l0_motion_neighbor_state(
@@ -110,18 +139,25 @@ impl H264Decoder {
         }
         let nbr_x4 = nbr_x4 as usize;
         let nbr_y4 = nbr_y4 as usize;
-        if self.motion_l0_4x4_index(nbr_x4, nbr_y4).is_none()
-            || !self.same_slice_4x4(cur_x4, cur_y4, nbr_x4, nbr_y4)
-        {
+        let Some(idx) = self.motion_l0_4x4_index(nbr_x4, nbr_y4) else {
+            return MotionNeighbor::PartNotAvailable;
+        };
+        if !self.same_slice_4x4(cur_x4, cur_y4, nbr_x4, nbr_y4) {
             return MotionNeighbor::PartNotAvailable;
         }
-        match self.l0_motion_candidate_4x4(nbr_x4 as isize, nbr_y4 as isize) {
-            Some((mv_x, mv_y, ref_idx)) => MotionNeighbor::Available {
-                mv_x,
-                mv_y,
-                ref_idx,
-            },
-            None => MotionNeighbor::ListNotUsed,
+        let ref_idx = self.ref_idx_l0_4x4.get(idx).copied().unwrap_or(-1);
+        if ref_idx == -2 {
+            return MotionNeighbor::PartNotAvailable;
+        }
+        if ref_idx < 0 {
+            return MotionNeighbor::ListNotUsed;
+        }
+        let mv_x = self.mv_l0_x_4x4.get(idx).copied().unwrap_or(0) as i32;
+        let mv_y = self.mv_l0_y_4x4.get(idx).copied().unwrap_or(0) as i32;
+        MotionNeighbor::Available {
+            mv_x,
+            mv_y,
+            ref_idx,
         }
     }
 
@@ -138,18 +174,25 @@ impl H264Decoder {
         }
         let nbr_x4 = nbr_x4 as usize;
         let nbr_y4 = nbr_y4 as usize;
-        if self.motion_l1_4x4_index(nbr_x4, nbr_y4).is_none()
-            || !self.same_slice_4x4(cur_x4, cur_y4, nbr_x4, nbr_y4)
-        {
+        let Some(idx) = self.motion_l1_4x4_index(nbr_x4, nbr_y4) else {
+            return MotionNeighbor::PartNotAvailable;
+        };
+        if !self.same_slice_4x4(cur_x4, cur_y4, nbr_x4, nbr_y4) {
             return MotionNeighbor::PartNotAvailable;
         }
-        match self.l1_motion_candidate_4x4(nbr_x4 as isize, nbr_y4 as isize) {
-            Some((mv_x, mv_y, ref_idx)) => MotionNeighbor::Available {
-                mv_x,
-                mv_y,
-                ref_idx,
-            },
-            None => MotionNeighbor::ListNotUsed,
+        let ref_idx = self.ref_idx_l1_4x4.get(idx).copied().unwrap_or(-1);
+        if ref_idx == -2 {
+            return MotionNeighbor::PartNotAvailable;
+        }
+        if ref_idx < 0 {
+            return MotionNeighbor::ListNotUsed;
+        }
+        let mv_x = self.mv_l1_x_4x4.get(idx).copied().unwrap_or(0) as i32;
+        let mv_y = self.mv_l1_y_4x4.get(idx).copied().unwrap_or(0) as i32;
+        MotionNeighbor::Available {
+            mv_x,
+            mv_y,
+            ref_idx,
         }
     }
 
@@ -185,6 +228,7 @@ impl H264Decoder {
         let a_mv = Self::neighbor_mv(a);
         let b_mv = Self::neighbor_mv(b);
         let c_mv = Self::neighbor_mv(c);
+
         let match_count = usize::from(a_ref == ref_idx)
             + usize::from(b_ref == ref_idx)
             + usize::from(c_ref == ref_idx);
@@ -225,6 +269,9 @@ impl H264Decoder {
         part: usize,
         ref_idx: i8,
     ) -> (i32, i32) {
+        if std::env::var("TAO_H264_DISABLE_L0_DIR_MVP").as_deref() == Ok("1") {
+            return self.predict_mv_l0_partition(mb_x, mb_y, 0, part * 2, 4, ref_idx);
+        }
         let x4 = mb_x * 4;
         let y4 = mb_y * 4 + part * 2;
         if part == 0 {
@@ -257,36 +304,142 @@ impl H264Decoder {
         part: usize,
         ref_idx: i8,
     ) -> (i32, i32) {
+        if std::env::var("TAO_H264_DISABLE_L0_DIR_MVP").as_deref() == Ok("1") {
+            return self.predict_mv_l0_partition(mb_x, mb_y, part * 2, 0, 2, ref_idx);
+        }
         let x4 = mb_x * 4 + part * 2;
         let y4 = mb_y * 4;
         if part == 0 {
-            if let Some((mv_x, mv_y, left_ref)) =
-                self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
+            if let MotionNeighbor::Available {
+                mv_x,
+                mv_y,
+                ref_idx: left_ref,
+            } = self.l0_motion_neighbor_state(x4, y4, x4 as isize - 1, y4 as isize, ref_idx)
+                && left_ref == ref_idx
             {
-                if left_ref == ref_idx && self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4) {
-                    return (mv_x, mv_y);
-                }
+                return (mv_x, mv_y);
             }
         } else {
-            let mut diag = self.l0_motion_candidate_4x4((x4 + 2) as isize, y4 as isize - 1);
-            if diag.is_some() && !self.same_slice_4x4(x4, y4, x4 + 2, y4.saturating_sub(1)) {
-                diag = None;
+            let mut diag =
+                self.l0_motion_neighbor_state(x4, y4, (x4 + 2) as isize, y4 as isize - 1, ref_idx);
+            // 仅在 C=PartNotAvailable 时回退到 D.
+            // 若 C=ListNotUsed, 需保留该状态并在后续走 pred_motion 的中值分支.
+            if matches!(diag, MotionNeighbor::PartNotAvailable) {
+                diag = self.l0_motion_neighbor_state(
+                    x4,
+                    y4,
+                    x4 as isize - 1,
+                    y4 as isize - 1,
+                    ref_idx,
+                );
             }
-            if diag.is_none() {
-                diag = self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize - 1);
-                if diag.is_some()
-                    && !self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4.saturating_sub(1))
-                {
-                    diag = None;
-                }
-            }
-            if let Some((mv_x, mv_y, diag_ref)) = diag
+            if let MotionNeighbor::Available {
+                mv_x,
+                mv_y,
+                ref_idx: diag_ref,
+            } = diag
                 && diag_ref == ref_idx
             {
                 return (mv_x, mv_y);
             }
         }
         self.predict_mv_l0_partition(mb_x, mb_y, part * 2, 0, 2, ref_idx)
+    }
+
+    /// P_8x8 子分区类型 8x4 的方向性 MVP.
+    ///
+    /// - part=0 (上半): 优先使用上邻居 MV (若 ref 匹配)
+    /// - part=1 (下半): 优先使用左邻居 MV (若 ref 匹配)
+    /// - 不匹配时回退到通用分区预测
+    pub(super) fn predict_mv_l0_sub_8x4(
+        &self,
+        mb_x: usize,
+        mb_y: usize,
+        sub_part_x4: usize,
+        sub_part_y4: usize,
+        part: usize,
+        ref_idx: i8,
+    ) -> (i32, i32) {
+        if std::env::var("TAO_H264_USE_DIR_SUB_8X4").as_deref() == Ok("1") {
+            let x4 = mb_x * 4 + sub_part_x4;
+            let y4 = mb_y * 4 + sub_part_y4 + part;
+            if part == 0 {
+                if let Some((mv_x, mv_y, top_ref)) =
+                    self.l0_motion_candidate_4x4(x4 as isize, y4 as isize - 1)
+                    && top_ref == ref_idx
+                    && self.same_slice_4x4(x4, y4, x4, y4.saturating_sub(1))
+                {
+                    return (mv_x, mv_y);
+                }
+            } else if let Some((mv_x, mv_y, left_ref)) =
+                self.l0_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
+                && left_ref == ref_idx
+                && self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4)
+            {
+                return (mv_x, mv_y);
+            }
+        }
+        // 默认路径: 回退到通用分区中值预测.
+        self.predict_mv_l0_partition(mb_x, mb_y, sub_part_x4, sub_part_y4 + part, 2, ref_idx)
+    }
+
+    /// P_8x8 子分区类型 4x8 的方向性 MVP.
+    ///
+    /// - part=0 (左半): 优先使用左邻居 MV (若 ref 匹配)
+    /// - part=1 (右半): 优先使用对角邻居 C (C 不可用时回退 D, 且仅 ref 匹配时快捷返回)
+    /// - 不匹配时回退到通用分区预测
+    pub(super) fn predict_mv_l0_sub_4x8(
+        &self,
+        mb_x: usize,
+        mb_y: usize,
+        sub_part_x4: usize,
+        sub_part_y4: usize,
+        part: usize,
+        ref_idx: i8,
+    ) -> (i32, i32) {
+        if std::env::var("TAO_H264_USE_DIR_SUB_4X8").as_deref() == Ok("1") {
+            let x4 = mb_x * 4 + sub_part_x4 + part;
+            let y4 = mb_y * 4 + sub_part_y4;
+            if part == 0 {
+                if let MotionNeighbor::Available {
+                    mv_x,
+                    mv_y,
+                    ref_idx: left_ref,
+                } = self.l0_motion_neighbor_state(x4, y4, x4 as isize - 1, y4 as isize, ref_idx)
+                    && left_ref == ref_idx
+                {
+                    return (mv_x, mv_y);
+                }
+            } else {
+                let mut diag = self.l0_motion_neighbor_state(
+                    x4,
+                    y4,
+                    (x4 + 1) as isize,
+                    y4 as isize - 1,
+                    ref_idx,
+                );
+                if matches!(diag, MotionNeighbor::PartNotAvailable) {
+                    diag = self.l0_motion_neighbor_state(
+                        x4,
+                        y4,
+                        x4 as isize - 1,
+                        y4 as isize - 1,
+                        ref_idx,
+                    );
+                }
+                if let MotionNeighbor::Available {
+                    mv_x,
+                    mv_y,
+                    ref_idx: diag_ref,
+                } = diag
+                    && diag_ref == ref_idx
+                {
+                    return (mv_x, mv_y);
+                }
+            }
+        }
+        // 默认路径: 回退到通用分区中值预测.
+        self.predict_mv_l0_partition(mb_x, mb_y, sub_part_x4 + part, sub_part_y4, 1, ref_idx)
     }
 
     /// L1 版本的 16x8 方向性 MV 预测 (对标 FFmpeg pred_16x8_motion with list=1).
@@ -297,6 +450,9 @@ impl H264Decoder {
         part: usize,
         ref_idx: i8,
     ) -> (i32, i32) {
+        if std::env::var("TAO_H264_DISABLE_L1_DIR_MVP").as_deref() == Ok("1") {
+            return self.predict_mv_l1_partition(mb_x, mb_y, 0, part * 2, 4, ref_idx);
+        }
         let x4 = mb_x * 4;
         let y4 = mb_y * 4 + part * 2;
         if part == 0 {
@@ -325,30 +481,38 @@ impl H264Decoder {
         part: usize,
         ref_idx: i8,
     ) -> (i32, i32) {
+        if std::env::var("TAO_H264_DISABLE_L1_DIR_MVP").as_deref() == Ok("1") {
+            return self.predict_mv_l1_partition(mb_x, mb_y, part * 2, 0, 2, ref_idx);
+        }
         let x4 = mb_x * 4 + part * 2;
         let y4 = mb_y * 4;
         if part == 0 {
-            if let Some((mv_x, mv_y, left_ref)) =
-                self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize)
+            if let MotionNeighbor::Available {
+                mv_x,
+                mv_y,
+                ref_idx: left_ref,
+            } = self.l1_motion_neighbor_state(x4, y4, x4 as isize - 1, y4 as isize, ref_idx)
+                && left_ref == ref_idx
             {
-                if left_ref == ref_idx && self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4) {
-                    return (mv_x, mv_y);
-                }
+                return (mv_x, mv_y);
             }
         } else {
-            let mut diag = self.l1_motion_candidate_4x4((x4 + 2) as isize, y4 as isize - 1);
-            if diag.is_some() && !self.same_slice_4x4(x4, y4, x4 + 2, y4.saturating_sub(1)) {
-                diag = None;
+            let mut diag =
+                self.l1_motion_neighbor_state(x4, y4, (x4 + 2) as isize, y4 as isize - 1, ref_idx);
+            if matches!(diag, MotionNeighbor::PartNotAvailable) {
+                diag = self.l1_motion_neighbor_state(
+                    x4,
+                    y4,
+                    x4 as isize - 1,
+                    y4 as isize - 1,
+                    ref_idx,
+                );
             }
-            if diag.is_none() {
-                diag = self.l1_motion_candidate_4x4(x4 as isize - 1, y4 as isize - 1);
-                if diag.is_some()
-                    && !self.same_slice_4x4(x4, y4, x4.saturating_sub(1), y4.saturating_sub(1))
-                {
-                    diag = None;
-                }
-            }
-            if let Some((mv_x, mv_y, diag_ref)) = diag
+            if let MotionNeighbor::Available {
+                mv_x,
+                mv_y,
+                ref_idx: diag_ref,
+            } = diag
                 && diag_ref == ref_idx
             {
                 return (mv_x, mv_y);

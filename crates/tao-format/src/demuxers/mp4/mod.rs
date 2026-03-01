@@ -476,24 +476,38 @@ impl Mp4Demuxer {
 
     /// 找到最早的下一个采样 (跨所有流)
     fn find_next_sample(&self) -> Option<(usize, u32)> {
-        let mut best: Option<(usize, u32, u64)> = None;
+        // 以统一时间尺度比较各流的 DTS, 避免按文件偏移导致的乱序出包。
+        let mut best: Option<(usize, u32, i128, u64)> = None;
 
         for (stream_idx, st) in self.sample_tables.iter().enumerate() {
             let sample_idx = self.current_sample[stream_idx];
             if sample_idx >= st.sample_count() {
                 continue;
             }
+
+            let pts_offset = self.stream_pts_offset.get(stream_idx).copied().unwrap_or(0);
+            let dts = st.sample_dts(sample_idx) - pts_offset;
+            let dts_key = match self.streams.get(stream_idx) {
+                Some(stream) if stream.time_base.den != 0 => {
+                    i128::from(dts) * i128::from(stream.time_base.num) * 1_000_000
+                        / i128::from(stream.time_base.den)
+                }
+                _ => i128::from(dts),
+            };
             let offset = st.sample_offset(sample_idx);
+
             match best {
-                None => best = Some((stream_idx, sample_idx, offset)),
-                Some((_, _, best_off)) if offset < best_off => {
-                    best = Some((stream_idx, sample_idx, offset));
+                None => best = Some((stream_idx, sample_idx, dts_key, offset)),
+                Some((_, _, best_dts_key, best_off))
+                    if dts_key < best_dts_key || (dts_key == best_dts_key && offset < best_off) =>
+                {
+                    best = Some((stream_idx, sample_idx, dts_key, offset));
                 }
                 _ => {}
             }
         }
 
-        best.map(|(si, idx, _)| (si, idx))
+        best.map(|(si, idx, _, _)| (si, idx))
     }
 }
 
@@ -569,6 +583,7 @@ impl Demuxer for Mp4Demuxer {
         let offset = st.sample_offset(sample_idx);
         let size = st.sample_size(sample_idx);
         let pts_offset = self.stream_pts_offset.get(stream_idx).copied().unwrap_or(0);
+        let dts = st.sample_dts(sample_idx) - pts_offset;
         let pts = st.sample_pts(sample_idx) - pts_offset;
         let is_keyframe = st.is_sync_sample(sample_idx);
 
@@ -579,7 +594,7 @@ impl Demuxer for Mp4Demuxer {
         let mut pkt = Packet::from_data(Bytes::from(data));
         pkt.stream_index = stream_idx;
         pkt.pts = pts;
-        pkt.dts = pts; // TODO: 使用 ctts 计算真实 DTS
+        pkt.dts = dts;
         pkt.is_keyframe = is_keyframe;
 
         if let Some(stream) = self.streams.get(stream_idx) {
