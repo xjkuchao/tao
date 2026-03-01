@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
+import json
 import os
 import re
 import subprocess
@@ -7,8 +9,12 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from multiprocessing import cpu_count
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 REPORT_PATH = Path("plans/tao-codec/audio/aac/coverage/report.md")
+DEFAULT_LOCAL_INDEX_PATH = Path(
+    "plans/tao-codec/audio/aac/coverage/targets_local_index.json"
+)
 NO_AUDIO_SAMPLE_INDEXES = {
     20,
     49,
@@ -47,7 +53,7 @@ SEP_PREFIX = "| --- |"
 
 LINE_RE = re.compile(
     r"Tao对比样本=(\d+), Tao=(\d+), FFmpeg=(\d+), (?:lag=[-+]?\d+, )?Tao/FFmpeg: "
-    r"max_err=([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?), "
+    r"max_err=([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?), (?:max_err_idx=\d+, )?"
     r"psnr=([A-Za-z]+|[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)dB, "
     r"精度=([-+]?[0-9]*\.?[0-9]+)%"
 )
@@ -76,6 +82,9 @@ def parse_args():
 
   # 指定并行数量
   python plans/tao-codec/audio/aac/coverage/run_decoder.py --jobs 4
+
+  # 优先使用 data 本地缓存样本
+  python plans/tao-codec/audio/aac/coverage/run_decoder.py --prefer-local-data
         """,
     )
     group = parser.add_mutually_exclusive_group()
@@ -114,6 +123,28 @@ def parse_args():
         "--include-skipped",
         action="store_true",
         help="包含默认跳过样本(用于手动复测, 默认不包含)",
+    )
+    parser.add_argument(
+        "--prefer-local-data",
+        action="store_true",
+        help="优先使用 data 目录已下载的本地样本, 缺失时自动回退 URL",
+    )
+    parser.add_argument(
+        "--local-root",
+        type=Path,
+        default=Path("data/aac_samples"),
+        metavar="PATH",
+        help="本地样本根目录(默认: data/aac_samples)",
+    )
+    parser.add_argument(
+        "--local-index",
+        type=Path,
+        default=DEFAULT_LOCAL_INDEX_PATH,
+        metavar="PATH",
+        help=(
+            "URL->本地文件索引路径(默认: "
+            "plans/tao-codec/audio/aac/coverage/targets_local_index.json)"
+        ),
     )
     return parser.parse_args()
 
@@ -166,9 +197,9 @@ def write_report(lines, header_idx, sep, rows):
     REPORT_PATH.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
-def run_compare(url, timeout_sec):
+def run_compare(input_target, timeout_sec):
     env = os.environ.copy()
-    env["TAO_AAC_COMPARE_INPUT"] = url
+    env["TAO_AAC_COMPARE_INPUT"] = input_target
     cmd = [
         "cargo",
         "test",
@@ -243,6 +274,90 @@ def extract_failure_reason(output):
     return " / ".join(ln.replace("|", "/") for ln in tail)
 
 
+def sanitize_segment(segment):
+    cleaned = unquote(segment).strip()
+    if not cleaned:
+        return "_"
+    cleaned = cleaned.replace("\\", "_")
+    cleaned = cleaned.replace("/", "_")
+    cleaned = cleaned.replace("\x00", "_")
+    cleaned = cleaned.replace("\n", "_")
+    cleaned = cleaned.replace("\r", "_")
+    if cleaned in (".", ".."):
+        return "_"
+    return cleaned
+
+
+def local_path_from_url(url, local_root):
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+
+    rel_parts = [sanitize_segment(parsed.netloc)]
+    for raw in parsed.path.split("/"):
+        if not raw:
+            continue
+        rel_parts.append(sanitize_segment(raw))
+
+    if not rel_parts:
+        return None
+    if len(rel_parts) == 1:
+        rel_parts.append("index.bin")
+    if parsed.path.endswith("/"):
+        rel_parts.append("index.bin")
+
+    local_path = Path(local_root, *rel_parts)
+    if parsed.query:
+        digest = hashlib.sha1(parsed.query.encode("utf-8")).hexdigest()[:8]
+        local_path = local_path.with_name(f"{local_path.name}__q_{digest}")
+    return local_path
+
+
+def load_local_index(index_path):
+    path = Path(index_path)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as err:
+        print(f"警告: 本地索引读取失败, 将退回 URL 口径: {err}", flush=True)
+        return {}
+
+    if isinstance(payload, dict):
+        entries = payload.get("entries", [])
+    elif isinstance(payload, list):
+        entries = payload
+    else:
+        entries = []
+
+    mapping = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        url = entry.get("url")
+        local_path = entry.get("local_path")
+        if isinstance(url, str) and isinstance(local_path, str) and url:
+            mapping[url] = local_path
+    return mapping
+
+
+def resolve_input_target(url, args, local_index):
+    if not args.prefer_local_data:
+        return url, False
+
+    mapped = local_index.get(url)
+    if mapped:
+        mapped_path = Path(mapped)
+        if mapped_path.exists() and mapped_path.is_file() and mapped_path.stat().st_size > 0:
+            return str(mapped_path), True
+
+    inferred = local_path_from_url(url, args.local_root)
+    if inferred and inferred.exists() and inferred.is_file() and inferred.stat().st_size > 0:
+        return str(inferred), True
+
+    return url, False
+
+
 def should_skip(row, col_map, args, idx):
     if not args.include_skipped and idx in SKIPPED_SAMPLE_INDEXES:
         return True
@@ -307,6 +422,7 @@ def apply_default_skip_rows(rows, col_map, args):
 def main():
     args = parse_args()
     lines, header_idx, header, sep, rows = load_report()
+    local_index = load_local_index(args.local_index)
 
     col_map = {name: idx for idx, name in enumerate(header)}
     required = [
@@ -350,8 +466,10 @@ def main():
 
     def process(idx, row):
         url = row[col_map["URL"]]
-        print(f"开始处理 {idx}/{total}: {url}", flush=True)
-        code, output = run_compare(url, args.timeout)
+        input_target, from_local = resolve_input_target(url, args, local_index)
+        source_tag = "local" if from_local else "url"
+        print(f"开始处理 {idx}/{total}: {url} ({source_tag})", flush=True)
+        code, output = run_compare(input_target, args.timeout)
         metrics = parse_metrics(output)
 
         if metrics is not None:

@@ -651,6 +651,22 @@ const BITS_11: [u8; 289] = [
 mod tests {
     use super::*;
 
+    fn push_bits(bits: &mut Vec<u8>, value: u32, len: u8) {
+        for bit_pos in (0..len).rev() {
+            bits.push(((value >> bit_pos) & 1) as u8);
+        }
+    }
+
+    fn bits_to_bytes(bits: &[u8]) -> Vec<u8> {
+        let mut out = vec![0u8; bits.len().div_ceil(8)];
+        for (i, &bit) in bits.iter().enumerate() {
+            if bit != 0 {
+                out[i / 8] |= 1 << (7 - (i % 8));
+            }
+        }
+        out
+    }
+
     #[test]
     fn test_sf_tree_decode() {
         let cbs = AacCodebooks::build();
@@ -756,5 +772,31 @@ mod tests {
 
         let vals = index_to_values(80, 2, 9, -4);
         assert_eq!(vals, [4, 4, 0, 0]);
+    }
+
+    #[test]
+    fn test_cb11_escape_signbit_order() {
+        // 构造 CB11 中 (16,16) 条目, 验证“先读符号位, 再读 ESC”语义.
+        // index = 16 * 17 + 16 = 288.
+        let idx = 288usize;
+        let mut bits = Vec::new();
+        push_bits(&mut bits, CODES_11[idx] as u32, BITS_11[idx]);
+        // sign bits: 第一个负, 第二个正.
+        bits.push(1);
+        bits.push(0);
+        // ESC #1: n=4 (前缀 0), mantissa=4 => magnitude=20.
+        bits.push(0);
+        push_bits(&mut bits, 0b0100, 4);
+        // ESC #2: n=4 (前缀 0), mantissa=15 => magnitude=31.
+        bits.push(0);
+        push_bits(&mut bits, 0b1111, 4);
+
+        let data = bits_to_bytes(&bits);
+        let mut br = BitReader::new(&data);
+        let cbs = AacCodebooks::build();
+        let cb11 = cbs.spectral[10].as_ref().unwrap();
+        let vals = cb11.decode_values(&mut br).unwrap();
+        assert_eq!(vals[0], -20, "CB11 第一个 ESC 值应正确保留符号");
+        assert_eq!(vals[1], 31, "CB11 第二个 ESC 值应正确解码");
     }
 }

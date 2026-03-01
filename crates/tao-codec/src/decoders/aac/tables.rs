@@ -1,6 +1,9 @@
 //! AAC 解码器常量数据表.
 
-pub(super) const AAC_MP4_LEADING_TRIM_SAMPLES: usize = 1024;
+/// MP4 AAC 默认首包裁剪样本数.
+///
+/// 当前先关闭默认裁剪, 由后续基于容器显式 priming 元数据的精确裁剪机制替代.
+pub(super) const AAC_MP4_LEADING_TRIM_SAMPLES: usize = 0;
 /// AAC 时域输出增益校准.
 ///
 /// AAC 频谱反量化后需经过较大缩放, 该系数用于把时域样本归一到 [-1, 1].

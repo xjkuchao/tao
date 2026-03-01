@@ -1,0 +1,919 @@
+{
+  "generated_at": "2026-02-28T13:04:07.798881+00:00",
+  "report_path": "plans/tao-codec/audio/aac/coverage/report.md",
+  "local_root": "data/aac_samples",
+  "entries": [
+    {
+      "index": 1,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/2_aac_error_while_decoding_stream.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/2_aac_error_while_decoding_stream.aac",
+      "download_status": "cached",
+      "size_bytes": 4653746,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 2,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/8_Channel_ID.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/8_Channel_ID.m4a",
+      "download_status": "cached",
+      "size_bytes": 136005,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 3,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/Bandit.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/Bandit.mp4",
+      "download_status": "cached",
+      "size_bytes": 4568041,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 4,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/Music%20Station%20Super%20Live%20-%202011.12.23.mkv",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/Music Station Super Live - 2011.12.23.mkv",
+      "download_status": "cached",
+      "size_bytes": 8392000,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 5,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/aacPlusDecoderCheckPackage_v2.1/bitstreams/File1.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/aacPlusDecoderCheckPackage_v2.1/bitstreams/File1.aac",
+      "download_status": "cached",
+      "size_bytes": 31507,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 6,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/aacPlusDecoderCheckPackage_v2.1/bitstreams/File2.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/aacPlusDecoderCheckPackage_v2.1/bitstreams/File2.mp4",
+      "download_status": "cached",
+      "size_bytes": 32992,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 7,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/aacPlusDecoderCheckPackage_v2.1/bitstreams/File3.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/aacPlusDecoderCheckPackage_v2.1/bitstreams/File3.mp4",
+      "download_status": "cached",
+      "size_bytes": 32995,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 8,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/aacPlusDecoderCheckPackage_v2.1/bitstreams/File4.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/aacPlusDecoderCheckPackage_v2.1/bitstreams/File4.mp4",
+      "download_status": "cached",
+      "size_bytes": 32997,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 9,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/aacPlusDecoderCheckPackage_v2.1/bitstreams/File5.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/aacPlusDecoderCheckPackage_v2.1/bitstreams/File5.mp4",
+      "download_status": "cached",
+      "size_bytes": 32990,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 10,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/channel_model/bad_concat.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/channel_model/bad_concat.mp4",
+      "download_status": "cached",
+      "size_bytes": 58095,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 11,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/channel_model/elem_id0.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/channel_model/elem_id0.mp4",
+      "download_status": "cached",
+      "size_bytes": 46286,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 12,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/channel_model/lfe_is_sce.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/channel_model/lfe_is_sce.mp4",
+      "download_status": "cached",
+      "size_bytes": 46286,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 13,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/ct_faac-adts.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/ct_faac-adts.aac",
+      "download_status": "cached",
+      "size_bytes": 299647,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 14,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/ct_faac.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/ct_faac.mp4",
+      "download_status": "cached",
+      "size_bytes": 297800,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 15,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/ct_nero-heaac.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/ct_nero-heaac.mp4",
+      "download_status": "cached",
+      "size_bytes": 163514,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 16,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/faad2-fail.mkv",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/faad2-fail.mkv",
+      "download_status": "cached",
+      "size_bytes": 1470057,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 17,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/hulu-aac-main.flv",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/hulu-aac-main.flv",
+      "download_status": "cached",
+      "size_bytes": 1048576,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 18,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/mdct_error.flv",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/mdct_error.flv",
+      "download_status": "cached",
+      "size_bytes": 6501404,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 19,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/ssr/Dailymotion_-_Los_Sucesos_de_Bagua_-_un_v_deo_de_Creaci_n.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/ssr/Dailymotion_-_Los_Sucesos_de_Bagua_-_un_v_deo_de_Creaci_n.mp4",
+      "download_status": "cached",
+      "size_bytes": 50024547,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 20,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/zodiac_audio.mov",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/zodiac_audio.mov",
+      "download_status": "cached",
+      "size_bytes": 3774995,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 21,
+      "url": "https://samples.ffmpeg.org/A-codecs/AAC/zx.eva.renewal.01.divx511.mkv",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/AAC/zx.eva.renewal.01.divx511.mkv",
+      "download_status": "cached",
+      "size_bytes": 51137050,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 22,
+      "url": "https://samples.ffmpeg.org/A-codecs/lossless/ALAC/old_midi_stuff.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/lossless/ALAC/old_midi_stuff.m4a",
+      "download_status": "cached",
+      "size_bytes": 12220846,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 23,
+      "url": "https://samples.ffmpeg.org/A-codecs/lossless/ALAC/quicktime-newcodec-applelosslessaudiocodec.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/lossless/ALAC/quicktime-newcodec-applelosslessaudiocodec.m4a",
+      "download_status": "cached",
+      "size_bytes": 1048576,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 24,
+      "url": "https://samples.ffmpeg.org/A-codecs/lossless/ALAC/snoop_try.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/lossless/ALAC/snoop_try.m4a",
+      "download_status": "cached",
+      "size_bytes": 16415231,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 25,
+      "url": "https://samples.ffmpeg.org/A-codecs/lossless/luckynight.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/lossless/luckynight.m4a",
+      "download_status": "cached",
+      "size_bytes": 6719490,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 26,
+      "url": "https://samples.ffmpeg.org/A-codecs/suite/AAC+/36kbps_st_48kHz_eaac+_adts.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/suite/AAC+/36kbps_st_48kHz_eaac+_adts.aac",
+      "download_status": "cached",
+      "size_bytes": 57973,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 27,
+      "url": "https://samples.ffmpeg.org/A-codecs/suite/AAC+/48kbps_st_44kHz_aac+_adts.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/suite/AAC+/48kbps_st_44kHz_aac+_adts.aac",
+      "download_status": "cached",
+      "size_bytes": 80249,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 28,
+      "url": "https://samples.ffmpeg.org/A-codecs/suite/AAC+/WishI-48kSBR.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/suite/AAC+/WishI-48kSBR.aac",
+      "download_status": "cached",
+      "size_bytes": 101111,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 29,
+      "url": "https://samples.ffmpeg.org/A-codecs/suite/AAC+/WishI-48kSBRPS.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/suite/AAC+/WishI-48kSBRPS.aac",
+      "download_status": "cached",
+      "size_bytes": 101426,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 30,
+      "url": "https://samples.ffmpeg.org/A-codecs/suite/AAC/Audio%20AAC/cooki-e2-a32sxx.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/suite/AAC/Audio AAC/cooki-e2-a32sxx.mp4",
+      "download_status": "cached",
+      "size_bytes": 364127,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 31,
+      "url": "https://samples.ffmpeg.org/A-codecs/suite/AAC/Audio%20AAC/cooki-e2-a64sxx.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/suite/AAC/Audio AAC/cooki-e2-a64sxx.mp4",
+      "download_status": "cached",
+      "size_bytes": 655351,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 32,
+      "url": "https://samples.ffmpeg.org/A-codecs/suite/AAC/Audio%20AAC/sample.PCM.16bit.8000Hz.Mono.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/suite/AAC/Audio AAC/sample.PCM.16bit.8000Hz.Mono.aac",
+      "download_status": "cached",
+      "size_bytes": 7346,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 33,
+      "url": "https://samples.ffmpeg.org/A-codecs/suite/AAC/Frula_Show_-_Gde_si_do_sad.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/suite/AAC/Frula_Show_-_Gde_si_do_sad.aac",
+      "download_status": "cached",
+      "size_bytes": 942080,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 34,
+      "url": "https://samples.ffmpeg.org/A-codecs/suite/AAC/MPEG%20AAC/cooki-e2-m64s25-a32sxx.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/suite/AAC/MPEG AAC/cooki-e2-m64s25-a32sxx.mp4",
+      "download_status": "cached",
+      "size_bytes": 744279,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 35,
+      "url": "https://samples.ffmpeg.org/A-codecs/suite/AAC/MPEG%20AAC/xtrem-e2-m064q15-a16sxx.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/suite/AAC/MPEG AAC/xtrem-e2-m064q15-a16sxx.mp4",
+      "download_status": "cached",
+      "size_bytes": 288821,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 36,
+      "url": "https://samples.ffmpeg.org/A-codecs/suite/AAC/aactestfile.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/suite/AAC/aactestfile.aac",
+      "download_status": "cached",
+      "size_bytes": 117547,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 37,
+      "url": "https://samples.ffmpeg.org/A-codecs/suite/AAC/asimovis.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/suite/AAC/asimovis.aac",
+      "download_status": "cached",
+      "size_bytes": 19793,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 38,
+      "url": "https://samples.ffmpeg.org/A-codecs/suite/AAC/particle20041116matrixd3_04_the_golden_gator_reprise.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/suite/AAC/particle20041116matrixd3_04_the_golden_gator_reprise.aac",
+      "download_status": "cached",
+      "size_bytes": 4499440,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 39,
+      "url": "https://samples.ffmpeg.org/A-codecs/suite/AAC/sample-aac.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/suite/AAC/sample-aac.aac",
+      "download_status": "cached",
+      "size_bytes": 7346,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 40,
+      "url": "https://samples.ffmpeg.org/A-codecs/suite/AAC/sample-pcm-16bit-8khz-mono-aac.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/suite/AAC/sample-pcm-16bit-8khz-mono-aac.aac",
+      "download_status": "cached",
+      "size_bytes": 7346,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 41,
+      "url": "https://samples.ffmpeg.org/A-codecs/suite/MP4A/MGPDEMOMP4.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/suite/MP4A/MGPDEMOMP4.m4a",
+      "download_status": "cached",
+      "size_bytes": 21338036,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 42,
+      "url": "https://samples.ffmpeg.org/A-codecs/suite/MP4A/motr_aac.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/A-codecs/suite/MP4A/motr_aac.m4a",
+      "download_status": "cached",
+      "size_bytes": 200229,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 43,
+      "url": "https://samples.ffmpeg.org/MPEG-4/218-adam-kessel/file_doesnt_work.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/MPEG-4/218-adam-kessel/file_doesnt_work.m4a",
+      "download_status": "cached",
+      "size_bytes": 1547708,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 44,
+      "url": "https://samples.ffmpeg.org/MPEG-4/218-adam-kessel/file_works.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/MPEG-4/218-adam-kessel/file_works.m4a",
+      "download_status": "cached",
+      "size_bytes": 1529669,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 45,
+      "url": "https://samples.ffmpeg.org/archive/all/aac++aac++clip.faac.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/all/aac++aac++clip.faac.aac",
+      "download_status": "cached",
+      "size_bytes": 381769,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 46,
+      "url": "https://samples.ffmpeg.org/archive/all/aac++aac++clip.menc.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/all/aac++aac++clip.menc.aac",
+      "download_status": "cached",
+      "size_bytes": 380736,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 47,
+      "url": "https://samples.ffmpeg.org/archive/all/aac++aac++uninit_condition_test.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/all/aac++aac++uninit_condition_test.aac",
+      "download_status": "cached",
+      "size_bytes": 7346,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 48,
+      "url": "https://samples.ffmpeg.org/archive/all/mov++alac++failes.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/all/mov++alac++failes.m4a",
+      "download_status": "cached",
+      "size_bytes": 1094241,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 49,
+      "url": "https://samples.ffmpeg.org/archive/all/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag-2.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/all/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag-2.m4a",
+      "download_status": "cached",
+      "size_bytes": 33195312,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 50,
+      "url": "https://samples.ffmpeg.org/archive/all/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/all/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag.m4a",
+      "download_status": "cached",
+      "size_bytes": 16356608,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 51,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/aac++aac++clip.faac.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/aac++aac++clip.faac.aac",
+      "download_status": "cached",
+      "size_bytes": 381769,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 52,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/aac++aac++clip.menc.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/aac++aac++clip.menc.aac",
+      "download_status": "cached",
+      "size_bytes": 380736,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 53,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/aac++aac++uninit_condition_test.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/aac++aac++uninit_condition_test.aac",
+      "download_status": "cached",
+      "size_bytes": 7346,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 54,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/avi+mpeg4+aac++black_smearing_with_ppc_altivec.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/avi+mpeg4+aac++black_smearing_with_ppc_altivec.mp4",
+      "download_status": "cached",
+      "size_bytes": 6523316,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 55,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++Demo_FlagOfOurFathers.mov",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++Demo_FlagOfOurFathers.mov",
+      "download_status": "cached",
+      "size_bytes": 943785,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 56,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++H264memleak.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++H264memleak.mp4",
+      "download_status": "cached",
+      "size_bytes": 676046,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 57,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++bbc_1080p.mov",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++bbc_1080p.mov",
+      "download_status": "cached",
+      "size_bytes": 97812890,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 58,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++devil_may_cry.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++devil_may_cry.mp4",
+      "download_status": "cached",
+      "size_bytes": 262130406,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 59,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++eric.flv",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++eric.flv",
+      "download_status": "cached",
+      "size_bytes": 5696395,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 60,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++itune_export.mov",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++itune_export.mov",
+      "download_status": "cached",
+      "size_bytes": 55763,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 61,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++mp42mp2garbled_sample.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++mp42mp2garbled_sample.mp4",
+      "download_status": "cached",
+      "size_bytes": 6433583,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 62,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++mp4box_frag.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++mp4box_frag.mp4",
+      "download_status": "cached",
+      "size_bytes": 5701855,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 63,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++rb_07_mar_15_hd.mov",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++rb_07_mar_15_hd.mov",
+      "download_status": "cached",
+      "size_bytes": 27131904,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 64,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++seekhang.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++seekhang.mp4",
+      "download_status": "cached",
+      "size_bytes": 21718565,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 65,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++testcase2.flv",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+h264+aac++testcase2.flv",
+      "download_status": "cached",
+      "size_bytes": 8849952,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 66,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+h264+aac-sac3+mp4s+ETERNAL_cut.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+h264+aac-sac3+mp4s+ETERNAL_cut.mp4",
+      "download_status": "cached",
+      "size_bytes": 7300749,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 67,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag-2.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag-2.m4a",
+      "download_status": "cached",
+      "size_bytes": 33195312,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 68,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag.m4a",
+      "download_status": "cached",
+      "size_bytes": 16356608,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 69,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++15fps30000fps.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++15fps30000fps.mp4",
+      "download_status": "cached",
+      "size_bytes": 490872,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 70,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++29fps1000fps.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++29fps1000fps.mp4",
+      "download_status": "cached",
+      "size_bytes": 76239974,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 71,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++AmigaTribute.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++AmigaTribute.mp4",
+      "download_status": "cached",
+      "size_bytes": 4096000,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 72,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++aac_decoding_error.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++aac_decoding_error.mp4",
+      "download_status": "cached",
+      "size_bytes": 7846115,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 73,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++broken_file.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++broken_file.mp4",
+      "download_status": "cached",
+      "size_bytes": 5914863,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 74,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++ffmpegx_wrong_ar.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++ffmpegx_wrong_ar.mp4",
+      "download_status": "cached",
+      "size_bytes": 6153314,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 75,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++framerate.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++framerate.mp4",
+      "download_status": "cached",
+      "size_bytes": 621222,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 76,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++mp4_noise_audio.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++mp4_noise_audio.mp4",
+      "download_status": "cached",
+      "size_bytes": 5696268,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 77,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++trutter1_problem.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++trutter1_problem.mp4",
+      "download_status": "cached",
+      "size_bytes": 490648,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 78,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++vfr.mp4",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+mpeg4+aac++vfr.mp4",
+      "download_status": "cached",
+      "size_bytes": 490872,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 79,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+svq3+aac++animatrix_2_program_640-sample.mov",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+svq3+aac++animatrix_2_program_640-sample.mov",
+      "download_status": "cached",
+      "size_bytes": 31457280,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 80,
+      "url": "https://samples.ffmpeg.org/archive/audio/aac/mov+svq3+aac++t_starcraft2_teasecinv2_h264.mov",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/aac/mov+svq3+aac++t_starcraft2_teasecinv2_h264.mov",
+      "download_status": "cached",
+      "size_bytes": 7137716,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 81,
+      "url": "https://samples.ffmpeg.org/archive/audio/alac/mov++alac++failes.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/audio/alac/mov++alac++failes.m4a",
+      "download_status": "cached",
+      "size_bytes": 1094241,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 82,
+      "url": "https://samples.ffmpeg.org/archive/container/aac/aac++aac++clip.faac.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/container/aac/aac++aac++clip.faac.aac",
+      "download_status": "cached",
+      "size_bytes": 381769,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 83,
+      "url": "https://samples.ffmpeg.org/archive/container/aac/aac++aac++clip.menc.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/container/aac/aac++aac++clip.menc.aac",
+      "download_status": "cached",
+      "size_bytes": 380736,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 84,
+      "url": "https://samples.ffmpeg.org/archive/container/aac/aac++aac++uninit_condition_test.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/container/aac/aac++aac++uninit_condition_test.aac",
+      "download_status": "cached",
+      "size_bytes": 7346,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 85,
+      "url": "https://samples.ffmpeg.org/archive/container/mov/mov++alac++failes.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/container/mov/mov++alac++failes.m4a",
+      "download_status": "cached",
+      "size_bytes": 1094241,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 86,
+      "url": "https://samples.ffmpeg.org/archive/container/mov/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag-2.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/container/mov/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag-2.m4a",
+      "download_status": "cached",
+      "size_bytes": 33195312,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 87,
+      "url": "https://samples.ffmpeg.org/archive/container/mov/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/container/mov/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag.m4a",
+      "download_status": "cached",
+      "size_bytes": 16356608,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 88,
+      "url": "https://samples.ffmpeg.org/archive/extension/aac/aac++aac++clip.faac.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/extension/aac/aac++aac++clip.faac.aac",
+      "download_status": "cached",
+      "size_bytes": 381769,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 89,
+      "url": "https://samples.ffmpeg.org/archive/extension/aac/aac++aac++clip.menc.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/extension/aac/aac++aac++clip.menc.aac",
+      "download_status": "cached",
+      "size_bytes": 380736,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 90,
+      "url": "https://samples.ffmpeg.org/archive/extension/aac/aac++aac++uninit_condition_test.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/extension/aac/aac++aac++uninit_condition_test.aac",
+      "download_status": "cached",
+      "size_bytes": 7346,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 91,
+      "url": "https://samples.ffmpeg.org/archive/extension/m4a/mov++alac++failes.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/extension/m4a/mov++alac++failes.m4a",
+      "download_status": "cached",
+      "size_bytes": 1094241,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 92,
+      "url": "https://samples.ffmpeg.org/archive/extension/m4a/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag-2.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/extension/m4a/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag-2.m4a",
+      "download_status": "cached",
+      "size_bytes": 33195312,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 93,
+      "url": "https://samples.ffmpeg.org/archive/extension/m4a/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/extension/m4a/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag.m4a",
+      "download_status": "cached",
+      "size_bytes": 16356608,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 94,
+      "url": "https://samples.ffmpeg.org/archive/subtitles/text/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag-2.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/subtitles/text/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag-2.m4a",
+      "download_status": "cached",
+      "size_bytes": 33195312,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 95,
+      "url": "https://samples.ffmpeg.org/archive/subtitles/text/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/subtitles/text/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag.m4a",
+      "download_status": "cached",
+      "size_bytes": 16356608,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 96,
+      "url": "https://samples.ffmpeg.org/archive/subtitles/tx3g/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag-2.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/subtitles/tx3g/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag-2.m4a",
+      "download_status": "cached",
+      "size_bytes": 33195312,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 97,
+      "url": "https://samples.ffmpeg.org/archive/subtitles/tx3g/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/subtitles/tx3g/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag.m4a",
+      "download_status": "cached",
+      "size_bytes": 16356608,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 98,
+      "url": "https://samples.ffmpeg.org/archive/video/mjpeg/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag-2.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/video/mjpeg/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag-2.m4a",
+      "download_status": "cached",
+      "size_bytes": 33195312,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 99,
+      "url": "https://samples.ffmpeg.org/archive/video/mjpeg/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/archive/video/mjpeg/mov+mjpeg+aac+text-tx3g+jfb_podcast_stung_1-2-libicover-e000000-jpg-mktag.m4a",
+      "download_status": "cached",
+      "size_bytes": 16356608,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 100,
+      "url": "https://samples.ffmpeg.org/ffmpeg-bugs/roundup/issue1254/lol-pce.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/ffmpeg-bugs/roundup/issue1254/lol-pce.m4a",
+      "download_status": "cached",
+      "size_bytes": 63029,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 101,
+      "url": "https://samples.ffmpeg.org/ffmpeg-bugs/roundup/issue1295/out0.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/ffmpeg-bugs/roundup/issue1295/out0.m4a",
+      "download_status": "cached",
+      "size_bytes": 54863,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 102,
+      "url": "https://samples.ffmpeg.org/ffmpeg-bugs/roundup/issue2481/LTP2.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/ffmpeg-bugs/roundup/issue2481/LTP2.aac",
+      "download_status": "cached",
+      "size_bytes": 82601,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 103,
+      "url": "https://samples.ffmpeg.org/ffmpeg-bugs/roundup/issue2481/LTP6.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/ffmpeg-bugs/roundup/issue2481/LTP6.aac",
+      "download_status": "cached",
+      "size_bytes": 241691,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 104,
+      "url": "https://samples.ffmpeg.org/ffmpeg-bugs/roundup/issue483/aacchannel/aac-channel-conf.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/ffmpeg-bugs/roundup/issue483/aacchannel/aac-channel-conf.aac",
+      "download_status": "cached",
+      "size_bytes": 1154387,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 105,
+      "url": "https://samples.ffmpeg.org/ffmpeg-bugs/roundup/issue662/neesa_wife_whoopie_1041754.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/ffmpeg-bugs/roundup/issue662/neesa_wife_whoopie_1041754.aac",
+      "download_status": "cached",
+      "size_bytes": 10236950,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 106,
+      "url": "https://samples.ffmpeg.org/ffmpeg-bugs/roundup/issue853/aac_decode_failure.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/ffmpeg-bugs/roundup/issue853/aac_decode_failure.m4a",
+      "download_status": "cached",
+      "size_bytes": 282118,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 107,
+      "url": "https://samples.ffmpeg.org/ffmpeg-bugs/trac/ticket1559/Nic%20Chagall%20-%20Get%20The%20Kicks%20Podcast%20001.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/ffmpeg-bugs/trac/ticket1559/Nic Chagall - Get The Kicks Podcast 001.m4a",
+      "download_status": "cached",
+      "size_bytes": 59578607,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 108,
+      "url": "https://samples.ffmpeg.org/ffmpeg-bugs/trac/ticket1693/ssr_not_implemented_warning.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/ffmpeg-bugs/trac/ticket1693/ssr_not_implemented_warning.aac",
+      "download_status": "cached",
+      "size_bytes": 67199,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 109,
+      "url": "https://samples.ffmpeg.org/ffmpeg-bugs/trac/ticket1694/a.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/ffmpeg-bugs/trac/ticket1694/a.aac",
+      "download_status": "cached",
+      "size_bytes": 2831449,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 110,
+      "url": "https://samples.ffmpeg.org/ffmpeg-bugs/trac/ticket1730/FFMpeg_Bug_1730_crash_demuxing_m4a.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/ffmpeg-bugs/trac/ticket1730/FFMpeg_Bug_1730_crash_demuxing_m4a.m4a",
+      "download_status": "cached",
+      "size_bytes": 9597458,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 111,
+      "url": "https://samples.ffmpeg.org/ffmpeg-bugs/trac/ticket2458/trac_8309_raw.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/ffmpeg-bugs/trac/ticket2458/trac_8309_raw.aac",
+      "download_status": "cached",
+      "size_bytes": 5332094,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 112,
+      "url": "https://samples.ffmpeg.org/ffmpeg-bugs/trac/ticket3312/ref.aac",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/ffmpeg-bugs/trac/ticket3312/ref.aac",
+      "download_status": "cached",
+      "size_bytes": 56123,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 113,
+      "url": "https://samples.ffmpeg.org/ffmpeg-bugs/trac/ticket5513/alac_20bit.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/ffmpeg-bugs/trac/ticket5513/alac_20bit.m4a",
+      "download_status": "cached",
+      "size_bytes": 3887172,
+      "message": "命中本地缓存"
+    },
+    {
+      "index": 114,
+      "url": "https://samples.ffmpeg.org/mov/audio_with_still.m4a",
+      "local_path": "data/aac_samples/samples.ffmpeg.org/mov/audio_with_still.m4a",
+      "download_status": "cached",
+      "size_bytes": 40003788,
+      "message": "命中本地缓存"
+    }
+  ]
+}

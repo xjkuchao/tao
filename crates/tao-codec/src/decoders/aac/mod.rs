@@ -56,6 +56,8 @@ pub struct AacDecoder {
     pending_leading_trim_samples: usize,
     /// 每声道上一帧窗口形状 (0=sine, 1=kbd).
     prev_window_shape: Vec<u8>,
+    /// 每声道上一帧窗口序列 (0/1/2/3).
+    prev_window_sequence: Vec<u32>,
     /// 2048 点 sine 窗.
     long_sine_window: Vec<f32>,
     /// 2048 点 kbd 窗.
@@ -87,6 +89,7 @@ impl AacDecoder {
             default_leading_trim_samples: 0,
             pending_leading_trim_samples: 0,
             prev_window_shape: Vec::new(),
+            prev_window_sequence: Vec::new(),
             long_sine_window: Vec::new(),
             long_kbd_window: Vec::new(),
             short_sine_window: Vec::new(),
@@ -194,6 +197,56 @@ impl AacDecoder {
         }
     }
 
+    /// 按窗口序列执行 overlap-add 并更新 saved 缓冲.
+    ///
+    /// 当前实现先保持与历史行为等价, 但显式暴露序列分支,
+    /// 便于后续按 FFmpeg `imdct_and_windowing` 逐序列同构改写.
+    fn overlap_add_with_sequence(
+        first_frame: bool,
+        prev_window_sequence: u32,
+        curr_window_sequence: u32,
+        overlap: &mut [f32],
+        windowed: &[f32],
+    ) -> Vec<f32> {
+        let mut out = vec![0.0f32; 1024];
+        if windowed.len() < 2048 || overlap.len() < 1024 {
+            return out;
+        }
+
+        if first_frame {
+            out.copy_from_slice(&windowed[..1024]);
+        } else {
+            let prev_is_long = prev_window_sequence == 0 || prev_window_sequence == 3;
+            let curr_is_long_or_start = curr_window_sequence == 0 || curr_window_sequence == 1;
+            if prev_is_long && curr_is_long_or_start {
+                // FFmpeg long->long 分支: 全段 overlap.
+                for i in 0..1024 {
+                    out[i] = overlap[i] + windowed[i];
+                }
+            } else if curr_window_sequence == 2 {
+                // FFmpeg short 分支: 前 448 直接取 saved, 后段做 overlap.
+                out[..448].copy_from_slice(&overlap[..448]);
+                for i in 448..1024 {
+                    out[i] = overlap[i] + windowed[i];
+                }
+            } else {
+                // FFmpeg 过渡分支(LONG_STOP/其它): 448..576 overlap, 576..1024 直接取当前块.
+                out[..448].copy_from_slice(&overlap[..448]);
+                for i in 448..576 {
+                    out[i] = overlap[i] + windowed[i];
+                }
+                out[576..1024].copy_from_slice(&windowed[576..1024]);
+            }
+        }
+
+        match curr_window_sequence {
+            0 | 1 | 2 | 3 | _ => {
+                overlap.copy_from_slice(&windowed[1024..2048]);
+            }
+        }
+        out
+    }
+
     /// 解码一个原始 AAC 帧
     fn decode_raw_frame(&mut self, data: &[u8]) -> TaoResult<Vec<Vec<f32>>> {
         let channels = self.channels as usize;
@@ -203,6 +256,9 @@ impl AacDecoder {
         }
         if self.prev_window_shape.len() != channels {
             self.prev_window_shape.resize(channels, 0);
+        }
+        if self.prev_window_sequence.len() != channels {
+            self.prev_window_sequence.resize(channels, 0);
         }
         let mut spectral = vec![vec![0.0f32; 1024]; channels];
         let mut window_sequences = vec![0u32; channels];
@@ -221,11 +277,13 @@ impl AacDecoder {
         let mut pcm_out = vec![vec![0.0f32; 1024]; channels];
         for ch in 0..channels {
             let window_sequence = window_sequences.get(ch).copied().unwrap_or(0);
+            let prev_sequence = self.prev_window_sequence.get(ch).copied().unwrap_or(0);
             let prev_shape = self.prev_window_shape.get(ch).copied().unwrap_or(0);
             let curr_shape = window_shapes.get(ch).copied().unwrap_or(prev_shape);
             let windowed = if window_sequence == 2 {
                 synthesize_short_windows(
                     &spectral[ch],
+                    prev_shape,
                     curr_shape,
                     &self.short_sine_window,
                     &self.short_kbd_window,
@@ -247,18 +305,18 @@ impl AacDecoder {
                 )
             };
 
-            if self.first_frame {
-                pcm_out[ch][..1024].copy_from_slice(&windowed[..1024]);
-            } else {
-                for i in 0..1024 {
-                    pcm_out[ch][i] = self.overlap[ch][i] + windowed[i];
-                }
-            }
-            if ch < self.overlap.len() {
-                self.overlap[ch] = windowed[1024..2048].to_vec();
-            }
+            pcm_out[ch] = Self::overlap_add_with_sequence(
+                self.first_frame,
+                prev_sequence,
+                window_sequence,
+                &mut self.overlap[ch],
+                &windowed,
+            );
             if ch < self.prev_window_shape.len() {
                 self.prev_window_shape[ch] = curr_shape;
+            }
+            if ch < self.prev_window_sequence.len() {
+                self.prev_window_sequence[ch] = window_sequence;
             }
         }
         self.first_frame = false;
@@ -275,7 +333,6 @@ impl AacDecoder {
     ) -> TaoResult<()> {
         let mut br = BitReader::new(data);
         let mut ch_idx = 0usize;
-
         while br.bits_left() >= 3 {
             let id_syn_ele = br.read_bits(3)?;
             if id_syn_ele == 7 {
@@ -326,13 +383,15 @@ impl AacDecoder {
                         // 两个声道使用共享的 ics_info
                         let left_idx = ch_idx;
                         let mut left_band_info = IcsBandInfo::default();
+                        let mut left_tns_data = None;
                         if ch_idx < spectral.len() {
-                            self.parse_ics_with_info(
+                            self.parse_ics_with_info_capture_tns(
                                 &mut br,
                                 &mut spectral[ch_idx],
                                 codebooks,
                                 Some(&mut left_band_info),
                                 info,
+                                &mut left_tns_data,
                             )?;
                             if ch_idx < window_sequences.len() {
                                 window_sequences[ch_idx] = info.window_sequence;
@@ -343,13 +402,15 @@ impl AacDecoder {
                         }
                         ch_idx += 1;
                         let mut right_band_info = IcsBandInfo::default();
+                        let mut right_tns_data = None;
                         if ch_idx < spectral.len() {
-                            self.parse_ics_with_info(
+                            self.parse_ics_with_info_capture_tns(
                                 &mut br,
                                 &mut spectral[ch_idx],
                                 codebooks,
                                 Some(&mut right_band_info),
                                 info,
+                                &mut right_tns_data,
                             )?;
                             if ch_idx < window_sequences.len() {
                                 window_sequences[ch_idx] = info.window_sequence;
@@ -365,11 +426,14 @@ impl AacDecoder {
                             } else {
                                 self.swb_offset()
                             };
+                            let tns_max_bands = self.tns_max_bands(info.window_sequence == 2);
+                            let (left_slice, right_slice) = spectral.split_at_mut(right_idx);
+                            let left_spec = &mut left_slice[left_idx];
+                            let right_spec = &mut right_slice[0];
                             if !ms_used.is_empty() && ms_mask_present != 0 {
-                                let (left_slice, right_slice) = spectral.split_at_mut(right_idx);
                                 apply_ms_stereo(
-                                    &mut left_slice[left_idx],
-                                    &mut right_slice[0],
+                                    left_spec,
+                                    right_spec,
                                     &info,
                                     &ms_used,
                                     Some(&left_band_info.band_types),
@@ -377,10 +441,9 @@ impl AacDecoder {
                                     swb_offset,
                                 );
                             }
-                            let (left_slice, right_slice) = spectral.split_at_mut(right_idx);
                             apply_intensity_stereo(
-                                &mut left_slice[left_idx],
-                                &mut right_slice[0],
+                                left_spec,
+                                right_spec,
                                 &info,
                                 &right_band_info.band_types,
                                 &right_band_info.scale_factors,
@@ -391,38 +454,71 @@ impl AacDecoder {
                                 },
                                 swb_offset,
                             );
+                            if let Some(tns) = left_tns_data.as_ref() {
+                                apply_tns_data(left_spec, tns, &info, swb_offset, tns_max_bands);
+                            }
+                            if let Some(tns) = right_tns_data.as_ref() {
+                                apply_tns_data(right_spec, tns, &info, swb_offset, tns_max_bands);
+                            }
                         }
                         ch_idx += 1;
                     } else {
-                        if ch_idx < spectral.len() {
+                        let left_idx = ch_idx;
+                        if left_idx < spectral.len() {
                             let info = self.parse_ics(
                                 &mut br,
-                                &mut spectral[ch_idx],
+                                &mut spectral[left_idx],
                                 codebooks,
                                 None,
                                 false,
                             )?;
-                            if ch_idx < window_sequences.len() {
-                                window_sequences[ch_idx] = info.window_sequence;
+                            if left_idx < window_sequences.len() {
+                                window_sequences[left_idx] = info.window_sequence;
                             }
-                            if ch_idx < window_shapes.len() {
-                                window_shapes[ch_idx] = info.window_shape;
+                            if left_idx < window_shapes.len() {
+                                window_shapes[left_idx] = info.window_shape;
                             }
                         }
                         ch_idx += 1;
-                        if ch_idx < spectral.len() {
+                        let right_idx = ch_idx;
+                        let mut right_info = None;
+                        let mut right_band_info = IcsBandInfo::default();
+                        if right_idx < spectral.len() {
                             let info = self.parse_ics(
                                 &mut br,
-                                &mut spectral[ch_idx],
+                                &mut spectral[right_idx],
                                 codebooks,
-                                None,
+                                Some(&mut right_band_info),
                                 false,
                             )?;
-                            if ch_idx < window_sequences.len() {
-                                window_sequences[ch_idx] = info.window_sequence;
+                            if right_idx < window_sequences.len() {
+                                window_sequences[right_idx] = info.window_sequence;
                             }
-                            if ch_idx < window_shapes.len() {
-                                window_shapes[ch_idx] = info.window_shape;
+                            if right_idx < window_shapes.len() {
+                                window_shapes[right_idx] = info.window_shape;
+                            }
+                            right_info = Some(info);
+                        }
+                        if left_idx < spectral.len() && right_idx < spectral.len() {
+                            if let Some(info) = right_info {
+                                let swb_offset = if info.window_sequence == 2 {
+                                    self.swb_offset_short()
+                                } else {
+                                    self.swb_offset()
+                                };
+                                let (left_slice, right_slice) = spectral.split_at_mut(right_idx);
+                                let left_spec = &mut left_slice[left_idx];
+                                let right_spec = &mut right_slice[0];
+                                // FFmpeg 在 common_window=0 的 CPE 也会执行强度立体声.
+                                apply_intensity_stereo(
+                                    left_spec,
+                                    right_spec,
+                                    &info,
+                                    &right_band_info.band_types,
+                                    &right_band_info.scale_factors,
+                                    None,
+                                    swb_offset,
+                                );
                             }
                         }
                         ch_idx += 1;
@@ -728,21 +824,30 @@ impl AacDecoder {
     ) -> TaoResult<IcsInfo> {
         let global_gain = br.read_bits(8)? as i32;
         let info = self.parse_ics_info(br)?;
-        self.decode_ics(br, spectral, codebooks, info, global_gain, band_info)?;
+        self.decode_ics(br, spectral, codebooks, info, global_gain, band_info, None)?;
         Ok(info)
     }
 
-    /// 解析 individual_channel_stream (使用共享 ics_info)
-    fn parse_ics_with_info(
+    /// 解析 individual_channel_stream (使用共享 ics_info), 并延后 TNS 应用.
+    fn parse_ics_with_info_capture_tns(
         &self,
         br: &mut BitReader,
         spectral: &mut [f32],
         codebooks: &AacCodebooks,
         band_info: Option<&mut IcsBandInfo>,
         info: IcsInfo,
+        tns_capture: &mut Option<TnsData>,
     ) -> TaoResult<()> {
         let global_gain = br.read_bits(8)? as i32;
-        self.decode_ics(br, spectral, codebooks, info, global_gain, band_info)
+        self.decode_ics(
+            br,
+            spectral,
+            codebooks,
+            info,
+            global_gain,
+            band_info,
+            Some(tns_capture),
+        )
     }
 
     /// 解码 ICS 内容 (section + scalefactor + spectral)
@@ -754,6 +859,7 @@ impl AacDecoder {
         info: IcsInfo,
         global_gain: i32,
         mut band_info: Option<&mut IcsBandInfo>,
+        tns_capture: Option<&mut Option<TnsData>>,
     ) -> TaoResult<()> {
         // 1. section_data
         let sections = parse_section_data(br, &info).map_err(|e| {
@@ -789,17 +895,24 @@ impl AacDecoder {
             meta.scale_factors = scale_factors.clone();
         }
 
+        let swb_offset = if info.window_sequence == 2 {
+            self.swb_offset_short()
+        } else {
+            self.swb_offset()
+        };
+
         // 3. pulse_data_present
         let pulse_present = br.read_bit()? != 0;
+        let mut pulse_data = None;
         if pulse_present {
-            skip_pulse_data(br).map_err(|e| {
+            pulse_data = Some(parse_pulse_data(br, &info, swb_offset).map_err(|e| {
                 TaoError::InvalidData(format!(
                     "AAC pulse_data 解析失败: win_seq={}, 剩余位={}, 错误={}",
                     info.window_sequence,
                     br.bits_left(),
                     e
                 ))
-            })?;
+            })?);
         }
 
         // 4. tns_data_present
@@ -837,11 +950,6 @@ impl AacDecoder {
         }
 
         // 6. spectral_data
-        let swb_offset = if info.window_sequence == 2 {
-            self.swb_offset_short()
-        } else {
-            self.swb_offset()
-        };
         decode_spectral_data(
             br,
             spectral,
@@ -862,7 +970,20 @@ impl AacDecoder {
             ))
         })?;
 
-        if let Some(tns) = tns_data {
+        if let Some(pulse) = pulse_data.as_ref() {
+            apply_pulse_data(
+                spectral,
+                pulse,
+                &sections,
+                &scale_factors,
+                &info,
+                swb_offset,
+            );
+        }
+
+        if let Some(slot) = tns_capture {
+            *slot = tns_data;
+        } else if let Some(tns) = tns_data {
             apply_tns_data(
                 spectral,
                 &tns,
@@ -893,6 +1014,8 @@ impl AacDecoder {
                     self.channel_layout = ChannelLayout::from_channels(channels);
                     self.overlap = vec![vec![0.0f32; 1024]; channels as usize];
                     self.first_frame = true;
+                    self.prev_window_shape = vec![0u8; channels as usize];
+                    self.prev_window_sequence = vec![0u32; channels as usize];
                 }
                 self.channel_config = channel_config;
             }
@@ -935,6 +1058,7 @@ impl Decoder for AacDecoder {
         self.codebooks = Some(AacCodebooks::build());
         self.overlap = vec![vec![0.0f32; 1024]; self.channels as usize];
         self.prev_window_shape = vec![0u8; self.channels as usize];
+        self.prev_window_sequence = vec![0u32; self.channels as usize];
         self.long_sine_window = build_sine_window(2048);
         self.long_kbd_window = build_kbd_window(2048, 4.0);
         self.short_sine_window = build_sine_window(256);
@@ -955,6 +1079,12 @@ impl Decoder for AacDecoder {
         }
 
         let (raw_data, has_adts_header) = self.strip_adts_header(&packet.data);
+        if !has_adts_header && self.first_frame && self.pending_leading_trim_samples == 0 {
+            // MP4 中首包可能通过负 PTS 表示 priming 样本, 按首包 PTS 推断裁剪量.
+            if packet.pts != tao_core::timestamp::NOPTS_VALUE && packet.pts < 0 {
+                self.pending_leading_trim_samples = (-packet.pts) as usize;
+            }
+        }
 
         // 解码, 失败时输出静音
         let pcm = match self.decode_raw_frame(raw_data) {
@@ -967,7 +1097,13 @@ impl Decoder for AacDecoder {
 
         let channels = self.channels as usize;
         let channel_map = self.output_channel_map();
-        let num_samples = 1024;
+        let num_samples = 1024usize;
+        let packet_samples =
+            if !has_adts_header && (1..=num_samples as i64).contains(&packet.duration) {
+                packet.duration as usize
+            } else {
+                num_samples
+            };
         let mut interleaved = vec![0u8; num_samples * channels * 4];
 
         for i in 0..num_samples {
@@ -977,13 +1113,9 @@ impl Decoder for AacDecoder {
                     .copied()
                     .unwrap_or(ch);
                 let sample = if src_ch < pcm.len() {
-                    // F32 输出不做 [-1,1] 强制削顶, 仅对异常值做保护, 避免与参考实现产生系统性截断误差.
+                    // F32 输出不做额外削顶, 仅过滤非有限值.
                     let scaled = pcm[src_ch][i] * AAC_OUTPUT_GAIN;
-                    if scaled.is_finite() {
-                        scaled.clamp(-8.0, 8.0)
-                    } else {
-                        0.0
-                    }
+                    if scaled.is_finite() { scaled } else { 0.0 }
                 } else {
                     0.0
                 };
@@ -998,17 +1130,14 @@ impl Decoder for AacDecoder {
             leading_trim_samples = self.pending_leading_trim_samples.min(num_samples);
             self.pending_leading_trim_samples -= leading_trim_samples;
         }
-        let output_samples = num_samples - leading_trim_samples;
+        let output_samples = packet_samples.saturating_sub(leading_trim_samples);
         if output_samples == 0 {
             self.output_frame = None;
             return Ok(());
         }
         let payload_offset = leading_trim_samples * channels * 4;
-        let output_interleaved = if payload_offset == 0 {
-            interleaved
-        } else {
-            interleaved[payload_offset..].to_vec()
-        };
+        let payload_end = packet_samples * channels * 4;
+        let output_interleaved = interleaved[payload_offset..payload_end].to_vec();
         let output_pts = if packet.pts == tao_core::timestamp::NOPTS_VALUE {
             packet.pts
         } else {
@@ -1045,6 +1174,7 @@ impl Decoder for AacDecoder {
         self.first_frame = true;
         self.pending_leading_trim_samples = self.default_leading_trim_samples;
         self.prev_window_shape.fill(0);
+        self.prev_window_sequence.fill(0);
         self.random_state.set(0x1f2e3d4c);
         for ch in &mut self.overlap {
             ch.fill(0.0);

@@ -1,6 +1,7 @@
 //! AAC 频谱处理: 辅助结构体、量化、立体声、TNS 等.
 
 use std::cell::Cell;
+use std::sync::OnceLock;
 
 use tao_core::bitreader::BitReader;
 use tao_core::{TaoError, TaoResult};
@@ -40,6 +41,13 @@ pub(super) struct TnsData {
     pub(super) order: [[u8; 4]; 8],
     pub(super) direction: [[bool; 4]; 8],
     pub(super) coef: [[[f32; 20]; 4]; 8],
+}
+
+#[derive(Default, Clone)]
+pub(super) struct PulseData {
+    pub(super) num_pulse: usize,
+    pub(super) pos: [usize; 4],
+    pub(super) amp: [i32; 4],
 }
 
 impl Default for TnsData {
@@ -198,7 +206,7 @@ pub(super) fn decode_spectral_data(
             let group_start = info.window_group_starts[section.group];
             if cb == NOISE_HCB {
                 // PNS 噪声重建: 与 FFmpeg 相同的 LCG 随机源 + 频带归一化.
-                let target = inverse_quantize(1, sf).abs();
+                let target = 2.0f32.powf(0.25 * (sf - 100) as f32);
                 for win_in_group in 0..window_group_len {
                     let win = group_start + win_in_group;
                     let win_base = win * 128 + start_idx;
@@ -230,7 +238,7 @@ pub(super) fn decode_spectral_data(
                     .as_ref()
                     .ok_or_else(|| TaoError::Unsupported(format!("AAC: 频谱码本 {cb} 未实现")))?;
                 if is_short {
-                    // short 窗口必须按每个窗单独解码, 不能把组内多个窗拼接后一次解码.
+                    // short 窗口需按每个窗单独解码 (与 FFmpeg 行为一致).
                     'short_outer: for win_in_group in 0..window_group_len {
                         let win = group_start + win_in_group;
                         let win_base = win * 128 + start_idx;
@@ -416,15 +424,125 @@ pub(super) fn apply_intensity_stereo(
     }
 }
 
-/// 跳过 pulse_data
-pub(super) fn skip_pulse_data(br: &mut BitReader) -> TaoResult<()> {
-    let num_pulse = br.read_bits(2)? + 1;
-    let _pulse_start_sfb = br.read_bits(6)?;
-    for _ in 0..num_pulse {
-        let _offset = br.read_bits(5)?;
-        let _amp = br.read_bits(4)?;
+/// 解析 pulse_data (ISO 14496-3 Table 4.7).
+pub(super) fn parse_pulse_data(
+    br: &mut BitReader,
+    info: &IcsInfo,
+    swb_offset: &[usize],
+) -> TaoResult<PulseData> {
+    if info.window_sequence == 2 {
+        return Err(TaoError::InvalidData(
+            "AAC pulse_data 非法: EIGHT_SHORT_SEQUENCE 不允许 pulse tool".into(),
+        ));
     }
-    Ok(())
+    if info.num_swb >= swb_offset.len() {
+        return Err(TaoError::InvalidData(format!(
+            "AAC pulse_data 非法: num_swb={} 超出 swb_offset 边界={}",
+            info.num_swb,
+            swb_offset.len()
+        )));
+    }
+
+    let mut pulse = PulseData {
+        num_pulse: br.read_bits(2)? as usize + 1,
+        ..Default::default()
+    };
+    let pulse_swb = br.read_bits(6)? as usize;
+    if pulse_swb >= info.num_swb {
+        return Err(TaoError::InvalidData(format!(
+            "AAC pulse_data 非法: pulse_start_sfb={} 超出 num_swb={}",
+            pulse_swb, info.num_swb
+        )));
+    }
+
+    let max_line = swb_offset[info.num_swb];
+    pulse.pos[0] = swb_offset[pulse_swb] + br.read_bits(5)? as usize;
+    if pulse.pos[0] >= max_line {
+        return Err(TaoError::InvalidData(format!(
+            "AAC pulse_data 非法: pulse pos[0]={} 超出频谱上限={}",
+            pulse.pos[0], max_line
+        )));
+    }
+    pulse.amp[0] = br.read_bits(4)? as i32;
+
+    for i in 1..pulse.num_pulse {
+        pulse.pos[i] = pulse.pos[i - 1] + br.read_bits(5)? as usize;
+        if pulse.pos[i] >= max_line {
+            return Err(TaoError::InvalidData(format!(
+                "AAC pulse_data 非法: pulse pos[{}]={} 超出频谱上限={}",
+                i, pulse.pos[i], max_line
+            )));
+        }
+        pulse.amp[i] = br.read_bits(4)? as i32;
+    }
+    Ok(pulse)
+}
+
+/// 对频谱应用 pulse tool 校正.
+pub(super) fn apply_pulse_data(
+    spectral: &mut [f32],
+    pulse: &PulseData,
+    sections: &[Section],
+    scale_factors: &[i32],
+    info: &IcsInfo,
+    swb_offset: &[usize],
+) {
+    if pulse.num_pulse == 0 || info.num_swb == 0 || info.num_swb >= swb_offset.len() {
+        return;
+    }
+
+    // pulse 仅用于 long block, 这里按首组 SFB 定位 band_type/scalefactor.
+    let mut band_types = vec![0u8; info.max_sfb];
+    for section in sections {
+        if section.group != 0 {
+            continue;
+        }
+        let end = section.sect_end.min(info.max_sfb);
+        for sfb in section.sect_start..end {
+            band_types[sfb] = section.sect_cb;
+        }
+    }
+
+    let max_line = swb_offset[info.num_swb];
+    let mut sfb_idx = 0usize;
+    for i in 0..pulse.num_pulse.min(4) {
+        let pos = pulse.pos[i];
+        if pos >= spectral.len() || pos >= max_line {
+            continue;
+        }
+
+        while sfb_idx + 1 < info.num_swb && swb_offset[sfb_idx + 1] <= pos {
+            sfb_idx += 1;
+        }
+        let band_type = band_types.get(sfb_idx).copied().unwrap_or(0);
+        if !(1..=11).contains(&band_type) {
+            continue;
+        }
+        let sf = scale_factors.get(sfb_idx).copied().unwrap_or(0);
+        let sf_scale = 2.0f32.powf(0.25 * (sf - 120) as f32);
+        if !sf_scale.is_finite() || sf_scale == 0.0 {
+            continue;
+        }
+
+        let co = spectral[pos];
+        let amp = pulse.amp[i] as f32;
+        let mut q = -amp;
+        if co != 0.0 {
+            let mut quantized = co / sf_scale;
+            let abs_q = quantized.abs();
+            if abs_q > 0.0 {
+                quantized /= abs_q.sqrt().sqrt();
+            } else {
+                quantized = 0.0;
+            }
+            q = quantized + if quantized > 0.0 { -amp } else { amp };
+        }
+        spectral[pos] = if q == 0.0 {
+            0.0
+        } else {
+            q.signum() * q.abs().powf(4.0 / 3.0) * sf_scale
+        };
+    }
 }
 
 /// 解析 tns_data.
@@ -499,19 +617,16 @@ pub(super) fn compute_tns_lpc(coefs: &[f32]) -> [f32; 20] {
     if coefs.is_empty() {
         return lpc;
     }
-    lpc[0] = coefs[0];
-    for i in 1..coefs.len() {
-        let r = coefs[i];
-        for j in 0..(i / 2) {
-            let tmp_coef = r * lpc[j];
-            lpc[j] += r * lpc[i - 1 - j];
-            lpc[i - 1 - j] += tmp_coef;
-        }
-        if i % 2 != 0 {
-            let j = i / 2;
-            lpc[j] += r * lpc[j];
-        }
+    for i in 0..coefs.len() {
+        // 与 FFmpeg/FDK 行为保持一致: 反射系数到 LPC 递推使用负号.
+        let r = -coefs[i];
         lpc[i] = r;
+        for j in 0..((i + 1) >> 1) {
+            let f = lpc[j];
+            let b = lpc[i - 1 - j];
+            lpc[j] = f + r * b;
+            lpc[i - 1 - j] = b + r * f;
+        }
     }
     lpc
 }
@@ -549,16 +664,13 @@ pub(super) fn apply_tns_data(
             }
 
             let lpc = compute_tns_lpc(&tns.coef[w][filt][..order]);
-            let mut pos = if tns.direction[w][filt] {
+            let reverse = tns.direction[w][filt];
+            let mut pos = if reverse {
                 (w * 128 + end.saturating_sub(1)) as isize
             } else {
                 (w * 128 + start) as isize
             };
-            let inc = if tns.direction[w][filt] {
-                -1isize
-            } else {
-                1isize
-            };
+            let inc = if reverse { -1isize } else { 1isize };
 
             for m in 0..size {
                 let idx = pos as usize;
@@ -621,10 +733,621 @@ pub(super) fn inverse_quantize(x: i32, sf: i32) -> f32 {
         return 0.0;
     }
     let sign = if x > 0 { 1.0f32 } else { -1.0f32 };
-    let abs_x = x.unsigned_abs() as f32;
-    let pow_val = abs_x.powf(4.0 / 3.0);
-    let scale = 2.0f32.powf(0.25 * (sf - 120) as f32);
+    let abs_x = x.unsigned_abs() as usize;
+    let pow_val = pow43_value(abs_x);
+    let scale = inverse_quant_scale(sf);
     sign * pow_val * scale
+}
+
+fn pow43_value(abs_x: usize) -> f32 {
+    const POW43_TABLE_MAX: usize = 8191;
+    static POW43_TABLE: OnceLock<Vec<f32>> = OnceLock::new();
+    let table = POW43_TABLE.get_or_init(|| {
+        let mut t = vec![0.0f32; POW43_TABLE_MAX + 1];
+        for (i, slot) in t.iter_mut().enumerate() {
+            *slot = (i as f64).powf(4.0 / 3.0) as f32;
+        }
+        t
+    });
+    if abs_x <= POW43_TABLE_MAX {
+        table[abs_x]
+    } else {
+        (abs_x as f64).powf(4.0 / 3.0) as f32
+    }
+}
+
+fn inverse_quant_scale(sf: i32) -> f32 {
+    const SF_MIN: i32 = -256;
+    const SF_MAX: i32 = 511;
+    static SCALE_TABLE: OnceLock<Vec<f32>> = OnceLock::new();
+    let table = SCALE_TABLE.get_or_init(|| {
+        let mut t = Vec::with_capacity((SF_MAX - SF_MIN + 1) as usize);
+        for sfv in SF_MIN..=SF_MAX {
+            t.push((2.0f64).powf(0.25 * (sfv - 120) as f64) as f32);
+        }
+        t
+    });
+    if (SF_MIN..=SF_MAX).contains(&sf) {
+        table[(sf - SF_MIN) as usize]
+    } else {
+        (2.0f64).powf(0.25 * (sf - 120) as f64) as f32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        IcsInfo, PulseData, Section, TnsData, apply_intensity_stereo, apply_ms_stereo,
+        apply_pulse_data, apply_tns_data, compute_tns_lpc, inverse_quantize,
+    };
+    use crate::decoders::aac::tables::{INTENSITY_HCB, INTENSITY_HCB2, NOISE_HCB};
+
+    fn inverse_quantize_reference(x: i32, sf: i32) -> f32 {
+        if x == 0 {
+            return 0.0;
+        }
+        let sign = if x > 0 { 1.0f32 } else { -1.0f32 };
+        let abs_x = x.unsigned_abs() as f64;
+        let pow_val = abs_x.powf(4.0 / 3.0) as f32;
+        let scale = (2.0f64).powf(0.25 * (sf - 120) as f64) as f32;
+        sign * pow_val * scale
+    }
+
+    #[test]
+    fn test_inverse_quantize_matches_reference() {
+        let samples = [
+            (0, 120),
+            (1, 120),
+            (-1, 120),
+            (7, 98),
+            (-15, 140),
+            (64, 60),
+            (-91, 200),
+            (1024, 180),
+            (-4096, 96),
+            (16384, 256),
+        ];
+        for (x, sf) in samples {
+            let ours = inverse_quantize(x, sf);
+            let reference = inverse_quantize_reference(x, sf);
+            let err = (ours - reference).abs();
+            assert!(
+                err < 1e-5,
+                "inverse_quantize 偏差超限: x={}, sf={}, ours={:.9}, ref={:.9}, err={:.9}",
+                x,
+                sf,
+                ours,
+                reference,
+                err
+            );
+        }
+    }
+
+    fn make_long_ics(max_sfb: usize) -> IcsInfo {
+        let mut group_lengths = [0usize; 8];
+        let mut group_starts = [0usize; 8];
+        group_lengths[0] = 1;
+        group_starts[0] = 0;
+        IcsInfo {
+            window_sequence: 0,
+            window_shape: 0,
+            max_sfb,
+            num_swb: max_sfb,
+            num_window_groups: 1,
+            window_group_lengths: group_lengths,
+            window_group_starts: group_starts,
+        }
+    }
+
+    fn make_short_ics(max_sfb: usize, group0_len: usize, group1_len: usize) -> IcsInfo {
+        let mut group_lengths = [0usize; 8];
+        let mut group_starts = [0usize; 8];
+        group_lengths[0] = group0_len;
+        group_lengths[1] = group1_len;
+        group_starts[0] = 0;
+        group_starts[1] = group0_len;
+        IcsInfo {
+            window_sequence: 2,
+            window_shape: 0,
+            max_sfb,
+            num_swb: max_sfb,
+            num_window_groups: 2,
+            window_group_lengths: group_lengths,
+            window_group_starts: group_starts,
+        }
+    }
+
+    fn apply_ms_reference(
+        left: &mut [f32],
+        right: &mut [f32],
+        info: &IcsInfo,
+        ms_used: &[bool],
+        left_band_types: Option<&[u8]>,
+        right_band_types: Option<&[u8]>,
+        swb_offset: &[usize],
+    ) {
+        let is_short = info.window_sequence == 2;
+        for group in 0..info.num_window_groups {
+            for sfb in 0..info.max_sfb {
+                let mask_idx = group * info.max_sfb + sfb;
+                if !ms_used.get(mask_idx).copied().unwrap_or(false) {
+                    continue;
+                }
+                if let (Some(left_types), Some(right_types)) = (left_band_types, right_band_types) {
+                    let left_bt = left_types.get(mask_idx).copied().unwrap_or(0);
+                    let right_bt = right_types.get(mask_idx).copied().unwrap_or(0);
+                    if left_bt >= NOISE_HCB || right_bt >= NOISE_HCB {
+                        continue;
+                    }
+                }
+                let start = swb_offset[sfb];
+                let end = swb_offset[sfb + 1];
+                if is_short {
+                    let group_len = info.window_group_lengths[group];
+                    let group_start = info.window_group_starts[group];
+                    for win in 0..group_len {
+                        let win_base = (group_start + win) * 128;
+                        for line in start..end {
+                            let idx = win_base + line;
+                            let l = left[idx];
+                            let r = right[idx];
+                            left[idx] = l + r;
+                            right[idx] = l - r;
+                        }
+                    }
+                } else {
+                    for idx in start..end {
+                        let l = left[idx];
+                        let r = right[idx];
+                        left[idx] = l + r;
+                        right[idx] = l - r;
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_is_reference(
+        left: &mut [f32],
+        right: &mut [f32],
+        info: &IcsInfo,
+        right_band_types: &[u8],
+        right_scale_factors: &[i32],
+        ms_used: Option<&[bool]>,
+        swb_offset: &[usize],
+    ) {
+        let is_short = info.window_sequence == 2;
+        for group in 0..info.num_window_groups {
+            for sfb in 0..info.max_sfb {
+                let band_idx = group * info.max_sfb + sfb;
+                let sf_idx = group * info.num_swb + sfb;
+                let band_type = right_band_types.get(band_idx).copied().unwrap_or(0);
+                if band_type != INTENSITY_HCB && band_type != INTENSITY_HCB2 {
+                    continue;
+                }
+                let is_position = right_scale_factors.get(sf_idx).copied().unwrap_or(0) as f32;
+                let mut sign = if band_type == INTENSITY_HCB2 {
+                    -1.0
+                } else {
+                    1.0
+                };
+                if ms_used
+                    .and_then(|mask| mask.get(band_idx))
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    sign = -sign;
+                }
+                let scale = sign * 0.5f32.powf(0.25 * is_position);
+                let start = swb_offset[sfb];
+                let end = swb_offset[sfb + 1];
+                if is_short {
+                    let group_len = info.window_group_lengths[group];
+                    let group_start = info.window_group_starts[group];
+                    for win in 0..group_len {
+                        let win_base = (group_start + win) * 128;
+                        for line in start..end {
+                            let idx = win_base + line;
+                            right[idx] = left[idx] * scale;
+                        }
+                    }
+                } else {
+                    for idx in start..end {
+                        right[idx] = left[idx] * scale;
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_pulse_reference(
+        spectral: &mut [f32],
+        pulse: &PulseData,
+        sections: &[Section],
+        scale_factors: &[i32],
+        info: &IcsInfo,
+        swb_offset: &[usize],
+    ) {
+        if pulse.num_pulse == 0 || info.num_swb == 0 || info.num_swb >= swb_offset.len() {
+            return;
+        }
+        let mut band_types = vec![0u8; info.max_sfb];
+        for section in sections {
+            if section.group != 0 {
+                continue;
+            }
+            let end = section.sect_end.min(info.max_sfb);
+            for sfb in section.sect_start..end {
+                band_types[sfb] = section.sect_cb;
+            }
+        }
+        let max_line = swb_offset[info.num_swb];
+        let mut sfb_idx = 0usize;
+        for i in 0..pulse.num_pulse.min(4) {
+            let pos = pulse.pos[i];
+            if pos >= spectral.len() || pos >= max_line {
+                continue;
+            }
+            while sfb_idx + 1 < info.num_swb && swb_offset[sfb_idx + 1] <= pos {
+                sfb_idx += 1;
+            }
+            let band_type = band_types.get(sfb_idx).copied().unwrap_or(0);
+            if !(1..=11).contains(&band_type) {
+                continue;
+            }
+            let sf = scale_factors.get(sfb_idx).copied().unwrap_or(0);
+            let sf_scale = 2.0f32.powf(0.25 * (sf - 120) as f32);
+            if !sf_scale.is_finite() || sf_scale == 0.0 {
+                continue;
+            }
+            let co = spectral[pos];
+            let amp = pulse.amp[i] as f32;
+            let mut q = -amp;
+            if co != 0.0 {
+                let mut quantized = co / sf_scale;
+                let abs_q = quantized.abs();
+                if abs_q > 0.0 {
+                    quantized /= abs_q.sqrt().sqrt();
+                } else {
+                    quantized = 0.0;
+                }
+                q = quantized + if quantized > 0.0 { -amp } else { amp };
+            }
+            spectral[pos] = if q == 0.0 {
+                0.0
+            } else {
+                q.signum() * q.abs().powf(4.0 / 3.0) * sf_scale
+            };
+        }
+    }
+
+    fn compute_tns_lpc_reference(coefs: &[f32]) -> [f32; 20] {
+        let mut lpc = [0.0f32; 20];
+        if coefs.is_empty() {
+            return lpc;
+        }
+        for i in 0..coefs.len() {
+            let r = -coefs[i];
+            lpc[i] = r;
+            for j in 0..((i + 1) >> 1) {
+                let f = lpc[j];
+                let b = lpc[i - 1 - j];
+                lpc[j] = f + r * b;
+                lpc[i - 1 - j] = b + r * f;
+            }
+        }
+        lpc
+    }
+
+    fn apply_tns_reference(
+        spectral: &mut [f32],
+        tns: &TnsData,
+        info: &IcsInfo,
+        swb_offset: &[usize],
+        tns_max_bands: usize,
+    ) {
+        let mmm = tns_max_bands.min(info.max_sfb);
+        if mmm == 0 || tns.num_windows == 0 {
+            return;
+        }
+        for w in 0..tns.num_windows {
+            let mut bottom = info.num_swb;
+            for filt in 0..tns.n_filt[w] as usize {
+                let top = bottom;
+                bottom = top.saturating_sub(tns.length[w][filt] as usize);
+                let order = tns.order[w][filt] as usize;
+                if order == 0 {
+                    continue;
+                }
+                let start_band = bottom.min(mmm);
+                let end_band = top.min(mmm);
+                let start = swb_offset[start_band.min(swb_offset.len() - 1)];
+                let end = swb_offset[end_band.min(swb_offset.len() - 1)];
+                let size = end.saturating_sub(start);
+                if size == 0 {
+                    continue;
+                }
+                let lpc = compute_tns_lpc_reference(&tns.coef[w][filt][..order]);
+                let reverse = tns.direction[w][filt];
+                let mut pos = if reverse {
+                    (w * 128 + end.saturating_sub(1)) as isize
+                } else {
+                    (w * 128 + start) as isize
+                };
+                let inc = if reverse { -1isize } else { 1isize };
+                for m in 0..size {
+                    let idx = pos as usize;
+                    if idx >= spectral.len() {
+                        break;
+                    }
+                    let mut acc = spectral[idx];
+                    let tap = m.min(order);
+                    for i in 1..=tap {
+                        let src = (pos - (i as isize) * inc) as usize;
+                        if src >= spectral.len() {
+                            continue;
+                        }
+                        acc -= spectral[src] * lpc[i - 1];
+                    }
+                    spectral[idx] = acc;
+                    pos += inc;
+                }
+            }
+        }
+    }
+
+    fn assert_slice_close(lhs: &[f32], rhs: &[f32], tol: f32, tag: &str) {
+        assert_eq!(lhs.len(), rhs.len(), "{} 长度不一致", tag);
+        let mut max_err = 0.0f32;
+        for (&a, &b) in lhs.iter().zip(rhs.iter()) {
+            let e = (a - b).abs();
+            if e > max_err {
+                max_err = e;
+            }
+        }
+        assert!(
+            max_err < tol,
+            "{} 偏差超限: max_err={:.9}, tol={:.9}",
+            tag,
+            max_err,
+            tol
+        );
+    }
+
+    #[test]
+    fn test_apply_ms_stereo_matches_reference_long() {
+        let info = make_long_ics(3);
+        let swb_offset = [0usize, 4, 8, 12];
+        let mut left = (0..12).map(|v| v as f32 * 0.1 + 0.3).collect::<Vec<_>>();
+        let mut right = (0..12).map(|v| 1.7 - v as f32 * 0.05).collect::<Vec<_>>();
+        let mut left_ref = left.clone();
+        let mut right_ref = right.clone();
+        let ms_used = [true, false, true];
+        let left_bt = [1u8, 1, NOISE_HCB];
+        let right_bt = [1u8, 1, 1];
+
+        apply_ms_stereo(
+            &mut left,
+            &mut right,
+            &info,
+            &ms_used,
+            Some(&left_bt),
+            Some(&right_bt),
+            &swb_offset,
+        );
+        apply_ms_reference(
+            &mut left_ref,
+            &mut right_ref,
+            &info,
+            &ms_used,
+            Some(&left_bt),
+            Some(&right_bt),
+            &swb_offset,
+        );
+
+        assert_slice_close(&left, &left_ref, 1e-7, "MS long left");
+        assert_slice_close(&right, &right_ref, 1e-7, "MS long right");
+    }
+
+    #[test]
+    fn test_apply_ms_stereo_matches_reference_short_grouped() {
+        let info = make_short_ics(2, 3, 5);
+        let swb_offset = [0usize, 6, 12];
+        let mut left = vec![0.0f32; 8 * 128];
+        let mut right = vec![0.0f32; 8 * 128];
+        for i in 0..left.len() {
+            left[i] = (i as f32 * 0.001).sin();
+            right[i] = (i as f32 * 0.002).cos();
+        }
+        let mut left_ref = left.clone();
+        let mut right_ref = right.clone();
+        let ms_used = [true, false, false, true];
+        let left_bt = [1u8, 1, 1, 1];
+        let right_bt = [1u8, 1, 1, 1];
+
+        apply_ms_stereo(
+            &mut left,
+            &mut right,
+            &info,
+            &ms_used,
+            Some(&left_bt),
+            Some(&right_bt),
+            &swb_offset,
+        );
+        apply_ms_reference(
+            &mut left_ref,
+            &mut right_ref,
+            &info,
+            &ms_used,
+            Some(&left_bt),
+            Some(&right_bt),
+            &swb_offset,
+        );
+
+        assert_slice_close(&left, &left_ref, 1e-7, "MS short left");
+        assert_slice_close(&right, &right_ref, 1e-7, "MS short right");
+    }
+
+    #[test]
+    fn test_apply_intensity_stereo_matches_reference_long() {
+        let info = make_long_ics(3);
+        let swb_offset = [0usize, 4, 8, 12];
+        let mut left = (0..12).map(|v| (v as f32 * 0.3).sin()).collect::<Vec<_>>();
+        let mut right = vec![0.0f32; 12];
+        let mut left_ref = left.clone();
+        let mut right_ref = right.clone();
+        let right_bt = [INTENSITY_HCB, 1, INTENSITY_HCB2];
+        let right_sf = [8i32, 0, -4];
+        let ms_used = [true, false, false];
+
+        apply_intensity_stereo(
+            &mut left,
+            &mut right,
+            &info,
+            &right_bt,
+            &right_sf,
+            Some(&ms_used),
+            &swb_offset,
+        );
+        apply_is_reference(
+            &mut left_ref,
+            &mut right_ref,
+            &info,
+            &right_bt,
+            &right_sf,
+            Some(&ms_used),
+            &swb_offset,
+        );
+
+        assert_slice_close(&left, &left_ref, 1e-7, "IS long left");
+        assert_slice_close(&right, &right_ref, 1e-7, "IS long right");
+    }
+
+    #[test]
+    fn test_apply_intensity_stereo_matches_reference_short_grouped() {
+        let info = make_short_ics(2, 2, 6);
+        let swb_offset = [0usize, 8, 16];
+        let mut left = vec![0.0f32; 8 * 128];
+        let mut right = vec![0.0f32; 8 * 128];
+        for i in 0..left.len() {
+            left[i] = (i as f32 * 0.004).cos();
+            right[i] = (i as f32 * 0.003).sin();
+        }
+        let mut left_ref = left.clone();
+        let mut right_ref = right.clone();
+        let right_bt = [INTENSITY_HCB, 1, 1, INTENSITY_HCB2];
+        let right_sf = [6i32, 0, 0, -8];
+        let ms_used = [false, false, false, true];
+
+        apply_intensity_stereo(
+            &mut left,
+            &mut right,
+            &info,
+            &right_bt,
+            &right_sf,
+            Some(&ms_used),
+            &swb_offset,
+        );
+        apply_is_reference(
+            &mut left_ref,
+            &mut right_ref,
+            &info,
+            &right_bt,
+            &right_sf,
+            Some(&ms_used),
+            &swb_offset,
+        );
+
+        assert_slice_close(&left, &left_ref, 1e-7, "IS short left");
+        assert_slice_close(&right, &right_ref, 1e-7, "IS short right");
+    }
+
+    #[test]
+    fn test_apply_pulse_data_matches_reference() {
+        let info = make_long_ics(4);
+        let swb_offset = [0usize, 4, 8, 12, 16];
+        let sections = vec![Section {
+            group: 0,
+            sect_cb: 5,
+            sect_start: 0,
+            sect_end: 4,
+        }];
+        let scale_factors = [120i32, 116, 124, 112];
+        let pulse = PulseData {
+            num_pulse: 2,
+            pos: [2, 10, 0, 0],
+            amp: [3, 2, 0, 0],
+        };
+        let mut spectral = (0..16)
+            .map(|i| {
+                if i % 2 == 0 {
+                    0.5 + i as f32 * 0.1
+                } else {
+                    -0.7 + i as f32 * 0.05
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut reference = spectral.clone();
+
+        apply_pulse_data(
+            &mut spectral,
+            &pulse,
+            &sections,
+            &scale_factors,
+            &info,
+            &swb_offset,
+        );
+        apply_pulse_reference(
+            &mut reference,
+            &pulse,
+            &sections,
+            &scale_factors,
+            &info,
+            &swb_offset,
+        );
+
+        assert_slice_close(&spectral, &reference, 1e-6, "pulse");
+    }
+
+    #[test]
+    fn test_compute_tns_lpc_matches_reference() {
+        let coefs = [0.12f32, -0.31, 0.27, -0.08, 0.05];
+        let ours = compute_tns_lpc(&coefs);
+        let reference = compute_tns_lpc_reference(&coefs);
+        assert_slice_close(
+            &ours[..coefs.len()],
+            &reference[..coefs.len()],
+            1e-7,
+            "tns_lpc",
+        );
+    }
+
+    #[test]
+    fn test_apply_tns_data_matches_reference() {
+        let info = make_long_ics(4);
+        let swb_offset = [0usize, 4, 8, 12, 16];
+        let mut tns = TnsData {
+            num_windows: 1,
+            ..TnsData::default()
+        };
+        tns.n_filt[0] = 1;
+        tns.length[0][0] = 4;
+        tns.order[0][0] = 3;
+        tns.direction[0][0] = false;
+        tns.coef[0][0][0] = 0.21;
+        tns.coef[0][0][1] = -0.14;
+        tns.coef[0][0][2] = 0.09;
+
+        let mut spectral = (0..1024)
+            .map(|i| (i as f32 * 0.007).sin() * 0.8 + (i as f32 * 0.003).cos() * 0.2)
+            .collect::<Vec<_>>();
+        let mut reference = spectral.clone();
+
+        apply_tns_data(&mut spectral, &tns, &info, &swb_offset, 4);
+        apply_tns_reference(&mut reference, &tns, &info, &swb_offset, 4);
+
+        assert_slice_close(&spectral, &reference, 1e-6, "tns_apply");
+    }
 }
 
 // ============================================================

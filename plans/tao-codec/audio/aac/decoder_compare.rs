@@ -17,7 +17,7 @@ use tao::format::{FormatRegistry, IoContext};
 
 static FF_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const DEFAULT_COMPARE_SECONDS: u32 = 10;
-type DecodeResult = Result<(u32, u32, Vec<f32>, Option<u32>), Box<dyn std::error::Error>>;
+type DecodeResult = Result<(u32, u32, Vec<f32>, Option<u32>, usize), Box<dyn std::error::Error>>;
 
 fn compare_seconds_limit() -> u32 {
     std::env::var("TAO_AAC_COMPARE_SECONDS")
@@ -133,7 +133,7 @@ fn decode_aac_with_tao(path: &str) -> DecodeResult {
             path, codec_id
         );
         let (sr, ch, pcm) = decode_aac_with_ffmpeg(path, Some(stream_index_u32), None)?;
-        return Ok((sr, ch, pcm, Some(stream_index_u32)));
+        return Ok((sr, ch, pcm, Some(stream_index_u32), 0));
     }
 
     let (sample_rate, channel_layout, sample_format, frame_size) = match &stream.params {
@@ -175,12 +175,26 @@ fn decode_aac_with_tao(path: &str) -> DecodeResult {
 
     let mut demux_eof = false;
     let mut packet_index: u64 = 0;
+    let mut first_audio_packet_seen = false;
+    let mut estimated_leading_trim_samples = 0usize;
     loop {
         if !demux_eof {
             match demuxer.read_packet(&mut io) {
                 Ok(pkt) => {
                     if pkt.stream_index != stream.index {
                         continue;
+                    }
+                    if !first_audio_packet_seen {
+                        first_audio_packet_seen = true;
+                        let has_adts_header = pkt.data.len() >= 2
+                            && pkt.data[0] == 0xFF
+                            && (pkt.data[1] & 0xF0) == 0xF0;
+                        if !has_adts_header
+                            && pkt.pts != tao_core::timestamp::NOPTS_VALUE
+                            && pkt.pts < 0
+                        {
+                            estimated_leading_trim_samples = (-pkt.pts) as usize;
+                        }
                     }
                     packet_index += 1;
                     decoder.send_packet(&pkt).map_err(|e| {
@@ -222,18 +236,36 @@ fn decode_aac_with_tao(path: &str) -> DecodeResult {
                         && out.len() >= limit
                     {
                         out.truncate(limit);
-                        return Ok((actual_sr, actual_ch, out, Some(stream_index_u32)));
+                        return Ok((
+                            actual_sr,
+                            actual_ch,
+                            out,
+                            Some(stream_index_u32),
+                            estimated_leading_trim_samples,
+                        ));
                     }
                 }
                 Ok(_) => {}
                 Err(TaoError::NeedMoreData) => {
                     if demux_eof {
-                        return Ok((actual_sr, actual_ch, out, Some(stream_index_u32)));
+                        return Ok((
+                            actual_sr,
+                            actual_ch,
+                            out,
+                            Some(stream_index_u32),
+                            estimated_leading_trim_samples,
+                        ));
                     }
                     break;
                 }
                 Err(TaoError::Eof) => {
-                    return Ok((actual_sr, actual_ch, out, Some(stream_index_u32)));
+                    return Ok((
+                        actual_sr,
+                        actual_ch,
+                        out,
+                        Some(stream_index_u32),
+                        estimated_leading_trim_samples,
+                    ));
                 }
                 Err(e) => {
                     return Err(
@@ -356,11 +388,73 @@ struct CompareStats {
     n: usize,
     lag: isize,
     max_err: f64,
+    max_err_idx: usize,
+    max_err_ref: f64,
+    max_err_test: f64,
     psnr: f64,
     precision_pct: f64,
     corr: f64,
     ref_rms: f64,
     test_rms: f64,
+}
+
+#[derive(Clone, Copy)]
+struct MaxErrorMapping {
+    aligned_idx: usize,
+    frame_idx: usize,
+    channel_idx: usize,
+    block_1024: usize,
+    block_offset: usize,
+    ref_idx: usize,
+    test_idx: usize,
+}
+
+fn align_by_lag<'a>(reference: &'a [f32], test: &'a [f32], lag: isize) -> (&'a [f32], &'a [f32]) {
+    if lag >= 0 {
+        let rs = lag as usize;
+        let r = if rs < reference.len() {
+            &reference[rs..]
+        } else {
+            &reference[0..0]
+        };
+        (r, test)
+    } else {
+        let ts = (-lag) as usize;
+        let t = if ts < test.len() {
+            &test[ts..]
+        } else {
+            &test[0..0]
+        };
+        (reference, t)
+    }
+}
+
+fn aligned_index_to_original(aligned_idx: usize, lag: isize) -> (usize, usize) {
+    if lag >= 0 {
+        (aligned_idx + lag as usize, aligned_idx)
+    } else {
+        (aligned_idx, aligned_idx + (-lag) as usize)
+    }
+}
+
+fn map_max_error_index(max_err_idx: usize, channels: usize, lag: isize) -> Option<MaxErrorMapping> {
+    if channels == 0 {
+        return None;
+    }
+    let frame_idx = max_err_idx / channels;
+    let channel_idx = max_err_idx % channels;
+    let block_1024 = frame_idx / 1024;
+    let block_offset = frame_idx % 1024;
+    let (ref_idx, test_idx) = aligned_index_to_original(max_err_idx, lag);
+    Some(MaxErrorMapping {
+        aligned_idx: max_err_idx,
+        frame_idx,
+        channel_idx,
+        block_1024,
+        block_offset,
+        ref_idx,
+        test_idx,
+    })
 }
 
 fn compare_pcm_core(reference: &[f32], test: &[f32], lag: isize) -> CompareStats {
@@ -370,6 +464,9 @@ fn compare_pcm_core(reference: &[f32], test: &[f32], lag: isize) -> CompareStats
             n: 0,
             lag,
             max_err: 0.0,
+            max_err_idx: 0,
+            max_err_ref: 0.0,
+            max_err_test: 0.0,
             psnr: f64::INFINITY,
             precision_pct: 0.0,
             corr: 0.0,
@@ -379,6 +476,9 @@ fn compare_pcm_core(reference: &[f32], test: &[f32], lag: isize) -> CompareStats
     }
     let mut mse = 0.0f64;
     let mut max_err = 0.0f64;
+    let mut max_err_idx = 0usize;
+    let mut max_err_ref = 0.0f64;
+    let mut max_err_test = 0.0f64;
     let mut ref_power = 0.0f64;
     let mut test_power = 0.0f64;
     let mut dot = 0.0f64;
@@ -387,7 +487,12 @@ fn compare_pcm_core(reference: &[f32], test: &[f32], lag: isize) -> CompareStats
         let t = test[i] as f64;
         let d = t - r;
         let ad = d.abs();
-        max_err = max_err.max(ad);
+        if ad > max_err {
+            max_err = ad;
+            max_err_idx = i;
+            max_err_ref = r;
+            max_err_test = t;
+        }
         mse += d * d;
         ref_power += r * r;
         test_power += t * t;
@@ -422,6 +527,9 @@ fn compare_pcm_core(reference: &[f32], test: &[f32], lag: isize) -> CompareStats
         n,
         lag,
         max_err,
+        max_err_idx,
+        max_err_ref,
+        max_err_test,
         psnr,
         precision_pct,
         corr,
@@ -468,24 +576,59 @@ fn compare_pcm(reference: &[f32], test: &[f32]) -> CompareStats {
         return compare_pcm_core(reference, test, 0);
     }
     let lag = find_best_lag(reference, test, 4096, 32768);
-    let (reference, test) = if lag >= 0 {
-        let r = lag as usize;
-        let r_slice = if r < reference.len() {
-            &reference[r..]
-        } else {
-            &reference[0..0]
-        };
-        (r_slice, test)
-    } else {
-        let t = (-lag) as usize;
-        let t_slice = if t < test.len() {
-            &test[t..]
-        } else {
-            &test[0..0]
-        };
-        (reference, t_slice)
-    };
+    let (reference, test) = align_by_lag(reference, test, lag);
     compare_pcm_core(reference, test, lag)
+}
+
+fn fit_linear_adjustment(
+    reference: &[f32],
+    test: &[f32],
+    lag: isize,
+) -> Option<(f64, f64, f64, f64)> {
+    let (reference, test) = align_by_lag(reference, test, lag);
+    let n = reference.len().min(test.len());
+    if n == 0 {
+        return None;
+    }
+    let mut sum_t = 0.0f64;
+    let mut sum_r = 0.0f64;
+    let mut sum_tt = 0.0f64;
+    let mut sum_tr = 0.0f64;
+    let mut ref_power = 0.0f64;
+    for i in 0..n {
+        let r = reference[i] as f64;
+        let t = test[i] as f64;
+        sum_t += t;
+        sum_r += r;
+        sum_tt += t * t;
+        sum_tr += t * r;
+        ref_power += r * r;
+    }
+    let n_f = n as f64;
+    let denom = n_f * sum_tt - sum_t * sum_t;
+    if denom.abs() <= f64::EPSILON {
+        return None;
+    }
+    let gain = (n_f * sum_tr - sum_t * sum_r) / denom;
+    let bias = (sum_r - gain * sum_t) / n_f;
+
+    let mut mse = 0.0f64;
+    for i in 0..n {
+        let r = reference[i] as f64;
+        let t = test[i] as f64;
+        let d = gain * t + bias - r;
+        mse += d * d;
+    }
+    mse /= n_f;
+    let ref_power = ref_power / n_f;
+    let precision_pct = if ref_power > 0.0 {
+        (ref_power / (ref_power + mse)) * 100.0
+    } else if mse == 0.0 {
+        100.0
+    } else {
+        0.0
+    };
+    Some((gain, bias, mse, precision_pct.clamp(0.0, 100.0)))
 }
 
 fn channel_corr_matrix(
@@ -498,23 +641,7 @@ fn channel_corr_matrix(
     if channels == 0 {
         return Vec::new();
     }
-    let (reference, test) = if lag >= 0 {
-        let rs = lag as usize;
-        let r = if rs < reference.len() {
-            &reference[rs..]
-        } else {
-            &reference[0..0]
-        };
-        (r, test)
-    } else {
-        let ts = (-lag) as usize;
-        let t = if ts < test.len() {
-            &test[ts..]
-        } else {
-            &test[0..0]
-        };
-        (reference, t)
-    };
+    let (reference, test) = align_by_lag(reference, test, lag);
     let frames = (reference.len() / channels)
         .min(test.len() / channels)
         .min(max_frames);
@@ -545,6 +672,269 @@ fn channel_corr_matrix(
     out
 }
 
+fn top_error_frames(
+    reference: &[f32],
+    test: &[f32],
+    channels: usize,
+    lag: isize,
+    limit: usize,
+) -> Vec<(usize, f64, f64)> {
+    if channels == 0 {
+        return Vec::new();
+    }
+    let (reference, test) = align_by_lag(reference, test, lag);
+
+    let frames = (reference.len() / channels).min(test.len() / channels);
+    if frames == 0 {
+        return Vec::new();
+    }
+
+    let mut rows = Vec::with_capacity(frames);
+    for frame in 0..frames {
+        let mut mse = 0.0f64;
+        let mut max_err = 0.0f64;
+        for ch in 0..channels {
+            let idx = frame * channels + ch;
+            let d = test[idx] as f64 - reference[idx] as f64;
+            let ad = d.abs();
+            if ad > max_err {
+                max_err = ad;
+            }
+            mse += d * d;
+        }
+        mse /= channels as f64;
+        rows.push((frame, mse, max_err));
+    }
+    rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    rows.truncate(limit);
+    rows
+}
+
+fn top_error_frames_by_channel(
+    reference: &[f32],
+    test: &[f32],
+    channels: usize,
+    lag: isize,
+    limit: usize,
+) -> Vec<Vec<(usize, f64, f64)>> {
+    if channels == 0 {
+        return Vec::new();
+    }
+    let (reference, test) = align_by_lag(reference, test, lag);
+    let frames = (reference.len() / channels).min(test.len() / channels);
+    if frames == 0 {
+        return vec![Vec::new(); channels];
+    }
+    let mut out = vec![Vec::new(); channels];
+    for ch in 0..channels {
+        let mut rows = Vec::with_capacity(frames);
+        for frame in 0..frames {
+            let idx = frame * channels + ch;
+            let d = test[idx] as f64 - reference[idx] as f64;
+            rows.push((frame, d * d, d.abs()));
+        }
+        rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        rows.truncate(limit);
+        out[ch] = rows;
+    }
+    out
+}
+
+fn top_error_blocks_by_channel(
+    reference: &[f32],
+    test: &[f32],
+    channels: usize,
+    lag: isize,
+    block_frames: usize,
+    limit: usize,
+) -> Vec<Vec<(usize, usize, usize, f64, f64)>> {
+    if channels == 0 || block_frames == 0 {
+        return Vec::new();
+    }
+    let (reference, test) = align_by_lag(reference, test, lag);
+    let frames = (reference.len() / channels).min(test.len() / channels);
+    if frames == 0 {
+        return vec![Vec::new(); channels];
+    }
+    let blocks = frames.div_ceil(block_frames);
+    let mut out = vec![Vec::new(); channels];
+    for ch in 0..channels {
+        let mut rows = Vec::with_capacity(blocks);
+        for block in 0..blocks {
+            let start = block * block_frames;
+            let end = (start + block_frames).min(frames);
+            let mut sum = 0.0f64;
+            let mut count = 0usize;
+            let mut max_err = 0.0f64;
+            for frame in start..end {
+                let idx = frame * channels + ch;
+                let d = test[idx] as f64 - reference[idx] as f64;
+                let ad = d.abs();
+                if ad > max_err {
+                    max_err = ad;
+                }
+                sum += d * d;
+                count += 1;
+            }
+            let mse = if count > 0 { sum / count as f64 } else { 0.0 };
+            rows.push((block, start, end, mse, max_err));
+        }
+        rows.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
+        rows.truncate(limit);
+        out[ch] = rows;
+    }
+    out
+}
+
+fn error_bins_by_ref_abs(
+    reference: &[f32],
+    test: &[f32],
+    lag: isize,
+    edges: &[f64],
+) -> Vec<(String, usize, f64, f64)> {
+    let mut sums = vec![0.0f64; edges.len() + 1];
+    let mut max_errs = vec![0.0f64; edges.len() + 1];
+    let mut counts = vec![0usize; edges.len() + 1];
+    let (reference, test) = align_by_lag(reference, test, lag);
+    let n = reference.len().min(test.len());
+    for i in 0..n {
+        let r = reference[i] as f64;
+        let t = test[i] as f64;
+        let abs_r = r.abs();
+        let err = (t - r).abs();
+        let mut idx = edges.len();
+        for (j, edge) in edges.iter().enumerate() {
+            if abs_r <= *edge {
+                idx = j;
+                break;
+            }
+        }
+        counts[idx] += 1;
+        sums[idx] += err * err;
+        if err > max_errs[idx] {
+            max_errs[idx] = err;
+        }
+    }
+    let mut out = Vec::with_capacity(edges.len() + 1);
+    for i in 0..=edges.len() {
+        let label = if i == 0 {
+            format!("[0,{:.2}]", edges[0])
+        } else if i < edges.len() {
+            format!("({:.2},{:.2}]", edges[i - 1], edges[i])
+        } else {
+            format!("(>{:.2})", edges[edges.len() - 1])
+        };
+        let mse = if counts[i] > 0 {
+            sums[i] / counts[i] as f64
+        } else {
+            0.0
+        };
+        out.push((label, counts[i], mse, max_errs[i]));
+    }
+    out
+}
+
+fn local_best_lag_by_channel(
+    reference: &[f32],
+    test: &[f32],
+    channels: usize,
+    lag: isize,
+    channel_idx: usize,
+    center_frame: usize,
+    window_frames: usize,
+    max_lag_frames: usize,
+) -> Option<(isize, usize, f64)> {
+    if channels == 0 || channel_idx >= channels || window_frames == 0 {
+        return None;
+    }
+    let (reference, test) = align_by_lag(reference, test, lag);
+    let frames = (reference.len() / channels).min(test.len() / channels);
+    if frames == 0 {
+        return None;
+    }
+
+    let half = window_frames / 2;
+    let start = center_frame.saturating_sub(half);
+    let end = (start + window_frames).min(frames);
+    if end <= start {
+        return None;
+    }
+
+    let mut best_lag = 0isize;
+    let mut best_mse = f64::INFINITY;
+    let mut best_count = 0usize;
+    let max_lag = max_lag_frames as isize;
+    for local_lag in -max_lag..=max_lag {
+        let (ref_start, test_start) = if local_lag >= 0 {
+            (start + local_lag as usize, start)
+        } else {
+            (start, start + (-local_lag) as usize)
+        };
+        if ref_start >= frames || test_start >= frames {
+            continue;
+        }
+        let count = (end - start)
+            .min(frames - ref_start)
+            .min(frames - test_start);
+        if count == 0 {
+            continue;
+        }
+
+        let mut mse = 0.0f64;
+        for i in 0..count {
+            let r_idx = (ref_start + i) * channels + channel_idx;
+            let t_idx = (test_start + i) * channels + channel_idx;
+            let d = test[t_idx] as f64 - reference[r_idx] as f64;
+            mse += d * d;
+        }
+        mse /= count as f64;
+        if mse < best_mse {
+            best_mse = mse;
+            best_lag = local_lag;
+            best_count = count;
+        }
+    }
+
+    if best_count == 0 {
+        None
+    } else {
+        Some((best_lag, best_count, best_mse))
+    }
+}
+
+fn print_error_neighborhood(
+    path: &str,
+    reference: &[f32],
+    test: &[f32],
+    lag: isize,
+    idx: usize,
+    radius: usize,
+) {
+    if reference.is_empty() || test.is_empty() {
+        return;
+    }
+    let (reference, test) = align_by_lag(reference, test, lag);
+    let n = reference.len().min(test.len());
+    if idx >= n {
+        return;
+    }
+    let start = idx.saturating_sub(radius);
+    let end = (idx + radius + 1).min(n);
+    println!("[{}] 最大误差邻域[{}..{}):", path, start, end);
+    for i in start..end {
+        let r = reference[i] as f64;
+        let t = test[i] as f64;
+        println!(
+            "[{}]   idx={}, FFmpeg={:.9}, Tao={:.9}, diff={:.9}",
+            path,
+            i,
+            r,
+            t,
+            t - r
+        );
+    }
+}
+
 fn resolve_input() -> Result<String, Box<dyn std::error::Error>> {
     let mut after_dd = std::env::args().skip_while(|v| v != "--").skip(1);
     if let Some(arg) = after_dd.next() {
@@ -559,7 +949,8 @@ fn resolve_input() -> Result<String, Box<dyn std::error::Error>> {
 }
 
 fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let (tao_sr, tao_ch, tao_pcm, tao_stream_index) = decode_aac_with_tao(path)?;
+    let (tao_sr, tao_ch, tao_pcm, tao_stream_index, tao_leading_trim_samples) =
+        decode_aac_with_tao(path)?;
     let (ff_sr, ff_ch, ff_pcm) =
         decode_aac_with_ffmpeg(path, tao_stream_index, Some((tao_sr, tao_ch)))?;
 
@@ -587,19 +978,84 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     let stats = compare_pcm(&ff_pcm, &tao_pcm);
     println!(
-        "[{}] Tao对比样本={}, Tao={}, FFmpeg={}, lag={}, Tao/FFmpeg: max_err={:.9}, psnr={:.2}dB, 精度={:.6}%, 相关系数={:.9}, RMS(Tao/FFmpeg)={:.9}/{:.9}, FFmpeg=100%",
+        "[{}] Tao对比样本={}, Tao={}, FFmpeg={}, lag={}, Tao/FFmpeg: max_err={:.9}, max_err_idx={}, psnr={:.2}dB, 精度={:.6}%, 相关系数={:.9}, RMS(Tao/FFmpeg)={:.9}/{:.9}, FFmpeg=100%",
         path,
         stats.n,
         tao_pcm.len(),
         ff_pcm.len(),
         stats.lag,
         stats.max_err,
+        stats.max_err_idx,
         stats.psnr,
         stats.precision_pct,
         stats.corr,
         stats.test_rms,
         stats.ref_rms
     );
+    println!(
+        "[{}] 最大误差点: idx={}, FFmpeg={:.9}, Tao={:.9}, diff={:.9}",
+        path,
+        stats.max_err_idx,
+        stats.max_err_ref,
+        stats.max_err_test,
+        stats.max_err_test - stats.max_err_ref
+    );
+    if let Some(mapping) = map_max_error_index(stats.max_err_idx, tao_ch as usize, stats.lag) {
+        let t = if tao_sr > 0 {
+            mapping.frame_idx as f64 / tao_sr as f64
+        } else {
+            0.0
+        };
+        println!(
+            "[{}] 最大误差映射: aligned_idx={}, ref_idx={}, tao_idx={}, channel={}, frame={}, time={:.3}s, aac_block={}, block_offset={}",
+            path,
+            mapping.aligned_idx,
+            mapping.ref_idx,
+            mapping.test_idx,
+            mapping.channel_idx,
+            mapping.frame_idx,
+            t,
+            mapping.block_1024,
+            mapping.block_offset
+        );
+        if tao_leading_trim_samples > 0 {
+            let raw_frame = mapping.frame_idx + tao_leading_trim_samples;
+            let raw_block = raw_frame / 1024;
+            let raw_block_offset = raw_frame % 1024;
+            let raw_t = if tao_sr > 0 {
+                raw_frame as f64 / tao_sr as f64
+            } else {
+                0.0
+            };
+            println!(
+                "[{}] 原始帧映射(含priming={}): raw_frame={}, raw_time={:.3}s, raw_aac_block={}, raw_block_offset={}",
+                path, tao_leading_trim_samples, raw_frame, raw_t, raw_block, raw_block_offset
+            );
+        }
+        if let Some((local_lag, count, local_mse)) = local_best_lag_by_channel(
+            &ff_pcm,
+            &tao_pcm,
+            tao_ch as usize,
+            stats.lag,
+            mapping.channel_idx,
+            mapping.frame_idx,
+            2048,
+            16,
+        ) {
+            println!(
+                "[{}] 最大误差点局部lag(按通道): ch={}, center_frame={}, window_frames={}, local_lag={}, global_lag={}, combined_lag={}, local_mse={:.9}",
+                path,
+                mapping.channel_idx,
+                mapping.frame_idx,
+                count,
+                local_lag,
+                stats.lag,
+                stats.lag + local_lag,
+                local_mse
+            );
+        }
+    }
+    print_error_neighborhood(path, &ff_pcm, &tao_pcm, stats.lag, stats.max_err_idx, 4);
     if tao_ch == ff_ch && tao_ch > 1 && stats.precision_pct < 99.9 {
         let channels = tao_ch as usize;
         let corr = channel_corr_matrix(&ff_pcm, &tao_pcm, channels, stats.lag, 16_384);
@@ -611,6 +1067,84 @@ fn run_compare(path: &str) -> Result<(), Box<dyn std::error::Error>> {
                 .collect::<Vec<_>>()
                 .join(", ");
             println!("[{}]   {}", path, line);
+        }
+        let top_frames = top_error_frames(&ff_pcm, &tao_pcm, channels, stats.lag, 5);
+        if !top_frames.is_empty() {
+            println!("[{}] 帧级误差 Top5(按 MSE):", path);
+            for (frame, mse, max_err) in top_frames {
+                let t = frame as f64 / tao_sr as f64;
+                if tao_leading_trim_samples > 0 {
+                    let raw_frame = frame + tao_leading_trim_samples;
+                    let raw_block = raw_frame / 1024;
+                    let raw_block_offset = raw_frame % 1024;
+                    let raw_t = if tao_sr > 0 {
+                        raw_frame as f64 / tao_sr as f64
+                    } else {
+                        0.0
+                    };
+                    println!(
+                        "[{}]   frame={}, time={:.3}s, raw_frame={}, raw_time={:.3}s, raw_block={}, raw_block_offset={}, mse={:.9}, max_err={:.9}",
+                        path, frame, t, raw_frame, raw_t, raw_block, raw_block_offset, mse, max_err
+                    );
+                } else {
+                    println!(
+                        "[{}]   frame={}, time={:.3}s, mse={:.9}, max_err={:.9}",
+                        path, frame, t, mse, max_err
+                    );
+                }
+            }
+        }
+        let per_channel = top_error_frames_by_channel(&ff_pcm, &tao_pcm, channels, stats.lag, 3);
+        if !per_channel.is_empty() {
+            println!("[{}] 按通道帧级误差 Top3:", path);
+            for (ch, rows) in per_channel.into_iter().enumerate() {
+                for (frame, mse, max_err) in rows {
+                    let t = frame as f64 / tao_sr as f64;
+                    println!(
+                        "[{}]   ch={}, frame={}, time={:.3}s, mse={:.9}, max_err={:.9}",
+                        path, ch, frame, t, mse, max_err
+                    );
+                }
+            }
+        }
+        let block_rows =
+            top_error_blocks_by_channel(&ff_pcm, &tao_pcm, channels, stats.lag, 1024, 5);
+        if !block_rows.is_empty() {
+            println!("[{}] 按通道 1024帧块误差 Top5:", path);
+            for (ch, rows) in block_rows.into_iter().enumerate() {
+                for (block, start, _end, mse, max_err) in rows {
+                    let t = start as f64 / tao_sr as f64;
+                    println!(
+                        "[{}]   ch={}, block={}, start_frame={}, time={:.3}s, mse={:.9}, max_err={:.9}",
+                        path, ch, block, start, t, mse, max_err
+                    );
+                }
+            }
+        }
+
+        let bins = error_bins_by_ref_abs(
+            &ff_pcm,
+            &tao_pcm,
+            stats.lag,
+            &[0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0],
+        );
+        if !bins.is_empty() {
+            println!("[{}] 按参考幅值分桶误差统计:", path);
+            for (label, count, mse, max_err) in bins {
+                println!(
+                    "[{}]   abs_ref={}, count={}, mse={:.9}, max_err={:.9}",
+                    path, label, count, mse, max_err
+                );
+            }
+        }
+
+        if let Some((gain, bias, mse, precision)) =
+            fit_linear_adjustment(&ff_pcm, &tao_pcm, stats.lag)
+        {
+            println!(
+                "[{}] 线性校正诊断(test' = gain*test+bias): gain={:.9}, bias={:.9}, mse={:.9}, 估计精度={:.6}%",
+                path, gain, bias, mse, precision
+            );
         }
     }
 
