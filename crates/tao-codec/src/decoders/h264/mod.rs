@@ -982,7 +982,7 @@ impl H264Decoder {
             self.decode_order_counter = 0;
         }
         while self.reference_frames.len() > self.max_reference_frames {
-            let _ = self.reference_frames.pop_front();
+            self.reference_frames.pop_front();
         }
     }
 
