@@ -140,23 +140,11 @@ impl H264Decoder {
     ) {
         self.prev_qp_delta_nz = false;
         let mut cur_qp = slice_qp;
-        let trace_i_mb = std::env::var("TAO_H264_TRACE_CABAC_I_MB")
-            .ok()
-            .and_then(|v| {
-                let mut it = v.split(',');
-                let frame = it.next()?.parse::<u32>().ok()?;
-                let target_mb = it.next()?.parse::<usize>().ok()?;
-                Some((frame, target_mb))
-            });
         for mb_idx in first..total {
             self.mark_mb_slice_first_mb(mb_idx, slice_first_mb);
             let mb_x = mb_idx % self.mb_width;
             let mb_y = mb_idx / self.mb_width;
             self.clear_mb_mvd_cache(mb_x, mb_y);
-            let trace_this_mb = trace_i_mb
-                .map(|(frame, target_mb)| self.last_frame_num == frame && mb_idx == target_mb)
-                .unwrap_or(false);
-            let qp_before = cur_qp;
 
             let mb_type = decode_i_mb_type(
                 cabac,
@@ -179,32 +167,6 @@ impl H264Decoder {
             }
             if mb_idx < self.mb_qp.len() {
                 self.mb_qp[mb_idx] = cur_qp;
-            }
-            if trace_this_mb {
-                let cbp = self.mb_cbp.get(mb_idx).copied().unwrap_or_default();
-                let tx8 = self
-                    .transform_8x8_flags
-                    .get(mb_idx)
-                    .copied()
-                    .unwrap_or_default();
-                let chroma_mode = self
-                    .chroma_pred_modes
-                    .get(mb_idx)
-                    .copied()
-                    .unwrap_or_default();
-                eprintln!(
-                    "[H264-CABAC-I-MB] frame_num={} mb_idx={} (x={},y={}) mb_type={} cbp={} qp_before={} qp_after={} tx8={} chroma_mode={}",
-                    self.last_frame_num,
-                    mb_idx,
-                    mb_x,
-                    mb_y,
-                    mb_type,
-                    cbp,
-                    qp_before,
-                    cur_qp,
-                    tx8,
-                    chroma_mode
-                );
             }
             // 对齐 FFmpeg/OpenH264: CABAC end_of_slice_flag 在每个 MB 后都需要解码.
             let term = cabac.decode_terminate();
@@ -470,9 +432,6 @@ impl H264Decoder {
         py: usize,
         mode: u8,
     ) {
-        let trace_i4x4 = self.should_trace_i4x4_block(mb_x, mb_y, abs_sub_x, abs_sub_y);
-        let mb_idx = mb_y * self.mb_width + mb_x;
-        let sub_idx = abs_sub_y * 4 + abs_sub_x;
         let top_available = if abs_sub_y > 0 {
             true
         } else {
@@ -491,51 +450,9 @@ impl H264Decoder {
             (abs_sub_x, abs_sub_y),
             (1, 1) | (3, 1) | (1, 3) | (3, 2) | (3, 3)
         );
-        let disable_tr_fix = std::env::var("TAO_H264_DISABLE_I4X4_TR_FIX").as_deref() == Ok("1");
-        let tr_not_avail =
-            !disable_tr_fix && matches!(remapped_mode, 3 | 7) && tr_not_avail_inside_mb;
+        let tr_not_avail = matches!(remapped_mode, 3 | 7) && tr_not_avail_inside_mb;
         let mut patched = false;
         let mut backup = [0u8; 4];
-
-        if trace_i4x4 {
-            let top_left = if px > 0 && py > 0 {
-                let idx = (py - 1) * self.stride_y + (px - 1);
-                self.ref_y.get(idx).copied().unwrap_or(128)
-            } else {
-                128
-            };
-            let mut top = [128u8; 8];
-            if py > 0 {
-                let row_above = (py - 1) * self.stride_y;
-                for (dx, slot) in top.iter_mut().enumerate() {
-                    let idx = row_above + px + dx;
-                    *slot = self.ref_y.get(idx).copied().unwrap_or(128);
-                }
-            }
-            let mut left = [128u8; 4];
-            if px > 0 {
-                for (dy, slot) in left.iter_mut().enumerate() {
-                    let idx = (py + dy) * self.stride_y + (px - 1);
-                    *slot = self.ref_y.get(idx).copied().unwrap_or(128);
-                }
-            }
-            eprintln!(
-                "[H264-I4X4-PRED-IN] frame_num={} mb_idx={} sub=({},{}#{}) mode={} remapped={} top_avail={} left_avail={} tr_not_avail={} top_left={} top={:?} left={:?}",
-                self.last_frame_num,
-                mb_idx,
-                abs_sub_x,
-                abs_sub_y,
-                sub_idx,
-                mode,
-                remapped_mode,
-                top_available,
-                left_available,
-                tr_not_avail,
-                top_left,
-                top,
-                left
-            );
-        }
 
         if tr_not_avail && py > 0 {
             let row_above = (py - 1) * self.stride_y;
@@ -556,14 +473,6 @@ impl H264Decoder {
 
         intra::predict_4x4(&mut self.ref_y, self.stride_y, px, py, remapped_mode);
 
-        if trace_i4x4 {
-            let pred_block = self.read_luma_4x4_block(px, py);
-            eprintln!(
-                "[H264-I4X4-PRED-OUT] frame_num={} mb_idx={} sub=({},{}#{}) pred={:?}",
-                self.last_frame_num, mb_idx, abs_sub_x, abs_sub_y, sub_idx, pred_block
-            );
-        }
-
         if patched {
             let row_above = (py - 1) * self.stride_y;
             for dx in 4..8 {
@@ -576,60 +485,7 @@ impl H264Decoder {
         }
     }
 
-    /// 判断当前 4x4 子块是否命中调试跟踪目标.
-    ///
-    /// 环境变量格式:
-    /// - `TAO_H264_TRACE_I4X4_BLOCK=frame,mb` -> 跟踪该 MB 的全部子块.
-    /// - `TAO_H264_TRACE_I4X4_BLOCK=frame,mb,sub` -> 跟踪指定子块.
-    ///   - `sub` 支持 `0..15` 或 `x:y`.
-    /// - `TAO_H264_TRACE_I4X4_BLOCK=frame,mb,all` -> 同上(全部子块).
-    pub(super) fn should_trace_i4x4_block(
-        &self,
-        mb_x: usize,
-        mb_y: usize,
-        abs_sub_x: usize,
-        abs_sub_y: usize,
-    ) -> bool {
-        let spec = match std::env::var("TAO_H264_TRACE_I4X4_BLOCK") {
-            Ok(v) => v,
-            Err(_) => return false,
-        };
-        let mut it = spec.split(',');
-        let frame = match it.next().and_then(|v| v.parse::<u32>().ok()) {
-            Some(v) => v,
-            None => return false,
-        };
-        if self.last_frame_num != frame {
-            return false;
-        }
-        let target_mb = match it.next().and_then(|v| v.parse::<usize>().ok()) {
-            Some(v) => v,
-            None => return false,
-        };
-        let mb_idx = mb_y * self.mb_width + mb_x;
-        if mb_idx != target_mb {
-            return false;
-        }
-        match it.next() {
-            None => true,
-            Some(scope) if scope.eq_ignore_ascii_case("all") => true,
-            Some(scope) => {
-                if let Ok(sub_idx) = scope.parse::<usize>() {
-                    return sub_idx < 16
-                        && abs_sub_x == (sub_idx & 3)
-                        && abs_sub_y == (sub_idx >> 2);
-                }
-                if let Some((sx, sy)) = scope.split_once(':')
-                    && let (Ok(sx), Ok(sy)) = (sx.parse::<usize>(), sy.parse::<usize>())
-                {
-                    return sx < 4 && sy < 4 && abs_sub_x == sx && abs_sub_y == sy;
-                }
-                false
-            }
-        }
-    }
-
-    /// 读取当前亮度平面指定位置的 4x4 块(越界按 0 填充), 仅用于诊断输出.
+    /// 读取当前亮度平面指定位置的 4x4 块(越界按 0 填充), 供调试路径复用.
     pub(super) fn read_luma_4x4_block(&self, px: usize, py: usize) -> [u8; 16] {
         let mut block = [0u8; 16];
         for y in 0..4 {
@@ -1099,44 +955,6 @@ impl H264Decoder {
         intra_defaults: bool,
     ) {
         let (mb_x, mb_y) = mb_pos;
-        let mb_idx = mb_y * self.mb_width + mb_x;
-        let chroma_skip_detail = std::env::var("TAO_H264_SKIP_CHROMA_DETAIL")
-            .ok()
-            .and_then(|v| {
-                let mut it = v.split(',');
-                let frame = it.next()?.parse::<u32>().ok()?;
-                let target_mb = it.next()?.parse::<usize>().ok()?;
-                let scope = it.next()?.to_ascii_lowercase();
-                Some((frame, target_mb, scope))
-            });
-        let scope = chroma_skip_detail
-            .and_then(|(frame, target_mb, scope)| {
-                if self.last_frame_num == frame && mb_idx == target_mb {
-                    Some(scope)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_default();
-        let skip_all = scope == "all";
-        let skip_u_dc = skip_all || scope == "u_dc";
-        let skip_v_dc = skip_all || scope == "v_dc";
-        let skip_u_ac = skip_all || scope == "u_ac";
-        let skip_v_ac = skip_all || scope == "v_ac";
-        let mut skip_u_ac_block = [false; 4];
-        let mut skip_v_ac_block = [false; 4];
-        if let Some(rest) = scope.strip_prefix('u')
-            && let Ok(idx) = rest.parse::<usize>()
-            && idx < 4
-        {
-            skip_u_ac_block[idx] = true;
-        }
-        if let Some(rest) = scope.strip_prefix('v')
-            && let Ok(idx) = rest.parse::<usize>()
-            && idx < 4
-        {
-            skip_v_ac_block[idx] = true;
-        }
         let u_scaling_4x4 = self.active_chroma_scaling_list_4x4(intra_defaults, false);
         let v_scaling_4x4 = self.active_chroma_scaling_list_4x4(intra_defaults, true);
         let transform_bypass = self.is_transform_bypass_active(slice_qp);
@@ -1151,15 +969,11 @@ impl H264Decoder {
 
         // U 通道
         let mut u_dc = [0i32; 4];
-        if !skip_u_dc {
-            let chroma_dc_cbf_inc_u = self.chroma_dc_cbf_ctx_inc(mb_x, mb_y, intra_defaults);
-            let u_coeffs = decode_residual_block(cabac, ctxs, &CAT_CHROMA_DC, chroma_dc_cbf_inc_u);
-            self.set_chroma_dc_u_cbf(mb_x, mb_y, u_coeffs.iter().any(|&c| c != 0));
-            for (i, &c) in u_coeffs.iter().enumerate().take(4) {
-                u_dc[i] = c;
-            }
-        } else {
-            self.set_chroma_dc_u_cbf(mb_x, mb_y, false);
+        let chroma_dc_cbf_inc_u = self.chroma_dc_cbf_ctx_inc(mb_x, mb_y, intra_defaults);
+        let u_coeffs = decode_residual_block(cabac, ctxs, &CAT_CHROMA_DC, chroma_dc_cbf_inc_u);
+        self.set_chroma_dc_u_cbf(mb_x, mb_y, u_coeffs.iter().any(|&c| c != 0));
+        for (i, &c) in u_coeffs.iter().enumerate().take(4) {
+            u_dc[i] = c;
         }
         if !transform_bypass {
             inverse_hadamard_2x2(&mut u_dc);
@@ -1168,15 +982,11 @@ impl H264Decoder {
 
         // V 通道
         let mut v_dc = [0i32; 4];
-        if !skip_v_dc {
-            let chroma_dc_cbf_inc_v = self.chroma_dc_v_cbf_ctx_inc(mb_x, mb_y, intra_defaults);
-            let v_coeffs = decode_residual_block(cabac, ctxs, &CAT_CHROMA_DC, chroma_dc_cbf_inc_v);
-            self.set_chroma_dc_v_cbf(mb_x, mb_y, v_coeffs.iter().any(|&c| c != 0));
-            for (i, &c) in v_coeffs.iter().enumerate().take(4) {
-                v_dc[i] = c;
-            }
-        } else {
-            self.set_chroma_dc_v_cbf(mb_x, mb_y, false);
+        let chroma_dc_cbf_inc_v = self.chroma_dc_v_cbf_ctx_inc(mb_x, mb_y, intra_defaults);
+        let v_coeffs = decode_residual_block(cabac, ctxs, &CAT_CHROMA_DC, chroma_dc_cbf_inc_v);
+        self.set_chroma_dc_v_cbf(mb_x, mb_y, v_coeffs.iter().any(|&c| c != 0));
+        for (i, &c) in v_coeffs.iter().enumerate().take(4) {
+            v_dc[i] = c;
         }
         if !transform_bypass {
             inverse_hadamard_2x2(&mut v_dc);
@@ -1188,60 +998,30 @@ impl H264Decoder {
         let mut v_scans = [[0i32; 16]; 4];
 
         if has_chroma_ac {
-            if !skip_u_ac {
-                for (block_idx, u_scan) in u_scans.iter_mut().enumerate() {
-                    let sub_x = block_idx & 1;
-                    let sub_y = block_idx >> 1;
-                    let x2 = mb_x * 2 + sub_x;
-                    let y2 = mb_y * 2 + sub_y;
-                    if skip_u_ac_block[block_idx] {
-                        self.set_chroma_u_cbf(x2, y2, false);
-                        continue;
-                    }
-
-                    let cbf_inc_u = self.chroma_u_cbf_ctx_inc(x2, y2, intra_defaults);
-                    let raw_u_ac = decode_residual_block(cabac, ctxs, &CAT_CHROMA_AC, cbf_inc_u);
-                    let coded_u = raw_u_ac.iter().any(|&c| c != 0);
-                    self.set_chroma_u_cbf(x2, y2, coded_u);
-                    for (scan, &c) in raw_u_ac.iter().enumerate().take(15) {
-                        u_scan[scan + 1] = c;
-                    }
-                }
-            } else {
-                for block_idx in 0..4usize {
-                    let sub_x = block_idx & 1;
-                    let sub_y = block_idx >> 1;
-                    let x2 = mb_x * 2 + sub_x;
-                    let y2 = mb_y * 2 + sub_y;
-                    self.set_chroma_u_cbf(x2, y2, false);
+            for (block_idx, u_scan) in u_scans.iter_mut().enumerate() {
+                let sub_x = block_idx & 1;
+                let sub_y = block_idx >> 1;
+                let x2 = mb_x * 2 + sub_x;
+                let y2 = mb_y * 2 + sub_y;
+                let cbf_inc_u = self.chroma_u_cbf_ctx_inc(x2, y2, intra_defaults);
+                let raw_u_ac = decode_residual_block(cabac, ctxs, &CAT_CHROMA_AC, cbf_inc_u);
+                let coded_u = raw_u_ac.iter().any(|&c| c != 0);
+                self.set_chroma_u_cbf(x2, y2, coded_u);
+                for (scan, &c) in raw_u_ac.iter().enumerate().take(15) {
+                    u_scan[scan + 1] = c;
                 }
             }
-            if !skip_v_ac {
-                for (block_idx, v_scan) in v_scans.iter_mut().enumerate() {
-                    let sub_x = block_idx & 1;
-                    let sub_y = block_idx >> 1;
-                    let x2 = mb_x * 2 + sub_x;
-                    let y2 = mb_y * 2 + sub_y;
-                    if skip_v_ac_block[block_idx] {
-                        self.set_chroma_v_cbf(x2, y2, false);
-                        continue;
-                    }
-
-                    let cbf_inc_v = self.chroma_v_cbf_ctx_inc(x2, y2, intra_defaults);
-                    let raw_v_ac = decode_residual_block(cabac, ctxs, &CAT_CHROMA_AC, cbf_inc_v);
-                    let coded_v = raw_v_ac.iter().any(|&c| c != 0);
-                    self.set_chroma_v_cbf(x2, y2, coded_v);
-                    for (scan, &c) in raw_v_ac.iter().enumerate().take(15) {
-                        v_scan[scan + 1] = c;
-                    }
-                }
-            } else {
-                for block_idx in 0..4usize {
-                    let sub_x = block_idx & 1;
-                    let sub_y = block_idx >> 1;
-                    let x2 = mb_x * 2 + sub_x;
-                    let y2 = mb_y * 2 + sub_y;
-                    self.set_chroma_v_cbf(x2, y2, false);
+            for (block_idx, v_scan) in v_scans.iter_mut().enumerate() {
+                let sub_x = block_idx & 1;
+                let sub_y = block_idx >> 1;
+                let x2 = mb_x * 2 + sub_x;
+                let y2 = mb_y * 2 + sub_y;
+                let cbf_inc_v = self.chroma_v_cbf_ctx_inc(x2, y2, intra_defaults);
+                let raw_v_ac = decode_residual_block(cabac, ctxs, &CAT_CHROMA_AC, cbf_inc_v);
+                let coded_v = raw_v_ac.iter().any(|&c| c != 0);
+                self.set_chroma_v_cbf(x2, y2, coded_v);
+                for (scan, &c) in raw_v_ac.iter().enumerate().take(15) {
+                    v_scan[scan + 1] = c;
                 }
             }
         } else {

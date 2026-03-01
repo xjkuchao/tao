@@ -341,20 +341,6 @@ impl H264Decoder {
         cur_frame_num: u32,
         active_count: usize,
     ) {
-        if std::env::var("TAO_H264_DISABLE_REF_MOD")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-        {
-            return;
-        }
-        let disable_on_frame = std::env::var("TAO_H264_DISABLE_REF_MOD_FRAME")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .map(|f| f == cur_frame_num)
-            .unwrap_or(false);
-        if disable_on_frame {
-            return;
-        }
         if mods.is_empty() || refs.is_empty() || active_count == 0 {
             return;
         }
@@ -484,57 +470,6 @@ impl H264Decoder {
             cur_frame_num,
             target,
         );
-        let trace_ref_list = std::env::var("TAO_H264_TRACE_REF_LIST")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let trace_ref_list_frame = std::env::var("TAO_H264_TRACE_REF_LIST_FRAME")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok());
-        let trace_this_frame = trace_ref_list
-            || trace_ref_list_frame
-                .map(|frame| frame == self.last_frame_num)
-                .unwrap_or(false);
-        if trace_this_frame {
-            let default_summary: Vec<String> = default_refs
-                .iter()
-                .enumerate()
-                .map(|(idx, pic)| {
-                    format!(
-                        "#{}:fn={} poc={} lt={:?}",
-                        idx, pic.frame_num, pic.poc, pic.long_term_frame_idx
-                    )
-                })
-                .collect();
-            let modified_summary: Vec<String> = refs
-                .iter()
-                .enumerate()
-                .map(|(idx, pic)| {
-                    format!(
-                        "#{}:fn={} poc={} lt={:?}",
-                        idx, pic.frame_num, pic.poc, pic.long_term_frame_idx
-                    )
-                })
-                .collect();
-            eprintln!(
-                "[H264-REF-L0] frame_num={} poc={} slice_type={} target={} cur_frame_num={} mods={:?}",
-                self.last_frame_num,
-                self.last_poc,
-                self.last_slice_type,
-                target,
-                cur_frame_num,
-                mods
-            );
-            eprintln!(
-                "[H264-REF-L0] default_len={} list={}",
-                default_summary.len(),
-                default_summary.join(" | ")
-            );
-            eprintln!(
-                "[H264-REF-L0] modified_len={} list={}",
-                modified_summary.len(),
-                modified_summary.join(" | ")
-            );
-        }
         let refs_empty = refs.is_empty();
         let refs_len = refs.len();
         let mut empty_missing_ranks = Vec::new();
@@ -590,57 +525,6 @@ impl H264Decoder {
             cur_frame_num,
             target,
         );
-        let trace_ref_list = std::env::var("TAO_H264_TRACE_REF_LIST")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let trace_ref_list_frame = std::env::var("TAO_H264_TRACE_REF_LIST_FRAME")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok());
-        let trace_this_frame = trace_ref_list
-            || trace_ref_list_frame
-                .map(|frame| frame == self.last_frame_num)
-                .unwrap_or(false);
-        if trace_this_frame {
-            let default_summary: Vec<String> = default_refs
-                .iter()
-                .enumerate()
-                .map(|(idx, pic)| {
-                    format!(
-                        "#{}:fn={} poc={} lt={:?}",
-                        idx, pic.frame_num, pic.poc, pic.long_term_frame_idx
-                    )
-                })
-                .collect();
-            let modified_summary: Vec<String> = refs
-                .iter()
-                .enumerate()
-                .map(|(idx, pic)| {
-                    format!(
-                        "#{}:fn={} poc={} lt={:?}",
-                        idx, pic.frame_num, pic.poc, pic.long_term_frame_idx
-                    )
-                })
-                .collect();
-            eprintln!(
-                "[H264-REF-L1] frame_num={} poc={} slice_type={} target={} cur_frame_num={} mods={:?}",
-                self.last_frame_num,
-                self.last_poc,
-                self.last_slice_type,
-                target,
-                cur_frame_num,
-                mods
-            );
-            eprintln!(
-                "[H264-REF-L1] default_len={} list={}",
-                default_summary.len(),
-                default_summary.join(" | ")
-            );
-            eprintln!(
-                "[H264-REF-L1] modified_len={} list={}",
-                modified_summary.len(),
-                modified_summary.join(" | ")
-            );
-        }
         let refs_empty = refs.is_empty();
         let refs_len = refs.len();
         let mut empty_missing_ranks = Vec::new();
@@ -867,25 +751,30 @@ impl H264Decoder {
             return;
         }
 
-        let marking = self.last_dec_ref_pic_marking.clone();
+        // 仅复制按值字段与单条 MMCO 操作, 避免每帧克隆整份标记结构.
+        let is_idr = self.last_dec_ref_pic_marking.is_idr;
+        let no_output_of_prior_pics = self.last_dec_ref_pic_marking.no_output_of_prior_pics;
+        let long_term_reference_flag = self.last_dec_ref_pic_marking.long_term_reference_flag;
+        let adaptive = self.last_dec_ref_pic_marking.adaptive;
+        let mmco_ops_len = self.last_dec_ref_pic_marking.ops.len();
         let mut current_long_term_idx = None;
         let mut has_mmco5 = false;
-        let disable_mmco = std::env::var("TAO_H264_DISABLE_MMCO").as_deref() == Ok("1");
 
-        if marking.is_idr {
-            if marking.no_output_of_prior_pics {
+        if is_idr {
+            if no_output_of_prior_pics {
                 self.output_queue.clear();
                 self.reorder_buffer.clear();
             }
             self.reference_frames.clear();
-            if marking.long_term_reference_flag {
+            if long_term_reference_flag {
                 self.max_long_term_frame_idx = Some(0);
                 current_long_term_idx = Some(0);
             } else {
                 self.max_long_term_frame_idx = None;
             }
-        } else if marking.adaptive && !disable_mmco {
-            for op in marking.ops {
+        } else if adaptive {
+            for op_idx in 0..mmco_ops_len {
+                let op = self.last_dec_ref_pic_marking.ops[op_idx];
                 match op {
                     MmcoOp::ForgetShort {
                         difference_of_pic_nums_minus1,
@@ -1011,32 +900,8 @@ impl H264Decoder {
         let w = self.width as usize;
         let h = self.height as usize;
         self.conceal_frame_level_errors();
-        if std::env::var("TAO_H264_TRACE_NEG_REF_MV")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-        {
-            let l0_neg_nonzero = self
-                .ref_idx_l0_4x4
-                .iter()
-                .zip(self.mv_l0_x_4x4.iter())
-                .zip(self.mv_l0_y_4x4.iter())
-                .filter(|((r, mx), my)| **r < 0 && (**mx != 0 || **my != 0))
-                .count();
-            let l1_neg_nonzero = self
-                .ref_idx_l1_4x4
-                .iter()
-                .zip(self.mv_l1_x_4x4.iter())
-                .zip(self.mv_l1_y_4x4.iter())
-                .filter(|((r, mx), my)| **r < 0 && (**mx != 0 || **my != 0))
-                .count();
-            let intra_mb_count = self.mb_types.iter().filter(|&&t| t <= 25).count();
-            println!(
-                "[H264-DEBLOCK-TRACE] frame_num={} neg_ref_nonzero_mv l0={} l1={} intra_mb={}",
-                self.last_frame_num, l0_neg_nonzero, l1_neg_nonzero, intra_mb_count
-            );
-        }
 
-        if self.last_disable_deblocking_filter_idc != 1 && !self.skip_deblock_by_env() {
+        if self.last_disable_deblocking_filter_idc != 1 {
             let (chroma_qp_index_offset, second_chroma_qp_index_offset) = self
                 .pps
                 .as_ref()
@@ -1118,17 +983,6 @@ impl H264Decoder {
             color_range: Default::default(),
         };
         let frame_poc = self.last_poc;
-        if std::env::var("TAO_H264_TRACE_OUTPUT").as_deref() == Ok("1") {
-            eprintln!(
-                "[H264-OUT] frame_num={} poc={} slice_type={} nal_ref_idc={} pts={} key={}",
-                self.last_frame_num,
-                frame_poc,
-                self.last_slice_type,
-                self.last_nal_ref_idc,
-                pts,
-                is_keyframe
-            );
-        }
         self.store_reference_with_marking();
         self.push_video_for_output(vf, frame_poc, self.last_nal_ref_idc != 0);
     }

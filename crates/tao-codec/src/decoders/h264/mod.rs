@@ -409,10 +409,10 @@ pub struct H264Decoder {
     fail_on_mvd_overflow: bool,
     /// CABAC mvd 解析溢出触发的首个错误信息.
     mvd_overflow_error: Option<String>,
-    /// 调试开关缓存: 禁用 weighted prediction.
-    disable_weighted_pred: bool,
-    /// 调试开关缓存: 跳过去块滤波.
-    skip_deblock: bool,
+    /// 调试开关缓存: 启用 P_8x8 子分区 8x4 方向性 MVP.
+    use_dir_sub_8x4: bool,
+    /// 调试开关缓存: 启用 P_8x8 子分区 4x8 方向性 MVP.
+    use_dir_sub_4x8: bool,
     /// 坏 NAL 丢弃次数(用于容错统计与单测验证).
     malformed_nal_drops: u64,
     /// 最近一次成功解析的 SEI payload 列表.
@@ -515,8 +515,8 @@ impl H264Decoder {
             mvd_overflow_count: 0,
             fail_on_mvd_overflow: false,
             mvd_overflow_error: None,
-            disable_weighted_pred: false,
-            skip_deblock: false,
+            use_dir_sub_8x4: false,
+            use_dir_sub_4x8: false,
             malformed_nal_drops: 0,
             last_sei_payloads: Vec::new(),
             pending_recovery_point_frame_cnt: None,
@@ -781,14 +781,6 @@ impl H264Decoder {
 
     /// `constrained_intra_pred_flag` 是否开启.
     fn constrained_intra_pred_enabled(&self) -> bool {
-        if let Ok(force) = std::env::var("TAO_H264_FORCE_CONSTRAINED_INTRA_PRED") {
-            if force == "1" || force.eq_ignore_ascii_case("true") {
-                return true;
-            }
-            if force == "0" || force.eq_ignore_ascii_case("false") {
-                return false;
-            }
-        }
         self.pps
             .as_ref()
             .map(|pps| pps.constrained_intra_pred)
@@ -1146,11 +1138,8 @@ impl H264Decoder {
         }
     }
 
-    fn update_missing_reference_fail_mode_from_env(&mut self) {
-        self.fail_on_missing_reference_fallback =
-            std::env::var("TAO_H264_COMPARE_FAIL_ON_REF_FALLBACK")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
+    fn reset_missing_reference_fail_mode(&mut self) {
+        self.fail_on_missing_reference_fallback = false;
         self.missing_reference_fallback_error = None;
     }
 
@@ -1158,35 +1147,19 @@ impl H264Decoder {
         self.missing_reference_fallback_error.take()
     }
 
-    fn update_ref_idx_oob_fail_mode_from_env(&mut self) {
-        self.fail_on_ref_idx_oob = std::env::var("TAO_H264_FAIL_ON_REF_IDX_OOB")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+    fn reset_ref_idx_oob_fail_mode(&mut self) {
+        self.fail_on_ref_idx_oob = false;
         self.ref_idx_oob_error = None;
     }
 
-    fn update_mvd_overflow_fail_mode_from_env(&mut self) {
-        self.fail_on_mvd_overflow = std::env::var("TAO_H264_FAIL_ON_MVD_OVERFLOW")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+    fn reset_mvd_overflow_fail_mode(&mut self) {
+        self.fail_on_mvd_overflow = false;
         self.mvd_overflow_error = None;
     }
 
-    fn refresh_runtime_debug_flags_from_env(&mut self) {
-        self.disable_weighted_pred = std::env::var("TAO_H264_DISABLE_WEIGHTED_PRED")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        self.skip_deblock = std::env::var("TAO_SKIP_DEBLOCK")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-    }
-
-    pub(super) fn weighted_pred_disabled(&self) -> bool {
-        self.disable_weighted_pred
-    }
-
-    pub(super) fn skip_deblock_by_env(&self) -> bool {
-        self.skip_deblock
+    fn reset_runtime_debug_overrides(&mut self) {
+        self.use_dir_sub_8x4 = false;
+        self.use_dir_sub_4x8 = false;
     }
 
     fn take_ref_idx_oob_error(&mut self) -> Option<String> {
@@ -1195,6 +1168,12 @@ impl H264Decoder {
 
     fn take_mvd_overflow_error(&mut self) -> Option<String> {
         self.mvd_overflow_error.take()
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_dir_sub_mv_predictor_for_test(&mut self, use_8x4: bool, use_4x8: bool) {
+        self.use_dir_sub_8x4 = use_8x4;
+        self.use_dir_sub_4x8 = use_4x8;
     }
 }
 
@@ -1235,12 +1214,12 @@ impl Decoder for H264Decoder {
         self.prev_frame_num_offset_type2 = 0;
         self.last_dec_ref_pic_marking = DecRefPicMarking::default();
         self.missing_reference_fallbacks = 0;
-        self.update_missing_reference_fail_mode_from_env();
+        self.reset_missing_reference_fail_mode();
         self.ref_idx_oob_count = 0;
-        self.update_ref_idx_oob_fail_mode_from_env();
+        self.reset_ref_idx_oob_fail_mode();
         self.mvd_overflow_count = 0;
-        self.update_mvd_overflow_fail_mode_from_env();
-        self.refresh_runtime_debug_flags_from_env();
+        self.reset_mvd_overflow_fail_mode();
+        self.reset_runtime_debug_overrides();
         self.malformed_nal_drops = 0;
         self.last_sei_payloads.clear();
         self.pending_recovery_point_frame_cnt = None;
@@ -1279,8 +1258,6 @@ impl Decoder for H264Decoder {
         if !self.opened {
             return Err(TaoError::InvalidData("H264 解码器未打开".into()));
         }
-        // 每包刷新一次调试开关, 避免热路径中频繁读取环境变量.
-        self.refresh_runtime_debug_flags_from_env();
         if packet.is_empty() {
             self.flushing = true;
             self.finalize_pending_frame();
