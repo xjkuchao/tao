@@ -82,7 +82,6 @@ impl H264Decoder {
     ) -> (i32, i32) {
         let x4 = mb_x * 4 + part_x4;
         let y4 = mb_y * 4 + part_y4;
-        let mb_idx = mb_y * self.mb_width + mb_x;
         let a = self.l1_motion_neighbor_state(x4, y4, x4 as isize - 1, y4 as isize, ref_idx);
         let b = self.l1_motion_neighbor_state(x4, y4, x4 as isize, y4 as isize - 1, ref_idx);
         let mut c = self.l1_motion_neighbor_state(
@@ -95,7 +94,6 @@ impl H264Decoder {
         if matches!(c, MotionNeighbor::PartNotAvailable) {
             c = self.l1_motion_neighbor_state(x4, y4, x4 as isize - 1, y4 as isize - 1, ref_idx);
         }
-        let _ = mb_idx;
         Self::predict_motion_from_neighbors(a, b, c, ref_idx)
     }
 
