@@ -82,9 +82,74 @@ impl H264Decoder {
             Ok(tc) => tc,
             Err(err) => {
                 if std::env::var("TAO_H264_TRACE_CAVLC_ERRORS").as_deref() == Ok("1") {
+                    let (has_left, has_top, na, nb) = match scene {
+                        "inter_luma_4x4" | "i16x16_luma_ac" => {
+                            let has_left =
+                                coord_x > 0 && (coord_x % 4 != 0 || self.left_avail(coord_x / 4, coord_y / 4));
+                            let has_top =
+                                coord_y > 0 && (coord_y % 4 != 0 || self.top_avail(coord_x / 4, coord_y / 4));
+                            let na = if has_left {
+                                self.get_nz_count_luma(coord_x - 1, coord_y) as i32
+                            } else {
+                                -1
+                            };
+                            let nb = if has_top {
+                                self.get_nz_count_luma(coord_x, coord_y - 1) as i32
+                            } else {
+                                -1
+                            };
+                            (has_left, has_top, na, nb)
+                        }
+                        "chroma_u_ac" => {
+                            let has_left =
+                                coord_x > 0 && (coord_x % 2 != 0 || self.left_avail(coord_x / 2, coord_y / 2));
+                            let has_top =
+                                coord_y > 0 && (coord_y % 2 != 0 || self.top_avail(coord_x / 2, coord_y / 2));
+                            let na = if has_left {
+                                self.get_nz_count_chroma_u(coord_x - 1, coord_y) as i32
+                            } else {
+                                -1
+                            };
+                            let nb = if has_top {
+                                self.get_nz_count_chroma_u(coord_x, coord_y - 1) as i32
+                            } else {
+                                -1
+                            };
+                            (has_left, has_top, na, nb)
+                        }
+                        "chroma_v_ac" => {
+                            let has_left =
+                                coord_x > 0 && (coord_x % 2 != 0 || self.left_avail(coord_x / 2, coord_y / 2));
+                            let has_top =
+                                coord_y > 0 && (coord_y % 2 != 0 || self.top_avail(coord_x / 2, coord_y / 2));
+                            let na = if has_left {
+                                self.get_nz_count_chroma_v(coord_x - 1, coord_y) as i32
+                            } else {
+                                -1
+                            };
+                            let nb = if has_top {
+                                self.get_nz_count_chroma_v(coord_x, coord_y - 1) as i32
+                            } else {
+                                -1
+                            };
+                            (has_left, has_top, na, nb)
+                        }
+                        _ => (false, false, -1, -1),
+                    };
                     eprintln!(
-                        "[H264-CAVLC-ERR] frame_num={} scene={} x={} y={} nc={} max_coeff={} err={}",
-                        self.last_frame_num, scene, coord_x, coord_y, nc, max_num_coeff, err
+                        "[H264-CAVLC-ERR] frame_num={} scene={} x={} y={} nc={} max_coeff={} has_left={} has_top={} na={} nb={} bits={} err={}",
+                        self.last_frame_num,
+                        scene,
+                        coord_x,
+                        coord_y,
+                        nc,
+                        max_num_coeff,
+                        has_left,
+                        has_top,
+                        na,
+                        nb,
+                        br.bits_read(),
+                        err
                     );
                 }
                 CAVLC_BLOCK_ERROR_FLAG.with(|flag| flag.set(true));

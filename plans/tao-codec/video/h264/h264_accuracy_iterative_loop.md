@@ -865,3 +865,31 @@
   - `TAO_H264_COMPARE_INPUT=data/2.mp4 TAO_H264_COMPARE_FRAMES=30 ...` 通过.
 - 判定: `有效修复(逻辑正确性与精度双向成立: 阻断错误连锁扩散且次要目标提升, 主目标无回归)`.
 - 下一子功能: `2-4` (继续定位 frame1 首个残差错误点: `frame_num=1, mb=(7,5), scene=chroma_u_ac`, 对齐 `nC/coeff_token/total_zeros` 逐项解析).
+
+### 9.26 Round-24 记录(2-4: run_before 码字域对齐 + 残差错误上下文增强)
+
+- 子功能: `2-4` (frame1 首错点下钻: `chroma_u_ac`, 继续核查 CAVLC 语法消费一致性).
+- 对比结论: `存在实现差异`.
+  - Tao 的 `decode_run_before` 在 `zeros_left >= 7` 场景仅按 `zeros_left+1` 限制可解码条目.
+  - FFmpeg `libavcodec/h264_cavlc.c` 在 `zeros_left >= 7` 时使用 `run7_vlc_table` 的完整 15 码字集合, 再由后续语义约束判定合法性.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/cavlc.rs`.
+  - `decode_run_before` 调整为:
+    - `zeros_left < 7` 时 `nb_codes = zeros_left + 1`.
+    - `zeros_left >= 7` 时 `nb_codes = 15`.
+  - 同步增强 `total_zeros` fallback trace 输出, 增加 `raw_idx/clamped_idx`.
+  - `total_zeros` 失败错误信息补齐 `nc/trailing_ones` 上下文.
+  - 文件: `crates/tao-codec/src/decoders/h264/cavlc_mb.rs`.
+    - 增强 `TAO_H264_TRACE_CAVLC_ERRORS=1` 输出, 新增:
+      - `has_left/has_top`
+      - `na/nb`
+      - `bits`
+- 验证证据:
+  - `frame_num=2, scene=inter_luma_4x4` 首错从“`run_before` 码字匹配失败”收敛为“`run_before=8/9/10 超过 zeros_left`”, 证明此前主要是码字域过窄掩盖了真实语义越界.
+  - `frame_num=1, scene=chroma_u_ac(x=14,y=10)` 记录到 `na=0, nb=0`, 首错点上下文已稳定可复现.
+- 精度变化:
+  - `c1`(10 帧, `TAO_H264_COMPARE_KEEP_NEG_PTS=1`): `11.434889% -> 11.435041%` (持平).
+  - `data/1.mp4`(30 帧): `100.000000%` (持平).
+  - `data/2.mp4`(30 帧): `100.000000%` (持平).
+- 判定: `有效修复(逻辑正确性优先: run_before 码字域与参考实现对齐, 主目标无回归; 为后续定位 coeff_token/total_zeros 根因提供更高质量错误信号)`.
+- 下一子功能: `2-4` (继续聚焦 `frame_num=1, mb=(7,5)`; 对齐该 MB 的 `coeff_token(trailing_ones)` 与残差前置语法消费).

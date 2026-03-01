@@ -434,6 +434,11 @@ pub fn decode_total_zeros(
 
     // 仅在显式开启时允许 total_zeros 扩表回退, 默认保持与参考实现一致.
     if let Ok(idx) = decode_vlc(br, &TOTAL_ZEROS_LEN[tc_idx], &TOTAL_ZEROS_BITS[tc_idx], 16) {
+        let clamped_idx = if max_coeff < 16 {
+            idx.min(max_zeros as usize)
+        } else {
+            idx
+        };
         if std::env::var("TAO_H264_CAVLC_TRACE_FALLBACK")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
@@ -441,18 +446,17 @@ pub fn decode_total_zeros(
             let seq = TOTAL_ZEROS_FALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
             if seq < 64 {
                 println!(
-                    "[H264-CAVLC-FALLBACK] kind=total_zeros tc={} max_coeff={} nb_codes={} bits_read={}",
+                    "[H264-CAVLC-FALLBACK] kind=total_zeros tc={} max_coeff={} nb_codes={} raw_idx={} clamped_idx={} bits_read={}",
                     total_coeff,
                     max_coeff,
                     nb_codes,
+                    idx,
+                    clamped_idx,
                     br.bits_read()
                 );
             }
         }
-        if max_coeff < 16 {
-            return Ok(idx.min(max_zeros as usize) as u8);
-        }
-        return Ok(idx as u8);
+        return Ok(clamped_idx as u8);
     }
 
     primary.map(|idx| idx as u8)
@@ -471,7 +475,8 @@ pub fn decode_run_before(br: &mut BitReader, zeros_left: u8) -> TaoResult<u8> {
     let nb_codes = if table_idx < 6 {
         zeros_left as usize + 1
     } else {
-        15usize.min(zeros_left as usize + 1)
+        // zeros_left >= 7 时使用 Table 9-10 的完整 15 码字集合.
+        15
     };
     let idx = decode_vlc(br, &RUN_LEN[table_idx], &RUN_BITS[table_idx], nb_codes)?;
     Ok(idx as u8)
@@ -547,8 +552,8 @@ pub fn decode_cavlc_residual_block(
     let total_zeros = if (total_coeff as usize) < max_num_coeff {
         decode_total_zeros(br, total_coeff, is_chroma_dc, max_num_coeff).map_err(|err| {
             TaoError::InvalidData(format!(
-                "CAVLC total_zeros 解码失败(total_coeff={}, max_num_coeff={}): {}",
-                total_coeff, max_num_coeff, err
+                "CAVLC total_zeros 解码失败(nc={}, total_coeff={}, trailing_ones={}, max_num_coeff={}): {}",
+                nc, total_coeff, trailing_ones, max_num_coeff, err
             ))
         })?
     } else {
@@ -670,14 +675,18 @@ mod tests {
     fn test_total_zeros_respects_max_num_coeff() {
         // total_coeff=14 时:
         // - max_num_coeff=16: total_zeros 可为 0..2, 码字 "1" 对应 total_zeros=2
-        // - max_num_coeff=15: total_zeros 仅可为 0..1, 回退路径会裁剪到 1
+        // - max_num_coeff=15: total_zeros 仅可为 0..1, 默认关闭回退时应解码失败
         let mut br = make_br(&[0b10000000]);
         let tz = decode_total_zeros(&mut br, 14, false, 16).unwrap();
         assert_eq!(tz, 2, "max_num_coeff=16 时应允许 total_zeros=2");
 
         let mut br = make_br(&[0b10000000]);
-        let tz = decode_total_zeros(&mut br, 14, false, 15).unwrap();
-        assert_eq!(tz, 1, "max_num_coeff=15 时应裁剪到 total_zeros=1");
+        let err = decode_total_zeros(&mut br, 14, false, 15).unwrap_err();
+        assert!(
+            err.to_string().contains("CAVLC VLC 码字匹配失败"),
+            "max_num_coeff=15 且默认关闭回退时应报错, got: {}",
+            err
+        );
     }
 
     #[test]
