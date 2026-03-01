@@ -19,7 +19,7 @@ impl H264Decoder {
         let rbsp = nalu.rbsp();
 
         match self.parse_slice_header(&rbsp, nalu) {
-            Ok(header) => {
+            Ok(mut header) => {
                 if header.redundant_pic_cnt > 0 {
                     tracing::debug!(
                         "H264: 跳过冗余 slice, redundant_pic_cnt={}, frame_num={}, pps_id={}",
@@ -42,7 +42,7 @@ impl H264Decoder {
                 let computed_poc = self.compute_slice_poc(&header, prev_frame_num_for_poc);
                 self.last_poc = computed_poc;
                 self.last_frame_num = header.frame_num;
-                self.last_dec_ref_pic_marking = header.dec_ref_pic_marking.clone();
+                self.last_dec_ref_pic_marking = std::mem::take(&mut header.dec_ref_pic_marking);
                 self.decode_slice_data(&rbsp, &header);
             }
             Err(err) => {

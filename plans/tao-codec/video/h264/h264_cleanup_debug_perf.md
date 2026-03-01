@@ -110,8 +110,9 @@
 - [x] 小块 61: 完成本轮 `h264` 目录调试开关与无效分支收尾清理, 样本精度保持 100%.
 - [x] 小块 62: `output.rs` 删除 `apply_ref_pic_list_modifications` 中无效 `let _ = cur_frame_num`.
 - [x] 小块 63: `output.rs` 避免每帧克隆 `DecRefPicMarking`, 改为按值字段读取 + 按索引复制 `MmcoOp`.
+- [x] 小块 64: `slice_decode.rs` 将 `dec_ref_pic_marking` 从 `clone` 改为 `std::mem::take` 转移, 避免每个 slice 额外分配/复制.
 - [x] 质量门禁全量回归(`fmt/clippy/check/test/doc`).
-- [ ] 小块 64+: 继续推进剩余性能收敛.
+- [ ] 小块 65+: 继续推进剩余性能收敛.
 
 ## 6. 本轮结果
 
@@ -132,6 +133,7 @@
     - `data/1.mp4` 为 `100.000000%`.
     - `data/2.mp4` 为 `100.000000%`.
   - 小块 62/63 的增量 16+2 验证均保持 `100.000000%`.
+  - 小块 64 的增量 16+2 验证保持 `100.000000%`.
   - 提交前全量门禁已通过:
     - `cargo fmt --all -- --check`
     - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
