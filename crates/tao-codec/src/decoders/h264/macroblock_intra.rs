@@ -674,7 +674,6 @@ impl H264Decoder {
     ) {
         let luma_scaling_8x8 = self.active_luma_scaling_list_8x8(intra_defaults);
         let transform_bypass = self.is_transform_bypass_active(qp);
-        let _mb_idx = mb_y * self.mb_width + mb_x;
         for sub_y in 0..4 {
             for sub_x in 0..4 {
                 self.set_luma_cbf(mb_x * 4 + sub_x, mb_y * 4 + sub_y, false);
