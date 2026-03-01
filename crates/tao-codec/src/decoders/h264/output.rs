@@ -780,10 +780,10 @@ impl H264Decoder {
                             self.pic_num_from_frame_num(self.last_frame_num),
                             difference_of_pic_nums_minus1 + 1,
                         );
-                        let _ = self.remove_short_term_by_pic_num(pic_num_x);
+                        self.remove_short_term_by_pic_num(pic_num_x);
                     }
                     MmcoOp::ForgetLong { long_term_pic_num } => {
-                        let _ = self.remove_long_term_by_idx(long_term_pic_num);
+                        self.remove_long_term_by_idx(long_term_pic_num);
                     }
                     MmcoOp::ConvertShortToLong {
                         difference_of_pic_nums_minus1,
@@ -793,7 +793,7 @@ impl H264Decoder {
                             self.pic_num_from_frame_num(self.last_frame_num),
                             difference_of_pic_nums_minus1 + 1,
                         );
-                        let _ = self.remove_long_term_by_idx(long_term_frame_idx);
+                        self.remove_long_term_by_idx(long_term_frame_idx);
                         if let Some(pos) = self.reference_frames.iter().rposition(|pic| {
                             pic.long_term_frame_idx.is_none()
                                 && self.pic_num_from_frame_num(pic.frame_num) == pic_num_x
@@ -832,7 +832,7 @@ impl H264Decoder {
 
         if let Some(idx) = current_long_term_idx {
             if self.max_long_term_frame_idx.is_none_or(|max| idx <= max) {
-                let _ = self.remove_long_term_by_idx(idx);
+                self.remove_long_term_by_idx(idx);
                 self.push_current_reference(Some(idx));
             } else {
                 self.push_current_reference(None);
