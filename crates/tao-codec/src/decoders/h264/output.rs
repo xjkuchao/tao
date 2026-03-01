@@ -664,7 +664,7 @@ impl H264Decoder {
             return;
         }
         if !self.remove_short_term_with_lowest_frame_num_wrap_for(cur_frame_num) {
-            let _ = self.reference_frames.pop_front();
+            self.reference_frames.pop_front();
         }
     }
 
@@ -675,7 +675,7 @@ impl H264Decoder {
     fn enforce_reference_capacity_for(&mut self, cur_frame_num: u32) {
         while self.reference_frames.len() > self.max_reference_frames {
             if !self.remove_short_term_with_lowest_frame_num_wrap_for(cur_frame_num) {
-                let _ = self.reference_frames.pop_front();
+                self.reference_frames.pop_front();
             }
         }
     }

@@ -117,8 +117,9 @@
 - [x] 小块 68: `slice_decode.rs` 删除 `computed_poc` 中间变量并直接写入 `last_poc`.
 - [x] 小块 69: `macroblock_intra.rs` 删除 `decode_i8x8_residual` 中未使用 `_mb_idx` 局部变量.
 - [x] 小块 70: `mod.rs` 删除 `activate_sps` 中 `pop_front` 的无效返回值绑定.
+- [x] 小块 71: `output.rs` 删除参考队列收敛路径中两处 `pop_front` 无效返回值绑定.
 - [x] 质量门禁全量回归(`fmt/clippy/check/test/doc`).
-- [ ] 小块 71+: 继续推进剩余性能收敛.
+- [ ] 小块 72+: 继续推进剩余性能收敛.
 
 ## 6. 本轮结果
 
@@ -146,6 +147,7 @@
   - 小块 68 的增量 16+2 验证保持 `100.000000%`.
   - 小块 69 的增量 16+2 验证保持 `100.000000%`.
   - 小块 70 的增量 16+2 验证保持 `100.000000%`.
+  - 小块 71 的增量 16+2 验证保持 `100.000000%`.
   - 提交前全量门禁已通过:
     - `cargo fmt --all -- --check`
     - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
