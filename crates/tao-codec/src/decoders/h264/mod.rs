@@ -1008,7 +1008,6 @@ impl H264Decoder {
     }
 
     fn activate_parameter_sets(&mut self, pps_id: u32) -> TaoResult<()> {
-        let prev_pps = self.pps.clone();
         let pps = self
             .pps_map
             .get(&pps_id)
@@ -1022,7 +1021,8 @@ impl H264Decoder {
             )));
         }
 
-        let rebuild_action = prev_pps
+        let rebuild_action = self
+            .pps
             .as_ref()
             .map(|old| Self::pps_rebuild_action(old, &pps))
             .unwrap_or(ParameterSetRebuildAction::None);
