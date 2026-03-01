@@ -192,7 +192,13 @@ fn decode_vlc(br: &mut BitReader, lens: &[u8], bits: &[u8], nb_codes: usize) -> 
             br.skip_bits(best_len as u32)?;
             Ok(idx)
         }
-        None => Err(TaoError::InvalidData("CAVLC VLC 码字匹配失败".into())),
+        None => Err(TaoError::InvalidData(format!(
+            "CAVLC VLC 码字匹配失败(avail_bits={}, peek=0b{:0width$b}, nb_codes={})",
+            avail,
+            peeked,
+            nb_codes,
+            width = avail as usize
+        ))),
     }
 }
 
@@ -350,7 +356,7 @@ fn decode_level(
     };
 
     let mut level_code = ((prefix.min(15) as i32) << *suffix_length) + level_suffix;
-    if prefix >= 15 && *suffix_length == 0 {
+    if prefix == 15 && *suffix_length == 0 {
         level_code += 15;
     }
     if prefix >= 16 {
@@ -501,6 +507,29 @@ pub fn decode_cavlc_residual_block(
     max_num_coeff: usize,
     coeffs: &mut [i32],
 ) -> TaoResult<u8> {
+    let start_bits = br.bits_read();
+    let trace_this_block = std::env::var("TAO_H264_TRACE_CAVLC_START_BIT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .map(|target| target == start_bits)
+        .unwrap_or(false);
+    if trace_this_block {
+        let peek_len = br.bits_left().min(24) as u32;
+        let peek_bits = if peek_len > 0 {
+            br.peek_bits(peek_len).unwrap_or(0)
+        } else {
+            0
+        };
+        eprintln!(
+            "[H264-CAVLC-TRACE] start_bits={} nc={} max_num_coeff={} bits_left={} peek_len={} peek=0b{:024b}",
+            start_bits,
+            nc,
+            max_num_coeff,
+            br.bits_left(),
+            peek_len,
+            peek_bits
+        );
+    }
     debug_assert!(coeffs.len() >= max_num_coeff);
     for c in coeffs[..max_num_coeff].iter_mut() {
         *c = 0;
@@ -511,6 +540,14 @@ pub fn decode_cavlc_residual_block(
     // 1. coeff_token → (total_coeff, trailing_ones)
     let (total_coeff, trailing_ones) = decode_coeff_token(br, nc)
         .map_err(|err| TaoError::InvalidData(format!("CAVLC coeff_token 解码失败: {}", err)))?;
+    if trace_this_block {
+        eprintln!(
+            "[H264-CAVLC-TRACE] after_coeff_token bits={} total_coeff={} trailing_ones={}",
+            br.bits_read(),
+            total_coeff,
+            trailing_ones
+        );
+    }
     if total_coeff == 0 {
         return Ok(0);
     }
@@ -547,6 +584,14 @@ pub fn decode_cavlc_residual_block(
                 TaoError::InvalidData(format!("CAVLC level 解码失败(i={}): {}", i + t1, err))
             })?;
     }
+    if trace_this_block {
+        eprintln!(
+            "[H264-CAVLC-TRACE] after_levels bits={} suffix_length={} levels={:?}",
+            br.bits_read(),
+            suffix_length,
+            &level[..tc]
+        );
+    }
 
     // 4. total_zeros
     let total_zeros = if (total_coeff as usize) < max_num_coeff {
@@ -559,6 +604,13 @@ pub fn decode_cavlc_residual_block(
     } else {
         0u8
     };
+    if trace_this_block {
+        eprintln!(
+            "[H264-CAVLC-TRACE] after_total_zeros bits={} total_zeros={}",
+            br.bits_read(),
+            total_zeros
+        );
+    }
 
     // 5. run_before 与系数放置
     let mut zeros_left = total_zeros;
@@ -591,6 +643,15 @@ pub fn decode_cavlc_residual_block(
         } else {
             0
         };
+        if trace_this_block {
+            eprintln!(
+                "[H264-CAVLC-TRACE] run_step={} bits={} run={} zeros_left_before={}",
+                run_idx + 1,
+                br.bits_read(),
+                run,
+                zeros_left
+            );
+        }
         if run > zeros_left {
             return Err(TaoError::InvalidData(format!(
                 "CAVLC run_before={} 超过 zeros_left={}",
@@ -602,6 +663,13 @@ pub fn decode_cavlc_residual_block(
             .checked_sub(1 + run as usize)
             .ok_or_else(|| TaoError::InvalidData("CAVLC 扫描位置下溢".into()))?;
         coeffs[scan_pos] = *lev;
+    }
+    if trace_this_block {
+        eprintln!(
+            "[H264-CAVLC-TRACE] done bits={} coeffs={:?}",
+            br.bits_read(),
+            &coeffs[..max_num_coeff]
+        );
     }
 
     Ok(total_coeff)

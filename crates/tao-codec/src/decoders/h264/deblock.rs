@@ -901,7 +901,11 @@ fn motion_sample_at(
     } else {
         i32::from(raw_ref_idx)
     };
-    Some(MotionSample { ref_id, mv_x: mv_x[idx], mv_y: mv_y[idx] })
+    Some(MotionSample {
+        ref_id,
+        mv_x: mv_x[idx],
+        mv_y: mv_y[idx],
+    })
 }
 
 fn list_motion_mismatch(a: Option<MotionSample>, b: Option<MotionSample>) -> Option<bool> {
@@ -942,8 +946,8 @@ fn combine_motion_list_mismatch(
 
     if let Some((a1, b1)) = list1_pair {
         if !mismatch {
-            mismatch = a1.ref_id != b1.ref_id
-                || list_motion_mismatch(Some(a1), Some(b1)).unwrap_or(false);
+            mismatch =
+                a1.ref_id != b1.ref_id || list_motion_mismatch(Some(a1), Some(b1)).unwrap_or(false);
         }
         if mismatch {
             if let Some((a0, b0)) = list0_pair {

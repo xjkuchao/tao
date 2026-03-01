@@ -39,8 +39,32 @@ impl H264Decoder {
         self.left_neighbor_available_units(x4, y4, 4)
     }
 
+    pub(super) fn left_neighbor_available_4x4_intra(&self, x4: usize, y4: usize) -> bool {
+        if x4 == 0 {
+            return false;
+        }
+        if x4 % 4 != 0 {
+            return true;
+        }
+        let mb_x = x4 / 4;
+        let mb_y = y4 / 4;
+        self.left_avail_intra_pred(mb_x, mb_y)
+    }
+
     pub(super) fn top_neighbor_available_4x4(&self, x4: usize, y4: usize) -> bool {
         self.top_neighbor_available_units(x4, y4, 4)
+    }
+
+    pub(super) fn top_neighbor_available_4x4_intra(&self, x4: usize, y4: usize) -> bool {
+        if y4 == 0 {
+            return false;
+        }
+        if y4 % 4 != 0 {
+            return true;
+        }
+        let mb_x = x4 / 4;
+        let mb_y = y4 / 4;
+        self.top_avail_intra_pred(mb_x, mb_y)
     }
 
     pub(super) fn same_slice_4x4(

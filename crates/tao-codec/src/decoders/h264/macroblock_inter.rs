@@ -1,6 +1,42 @@
 use super::*;
 
 impl H264Decoder {
+    fn parse_x264_core_build_from_sei_payload(payload: &[u8]) -> Option<u32> {
+        let text = String::from_utf8_lossy(payload);
+        let marker = "x264 - core ";
+        let pos = text.find(marker)?;
+        let rest = &text[(pos + marker.len())..];
+        let digits: String = rest.chars().take_while(|ch| ch.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            return None;
+        }
+        digits.parse::<u32>().ok()
+    }
+
+    fn spatial_direct_l1_col_zero_fallback_enabled(&self) -> bool {
+        if let Ok(v) = std::env::var("TAO_H264_FORCE_COL_ZERO_L1_FALLBACK") {
+            if v == "1" {
+                return true;
+            }
+            if v == "0" {
+                return false;
+            }
+        }
+        // 对齐 FFmpeg: 仅当能确认 x264_build > 33 时, 才允许 col_zero_flag 走 list1 回退.
+        // 对未知编码器(无 x264 build 信息)按禁用处理, 避免在旧流上误触发该分支.
+        self.last_sei_payloads
+            .iter()
+            .find_map(|payload| {
+                if let sei::SeiMessage::UserDataUnregistered(user) = &payload.message {
+                    Self::parse_x264_core_build_from_sei_payload(&user.payload)
+                } else {
+                    None
+                }
+            })
+            .map(|build| build > 33)
+            .unwrap_or(false)
+    }
+
     fn ref_planes_matches_picture(planes: &RefPlanes, pic: &ReferencePicture) -> bool {
         let pic_is_long_term = pic.long_term_frame_idx.is_some();
         if planes.is_long_term != pic_is_long_term {
@@ -339,10 +375,8 @@ impl H264Decoder {
                 return None;
             }
             if list1 {
-                if self.motion_l1_4x4_index(cx4_u, cy4_u).is_none() {
-                    // 越界邻居是 PART_NOT_AVAILABLE, 由 C->D 回退逻辑处理.
-                    return None;
-                }
+                // 越界邻居是 PART_NOT_AVAILABLE, 由 C->D 回退逻辑处理.
+                self.motion_l1_4x4_index(cx4_u, cy4_u)?;
                 // 仅在局部/断点解码导致 slice 标记未知(u32::MAX)时, 放宽为 MB 级 L1 回退.
                 // 正常全量解码路径维持严格 4x4 cache 语义, 避免引入精度回退.
                 let allow_mb_l1_fallback = self
@@ -382,10 +416,8 @@ impl H264Decoder {
                     self.l1_motion_candidate_4x4(cx4, cy4).or(Some((0, 0, -1)))
                 }
             } else {
-                if self.motion_l0_4x4_index(cx4_u, cy4_u).is_none() {
-                    // 越界邻居是 PART_NOT_AVAILABLE, 由 C->D 回退逻辑处理.
-                    return None;
-                }
+                // 越界邻居是 PART_NOT_AVAILABLE, 由 C->D 回退逻辑处理.
+                self.motion_l0_4x4_index(cx4_u, cy4_u)?;
                 self.l0_motion_candidate_4x4(cx4, cy4).or(Some((0, 0, -1)))
             }
         };
@@ -502,6 +534,9 @@ impl H264Decoder {
             if col_l0_ref_idx >= 0 {
                 return false;
             }
+        }
+        if !self.spatial_direct_l1_col_zero_fallback_enabled() {
+            return false;
         }
         let Some((col_l1_mv_x, col_l1_mv_y, col_ref_l1)) =
             self.ref_pic_l1_motion_at(col_pic, mb_x, mb_y, part_x4, part_y4)
@@ -744,7 +779,7 @@ impl H264Decoder {
         (motion_l0, motion_l1)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, dead_code)]
     pub(super) fn build_b_direct_motion(
         &self,
         mb_x: usize,

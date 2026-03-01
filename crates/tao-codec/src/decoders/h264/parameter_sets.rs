@@ -110,7 +110,7 @@ pub(super) fn parse_pps(rbsp: &[u8]) -> TaoResult<super::Pps> {
     // deblocking_filter_control_present_flag
     let deblocking = br.read_bit()? == 1;
     // constrained_intra_pred_flag
-    let _constrained_intra_pred = br.read_bit()?;
+    let constrained_intra_pred = br.read_bit()? == 1;
     // redundant_pic_cnt_present_flag
     let redundant_pic_cnt_present = br.read_bit()? == 1;
 
@@ -142,6 +142,7 @@ pub(super) fn parse_pps(rbsp: &[u8]) -> TaoResult<super::Pps> {
         chroma_qp_index_offset,
         second_chroma_qp_index_offset,
         deblocking_filter_control: deblocking,
+        constrained_intra_pred,
         pic_order_present,
         num_ref_idx_l0_default_active,
         num_ref_idx_l1_default_active,

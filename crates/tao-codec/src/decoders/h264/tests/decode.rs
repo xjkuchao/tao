@@ -6,6 +6,35 @@ use super::super::{H264Decoder, NalUnit};
 
 use super::helpers::*;
 
+struct ScopedEnvVar {
+    key: &'static str,
+    prev: Option<String>,
+}
+
+impl ScopedEnvVar {
+    fn set(key: &'static str, value: &str) -> Self {
+        let prev = std::env::var(key).ok();
+        // SAFETY: 单元测试串行场景下, 本地短时设置环境变量用于定向覆盖分支.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, prev }
+    }
+}
+
+impl Drop for ScopedEnvVar {
+    fn drop(&mut self) {
+        // SAFETY: 与 set 对称恢复原值, 仅用于当前测试进程.
+        unsafe {
+            if let Some(prev) = &self.prev {
+                std::env::set_var(self.key, prev);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+}
+
 #[test]
 fn test_decode_cavlc_slice_data_p_skip_run_reconstructs_from_l0_prediction() {
     let mut dec = build_test_decoder();
@@ -345,7 +374,7 @@ fn test_decode_cavlc_slice_data_marks_mb_error_and_skips_following_when_skip_run
 #[test]
 fn test_decode_cavlc_slice_data_marks_mb_error_and_skips_following_when_mb_type_truncated() {
     let mut dec = build_test_decoder();
-    dec.width = 32;
+    dec.width = 48;
     dec.height = 16;
     dec.init_buffers();
     let before = dec.malformed_nal_drops;
@@ -355,22 +384,27 @@ fn test_decode_cavlc_slice_data_marks_mb_error_and_skips_following_when_mb_type_
     header.data_bit_offset = 0;
     header.first_mb = 0;
 
-    // skip_run=0 后剩余全 0, 会在 mb_type ue 解码阶段失败.
-    dec.decode_cavlc_slice_data(&[0x80, 0x00], &header);
+    // skip_run=1(010) 后构造全 0 截断数据, 触发第二个宏块的 mb_type ue 解码失败.
+    dec.decode_cavlc_slice_data(&[0x40], &header);
 
     assert_eq!(
         dec.malformed_nal_drops,
         before + 1,
         "宏块 mb_type 解码失败应计入坏 NAL 丢弃统计"
     );
-    assert_eq!(dec.mb_types[0], 252, "出错宏块应标记为错误态 mb_type=252");
-    assert_eq!(dec.mb_types[1], 0, "异常后应停止本 slice 后续宏块解码");
+    assert_eq!(dec.mb_types[0], 255, "首个宏块应按 skip_run=1 走 P_Skip");
+    assert_eq!(dec.mb_types[1], 252, "出错宏块应标记为错误态 mb_type=252");
+    assert_eq!(dec.mb_types[2], 0, "异常后应停止本 slice 后续宏块解码");
     assert_eq!(
         dec.mb_slice_first_mb[0], 0,
+        "已解码宏块应记录所属 slice first_mb"
+    );
+    assert_eq!(
+        dec.mb_slice_first_mb[1], 0,
         "出错宏块应记录所属 slice first_mb"
     );
     assert_eq!(
-        dec.mb_slice_first_mb[1],
+        dec.mb_slice_first_mb[2],
         u32::MAX,
         "跳过的后续宏块不应被写入 slice first_mb 标记"
     );
@@ -891,6 +925,7 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_uses_mvp_from_left_neighbo
 fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_8x4_part1_prefers_left_neighbor() {
     use ExpGolombValue::{Se, Ue};
 
+    let _dir_guard = ScopedEnvVar::set("TAO_H264_USE_DIR_SUB_8X4", "1");
     let mut dec = build_test_decoder();
     dec.width = 32;
     dec.height = 32;
@@ -945,6 +980,7 @@ fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_8x4_part1_prefers_left_nei
 fn test_decode_cavlc_slice_data_p_non_skip_inter_p8x8_4x8_part1_prefers_diagonal_neighbor() {
     use ExpGolombValue::{Se, Ue};
 
+    let _dir_guard = ScopedEnvVar::set("TAO_H264_USE_DIR_SUB_4X8", "1");
     let mut dec = build_test_decoder();
     dec.width = 32;
     dec.height = 32;
@@ -1088,4 +1124,41 @@ fn test_decode_cavlc_mb_residual_inter_cbp_zero_clears_prev_qp_delta_flag() {
         "Inter 宏块在无残差时应清零 prev_qp_delta_nz"
     );
     assert_eq!(cur_qp, 26, "无残差时不应改写当前 QP");
+}
+
+#[test]
+fn test_decode_cavlc_mb_residual_inter_reads_transform8x8_before_qp_delta() {
+    let mut dec = build_test_decoder();
+    let mut pps = build_test_pps();
+    pps.transform_8x8_mode = true;
+    dec.pps = Some(pps.clone());
+    dec.pps_map.insert(pps.pps_id, pps);
+
+    // 语法顺序(Inter):
+    // coded_block_pattern=ue(2)->cbp=1(luma), transform_size_8x8_flag=1, mb_qp_delta=se(+1),
+    // 后接 4 个 4x4 块 coeff_token=0(比特 '1') 作为最小残差体.
+    let mut bits = Vec::new();
+    write_ue(&mut bits, 2);
+    bits.push(true);
+    write_se(&mut bits, 1);
+    bits.extend([true, true, true, true]);
+    let rbsp = bits_to_bytes(&bits);
+    let mut br = BitReader::new(&rbsp);
+    let mut cur_qp = 26;
+
+    dec.decode_cavlc_mb_residual(&mut br, 0, 0, &mut cur_qp, false, true);
+
+    assert!(
+        dec.get_transform_8x8_flag(0, 0),
+        "Inter CAVLC 应先读取 transform_size_8x8_flag"
+    );
+    assert_eq!(
+        cur_qp, 27,
+        "mb_qp_delta 应在 transform_size_8x8_flag 之后按 se(+1) 生效"
+    );
+    assert!(
+        dec.prev_qp_delta_nz,
+        "mb_qp_delta 非零后应置位 prev_qp_delta_nz"
+    );
+    assert_eq!(dec.mb_cbp[0] & 0x0f, 1, "CBP 低四位应保持为 luma_cbp=1");
 }

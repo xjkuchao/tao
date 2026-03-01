@@ -68,7 +68,14 @@ fn test_decode_cavlc_slice_data_b_skip_run_temporal_direct_uses_colocated_mv() {
         dec.ref_y[0], 50,
         "temporal direct 应按缩放后的双向运动进行融合采样"
     );
-    assert_eq!(dec.mv_l0_x[0], 2, "宏块记录的 L0 MV(x) 应为规范缩放后的值");
+    assert_eq!(
+        dec.mv_l0_x_4x4[0], 2,
+        "首个 4x4 分区的 L0 MV(x) 应为规范缩放后的值"
+    );
+    assert_eq!(
+        dec.mv_l0_x[0], 0,
+        "宏块级 MV 记录最后一个 direct 子分区结果, 在该用例中应为 0"
+    );
 }
 
 #[test]
@@ -112,16 +119,31 @@ fn test_decode_cavlc_slice_data_b_skip_run_temporal_direct_list1_fallback_keeps_
         dec.ref_y[0], 90,
         "temporal direct 应保留缩放后的 MV 参与双向融合"
     );
-    assert_eq!(dec.mv_l0_x[0], 1, "list1 回退分支应记录缩放后的 L0 MV(x)");
-    assert_eq!(dec.mv_l0_y[0], 0, "list1 回退分支应记录缩放后的 L0 MV(y)");
-    assert_eq!(dec.ref_idx_l0[0], 0, "L0 参考索引应保持为 0");
+    assert_eq!(
+        dec.mv_l0_x_4x4[0], 1,
+        "list1 回退分支应记录缩放后的 L0 MV(x)"
+    );
+    assert_eq!(
+        dec.mv_l0_y_4x4[0], 0,
+        "list1 回退分支应记录缩放后的 L0 MV(y)"
+    );
+    assert_eq!(dec.ref_idx_l0_4x4[0], 0, "L0 参考索引应保持为 0");
+    assert_eq!(
+        dec.mv_l0_x[0], 0,
+        "宏块级 MV 应记录最后一个 direct 子分区结果"
+    );
+    assert_eq!(
+        dec.mv_l0_y[0], 0,
+        "宏块级 MV 应记录最后一个 direct 子分区结果"
+    );
+    assert_eq!(dec.ref_idx_l0[0], 0, "宏块级 L0 参考索引应保持为 0");
     assert_eq!(dec.mv_l1_x[0], 0, "L1 MV(x) 应保持与共定位差分结果一致");
     assert_eq!(dec.mv_l1_y[0], 0, "L1 MV(y) 应保持与共定位差分结果一致");
     assert_eq!(dec.ref_idx_l1[0], 0, "L1 参考索引应保持为 0");
 }
 
 #[test]
-fn test_decode_cavlc_slice_data_b_skip_run_uses_predicted_mv_from_left_neighbor() {
+fn test_decode_cavlc_slice_data_b_skip_run_without_colocated_motion_falls_back_to_zero_mv() {
     let mut dec = build_test_decoder();
     dec.width = 32;
     dec.height = 16;
@@ -147,16 +169,16 @@ fn test_decode_cavlc_slice_data_b_skip_run_uses_predicted_mv_from_left_neighbor(
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(
-        dec.ref_y[16], 17,
-        "B_Skip 应使用左邻宏块预测 MV, 而非固定零向量"
+        dec.ref_y[16], 16,
+        "无可用共定位运动时, temporal direct 应回落到零 MV 采样"
     );
-    assert_eq!(dec.mv_l0_x[1], 4, "B_Skip 应写入预测后的 MV(x)");
-    assert_eq!(dec.mv_l0_y[1], 0, "B_Skip 应写入预测后的 MV(y)");
+    assert_eq!(dec.mv_l0_x[1], 0, "B_Skip 应写入回落后的零 MV(x)");
+    assert_eq!(dec.mv_l0_y[1], 0, "B_Skip 应写入回落后的零 MV(y)");
     assert_eq!(dec.mb_types[1], 254, "第二个宏块应按 B_Skip 路径解码");
 }
 
 #[test]
-fn test_decode_cavlc_slice_data_b_non_skip_direct_uses_predicted_mv_from_left_neighbor() {
+fn test_decode_cavlc_slice_data_b_non_skip_direct_without_colocated_motion_falls_back_to_zero_mv() {
     let mut dec = build_test_decoder();
     dec.width = 32;
     dec.height = 16;
@@ -184,11 +206,11 @@ fn test_decode_cavlc_slice_data_b_non_skip_direct_uses_predicted_mv_from_left_ne
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
     assert_eq!(
-        dec.ref_y[16], 17,
-        "B_Direct_16x16 应使用左邻宏块预测 MV, 而非固定零向量"
+        dec.ref_y[16], 16,
+        "无可用共定位运动时, B_Direct_16x16 应回落到零 MV"
     );
-    assert_eq!(dec.mv_l0_x[1], 4, "B_Direct_16x16 应写入预测后的 MV(x)");
-    assert_eq!(dec.mv_l0_y[1], 0, "B_Direct_16x16 应写入预测后的 MV(y)");
+    assert_eq!(dec.mv_l0_x[1], 0, "B_Direct_16x16 应写入回落后的零 MV(x)");
+    assert_eq!(dec.mv_l0_y[1], 0, "B_Direct_16x16 应写入回落后的零 MV(y)");
     assert_eq!(dec.mb_types[1], 254, "第二个宏块应按 B_Direct 路径解码");
 }
 
@@ -978,7 +1000,8 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_direct_no_ref_idx_parse() {
 }
 
 #[test]
-fn test_decode_cavlc_slice_data_b_non_skip_b8x8_direct_uses_predicted_mv_from_left_neighbor() {
+fn test_decode_cavlc_slice_data_b_non_skip_b8x8_direct_without_colocated_motion_falls_back_to_zero_mv()
+ {
     use ExpGolombValue::{Se, Ue};
 
     let mut dec = build_test_decoder();
@@ -1015,14 +1038,15 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_direct_uses_predicted_mv_from_le
     ]);
     dec.decode_cavlc_slice_data(&rbsp, &header);
 
-    assert_eq!(dec.ref_y[16], 17, "Direct_8x8 左上块应复用左邻 MVP");
-    assert_eq!(dec.ref_y[24], 25, "Direct_8x8 右上块应复用左邻 MVP");
-    assert_eq!(dec.mv_l0_x[1], 4, "Direct_8x8 宏块应写入预测后的 MV(x)");
-    assert_eq!(dec.mv_l0_y[1], 0, "Direct_8x8 宏块应写入预测后的 MV(y)");
+    assert_eq!(dec.ref_y[16], 16, "Direct_8x8 左上块应回落到零 MV");
+    assert_eq!(dec.ref_y[24], 24, "Direct_8x8 右上块应回落到零 MV");
+    assert_eq!(dec.mv_l0_x[1], 0, "Direct_8x8 宏块应写入回落后的 MV(x)");
+    assert_eq!(dec.mv_l0_y[1], 0, "Direct_8x8 宏块应写入回落后的 MV(y)");
 }
 
 #[test]
-fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l0_uses_direct_neighbor_motion_cache() {
+fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l0_subpartition_stays_zero_without_colocated_motion()
+ {
     use ExpGolombValue::{Se, Ue};
 
     let mut dec = build_test_decoder();
@@ -1070,21 +1094,22 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_l0_uses_direct_neighbor_motion_c
     let top_right_y4 = 0usize;
     let top_right_idx4 = top_right_y4 * dec.mb_width * 4 + top_right_x4;
     assert_eq!(
-        dec.ref_y[24], 25,
-        "sub1(L0_8x8) 应复用 sub0(Direct) 提前建立的 +1px MVP"
+        dec.ref_y[24], 24,
+        "无可用共定位运动时, sub1(L0_8x8) 应保持零 MV 采样"
     );
     assert_eq!(
         dec.ref_idx_l0_4x4[top_right_idx4], 0,
         "sub1(L0_8x8) 应保持 L0 参考索引 0"
     );
     assert_eq!(
-        dec.mv_l0_x_4x4[top_right_idx4], 4,
-        "sub1(L0_8x8) 的 L0 MV(x) 应由 direct 邻居缓存引导为 +1px"
+        dec.mv_l0_x_4x4[top_right_idx4], 0,
+        "sub1(L0_8x8) 的 L0 MV(x) 应保持零向量"
     );
 }
 
 #[test]
-fn test_decode_cavlc_slice_data_b_non_skip_b8x8_direct_right_sub_block_respects_inference_flag() {
+fn test_decode_cavlc_slice_data_b_non_skip_b8x8_direct_right_sub_block_without_colocated_motion_same_result()
+ {
     use ExpGolombValue::{Se, Ue};
 
     fn decode_with_inference_flag(flag: bool) -> u8 {
@@ -1126,17 +1151,17 @@ fn test_decode_cavlc_slice_data_b_non_skip_b8x8_direct_right_sub_block_respects_
     let pixel_false = decode_with_inference_flag(false);
 
     assert_eq!(
-        pixel_true, 25,
-        "direct_8x8_inference_flag=1 时, 右上 direct 子块应复用 8x8 预测 MV(+1px)"
+        pixel_true, 24,
+        "无共定位运动时, direct_8x8_inference_flag=1 也应回落到零 MV"
     );
     assert_eq!(
         pixel_false, 24,
-        "direct_8x8_inference_flag=0 时, 右上 direct 子块应按 4x4 粒度独立预测并回落到零 MV"
+        "direct_8x8_inference_flag=0 时应保持相同零 MV 结果"
     );
 }
 
 #[test]
-fn test_apply_b_direct_sub_8x8_respects_direct_8x8_inference_flag() {
+fn test_apply_b_direct_sub_8x8_without_colocated_motion_same_result() {
     fn apply_with_direct_8x8_inference_flag(flag: bool) -> (u8, i16) {
         let mut dec = build_test_decoder();
         let sps_resize = build_sps_nalu(0, 32, 16);
@@ -1180,21 +1205,18 @@ fn test_apply_b_direct_sub_8x8_respects_direct_8x8_inference_flag() {
     let (pix_false, mv_false) = apply_with_direct_8x8_inference_flag(false);
 
     assert_eq!(
-        pix_true, 25,
-        "direct_8x8_inference_flag=1 时应沿用 8x8 预测 MV(+1px)"
+        pix_true, 24,
+        "无共定位运动时, direct_8x8_inference_flag=1 应回落到零 MV"
     );
-    assert_eq!(
-        mv_true, 4,
-        "direct_8x8_inference_flag=1 时应记录 8x8 预测 MV(x)=4"
-    );
+    assert_eq!(mv_true, 0, "direct_8x8_inference_flag=1 时应记录零 MV(x)");
 
     assert_eq!(
         pix_false, 24,
-        "direct_8x8_inference_flag=0 时应按 4x4 粒度独立预测并回落到零 MV"
+        "direct_8x8_inference_flag=0 时应保持零 MV 结果"
     );
     assert_eq!(
         mv_false, 0,
-        "direct_8x8_inference_flag=0 时最后分区应记录独立 4x4 MV(x)=0"
+        "direct_8x8_inference_flag=0 时最后分区应记录零 MV(x)"
     );
 }
 

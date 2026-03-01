@@ -292,6 +292,43 @@ impl H264Decoder {
         ref_l1_list: &[RefPlanes],
     ) {
         let mb_idx = mb_y * self.mb_width + mb_x;
+        let trace_detail = std::env::var("TAO_H264_TRACE_B_MB_DETAIL")
+            .ok()
+            .and_then(|v| {
+                let mut it = v.split(',');
+                let first = it.next()?;
+                let second = it.next();
+                if let Some(mb) = second {
+                    let frame = first.parse::<u32>().ok()?;
+                    let target_mb = mb.parse::<usize>().ok()?;
+                    Some((Some(frame), target_mb))
+                } else {
+                    let target_mb = first.parse::<usize>().ok()?;
+                    Some((None, target_mb))
+                }
+            });
+        let trace_this_mb = trace_detail
+            .map(|(frame, target_mb)| {
+                mb_idx == target_mb && frame.map(|f| self.last_frame_num == f).unwrap_or(true)
+            })
+            .unwrap_or(false);
+        if trace_this_mb {
+            let weighted_bipred_idc = self
+                .pps
+                .as_ref()
+                .map(|p| p.weighted_bipred_idc)
+                .unwrap_or(0);
+            eprintln!(
+                "[H264-B-DETAIL] frame_num={} mb_idx={} mb_type_idx={:?} direct_spatial={} num_ref_l0={} num_ref_l1={} weighted_bipred_idc={}",
+                self.last_frame_num,
+                mb_idx,
+                mb_type_idx,
+                direct_spatial_mv_pred_flag,
+                num_ref_idx_l0,
+                num_ref_idx_l1,
+                weighted_bipred_idc
+            );
+        }
         self.set_luma_dc_cbf(mb_x, mb_y, false);
         self.reset_chroma_cbf_mb(mb_x, mb_y);
         self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
@@ -354,8 +391,8 @@ impl H264Decoder {
                 }
                 // 对齐 FFmpeg: 在解析 ref_idx 之前先落 direct 标记,
                 // 使 ref_idx CABAC 上下文能正确把 direct 邻居视为不可用.
-                for sub in 0..4usize {
-                    if !matches!(sub_dir[sub], BPredDir::Direct) {
+                for (sub, dir) in sub_dir.iter().enumerate() {
+                    if !matches!(dir, BPredDir::Direct) {
                         continue;
                     }
                     let sx = (sub & 1) * 8;
@@ -486,19 +523,17 @@ impl H264Decoder {
                         _ => ((part & 1) * 4, (part >> 1) * 4),
                     };
 
-                for sub in 0..4usize {
+                for (sub, part_count) in sub_part_count.iter().copied().enumerate() {
                     if !sub_use_l0[sub] {
                         continue;
                     }
                     let sx = (sub & 1) * 8;
                     let sy = (sub >> 1) * 8;
-                    for part in 0..sub_part_count[sub] {
-                        let (off_x, off_y) = part_offset(
-                            sub_part_w[sub],
-                            sub_part_h[sub],
-                            sub_part_count[sub],
-                            part,
-                        );
+                    for (part, motion_slot) in
+                        motion_l0_parts[sub].iter_mut().enumerate().take(part_count)
+                    {
+                        let (off_x, off_y) =
+                            part_offset(sub_part_w[sub], sub_part_h[sub], part_count, part);
                         let x4 = mb_x * 4 + (sx + off_x) / 4;
                         let y4 = mb_y * 4 + (sy + off_y) / 4;
                         let (amvd_x, amvd_y) = self.compute_cabac_amvd(x4, y4, 0);
@@ -540,22 +575,20 @@ impl H264Decoder {
                             motion.mv_y,
                             motion.ref_idx,
                         );
-                        motion_l0_parts[sub][part] = Some(motion);
+                        *motion_slot = Some(motion);
                     }
                 }
-                for sub in 0..4usize {
+                for (sub, part_count) in sub_part_count.iter().copied().enumerate() {
                     if !sub_use_l1[sub] {
                         continue;
                     }
                     let sx = (sub & 1) * 8;
                     let sy = (sub >> 1) * 8;
-                    for part in 0..sub_part_count[sub] {
-                        let (off_x, off_y) = part_offset(
-                            sub_part_w[sub],
-                            sub_part_h[sub],
-                            sub_part_count[sub],
-                            part,
-                        );
+                    for (part, motion_slot) in
+                        motion_l1_parts[sub].iter_mut().enumerate().take(part_count)
+                    {
+                        let (off_x, off_y) =
+                            part_offset(sub_part_w[sub], sub_part_h[sub], part_count, part);
                         let x4 = mb_x * 4 + (sx + off_x) / 4;
                         let y4 = mb_y * 4 + (sy + off_y) / 4;
                         let (amvd_x, amvd_y) = self.compute_cabac_amvd(x4, y4, 1);
@@ -598,7 +631,7 @@ impl H264Decoder {
                             motion.mv_y,
                             motion.ref_idx,
                         );
-                        motion_l1_parts[sub][part] = Some(motion);
+                        *motion_slot = Some(motion);
                     }
                 }
 
@@ -925,6 +958,41 @@ impl H264Decoder {
 
         if chroma_cbp >= 1 {
             self.decode_chroma_residual(cabac, ctxs, (mb_x, mb_y), *cur_qp, chroma_cbp >= 2, false);
+        }
+
+        if trace_this_mb {
+            let mut l0_refs = Vec::with_capacity(16);
+            let mut l1_refs = Vec::with_capacity(16);
+            for by in 0..4usize {
+                for bx in 0..4usize {
+                    let x4 = mb_x * 4 + bx;
+                    let y4 = mb_y * 4 + by;
+                    l0_refs.push(
+                        self.motion_l0_4x4_index(x4, y4)
+                            .and_then(|idx| self.ref_idx_l0_4x4.get(idx).copied())
+                            .unwrap_or(-9),
+                    );
+                    l1_refs.push(
+                        self.motion_l1_4x4_index(x4, y4)
+                            .and_then(|idx| self.ref_idx_l1_4x4.get(idx).copied())
+                            .unwrap_or(-9),
+                    );
+                }
+            }
+            eprintln!(
+                "[H264-B-DETAIL] frame_num={} mb_idx={} final_mb_type={} mv_l0=({},{} ref={}) mv_l1=({},{} ref={}) l0_4x4_ref={:?} l1_4x4_ref={:?}",
+                self.last_frame_num,
+                mb_idx,
+                self.mb_types.get(mb_idx).copied().unwrap_or(0),
+                self.mv_l0_x.get(mb_idx).copied().unwrap_or(0),
+                self.mv_l0_y.get(mb_idx).copied().unwrap_or(0),
+                self.ref_idx_l0.get(mb_idx).copied().unwrap_or(-1),
+                self.mv_l1_x.get(mb_idx).copied().unwrap_or(0),
+                self.mv_l1_y.get(mb_idx).copied().unwrap_or(0),
+                self.ref_idx_l1.get(mb_idx).copied().unwrap_or(-1),
+                l0_refs,
+                l1_refs
+            );
         }
     }
 

@@ -19,6 +19,7 @@ pub fn build_test_pps() -> Pps {
         chroma_qp_index_offset: 0,
         second_chroma_qp_index_offset: 0,
         deblocking_filter_control: true,
+        constrained_intra_pred: false,
         pic_order_present: false,
         num_ref_idx_l0_default_active: 1,
         num_ref_idx_l1_default_active: 1,

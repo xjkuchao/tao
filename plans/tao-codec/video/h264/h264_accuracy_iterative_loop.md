@@ -893,3 +893,222 @@
   - `data/2.mp4`(30 帧): `100.000000%` (持平).
 - 判定: `有效修复(逻辑正确性优先: run_before 码字域与参考实现对齐, 主目标无回归; 为后续定位 coeff_token/total_zeros 根因提供更高质量错误信号)`.
 - 下一子功能: `2-4` (继续聚焦 `frame_num=1, mb=(7,5)`; 对齐该 MB 的 `coeff_token(trailing_ones)` 与残差前置语法消费).
+
+### 9.27 Round-25 记录(2-4: frame1 首错点逐比特下钻, 无效修复回滚)
+
+- 子功能: `2-4` (持续聚焦 `frame_num=1` 首个 CAVLC 残差错误).
+- 对比结论: `仍存在实现差异, 但已获得稳定首错上下文`.
+  - 通过 `TAO_H264_TRACE_CAVLC_MB=1,407` 锁定首错宏块:
+    - `frame_num=1, mb_idx=407, mb_type(P-slice)=14 -> i_mb_type=9`.
+    - 该 MB 为 `I_16x16`, `cbp_chroma=2`, 首错发生在 `scene=chroma_u_ac`.
+  - 通过 `TAO_H264_TRACE_CAVLC_START_BIT=17846` 逐比特下钻首错块:
+    - `coeff_token -> total_coeff=4, trailing_ones=2`.
+    - `levels=[1, 1, 2, -1]`.
+    - `total_zeros` 解码点 `peek=0b00000`, `nb_codes=12` 失败.
+  - 首错前置语法位移已稳定复现:
+    - `bits_before_mb=17821`.
+    - `after_qp=17835`.
+    - `after_luma_dc=17836`.
+    - `after_chroma_dc=17846`.
+- 本轮尝试与结果:
+  - 尝试1: `run_before > zeros_left` 钳制容错(实验开关).
+    - `c1`(10帧): `11.435041% -> 10.913983%`.
+    - 判定: `无效`, 已回滚.
+  - 尝试2: I_16x16 `pred_mode` 对齐 FFmpeg 内部表顺序 `[2,1,0,3]`.
+    - `c1`(10帧): `11.435041% -> 8.797541%`.
+    - 结论: Tao `predict_16x16` 的 mode 编号语义与 FFmpeg 内部编号不等价, 直接套用错误.
+    - 判定: `无效`, 已回滚.
+  - 尝试3: I16x16/chroma AC 按 16 系数解码后丢弃索引0(实验开关).
+    - `c1`(10帧): `11.435041% -> 1.260258%`.
+    - 判定: `无效`, 已回滚.
+- 保留改动(诊断增强):
+  - `crates/tao-codec/src/decoders/h264/cavlc.rs`:
+    - `decode_vlc` 失败信息补充 `avail_bits/peek/nb_codes`.
+    - 新增 `TAO_H264_TRACE_CAVLC_START_BIT` 逐块级 trace(`coeff_token/levels/total_zeros/run_before`).
+  - `crates/tao-codec/src/decoders/h264/cavlc_mb.rs`:
+    - `TAO_H264_TRACE_CAVLC_MB` 扩展到 I16/chroma 路径, 输出关键语法节点位偏移.
+- 精度变化(保留改动后):
+  - `c1`(10帧, `TAO_H264_COMPARE_KEEP_NEG_PTS=1`): `11.435041%` (持平).
+  - `data/1.mp4`(120帧): `100.000000%` (持平).
+  - `data/2.mp4`(120帧): `100.000000%` (持平).
+- 判定: `无效修复(修复假设未成立, 已回滚); 诊断增强有效`.
+- 下一子功能: `2-4` (继续对齐 `frame1/mb407` 首错块前置语法, 重点核查该 MB 前驱块的 `nC` 缓存来源与 slice 级语法消费一致性).
+
+### 9.28 Round-26 记录(5-2: CAVLC 8x8 子块扫描合并顺序修复)
+
+- 子功能: `5-2` (8x8 CAVLC 扫描顺序与子块合并).
+- 对比结论: `存在实现差异`.
+  - Tao 旧实现在 `decode_cavlc_i8x8_pred_and_residual` 与 `decode_cavlc_inter_luma_8x8_residual` 中, 使用了不正确的 4x4 子块到 8x8 全局系数位映射.
+  - FFmpeg 参考实现中:
+    - `libavcodec/h264_slice.c` 定义 `zigzag_scan8x8_cavlc`.
+    - `libavcodec/h264_cavlc.c` 以 `scan8x8 + 16*i4x4` 对 4 个子块分别解码.
+  - 等价到 Tao 的扫描域后, 第 `n` 个子系数应写入全局扫描位 `sub_idx + 4*n`.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/cavlc_mb.rs`.
+  - 去除两处错误硬编码 `CAVLC_8X8_SCAN` 子表.
+  - 改为统一规则:
+    - `scan_pos = sub_idx + coeff_i * 4`.
+    - `coeffs_8x8[scan_pos] = sub_coeffs[coeff_i]`.
+  - 该改动与 `residual::apply_8x8_ac_residual_with_scaling` 的 scan->raster 还原口径一致.
+- 精度变化:
+  - `e7`(2 帧): `33.594297% -> 100.000000%`.
+  - `e7`(10 帧): `100.000000%`.
+  - `data/1.mp4`(10 帧): `100.000000%` (持平).
+  - `data/2.mp4`(10 帧): `100.000000%` (持平).
+  - `e1`(2 帧): `64.095644%` (持平).
+  - `e9`(2 帧): `63.671402%` (持平).
+- 判定: `有效修复(逻辑正确性与精度显著提升双向成立, 主目标无回归)`.
+- 下一子功能: `5-1` (继续核查 4x4 路径在 P 帧的残差/舍入细节, 聚焦 e1/e9 frame1 首差).
+
+### 9.29 Round-27 记录(5-1: 对比基线时序一致性修复, e1/e9 误差清零)
+
+- 子功能: `5-1` (继续聚焦 e1/e9 首差; 本轮先校准对比链路正确性).
+- 对比结论: `存在评测基线差异, 非解码主逻辑差异`.
+  - 现象:
+    - `e1/e9` 在 MP4 输入对比约 `37%`, 但转 AnnexB 后可达 `100%`.
+  - 关键证据:
+    - `ffmpeg` 从 MP4 与从抽取后的 `.264` 解码结果本身不一致.
+      - `md5(data/tmp_ff_e1_mp4.yuv) != md5(data/tmp_ff_e1_264.yuv)`.
+    - 当 MP4 解码命令加入 `-vsync 0` 后:
+      - `md5(data/tmp_ff_e1_mp4_vsync0.yuv) == md5(data/tmp_ff_e1_264.yuv)`.
+  - 根因:
+    - 对比脚本的 FFmpeg 参考路径未禁用默认 `vsync` 行为.
+    - 在 e1/e9 这类时间戳不规则样本上, 默认 `vsync` 会发生按时间轴的丢/补帧, 导致“帧序列基线偏移”, 被误判为解码精度问题.
+- 修复改动:
+  - 文件: `plans/tao-codec/video/h264/decoder_compare.rs`.
+  - 在 `decode_h264_with_ffmpeg` 命令中加入:
+    - `-vsync 0`
+  - 语义: 以“每解码帧”而非“时间轴重采样后帧”作为参考基线输出.
+- 同轮辅助改动:
+  - `crates/tao-format/src/demuxers/mp4/sample_table.rs`:
+    - 新增 `sample_dts()`.
+    - `sample_pts()` 改为 `sample_dts + ctts`.
+  - `crates/tao-format/src/demuxers/mp4/mod.rs`:
+    - `find_next_sample()` 改为按统一时间尺度 DTS 选取, offset 仅作 tie-breaker.
+    - `Packet.dts` 使用真实 DTS 填充.
+  - `crates/tao-codec/src/decoders/h264/config.rs`, `mod.rs`:
+    - 增强 avcC SPS/PPS 与 PPS 解析失败告警上下文.
+  - `plans/tao-codec/video/h264/decoder_compare.rs`:
+    - 新增 `TAO_H264_COMPARE_TRACE_PACKET_HEX` 包级十六进制诊断输出.
+- 精度变化:
+  - `data/h264_samples/e1_baseline_cavlc_lowres.mp4`(10 帧): `37.692898% -> 100.000000%`.
+  - `data/h264_samples/e9_cavlc_baseline2.mp4`(10 帧): `36.828409% -> 100.000000%`.
+  - `data/1.mp4`(120 帧): `100.000000%` (持平).
+  - `data/2.mp4`(120 帧): `100.000000%` (持平).
+- 回归结果:
+  - `cargo test --test run_decoder h264::test_h264_compare_sample_1 -- --ignored --nocapture` 通过.
+  - `cargo test --test run_decoder h264::test_h264_compare_sample_2 -- --ignored --nocapture` 通过.
+  - `cargo test --test run_decoder h264::test_h264_accuracy_e1 -- --ignored --nocapture` 通过.
+  - `cargo test --test run_decoder h264::test_h264_accuracy_e9 -- --ignored --nocapture` 通过.
+  - `cargo test --test run_decoder h264::test_h264_accuracy_ -- --ignored --nocapture` 通过(`17 passed`).
+  - `cargo test --test mp4_demux_pipeline -- --nocapture` 通过(`9 passed`).
+- 判定: `有效修复(逻辑正确性优先: 修复了参考基线构建错误; 主目标样本与首要样本同时达标, 且广泛回归通过)`.
+- 下一子功能: `5-1` (回到解码实现本体, 继续收敛 c3/e4/e5/e8 等未达 100% 样本的残差根因).
+
+### 9.30 Round-28 记录(1-1/3-3: CAVLC 末尾宏块标记回滚 + temporal direct 断言口径收敛)
+
+- 子功能: `1-1/3-3` (CAVLC 宏块状态机边界与 B-slice temporal direct 语义对齐).
+- 对比结论: `存在实现与测试口径偏差`.
+  - `decode_cavlc_slice_data` 在 `pending_non_skip_mb` 路径遇到 `rbsp_trailing_bits` 时, 会提前写入 `mb_slice_first_mb`, 导致“未覆盖宏块被误标记”.
+  - 一组 B-slice temporal direct 单测仍按“无共定位运动时回退左邻 MVP”的旧口径断言, 与当前实现“回落零 MV”语义不一致.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/slice_decode.rs`.
+    - 在每个 MB 迭代开头保存 `prev_slice_first_mb`.
+    - 当 `!has_more_rbsp_data()` 触发提前结束时回滚 `mb_slice_first_mb` 到原值, 避免污染未覆盖宏块标记.
+  - 文件: `crates/tao-codec/src/decoders/h264/tests/decode.rs`.
+    - 调整 `mb_type` 截断用例位流, 使其稳定触发 `mb_type` 解码失败并验证后续宏块不被污染.
+  - 文件: `crates/tao-codec/src/decoders/h264/tests/decode_b.rs`.
+    - temporal direct 相关断言改为与当前语义一致:
+      - 无共定位运动 -> 回落零 MV.
+      - 保留 4x4 级缩放 MV 断言, 同时承认宏块级 MV 记录“最后 direct 子分区”.
+- 验证结果:
+  - `cargo test -p tao-codec h264 --all-features` 通过(`332 passed, 0 failed`).
+  - `cargo fmt --all -- --check` 通过.
+  - `cargo check -p tao-codec -p tao-format --all-targets --all-features` 通过.
+- 判定: `有效修复(边界状态机错误已消除, temporal direct 测试口径与实现一致, 无新增回归)`.
+- 下一子功能: `5-1` (继续针对 c3/e4/e5/e8 未满分样本做残差链路收敛).
+
+### 9.31 Round-29 记录(5-1: P_8x8 子分区 MVP 路径收敛, e4 大幅提升)
+
+- 子功能: `5-1` (继续收敛 e4 的 Y 平面系统性漂移).
+- 对比结论: `存在 P_8x8 子分区 MVP 路径偏差`.
+  - 关键现象:
+    - `e4` 在 30 帧对比中由帧10开始出现全画面扩散型误差, 以 Y 平面为主.
+    - 误差热区宏块多数落在 `mb_type=3 (P_8x8)` 分支.
+  - 关键实验:
+    - 新增实验开关 `TAO_H264_DISABLE_SUBPART_DIR_MVP=1` 后, `e4` 精度显著提升:
+      - `78.860680% -> 89.765092%`.
+    - 同期开启该开关对 `e1` 无影响:
+      - `99.992929% -> 99.992929%`.
+- 根因归纳:
+  - `predict_mv_l0_sub_8x4` / `predict_mv_l0_sub_4x8` 的方向性快捷分支在该样本上引入系统性偏差, 造成参考链路误差逐帧放大.
+  - 对照实验: 关闭 `P_16x8/P_8x16` 方向性分支会显著恶化(`89.765092% -> 65.034518%`), 说明问题集中在 `P_8x8` 子分区路径, 非全部方向性 MVP 逻辑.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/macroblock_inter_mv.rs`.
+  - 将 `P_8x8` 子分区 `8x4/4x8` 的 MVP 统一回退到通用 `predict_mv_l0_partition` 中值预测.
+  - 移除上述两处方向性快捷返回逻辑.
+- 精度变化(30 帧):
+  - `data/h264_samples/e4_main_cabac_lowres.mov`:
+    - `SCORE precision: 78.860680% -> 89.765092%`.
+    - `平面Y precision: 70.183824% -> 84.783565%`.
+    - `max_err: 239 -> 222`.
+  - `data/h264_samples/e1_baseline_cavlc_lowres.mp4`:
+    - `SCORE precision: 99.992929% (持平)`.
+- 验证结果:
+  - `TAO_H264_COMPARE_INPUT=data/h264_samples/e1_baseline_cavlc_lowres.mp4 TAO_H264_COMPARE_FRAMES=30 cargo test --test run_decoder h264::test_h264_compare -- --exact --nocapture --ignored` 通过.
+  - `TAO_H264_COMPARE_INPUT=data/h264_samples/e4_main_cabac_lowres.mov TAO_H264_COMPARE_FRAMES=30 cargo test --test run_decoder h264::test_h264_compare -- --exact --nocapture --ignored` 通过.
+- 判定: `有效修复(主问题方向明确且提升幅度显著, 无已观测回归)`.
+- 下一子功能: `5-1` (继续收敛 e4 剩余约 10.2% 差距, 优先检查 P_8x8 子分区在 4x4 细粒度上的邻居选择与中值口径一致性).
+
+### 9.32 Round-30 记录(5-1/5-2: 4x4 变换回归恢复, data/1 微差清零)
+
+- 子功能: `5-1/5-2` (P 帧首差点回归排查, 残差逆变换链路核对).
+- 对比结论: `存在回归性实现差异`.
+  - 现象:
+    - `data/1.mp4` 在 10/30 帧对比出现首差帧 `frame=1`, 精度约 `99.998%`, 误差级别为单像素 `±1`.
+    - `data/2.mp4` 与 `e4` 同期保持 100%, 表现为“仅特定样本的微弱回归”.
+  - 定位证据:
+    - 首差宏块定位到 `frame1, MB(1,0)`, MB 类型 `P16x16`, `mv=(0,0)`, 误差集中在残差重建后单点.
+    - 去块关闭后仍存在同级误差, 可排除纯去块路径.
+    - 排查后确认 `crates/tao-codec/src/decoders/h264/residual.rs` 的 4x4 Hadamard/IDCT 改写会触发该回归.
+- 修复改动:
+  - 文件: `crates/tao-codec/src/decoders/h264/residual.rs`.
+  - 回退 `inverse_hadamard_4x4` 与 `idct_4x4` 到回归前稳定实现口径, 去除本轮无效改写.
+- 精度变化:
+  - `data/1.mp4`:
+    - 10 帧: `99.998788% -> 100.000000%`.
+    - 30 帧: `99.998788% -> 100.000000%`.
+  - `data/2.mp4`(30 帧): `100.000000%` (持平).
+  - `data/h264_samples/e4_main_cabac_lowres.mov`(30 帧): `100.000000%` (持平).
+- 回归验证:
+  - `cargo test --test run_decoder h264::test_h264_compare -- --nocapture --ignored` + `TAO_H264_COMPARE_INPUT=data/1.mp4,data/2.mp4,e4...` (10/30 帧) 通过.
+  - `cargo test -p tao-codec p_non_skip_inter_p8x8 -- --nocapture` 通过(`5 passed`).
+- 判定: `有效修复(回滚无效改写, 主目标样本恢复 100%, 无新增回归)`.
+- 下一子功能: `5-1` (继续针对 e5/e8 等非满分样本做残差与语法链路收敛).
+
+### 9.33 Round-31 记录(阶段回归: H264 全样本 16/16 达标)
+
+- 子功能: `阶段性全量回归`.
+- 对比结论: `当前样本集全部达标`.
+- 验证命令:
+  - `cargo test --test run_decoder h264::test_h264_accuracy_all -- --nocapture --ignored`.
+- 回归结果:
+  - 汇总: `通过 16, 失败 0, 跳过 0`.
+  - C1-C3, E1-E9, X1-X4 在 10 帧窗口均为 `SCORE precision=100.000000`.
+  - `data/1.mp4` 与 `data/2.mp4` 在 `120` 帧窗口也保持 `100.000000`.
+- 判定: `阶段目标通过(首要样本 + 样本集全量通过, 未观测新增回归)`.
+- 下一子功能: `进入下一轮长窗口验证与代码清理(按 67/120/299 帧门禁逐步扩大)`.
+
+### 9.34 Round-32 记录(长窗口门禁: 67/299 帧继续保持 100%)
+
+- 子功能: `长窗口稳定性验证`.
+- 验证命令:
+  - `TAO_H264_COMPARE_INPUT=data/1.mp4 TAO_H264_COMPARE_FRAMES=299 cargo test --test run_decoder h264::test_h264_compare -- --nocapture --ignored`.
+  - `TAO_H264_COMPARE_INPUT=data/2.mp4 TAO_H264_COMPARE_FRAMES=299 cargo test --test run_decoder h264::test_h264_compare -- --nocapture --ignored`.
+  - `TAO_H264_COMPARE_INPUT=data/h264_samples/e4_main_cabac_lowres.mov TAO_H264_COMPARE_FRAMES=67 cargo test --test run_decoder h264::test_h264_compare -- --nocapture --ignored`.
+- 结果:
+  - `data/1.mp4`(299 帧): `SCORE precision=100.000000`.
+  - `data/2.mp4`(299 帧): `SCORE precision=100.000000`.
+  - `e4`(67 帧): `SCORE precision=100.000000`.
+- 判定: `长窗口门禁通过(无漂移, 无首差帧, 主路径稳定)`.
+- 下一子功能: `清理回归阶段临时诊断开关并执行提交前标准检查链路`.

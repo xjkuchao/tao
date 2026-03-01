@@ -149,19 +149,26 @@ impl SampleTable {
         chunk_offset + byte_offset
     }
 
-    /// 获取指定采样的 PTS
-    pub fn sample_pts(&self, sample_idx: u32) -> i64 {
-        let mut pts = 0i64;
+    /// 获取指定采样的 DTS (解码时间戳, 仅由 stts 决定)
+    pub fn sample_dts(&self, sample_idx: u32) -> i64 {
+        let mut dts = 0i64;
         let mut remaining = sample_idx;
 
         for entry in &self.stts_entries {
             if remaining < entry.count {
-                pts += i64::from(remaining) * i64::from(entry.delta);
-                break;
+                dts += i64::from(remaining) * i64::from(entry.delta);
+                return dts;
             }
-            pts += i64::from(entry.count) * i64::from(entry.delta);
+            dts += i64::from(entry.count) * i64::from(entry.delta);
             remaining -= entry.count;
         }
+
+        dts
+    }
+
+    /// 获取指定采样的 PTS
+    pub fn sample_pts(&self, sample_idx: u32) -> i64 {
+        let mut pts = self.sample_dts(sample_idx);
 
         // 加上 ctts 偏移 (如果有)
         if !self.ctts_entries.is_empty() {
