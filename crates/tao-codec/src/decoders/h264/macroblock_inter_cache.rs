@@ -277,7 +277,6 @@ impl H264Decoder {
         ref_l1_list: &[RefPlanes],
     ) {
         let mb_idx = mb_y * self.mb_width + mb_x;
-        let _ = (mb_idx, mb_type_idx, num_ref_idx_l0, num_ref_idx_l1);
         self.set_luma_dc_cbf(mb_x, mb_y, false);
         self.reset_chroma_cbf_mb(mb_x, mb_y);
         self.reset_luma_8x8_cbf_mb(mb_x, mb_y);
