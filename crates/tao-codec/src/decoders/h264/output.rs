@@ -350,7 +350,6 @@ impl H264Decoder {
             return;
         }
 
-        let original_len = refs.len().max(active_count);
         let cur_pic_num = cur_frame_num as i32;
         let mut pic_num_pred = cur_pic_num;
         let mut insert_idx = 0usize;
@@ -439,8 +438,6 @@ impl H264Decoder {
                     }
                     if refs.len() > active_count {
                         refs.truncate(active_count);
-                    } else if refs.len() > original_len {
-                        refs.truncate(original_len);
                     }
                 }
             }
